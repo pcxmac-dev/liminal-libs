@@ -28,7 +28,8 @@ FAMILIES = ("apt", "dnf", "emerge")
 DOCKER_PACKAGES = "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
 STEPS = ("wsl", "update", "version", "distribution", "conf", "docker", "engine", "user")
 
-# Docker's own repositories, as its documentation gives them (2026-11-07)
+# Docker's own repositories, as its documentation gives them (2026-11-07). `{repository}` is the plugin's
+# `docker_repository` (Docker's for that distribution): the plugins name the hosts, the library none.
 INSTALL_SCRIPTS = {
     "apt": (
         "set -e\n"
@@ -36,19 +37,19 @@ INSTALL_SCRIPTS = {
         "apt-get update\n"
         "apt-get install -y ca-certificates curl\n"
         "install -m 0755 -d /etc/apt/keyrings\n"
-        "curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc\n"
+        "curl -fsSL {repository}/gpg -o /etc/apt/keyrings/docker.asc\n"
         "chmod a+r /etc/apt/keyrings/docker.asc\n"
         ". /etc/os-release\n"
         "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] "
-        "https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable\" > /etc/apt/sources.list.d/docker.list\n"
+        "{repository} ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable\" > /etc/apt/sources.list.d/docker.list\n"
         "apt-get update\n"
         f"apt-get install -y {DOCKER_PACKAGES}\n"
     ),
     "dnf": (
         "set -e\n"
         "dnf -y install dnf-plugins-core\n"
-        "dnf -y config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo "
-        "|| dnf -y config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo\n"
+        "dnf -y config-manager addrepo --from-repofile={repository}/docker-ce.repo "
+        "|| dnf -y config-manager --add-repo {repository}/docker-ce.repo\n"
         f"dnf -y install {DOCKER_PACKAGES}\n"
     ),
     "emerge": (
@@ -207,14 +208,16 @@ def wsl_path(windows_path: str) -> str:
 
 class WslDistribution(MachinePlugin):
     """The base of the distribution plugins: a subclass names the distribution (`distribution`: its WSL name),
-    its package family (`family`: apt, dnf or emerge) and how it is got (`install_name` for Microsoft's list,
-    else `tarball_url()` to import from a root file system tarball)."""
+    its package family (`family`: apt, dnf or emerge), Docker's repository for it (`docker_repository`, for apt
+    and dnf) and how it is got (`install_name` for Microsoft's list, else `tarball_url()` to import from a
+    root file system tarball)."""
 
     STEPS = STEPS
     ICON = "terminal"
     distribution = ""  # the WSL name: Ubuntu, FedoraLinux-42, Gentoo
     family = ""  # apt | dnf | emerge
     install_name = ""  # what `wsl --install -d` takes; "" to import a tarball
+    docker_repository = ""  # Docker's package repository for the distribution (apt, dnf); emerge needs none
     default_user = "liminal"  # the user made in the distribution, in the docker group
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
@@ -223,6 +226,16 @@ class WslDistribution(MachinePlugin):
         self.wsl = wsl if wsl is not None else Wsl(log=lambda m: None)
         self._data = data
         self._fetch = fetch  # (url, path) -> None: a download, for a tarball; urllib unless given
+
+    def install_script(self) -> str:
+        """The family's Docker install, from the plugin's `docker_repository` (WslError: no recipe for the
+        family, or a recipe needing a repository the plugin does not name)."""
+        if self.family not in INSTALL_SCRIPTS:
+            raise WslError(f"no install recipe for the family {self.family!r}")
+        script = INSTALL_SCRIPTS[self.family]
+        if "{repository}" in script and not self.docker_repository:
+            raise WslError(f"{self.name or type(self).__name__} names no Docker repository for {self.family}")
+        return script.replace("{repository}", self.docker_repository.rstrip("/"))
 
     @property
     def options(self) -> tuple[str, ...]:
@@ -320,9 +333,7 @@ class WslDistribution(MachinePlugin):
                 if self.engine()["installed"]:
                     step("docker", None, "Docker is installed inside")
                 else:
-                    if self.family not in INSTALL_SCRIPTS:
-                        return done if step("docker", False, f"no install recipe for the family {self.family!r}") else done
-                    self.wsl.script(name, INSTALL_SCRIPTS[self.family], timeout=INSTALL_TIMEOUT_S)
+                    self.wsl.script(name, self.install_script(), timeout=INSTALL_TIMEOUT_S)
                     step("docker", True, f"Docker installed by {self.family} from Docker's own repository")
             if "engine" in wanted:
                 how = self.wsl.script(name, ENGINE_SCRIPT, timeout=600).strip().splitlines()

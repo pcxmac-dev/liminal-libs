@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.22.1 (2026-11-07)
+
+Docker's repository is the distribution plugin's (`WslDistribution.docker_repository`), filled into the
+family's recipe by `install_script()`: the library's code names no outside host (the charts app's boundary
+rule), as the Gentoo plugin already names its own. A recipe needing a repository the plugin does not name
+fails the docker step in those words.
+
 ## 1.22.0 (2026-11-07)
 
 The resources monitor on Linux as on Windows (the user: "i need the hardware monitoring that was in charts,

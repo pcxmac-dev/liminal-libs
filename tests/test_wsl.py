@@ -71,6 +71,7 @@ class UbuntuLike(WslDistribution):
     distribution = "Ubuntu"
     family = "apt"
     install_name = "Ubuntu"
+    docker_repository = "https://repository.test/linux/ubuntu/"
     DISTRIBUTION_VAR = "WSL_UBUNTU_DISTRIBUTION"
     USER_VAR = "WSL_UBUNTU_USER"
 
@@ -150,7 +151,15 @@ def test_a_distribution_imported_from_a_tarball_and_the_families_recipes(tmp_pat
     assert got == ["https://distfiles.gentoo.org/releases/amd64/autobuilds/x/stage3-amd64-systemd-x.tar.xz"] and (tmp_path / "stage3-amd64-systemd-x.tar.xz").is_file()
     assert ["wsl", "--import", "Gentoo", str(tmp_path / "root"), str(tmp_path / "stage3-amd64-systemd-x.tar.xz"), "--version", "2"] in fake.calls
     assert "emerge" in wsl_mod.INSTALL_SCRIPTS["emerge"] and "app-containers/docker" in wsl_mod.INSTALL_SCRIPTS["emerge"]
-    assert "download.docker.com/linux/ubuntu" in wsl_mod.INSTALL_SCRIPTS["apt"] and "docker-ce.repo" in wsl_mod.INSTALL_SCRIPTS["dnf"]
+    assert "{repository}/gpg" in wsl_mod.INSTALL_SCRIPTS["apt"] and "{repository}/docker-ce.repo" in wsl_mod.INSTALL_SCRIPTS["dnf"]
+    assert "download.docker.com" not in "".join(wsl_mod.INSTALL_SCRIPTS.values())  # the plugins name the hosts
+    ubuntu = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path).install_script()
+    assert "curl -fsSL https://repository.test/linux/ubuntu/gpg " in ubuntu and "] https://repository.test/linux/ubuntu ${UBUNTU_CODENAME" in ubuntu
+    assert g.install_script() == wsl_mod.INSTALL_SCRIPTS["emerge"]  # emerge: Gentoo's own tree, no repository
+    nameless = UbuntuLike(wsl=Wsl(runner=FakeWsl(distributions=[("Ubuntu", "Running", "2")])), data=tmp_path).with_(docker_repository="")
+    with pytest.raises(WslError, match="names no Docker repository for apt"):
+        nameless.install_script()
+    assert [(d["step"], d["ok"]) for d in nameless.setup(log=lambda m: None, steps=("docker",))] == [("docker", False)]
     assert all(wsl_mod.DOCKER_PACKAGES in wsl_mod.INSTALL_SCRIPTS[f] for f in ("apt", "dnf")) and set(wsl_mod.INSTALL_SCRIPTS) == set(wsl_mod.FAMILIES)
     assert "systemctl enable --now docker" in wsl_mod.ENGINE_SCRIPT and "rc-service docker start" in wsl_mod.ENGINE_SCRIPT
     with pytest.raises(WslError):
