@@ -3,6 +3,8 @@ network and the connections read from a stand-in /proc and /sys, so this runs on
 Liminal app's processes and their roles (is_framework, framework_role); the monitor over the Linux probe."""
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from liminal_libs import resources as res
@@ -142,3 +144,37 @@ def test_the_monitor_reads_linux_as_it_reads_windows(tmp_path):
     assert set(labels) == {"Chart app · port 8765", "Integrator (daemon)"}
     assert labels["Chart app · port 8765"]["cpu"] == pytest.approx(0.25) and labels["Chart app · port 8765"]["connections"]["listening"] == 1
     assert view["network"]["received"] == 5000 and view["connections"]["established"] == 1
+
+
+def test_the_whole_disks_bytes_and_the_monitors_disk_rates(tmp_path):
+    """The disks' I/O, hardware only (the user: "lets get disk io ... in hwstats"; "the platform only cares about
+    hardware"): each whole disk's bytes read and written, partitions and loop devices left out; the rates a second."""
+    f, links = files()
+    f["/proc/diskstats"] = ("   8       0 sda 1000 0 2048 100 500 0 4096 50 0 150 150 0 0 0 0\n"
+                            "   8       1 sda1 900 0 2000 90 400 0 4000 40 0 130 130 0 0 0 0\n"
+                            "   7       0 loop0 10 0 20 1 0 0 0 0 0 1 1 0 0 0 0\n"
+                            " 259       0 nvme0n1 10 0 100 1 10 0 200 1 0 2 2 0 0 0 0\n")
+    for name in ("sda", "nvme0n1", "loop0"):
+        f[f"/sys/block/{name}/size"] = "1\n"
+    probe = FakeProc(f, links)
+    assert [(d.name, d.read, d.written) for d in probe.disks()] == [("sda", 2048 * 512, 4096 * 512), ("nvme0n1", 100 * 512, 200 * 512)]
+    bare = {k: v for k, v in f.items() if not k.startswith("/sys/block")}  # no /sys/block: partitions told by their names
+    assert [d.name for d in FakeProc(bare, links).disks()] == ["sda", "nvme0n1"]
+    t = [100.0]
+    m = Monitor(tmp_path, probe=probe, clock=lambda: t[0], wall=lambda: 1_800_010_000.0 + t[0], cpu_clock=lambda: 0.0, roles=framework_role)
+    m.sample()
+    f["/proc/diskstats"] = f["/proc/diskstats"].replace("sda 1000 0 2048", "sda 1000 0 6144").replace("500 0 4096", "500 0 8192")
+    t[0] = 102.0
+    m.sample()
+    v = m.view()
+    assert v["disk"]["read"] == pytest.approx(4096 * 512 / 2) and v["disk"]["write"] == pytest.approx(4096 * 512 / 2)
+    assert [(r["name"], r["readTotal"]) for r in v["disk"]["disks"]] == [("sda", 6144 * 512), ("nvme0n1", 100 * 512)]
+    assert v["series"]["diskRead"] == [None, pytest.approx(4096 * 512 / 2)] and v["series"]["diskWrite"][0] is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own disk counters")
+def test_this_windows_machines_disks_are_read_without_rights():
+    from liminal_libs.resources import Disk, WindowsProbe
+
+    found = WindowsProbe().disks()
+    assert isinstance(found, list) and all(isinstance(d, Disk) and d.name.endswith(":") and d.read >= 0 for d in found)

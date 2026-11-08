@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.26.0 (2026-11-07)
+
+The WSL distribution plugins check this PC before installing their system (the user: "each plugin should have a scheme
+for checking the environment to see if it supports installing the operating system it has in its name, if the criteria
+are met according to the O/S, then the install method should be not locked out"): `WslDistribution.check()` (Windows
+that runs WSL 2, WSL installed, its kernel, WSL 2.4.4 or later for a named install, the system on offer, the processor,
+the free space; `ready` and `installed`, why not). Their long commands stream what they print to a setup's log that
+has a `write` ("after the install is run a terminal pops up in the plugin and shows the install progress": `Wsl` runs
+with `out`, wsl's words in UTF-8 through WSL_UTF8). `update_packages` brings the system's packages up to date by
+apt, dnf or emerge ("after the install is complete, the user can use the plugin to update the environment's packages");
+`terminal()` gives the command of a login shell into it, with a terminal of its own inside Linux ("the plugin also
+allows for a user to login through a terminal in to the environment"); `machines.terminal`: `Terminal` (a process's
+output read from an offset, the keys written to it) and `Output`. The resources monitor reads the disks' I/O, hardware
+only ("lets get disk io ... in hwstats"; "the platform only cares about hardware"): `Disk`, `WindowsProbe.disks()`
+(each fixed drive's counters, no rights needed), `LinuxProbe.disks()` (/proc/diskstats, whole disks), each disk's and
+all disks' bytes read and written a second in the view (`disk`) and over time (`diskRead`, `diskWrite`).
+
 ## 1.25.0 (2026-11-07)
 
 A Linux target defaults to Liminal's own WSL distribution on Windows (the user: "Yes, do it" to the Linux admin and

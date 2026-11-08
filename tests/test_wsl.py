@@ -19,8 +19,9 @@ def u16(text: str) -> bytes:
 class FakeWsl:
     """Answers the wsl command: WSL there or not, the distributions, what runs inside."""
 
-    def __init__(self, present=True, distributions=(), docker_installed=False, daemon=True):
+    def __init__(self, present=True, distributions=(), docker_installed=False, daemon=True, wsl_version="2.6.3.0"):
         self.present = present
+        self.wsl_version = wsl_version
         self.distributions = list(distributions)  # (name, state, version)
         self.docker_installed = docker_installed
         self.daemon = daemon
@@ -30,6 +31,8 @@ class FakeWsl:
 
     def __call__(self, args, timeout):
         self.calls.append(list(args))
+        if args[1] == "--version":
+            return (0, u16(f"WSL version: {self.wsl_version}\r\nKernel version: 6.6.87.2-1\r\n"), b"") if self.wsl_version else (1, b"", u16("invalid option"))
         if args[1] == "--status":
             return (0, u16("Default Distribution: Ubuntu\r\nDefault Version: 2\r\n"), b"") if self.present else (1, b"", u16("not installed"))
         if args[1:3] == ["--list", "--verbose"]:
@@ -172,3 +175,90 @@ def test_a_distribution_imported_from_a_tarball_and_the_families_recipes(tmp_pat
     assert "systemctl enable --now docker" in wsl_mod.ENGINE_SCRIPT and "rc-service docker start" in wsl_mod.ENGINE_SCRIPT
     with pytest.raises(WslError):
         UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path).tarball_url()
+
+
+class Kept:
+    """A log as the platform's terminal panel gives it: lines, and what the commands print as it comes (write)."""
+
+    def __init__(self):
+        self.lines, self.text = [], ""
+
+    def __call__(self, line):
+        self.lines.append(line)
+
+    def write(self, chunk):
+        self.text += chunk
+
+
+def here(build=26100, machine="AMD64", windows=True):
+    return lambda: {"windows": windows, "build": build, "machine": machine}
+
+
+def roomy(path):
+    return 100 * 2**30
+
+
+def test_the_environment_is_checked_for_the_system_it_installs(tmp_path):
+    """The user: "each plugin should have a scheme for checking the environment to see if it supports installing the operating
+    system it has in its name, if the criteria are met according to the O/S, then the install method should be not locked
+    out". Every criterion met and Liminal's own not installed: ready."""
+    fake = FakeWsl(distributions=[("Ubuntu", "Running", "2")])
+    p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path, system=here(), free=roomy)
+    c = p.check()
+    assert c["ready"] is True and c["installed"] is False and c["why"] == "" and c["distribution"] == "Liminal-Ubuntu"
+    assert [x["name"] for x in c["criteria"]] == ["windows", "wsl", "kernel", "version", "source", "architecture", "space"]
+    assert all(x["ok"] for x in c["criteria"]) and "Ubuntu is on Microsoft's list" in [x["detail"] for x in c["criteria"]]
+    assert {"check", "update_packages", "terminal"} <= set(p.interface()["hooks"])
+    # each criterion locks it out on its own, in its words
+    old = UbuntuLike(wsl=Wsl(runner=FakeWsl(wsl_version="2.3.26.0")), data=tmp_path, system=here(), free=roomy).check()
+    assert old["ready"] is False and old["why"] == "WSL 2.4.4 or later: WSL 2.3.26.0: `wsl --update` brings a newer one"
+    assert UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path, system=here(build=18363), free=roomy).check()["why"].startswith(
+        "Windows that runs WSL 2: Windows build 18363")
+    assert UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path, system=here(), free=lambda path: 2**30).check()["why"].startswith(
+        "4 GB free for it: 1.0 GB free")
+    assert UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path, system=here(machine="riscv64"), free=roomy).check()["why"].startswith(
+        "A processor it is built for: riscv64")
+    nowsl = UbuntuLike(wsl=Wsl(runner=FakeWsl(present=False)), data=tmp_path, system=here(), free=roomy).check()
+    assert nowsl["ready"] is False and nowsl["why"].startswith("WSL installed: WSL is not installed")
+    # installed: nothing to install (the update and the terminal are open)
+    fake.distributions.append(("Liminal-Ubuntu", "Stopped", "2"))
+    done = p.check()
+    assert done["ready"] is False and done["installed"] is True and done["why"] == "Liminal-Ubuntu is installed"
+    # Gentoo is imported: no named install; its tarball found or not
+    g = GentooLike(wsl=Wsl(runner=FakeWsl()), data=tmp_path, system=here(), free=roomy).check()
+    assert "version" not in [x["name"] for x in g["criteria"]] and g["ready"] is True
+
+    class Lost(GentooLike):
+        def tarball_url(self):
+            raise WslError("no listing")
+    assert Lost(wsl=Wsl(runner=FakeWsl()), data=tmp_path, system=here(), free=roomy).check()["why"] == (
+        "Gentoo on offer: its root file system cannot be found: no listing")
+
+
+def test_the_packages_are_updated_and_the_install_streams_what_it_prints(tmp_path):
+    """The user: "after the install is complete, the user can use the plugin to update the environment's packages"; "after the
+    install is run a terminal pops up in the plugin and shows the install progress"."""
+    fake = FakeWsl(distributions=[])
+    p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path)
+    kept = Kept()
+    assert p.update_packages(log=kept) == [{"step": "packages", "ok": False, "detail": "Liminal-Ubuntu is not installed: install it first"}]
+    done = p.setup(log=kept, steps=("distribution", "docker"))
+    assert [(d["step"], d["ok"]) for d in done] == [("distribution", True), ("docker", True)]
+    assert "done" in kept.text and "systemd" in kept.text  # what the install and Docker's script printed, as it came
+    before = len(fake.scripts)
+    assert p.update_packages(log=kept)[0]["ok"] is True and fake.scripts[before:] == [("root", "script")]
+    assert set(wsl_mod.UPDATE_SCRIPTS) == set(wsl_mod.FAMILIES) and "apt-get -y upgrade" in wsl_mod.UPDATE_SCRIPTS["apt"]
+    assert "dnf -y upgrade" in wsl_mod.UPDATE_SCRIPTS["dnf"] and "@world" in wsl_mod.UPDATE_SCRIPTS["emerge"]
+
+
+def test_a_login_terminal_into_liminals_own_distribution(tmp_path):
+    """The user: "the plugin also allows for a user to login through a terminal in to the environment"."""
+    fake = FakeWsl(distributions=[("Ubuntu", "Running", "2")])
+    p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path)
+    with pytest.raises(WslError, match="not installed"):
+        p.terminal()  # the user's own Ubuntu is never logged into
+    fake.distributions.append(("Liminal-Ubuntu", "Running", "2"))
+    argv = p.terminal()
+    assert argv[:8] == ["wsl", "-d", "Liminal-Ubuntu", "--cd", "~", "--exec", "sh", "-c"] and "script -qfc" in argv[8] and "pty.spawn" in argv[8]
+    assert p.terminal(user="root")[3:5] == ["-u", "root"]
+    assert wsl_mod._version("2.6.3.0") == (2, 6, 3, 0) and wsl_mod._version("") == ()

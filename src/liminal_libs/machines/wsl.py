@@ -8,13 +8,25 @@ imported, systemd and the default user in wsl.conf, Docker installed by the fami
 the engine started and enabled, the user in the docker group), run (a command in the distribution, as a
 user or as root), instances (the engine as a Docker instance named after the plugin, reached as
 `wsl -d <distribution> docker`, Windows paths under /mnt). Everything runs as root inside the distribution
-through `wsl -u root`, so no password is asked. Off Windows nothing is present."""
+through `wsl -u root`, so no password is asked. Off Windows nothing is present.
+
+The plugin also checks whether this PC can install its system at all (`check`: the user, 2026-11-07, "each plugin
+should have a scheme for checking the environment to see if it supports installing the operating system it has in
+its name"), streams what its commands print while they run (a setup's `log` with a `write`: the platform's terminal
+panel), updates the system's packages (`update_packages`) and gives the command of a login terminal into it
+(`terminal`)."""
 from __future__ import annotations
 
+import codecs
 import os
+import platform as py_platform
 import re
 import shlex
+import shutil
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +39,19 @@ INSTALL_TIMEOUT_S = 7200.0  # Gentoo compiles Docker
 FAMILIES = ("apt", "dnf", "emerge")
 DOCKER_PACKAGES = "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
 STEPS = ("wsl", "update", "version", "distribution", "conf", "docker", "engine", "user")
+MIN_NAMED = (2, 4, 4)  # the WSL that installs a distribution from Microsoft's list under a name of its own (--name)
+MIN_BUILD = 19041  # the Windows build WSL 2 runs on (Windows 10 2004; every Windows 11)
+ONLINE_S = 60.0  # Microsoft's list of distributions is read again after this long
+# the packages brought up to date by each family's manager, as root
+UPDATE_SCRIPTS = {
+    "apt": "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\napt-get -y upgrade\n",
+    "dnf": "set -e\ndnf -y upgrade --refresh\n",
+    "emerge": "set -e\nemerge --sync --quiet || emerge-webrsync\nemerge --update --deep --newuse --quiet-build=y @world\n",
+}
+# a login shell with a terminal of its own inside Linux (script, else Python's pty), for the platform's terminal panel
+LOGIN = ("export TERM=xterm-256color; command -v script >/dev/null 2>&1 && "
+         "exec script -qfc 'stty cols 120 rows 32 2>/dev/null; exec bash -l' /dev/null; "
+         "exec python3 -c 'import pty; pty.spawn([\"bash\", \"-l\"])'")
 
 # Docker's own repositories, as its documentation gives them (2026-11-07). `{repository}` is the plugin's
 # `docker_repository` (Docker's for that distribution): the plugins name the hosts, the library none.
@@ -84,17 +109,24 @@ class Wsl:
     def __init__(self, runner=None, log=None):
         self._runner = runner
         self.log = log or (lambda m: None)
+        self._online: tuple[float, list[str]] | None = None
 
     @property
     def here(self) -> bool:
         """Whether this is Windows with the wsl command (or a stand-in)."""
         return self._runner is not None or (os.name == "nt" and _which("wsl") is not None)
 
-    def _run(self, args: list[str], timeout: float = TIMEOUT_S, stdin: str | None = None) -> tuple[int, bytes, bytes]:
+    def _run(self, args: list[str], timeout: float = TIMEOUT_S, stdin: str | None = None, out=None) -> tuple[int, bytes, bytes]:
+        """A command; with `out`, what it prints given to `out` as it comes (the platform's terminal panel)."""
         if self._runner is not None:
-            return self._runner(args, timeout)
+            code, so, se = self._runner(args, timeout)
+            if out is not None and so:
+                out(_text(so) if isinstance(so, bytes) else str(so))
+            return code, so, se
         if not self.here:
             raise WslError("WSL is not here: this is not Windows, or the wsl command is missing")
+        if out is not None:
+            return self._stream(args, timeout, stdin, out)
         try:
             done = subprocess.run(args, capture_output=True, timeout=timeout, input=stdin.encode() if stdin is not None else None,
                                   **_no_window())
@@ -104,9 +136,42 @@ class Wsl:
             raise WslError(f"wsl could not run: {e}") from None
         return done.returncode, done.stdout or b"", done.stderr or b""
 
-    def own(self, *args: str, timeout: float = TIMEOUT_S) -> str:
+    def _stream(self, args: list[str], timeout: float, stdin: str | None, out) -> tuple[int, bytes, bytes]:
+        env = dict(os.environ, WSL_UTF8="1")  # wsl's own words in UTF-8, as the commands inside print theirs
+        try:
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, bufsize=0, env=env, **_no_window())
+        except OSError as e:
+            raise WslError(f"wsl could not run: {e}") from None
+        if stdin is not None:
+            try:
+                proc.stdin.write(stdin.encode())
+                proc.stdin.close()
+            except OSError:
+                pass
+        killed = threading.Event()
+        timer = threading.Timer(timeout, lambda: (killed.set(), proc.kill()))
+        timer.daemon = True
+        timer.start()
+        decode, got = codecs.getincrementaldecoder("utf-8")("replace"), bytearray()
+        try:
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                got += chunk
+                out(decode.decode(chunk))
+            out(decode.decode(b"", final=True))
+            proc.wait()
+        finally:
+            timer.cancel()
+        if killed.is_set():
+            raise WslError(f"{' '.join(args[:3])} took more than {timeout:g} s")
+        return proc.returncode, bytes(got), b""
+
+    def own(self, *args: str, timeout: float = TIMEOUT_S, out=None) -> str:
         """One of wsl's own commands (--status, --list ...): its text (UTF-16 on Windows)."""
-        code, out, err = self._run(["wsl", *args], timeout)
+        code, out, err = self._run(["wsl", *args], timeout, out=out)
         text = _text(out)
         if code != 0:
             raise WslError((_text(err) or text or f"wsl {' '.join(args[:2])} failed ({code})").strip())
@@ -142,8 +207,24 @@ class Wsl:
     def distribution(self, name: str) -> Distribution | None:
         return next((d for d in self.distributions() if d.name.lower() == name.lower()), None)
 
+    def version(self) -> dict:
+        """`wsl --version`: {"wsl": "2.6.3.0", "kernel": "6.6.87.2-1"} ({} when it cannot say: an old WSL has no
+        --version)."""
+        try:
+            text = self.own("--version", timeout=30)
+        except WslError:
+            return {}
+        pairs = [(k.strip().lower(), v.strip()) for k, _, v in (line.partition(":") for line in text.splitlines()) if v.strip()]
+        found = {"wsl": next((v for k, v in pairs if k.startswith("wsl")), ""),
+                 "kernel": next((v for k, v in pairs if k.startswith("kernel")), "")}
+        if not found["wsl"] and pairs:  # another language: the first line is WSL's, the second the kernel's
+            found = {"wsl": pairs[0][1], "kernel": pairs[1][1] if len(pairs) > 1 else ""}
+        return {k: v for k, v in found.items() if v}
+
     def online(self) -> list[str]:
-        """The distributions `wsl --install -d` can fetch (`wsl --list --online`), by name."""
+        """The distributions `wsl --install -d` can fetch (`wsl --list --online`), by name; kept ONLINE_S."""
+        if self._online is not None and time.monotonic() - self._online[0] < ONLINE_S:
+            return list(self._online[1])
         try:
             text = self.own("--list", "--online", timeout=60)
         except WslError:
@@ -156,6 +237,7 @@ class Wsl:
                 continue
             if seen_header and line.strip():
                 names.append(line.split()[0])
+        self._online = (time.monotonic(), names)
         return names
 
     def install_feature(self) -> str:
@@ -168,38 +250,38 @@ class Wsl:
     def set_default_version(self, version: int = 2) -> str:
         return self.own("--set-default-version", str(version), timeout=60)
 
-    def install(self, source: str, name: str | None = None, location: Path | None = None) -> str:
+    def install(self, source: str, name: str | None = None, location: Path | None = None, out=None) -> str:
         """A distribution from Microsoft's list (`source`), not launched (its user made by the plugin); with `name`,
         installed under that name (a distribution of Liminal's own beside the user's: WSL 2.4.4 or later), its disk
         in `location`."""
         if not name:
-            return self.own("--install", "-d", source, "--no-launch", timeout=INSTALL_TIMEOUT_S)
+            return self.own("--install", "-d", source, "--no-launch", timeout=INSTALL_TIMEOUT_S, out=out)
         extra = ("--location", str(location)) if location is not None else ()
         if location is not None:
             Path(location).mkdir(parents=True, exist_ok=True)
-        return self.own("--install", source, "--name", name, *extra, "--no-launch", timeout=INSTALL_TIMEOUT_S)
+        return self.own("--install", source, "--name", name, *extra, "--no-launch", timeout=INSTALL_TIMEOUT_S, out=out)
 
-    def import_(self, name: str, folder: Path, tarball: Path) -> str:
+    def import_(self, name: str, folder: Path, tarball: Path, out=None) -> str:
         """A distribution from a root file system tarball (Gentoo's stage3), kept in `folder`."""
         Path(folder).mkdir(parents=True, exist_ok=True)
-        return self.own("--import", name, str(folder), str(tarball), "--version", "2", timeout=INSTALL_TIMEOUT_S)
+        return self.own("--import", name, str(folder), str(tarball), "--version", "2", timeout=INSTALL_TIMEOUT_S, out=out)
 
     def terminate(self, name: str) -> str:
         return self.own("--terminate", name, timeout=60)
 
-    def run(self, name: str, *command: str, user: str | None = None, stdin: str | None = None, timeout: float = TIMEOUT_S) -> str:
+    def run(self, name: str, *command: str, user: str | None = None, stdin: str | None = None, timeout: float = TIMEOUT_S, out=None) -> str:
         """A command in the distribution (as `user`, root when said), its output; WslError with the error's
         words when it fails."""
         args = ["wsl", "-d", name, *(("-u", user) if user else ()), "--exec", *command]  # as they are: no shell between
-        code, out, err = self._run(args, timeout, stdin)
-        text = out.decode("utf-8", "replace")
+        code, so, err = self._run(args, timeout, stdin, out=out)
+        text = so.decode("utf-8", "replace")
         if code != 0:
             raise WslError((err.decode("utf-8", "replace") or text or f"{' '.join(command[:2])} failed ({code}) in {name}").strip())
         return text
 
-    def script(self, name: str, text: str, user: str | None = "root", timeout: float = TIMEOUT_S) -> str:
+    def script(self, name: str, text: str, user: str | None = "root", timeout: float = TIMEOUT_S, out=None) -> str:
         """A shell script in the distribution, given on its standard input."""
-        return self.run(name, "sh", "-s", user=user, stdin=text, timeout=timeout)
+        return self.run(name, "sh", "-s", user=user, stdin=text, timeout=timeout, out=out)
 
     def write_file(self, name: str, path: str, text: str) -> None:
         """A file written in the distribution, as root."""
@@ -227,13 +309,18 @@ class WslDistribution(MachinePlugin):
     install_name = ""  # what `wsl --install` takes from Microsoft's list (Ubuntu), installed as `distribution`; "" to import a tarball
     docker_repository = ""  # Docker's package repository for the distribution (apt, dnf); emerge needs none
     default_user = "liminal"  # the user made in the distribution, in the docker group
+    space_gb = 4.0  # the free space its install needs on the data folder's drive
+    architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
+    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal")
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
 
-    def __init__(self, wsl: Wsl | None = None, data: Path | None = None, fetch=None):
+    def __init__(self, wsl: Wsl | None = None, data: Path | None = None, fetch=None, system=None, free=None):
         self.wsl = wsl if wsl is not None else Wsl(log=lambda m: None)
         self._data = data
         self._fetch = fetch  # (url, path) -> None: a download, for a tarball; urllib unless given
+        self._system = system  # () -> {"windows", "build", "machine"}: a test's; this PC's otherwise
+        self._free = free  # (path) -> bytes free: a test's; the disk's otherwise
 
     def install_script(self) -> str:
         """The family's Docker install, from the plugin's `docker_repository` (WslError: no recipe for the
@@ -262,6 +349,106 @@ class WslDistribution(MachinePlugin):
     def data(self) -> Path:
         """Where this plugin keeps what it downloads and imports: the data folder's platform/wsl/<name>."""
         return self._data if self._data is not None else layout.data_dir() / "platform" / "wsl" / self.name
+
+    # -- this PC ----------------------------------------------------------------------------------------
+    def system(self) -> dict:
+        """This PC: Windows or not, its build, its processor."""
+        if self._system is not None:
+            return self._system()
+        windows = os.name == "nt"
+        return {"windows": windows, "build": sys.getwindowsversion().build if windows else 0, "machine": py_platform.machine()}
+
+    def free_bytes(self) -> int:
+        """The free space on the drive the plugin's data folder (its distribution's disk) is on."""
+        place = Path(self.data)
+        while not place.exists() and place != place.parent:
+            place = place.parent
+        if self._free is not None:
+            return int(self._free(place))
+        try:
+            return shutil.disk_usage(place).free
+        except OSError:
+            return 0
+
+    def source_check(self) -> tuple[bool, str]:
+        """Whether its system is on offer: on Microsoft's list (`install_name`), or its tarball found (`tarball_url`)."""
+        if self.install_name:
+            listed = self.wsl.online()
+            if self.install_name in listed:
+                return True, f"{self.install_name} is on Microsoft's list"
+            return False, (f"{self.install_name} is not on Microsoft's list" if listed else "Microsoft's list of distributions cannot be read (offline?)")
+        try:
+            return True, f"its root file system: {self.tarball_url()}"
+        except Exception as e:  # noqa: BLE001 - not found, offline: said
+            return False, f"its root file system cannot be found: {e}"
+
+    def check(self) -> dict:
+        """Whether this PC can install the plugin's system (the user, 2026-11-07: \"each plugin should have a scheme for
+        checking the environment to see if it supports installing the operating system it has in its name, if the
+        criteria are met according to the O/S, then the install method should be not locked out\"): each criterion with
+        its words; `ready` when every one is met and Liminal's own is not installed yet, `installed` once it is."""
+        criteria: list[dict] = []
+
+        def criterion(name: str, title: str, ok, detail: str) -> None:
+            criteria.append({"name": name, "title": title, "ok": bool(ok), "detail": detail})
+
+        here = self.system()
+        criterion("windows", "Windows that runs WSL 2", here["windows"] and here["build"] >= MIN_BUILD,
+                  f"Windows build {here['build']}" + ("" if here["build"] >= MIN_BUILD else f": {MIN_BUILD} or later is needed")
+                  if here["windows"] else "this is not Windows")
+        st = self.wsl.status() if self.wsl.here else {"present": False}
+        criterion("wsl", "WSL installed", st.get("present"), f"default version {st.get('version') or '?'}" if st.get("present")
+                  else "WSL is not installed: its setup's wsl step installs it (Windows asks, then a restart)")
+        version = self.wsl.version() if st.get("present") else {}
+        criterion("kernel", "WSL 2's Linux kernel", version.get("kernel"), f"kernel {version['kernel']}" if version.get("kernel")
+                  else "no WSL 2 kernel answers: `wsl --update` brings it")
+        if self.install_name:  # under a name of Liminal's own, from Microsoft's list
+            have = _version(version.get("wsl", ""))
+            criterion("version", f"WSL {'.'.join(map(str, MIN_NAMED))} or later", have >= MIN_NAMED,
+                      f"WSL {version.get('wsl') or 'of no known version'}" + ("" if have >= MIN_NAMED else ": `wsl --update` brings a newer one"))
+        ok, detail = self.source_check() if st.get("present") else (False, "WSL first")
+        criterion("source", f"{self.title.replace('WSL ', '')} on offer", ok, detail)
+        criterion("architecture", "A processor it is built for", here["machine"] in self.architectures,
+                  f"{here['machine'] or 'unknown'}" + ("" if here["machine"] in self.architectures else f": built for {', '.join(self.architectures)}"))
+        free = self.free_bytes()
+        criterion("space", f"{self.space_gb:g} GB free for it", free >= self.space_gb * 2**30,
+                  f"{free / 2**30:.1f} GB free on the drive of {self.data}")
+        installed = bool(st.get("present")) and self.wsl.distribution(self.distribution_name) is not None
+        failing = next((c for c in criteria if not c["ok"]), None)
+        return {"ready": failing is None and not installed, "installed": installed, "distribution": self.distribution_name,
+                "criteria": criteria, "why": (f"{failing['title']}: {failing['detail']}" if failing
+                                               else f"{self.distribution_name} is installed" if installed else "")}
+
+    def update_packages(self, log=print) -> list[dict]:
+        """The packages of Liminal's own distribution brought up to date by its family's manager, as root, what it prints
+        given to the log as it comes (the user: \"after the install is complete, the user can use the plugin to update
+        the environment's packages\")."""
+        name, done = self.distribution_name, []
+
+        def step(ok, detail: str) -> list[dict]:
+            done.append({"step": "packages", "ok": ok, "detail": detail})
+            log(f"{self.name}: packages: {'ok' if ok else 'FAILED'}: {detail}")
+            return done
+
+        if not liminal_scoped(name) or not self.wsl.here or self.wsl.distribution(name) is None:
+            return step(False, f"{name} is not installed: install it first")
+        script = UPDATE_SCRIPTS.get(self.family)
+        if not script:
+            return step(False, f"no update recipe for the family {self.family!r}")
+        try:
+            self.wsl.script(name, script, timeout=INSTALL_TIMEOUT_S, out=getattr(log, "write", None))
+        except WslError as e:
+            return step(False, str(e))
+        return step(True, f"{name}'s packages brought up to date by {self.family}")
+
+    def terminal(self, user: str | None = None) -> list[str]:
+        """The command of a login terminal into Liminal's own distribution, as its default user (or `user`): a shell with
+        a terminal of its own inside Linux, for the platform's terminal panel (the user: \"the plugin also allows for a
+        user to login through a terminal in to the environment\")."""
+        name = self.distribution_name
+        if not liminal_scoped(name) or not self.wsl.here or self.wsl.distribution(name) is None:
+            raise WslError(f"{name} is not installed: install it first")
+        return ["wsl", "-d", name, *(("-u", user) if user else ()), "--cd", "~", "--exec", "sh", "-c", LOGIN]
 
     # -- the hooks ---------------------------------------------------------------------------------
     def present(self) -> bool:
@@ -305,6 +492,7 @@ class WslDistribution(MachinePlugin):
         wanted = tuple(steps) if steps else STEPS
         done: list[dict] = []
         name = self.distribution_name
+        stream = getattr(log, "write", None)  # the platform's terminal panel: the long commands' output as it comes
 
         def step(what: str, ok: bool | None, detail: str) -> bool:
             done.append({"step": what, "ok": ok, "detail": detail})
@@ -331,11 +519,11 @@ class WslDistribution(MachinePlugin):
                 if self.wsl.distribution(name) is not None:
                     step("distribution", None, f"{name} is installed")
                 elif self.install_name:
-                    self.wsl.install(self.install_name, name=name, location=self.data / "root")
+                    self.wsl.install(self.install_name, name=name, location=self.data / "root", out=stream)
                     step("distribution", True, f"{name} installed from Microsoft's {self.install_name} into {self.data / 'root'}, not launched")
                 else:
                     tarball = self.tarball()
-                    self.wsl.import_(name, self.data / "root", tarball)
+                    self.wsl.import_(name, self.data / "root", tarball, out=stream)
                     step("distribution", True, f"{name} imported from {tarball.name} into {self.data / 'root'}")
             if "conf" in wanted:
                 self.wsl.write_file(name, "/etc/wsl.conf", f"[boot]\nsystemd=true\n\n[user]\ndefault={self.user}\n")
@@ -346,7 +534,7 @@ class WslDistribution(MachinePlugin):
                 if self.engine()["installed"]:
                     step("docker", None, "Docker is installed inside")
                 else:
-                    self.wsl.script(name, self.install_script(), timeout=INSTALL_TIMEOUT_S)
+                    self.wsl.script(name, self.install_script(), timeout=INSTALL_TIMEOUT_S, out=stream)
                     step("docker", True, f"Docker installed by {self.family} from Docker's own repository")
             if "engine" in wanted:
                 how = self.wsl.script(name, ENGINE_SCRIPT, timeout=600).strip().splitlines()
@@ -391,6 +579,11 @@ def _download(url: str, path: Path) -> None:
             if not chunk:
                 break
             f.write(chunk)
+
+
+def _version(text: str) -> tuple[int, ...]:
+    """\"2.6.3.0\" -> (2, 6, 3, 0); () when there is none."""
+    return tuple(int(n) for n in re.findall(r"\d+", text)[:4])
 
 
 def _text(raw: bytes) -> str:

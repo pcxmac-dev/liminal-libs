@@ -20,6 +20,7 @@ are shown, and this process alone.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import threading
@@ -73,6 +74,15 @@ class Machine:
     memory_available: int
     commit_total: int  # RAM plus the page file
     commit_available: int
+
+
+@dataclass(frozen=True)
+class Disk:
+    """A disk's totals so far: bytes read and written since the machine started (a volume, C:, on Windows; a whole
+    disk, sda, on Linux)."""
+    name: str
+    read: int
+    written: int
 
 
 @dataclass(frozen=True)
@@ -367,6 +377,40 @@ class WindowsProbe:
         return Machine(os.cpu_count() or 1, total - self._seconds(idle), total, st.ullTotalPhys, st.ullAvailPhys,
                        st.ullTotalPageFile, st.ullAvailPageFile)
 
+    def disks(self) -> list[Disk]:
+        """Each fixed drive's bytes read and written so far (IOCTL_DISK_PERFORMANCE on its volume, opened asking no
+        rights: no administrator needed); none when Windows keeps no disk counters."""
+        ct, w, k = self.ct, self.w, self.k32
+        if not hasattr(self, "_PERF"):
+            class PERF(ct.Structure):
+                _fields_ = [("BytesRead", ct.c_longlong), ("BytesWritten", ct.c_longlong), ("ReadTime", ct.c_longlong),
+                            ("WriteTime", ct.c_longlong), ("IdleTime", ct.c_longlong), ("ReadCount", w.DWORD),
+                            ("WriteCount", w.DWORD), ("QueueDepth", w.DWORD), ("SplitCount", w.DWORD),
+                            ("QueryTime", ct.c_longlong), ("StorageDeviceNumber", w.DWORD), ("StorageManagerName", ct.c_wchar * 8)]
+            self._PERF = PERF
+            self._open = ct.WINFUNCTYPE(ct.c_void_p, w.LPCWSTR, w.DWORD, w.DWORD, ct.c_void_p, w.DWORD, w.DWORD, ct.c_void_p)(
+                ("CreateFileW", k))
+            self._ioctl = ct.WINFUNCTYPE(w.BOOL, ct.c_void_p, w.DWORD, ct.c_void_p, w.DWORD, ct.c_void_p, w.DWORD,
+                                         ct.POINTER(w.DWORD), ct.c_void_p)(("DeviceIoControl", k))
+            self._close = ct.WINFUNCTYPE(w.BOOL, ct.c_void_p)(("CloseHandle", k))
+        invalid = ct.c_void_p(-1).value
+        out = []
+        mask = k.GetLogicalDrives()
+        for i in range(26):
+            letter = f"{chr(65 + i)}:"
+            if not mask & (1 << i) or k.GetDriveTypeW(ct.c_wchar_p(letter + "\\")) != 3:  # fixed drives only
+                continue
+            handle = self._open(f"\\\\.\\{letter}", 0, 3, None, 3, 0, None)  # no rights asked; shared; it exists
+            if not handle or handle == invalid:
+                continue
+            try:
+                perf, got = self._PERF(), w.DWORD()
+                if self._ioctl(handle, 0x70020, None, 0, ct.byref(perf), ct.sizeof(perf), ct.byref(got), None):
+                    out.append(Disk(letter, int(perf.BytesRead), int(perf.BytesWritten)))
+            finally:
+                self._close(handle)
+        return out
+
     def network(self) -> Net | None:
         """Bytes in and out of the hardware adapters that are up (GetIfTable2): filter drivers and
         loopback are left out, so nothing is counted twice."""
@@ -475,9 +519,10 @@ class LinuxProbe:
     `net` are where /proc and /sys/class/net are, and the reads go through _read, _listdir and _readlink, so a
     test stands in for the files."""
 
-    def __init__(self, match=None, proc: str = "/proc", net: str = "/sys/class/net", ticks: int | None = None) -> None:
+    def __init__(self, match=None, proc: str = "/proc", net: str = "/sys/class/net", ticks: int | None = None,
+                 block: str = "/sys/block") -> None:
         self.match = match or is_app
-        self.proc, self.net = proc, net
+        self.proc, self.net, self.block = proc, net, block
         self.ticks = ticks or (os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100)
         self._commands: dict[tuple[int, float], str] = {}  # (pid, started) -> command line (read once)
         self._pids: set[int] = set()  # the processes reported last (their sockets are the ones attributed)
@@ -561,6 +606,23 @@ class LinuxProbe:
         return Machine(cores or os.cpu_count() or 1, total - idle, total, memory, available, memory + swap,
                        available + _kb(mem.get("SwapFree")))
 
+    def disks(self) -> list[Disk]:
+        """Each whole disk's bytes read and written so far (/proc/diskstats, sectors of 512 bytes): partitions, loop,
+        RAM and optical devices left out, so nothing is counted twice."""
+        whole = set(self._listdir(self.block))
+        out = []
+        for line in (self._read(f"{self.proc}/diskstats") or "").splitlines():
+            f = line.split()
+            if len(f) < 10 or not f[5].isdigit() or not f[9].isdigit():
+                continue
+            name = f[2]
+            if name.startswith(("loop", "ram", "zram", "fd", "sr")):
+                continue
+            if (name not in whole) if whole else bool(re.match(r"^((s|v|xv|h)d[a-z]+\d+|(nvme\d+n\d+|mmcblk\d+)p\d+)$", name)):
+                continue
+            out.append(Disk(name, int(f[5]) * 512, int(f[9]) * 512))
+        return out
+
     def network(self) -> Net | None:
         """Bytes in and out of the adapters that are up: the hardware ones (a device behind them), else every
         one that is not loopback or a bridge, tunnel or container's (WSL's and a VM's adapters have no device)."""
@@ -616,6 +678,9 @@ class OwnProbe:
 
     def network(self) -> Net | None:
         return None
+
+    def disks(self) -> list[Disk]:
+        return []
 
     def connections(self) -> list[Conn]:
         return []
@@ -675,6 +740,8 @@ class Monitor:
         self._prev: dict[tuple[int, float], tuple[float, Proc]] = {}  # (pid, started) -> (when, totals)
         self._machine_prev: tuple[float, Machine] | None = None
         self._net_prev: tuple[float, Net] | None = None
+        self._disk_prev: tuple[float, dict[str, Disk]] | None = None
+        self._disk: dict | None = None
         self._groups: list[dict] = []
         self._machine: dict | None = None
         self._net: dict | None = None
@@ -726,9 +793,14 @@ class Monitor:
         links = self._connect(groups, conns)
         mrow = self._machine_row(machine, now)
         nrow = self._net_row(net, now)
+        try:
+            drow = self._disk_row(getattr(self.probe, "disks", lambda: [])(), now)
+        except Exception:  # noqa: BLE001 - a disk that cannot be read: no disk figures this time
+            drow = None
         roles = {g["key"]: (g["cpu"], g["memory"], g["private"], g["readRate"], g["writeRate"]) for g in groups}
         point = {"t": at, "cpu": mrow["cpu"] if mrow else None, "mem": mrow["memoryUsed"] if mrow else None,
-                 "in": nrow["in"] if nrow else None, "out": nrow["out"] if nrow else None, "roles": roles}
+                 "in": nrow["in"] if nrow else None, "out": nrow["out"] if nrow else None,
+                 "dr": drow["read"] if drow else None, "dw": drow["write"] if drow else None, "roles": roles}
         files_every = FILES_VIEWING_S if self.viewing() else FILES_S
         if now - self._files_at >= files_every:
             self._files_at = now
@@ -736,7 +808,7 @@ class Monitor:
         else:
             files = None
         with self._lock:
-            self._groups, self._machine, self._net, self._links = groups, mrow, nrow, links
+            self._groups, self._machine, self._net, self._links, self._disk = groups, mrow, nrow, links, drow
             if files is not None:
                 self._files = files
             self._keep(self.recent, point)
@@ -835,6 +907,22 @@ class Monitor:
         return {"in": rate_in, "out": rate_out, "received": net.received, "sent": net.sent,
                 "link": net.link_bps, "adapters": list(net.adapters)}
 
+    def _disk_row(self, disks: list[Disk], now: float) -> dict | None:
+        """Each disk's bytes read and written a second since the last sample, and all of them together."""
+        if not disks:
+            return None
+        prev, self._disk_prev = self._disk_prev, (now, {d.name: d for d in disks})
+        rows, read, write = [], None, None
+        for d in disks:
+            r = wr = None
+            if prev and now > prev[0] and d.name in prev[1]:
+                was = prev[1][d.name]
+                r = max(d.read - was.read, 0) / (now - prev[0])
+                wr = max(d.written - was.written, 0) / (now - prev[0])
+                read, write = (read or 0.0) + r, (write or 0.0) + wr
+            rows.append({"name": d.name, "read": r, "write": wr, "readTotal": d.read, "writtenTotal": d.written})
+        return {"read": read, "write": write, "disks": rows}
+
     def _machine_row(self, m: Machine | None, now: float) -> dict | None:
         if m is None:
             return None
@@ -915,13 +1003,14 @@ class Monitor:
         with self._lock:
             points = list(self.history if span == "day" else self.recent)
             groups, machine, files = [dict(g) for g in self._groups], self._machine, self._files
-            net, links = self._net, self._links
+            net, links, disk = self._net, self._links, self._disk
             kept, held = len(self.recent) + len(self.history), self._bytes
         if span != "day" and points:
             points = [p for p in points if p["t"] >= points[-1]["t"] - RECENT_S]
         keys = [g["key"] for g in groups]
         series = {"t": [p["t"] for p in points], "cpu": [p["cpu"] for p in points], "memory": [p["mem"] for p in points],
                   "in": [p.get("in") for p in points], "out": [p.get("out") for p in points],
+                  "diskRead": [p.get("dr") for p in points], "diskWrite": [p.get("dw") for p in points],
                   "processes": {k: {"cpu": [p["roles"].get(k, (None,) * 5)[0] for p in points],
                                     "memory": [p["roles"].get(k, (None,) * 5)[1] for p in points]} for k in keys}}
         self._costs.append((self.clock(), self.cpu_clock() - began))
@@ -934,7 +1023,7 @@ class Monitor:
             "monitor": {"cpu": sum(c[1] for c in window) / elapsed, "limit": CPU_LIMIT, "budget": CPU_BUDGET,
                         "memory": held, "memoryCap": MEMORY_CAP, "samples": kept, "maxSamples": RECENT + HISTORY,
                         "error": self._error},
-            "machine": machine, "network": net, "connections": links, "processes": groups, "files": files,
+            "machine": machine, "network": net, "disk": disk, "connections": links, "processes": groups, "files": files,
             "series": series,
             "windows": isinstance(self.probe, WindowsProbe),
             "system": "windows" if isinstance(self.probe, WindowsProbe) else "linux" if isinstance(self.probe, LinuxProbe) else "other",
