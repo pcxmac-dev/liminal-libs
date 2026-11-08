@@ -107,6 +107,7 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     fake = FakeWsl(present=True, distributions=[], docker_installed=False)
     p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path)
     assert problems(p) == [] and p.KIND == "machine" and p.SYSTEM == "platform" and p.options == ("WSL_UBUNTU_DISTRIBUTION", "WSL_UBUNTU_USER")
+    assert {"present", "status", "setup", "run", "instances"} <= set(p.interface()["hooks"])  # the base gives them: a plugin of its own, not the contract
     assert not p.present() and p.status()["present"] is False and p.status()["wsl"]["present"] is True and p.instances() == ()
     # the whole setup on a machine with WSL and no Ubuntu: each step reported
     lines: list = []

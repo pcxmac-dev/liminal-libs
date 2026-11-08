@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.19.2 (2026-11-07)
+
+`WslDistribution` is a plugin base, not a contract class: the hooks it gives count as the plugin's own
+(`interface()` names them; `ask()` calls them).
+
 ## 1.19.1 (2026-11-07)
 
 `machines.wsl.wsl_path` collapses doubled separators.

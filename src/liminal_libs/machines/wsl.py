@@ -210,7 +210,6 @@ class WslDistribution(MachinePlugin):
     its package family (`family`: apt, dnf or emerge) and how it is got (`install_name` for Microsoft's list,
     else `tarball_url()` to import from a root file system tarball)."""
 
-    CONTRACT = True
     distribution = ""  # the WSL name: Ubuntu, FedoraLinux-42, Gentoo
     family = ""  # apt | dnf | emerge
     install_name = ""  # what `wsl --install -d` takes; "" to import a tarball
