@@ -99,8 +99,8 @@ def test_linux_commands_run_as_root_here_or_in_wsl(monkeypatch):
     monkeypatch.setattr(linux.os, "geteuid", lambda: 0, raising=False)
     assert Shell("local", runner=runner).run("ufw", "status") and got[-1] == ["ufw", "status"]  # root already: no sudo
     wsl = Shell("wsl:Ubuntu", runner=runner)
-    assert wsl.where == "WSL's Ubuntu" and wsl.root() and wsl.run("ufw", "status") and got[-1] == ["wsl", "-d", "Ubuntu", "-u", "root", "--", "ufw", "status"]
-    assert Shell("wsl", runner=runner).sh("echo hi") and got[-1] == ["wsl", "-u", "root", "--", "sh", "-c", "echo hi"]
+    assert wsl.where == "WSL's Ubuntu" and wsl.root() and wsl.run("ufw", "status") and got[-1] == ["wsl", "-d", "Ubuntu", "-u", "root", "--exec", "ufw", "status"]
+    assert Shell("wsl", runner=runner).sh("echo hi") and got[-1] == ["wsl", "-u", "root", "--exec", "sh", "-c", "echo hi"]
     assert wsl.run("utf16") == "hello"  # wsl's own messages come in UTF-16
     with pytest.raises(CommandError):
         Shell("ssh:vps")

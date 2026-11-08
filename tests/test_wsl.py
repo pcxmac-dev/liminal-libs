@@ -45,7 +45,7 @@ class FakeWsl:
             return 0, u16("done"), b""
         if args[1] == "-d":
             name = args[2]
-            command = args[args.index("--") + 1:]
+            command = args[args.index("--exec") + 1:]
             if not any(n == name for n, _, _ in self.distributions):
                 return 1, b"", b"no such distribution"
             if command[:2] == ["docker", "--version"]:
@@ -94,7 +94,7 @@ def test_the_wsl_command_is_read_through_the_stand_in_and_a_windows_path_goes_un
     assert w.here and w.status() == {"present": True, "version": "2", "distribution": "Ubuntu"}
     assert [(d.name, d.state, d.version, d.default) for d in w.distributions()] == [("Ubuntu", "Running", "2", True), ("Gentoo", "Stopped", "2", False)]
     assert w.distribution("ubuntu").name == "Ubuntu" and w.distribution("Fedora") is None and w.online() == ["Ubuntu", "FedoraLinux-42"]
-    assert w.run("Ubuntu", "echo", "hi") == "echo hi\n" and fake.calls[-1] == ["wsl", "-d", "Ubuntu", "--", "echo", "hi"]
+    assert w.run("Ubuntu", "echo", "hi") == "echo hi\n" and fake.calls[-1] == ["wsl", "-d", "Ubuntu", "--exec", "echo", "hi"]
     assert w.run("Ubuntu", "id", user="root") and fake.calls[-1][1:5] == ["-d", "Ubuntu", "-u", "root"]
     with pytest.raises(WslError) as e:
         w.run("Nowhere", "ls")
@@ -123,7 +123,7 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     assert p.present() and p.status()["engine"] == {"installed": True, "version": "28.1.1", "running": True}
     assert p.status()["summary"] == "Ubuntu (Stopped, WSL 2); Docker inside: running 28.1.1" and p.STEPS == wsl_mod.STEPS
     (inst,) = p.instances()
-    assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Ubuntu docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
+    assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Ubuntu --exec docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
     assert p.run("ls", "/") == "ls /\n"
     assert p.setup(log=lines.append, steps=("docker",)) == [{"step": "docker", "ok": None, "detail": "Docker is installed inside"}]
     fake.daemon = False

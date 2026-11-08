@@ -53,7 +53,9 @@ class Shell:
     def prefix(self, root: bool = True) -> list[str]:
         if self.target == "local":
             return ["sudo", "-n"] if root and not self.root() else []
-        return ["wsl", *(("-d", self.distribution) if self.distribution else ()), *(("-u", "root") if root else ()), "--"]
+        # --exec: the arguments reach the command as they are (with --, the distribution's default shell would
+        # expand $variables and split words before the command ran)
+        return ["wsl", *(("-d", self.distribution) if self.distribution else ()), *(("-u", "root") if root else ()), "--exec"]
 
     def run(self, *command: str, root: bool = True, timeout: float = TIMEOUT_S, check: bool = True, stdin: str | None = None) -> str:
         """The command's output (as root unless said); CommandError in its own words, denied when it needed root."""

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.20.2 (2026-11-07)
+
+Commands in a WSL distribution go through `wsl --exec` (machines.linux.Shell, machines.wsl.Wsl, the engine's
+instance `wsl -d <distribution> --exec docker`): with `wsl --`, WSL hands the command line to the
+distribution's default shell, which expanded `$variables` and split words before the command ran (found on
+this PC: a script's `$PRETTY_NAME` came back empty). Scripts and arguments now reach the command as they are.
+
 ## 1.20.1 (2026-11-07)
 
 The firewall plugins offer `allow`, `remove` and `wanted`, the admin plugins `service`, `startup`, `register`,

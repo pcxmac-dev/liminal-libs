@@ -182,7 +182,7 @@ class Wsl:
     def run(self, name: str, *command: str, user: str | None = None, stdin: str | None = None, timeout: float = TIMEOUT_S) -> str:
         """A command in the distribution (as `user`, root when said), its output; WslError with the error's
         words when it fails."""
-        args = ["wsl", "-d", name, *(("-u", user) if user else ()), "--", *command]
+        args = ["wsl", "-d", name, *(("-u", user) if user else ()), "--exec", *command]  # as they are: no shell between
         code, out, err = self._run(args, timeout, stdin)
         text = out.decode("utf-8", "replace")
         if code != 0:
@@ -340,7 +340,7 @@ class WslDistribution(MachinePlugin):
         if not self.present() or not self.engine()["installed"]:
             return ()
         name = self.distribution_name
-        return (Instance(self.name, f"Docker in {name} under WSL 2", command=f"wsl -d {name} docker", source=self.name, translate=wsl_path),)
+        return (Instance(self.name, f"Docker in {name} under WSL 2", command=f"wsl -d {name} --exec docker", source=self.name, translate=wsl_path),)
 
     # -- a distribution imported from a tarball (Gentoo) --------------------------------------------
     def tarball_url(self) -> str:
