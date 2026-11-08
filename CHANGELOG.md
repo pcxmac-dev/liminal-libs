@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.1 (2026-11-07)
+
+`liminal.css`: a list item's icon keeps its size beside a long line; a chip stays on one line.
+
 ## 1.21.0 (2026-11-07)
 
 The apps' layout as the user gave it: "the specifics are on the right hand side before the icons on the very

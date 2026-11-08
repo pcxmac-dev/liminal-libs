@@ -138,10 +138,11 @@ table.list tr:hover td { background: var(--hover); }
   border-radius: 7px; background: none; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
 .app-list .item:hover { background: var(--hover); }
 .app-list .item.active { background: var(--hover); color: var(--accent); }
+.app-list .item > svg { flex: none; }  /* an icon keeps its size beside a long line */
 .app-list .item .what { display: flex; flex-direction: column; min-width: 0; }
 .app-list .item .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip { display: inline-block; font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 9px; background: var(--panel);
-  color: var(--muted); border: 1px solid var(--border); }
+  color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
 .chip.up { color: var(--up); }
 .chip.down { color: var(--down); }
 @media (max-width: 1100px) {
