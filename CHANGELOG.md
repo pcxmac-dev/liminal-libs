@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.25.0 (2026-11-07)
+
+A Linux target defaults to Liminal's own WSL distribution on Windows (the user: "Yes, do it" to the Linux admin and
+firewall plugins targeting Liminal's WSL distribution by default): `linux.Shell` without a target takes the installed
+Liminal-Ubuntu, then Liminal-Fedora, Liminal-Gentoo (`wsl_distributions`, `liminal_distribution`), and says when there
+is none (`liminal_missing`, `scope_note`). A firewall or admin plugin on a target that is not Liminal's runs no command
+there: its status says why (`MachinePlugin.scope_note`) and its setup changes nothing. The user's own distribution is
+never taken.
+
 ## 1.24.0 (2026-11-07)
 
 A machine plugin says whether it is valid: set up for Liminal, on something of Liminal's own (the user: "if a plugin

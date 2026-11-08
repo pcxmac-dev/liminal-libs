@@ -114,3 +114,16 @@ def test_the_setup_starts_what_it_may_and_registers_nothing():
     refusing.refuse = True
     out = refusing.setup(log=lines.append, steps=("privileges", "services"))
     assert [(d["step"], d["ok"]) for d in out] == [("privileges", None), ("services", False)] and "Access is denied" in out[1]["detail"]
+
+
+def test_on_a_target_not_liminals_the_admin_asks_nothing_and_changes_nothing():
+    """The user's own distribution is never taken: its status and setup run no command there."""
+    from liminal_libs.machines.linux import Shell
+
+    ran: list = []
+    a = FakeAdmin(elevated=True)
+    a.shell = Shell("wsl:Ubuntu", runner=lambda args, timeout: ran.append(args) or (0, b"", b""))
+    st = a.status()
+    assert (st["present"], st["valid"], st["summary"]) == (False, False, "not on Liminal's") and "WSL's Ubuntu is not Liminal's" in st["why"]
+    done = a.setup(log=lambda m: None)
+    assert [d["ok"] for d in done] == [False] and "is not Liminal's" in done[0]["detail"] and ran == []

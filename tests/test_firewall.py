@@ -134,3 +134,16 @@ def test_the_setup_turns_it_on_finds_exposure_and_adds_the_services_rules():
     out = denied.setup(log=lines.append, steps=("rules",))
     assert out == [{"step": "rules", "ok": False, "detail": "this needs an administrator"}]
     assert issubclass(FirewallError, CommandError) and issubclass(FirewallNotNeeded, FirewallError)
+
+
+def test_on_a_target_not_liminals_the_firewall_asks_nothing_and_changes_nothing():
+    """The user's own distribution is never taken: its status and setup run no command there."""
+    from liminal_libs.machines.linux import Shell
+
+    ran: list = []
+    fw = FakeFirewall()
+    fw.shell = Shell("wsl:Ubuntu", runner=lambda args, timeout: ran.append(args) or (0, b"", b""))
+    st = fw.status()
+    assert (st["present"], st["valid"], st["summary"]) == (False, False, "not on Liminal's") and "is not Liminal's" in st["why"]
+    done = fw.setup(log=lambda m: None)
+    assert [d["ok"] for d in done] == [False] and ran == []

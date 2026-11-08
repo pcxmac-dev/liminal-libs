@@ -2,26 +2,74 @@
 machine, this one (with sudo when the platform is not root: never a password asked, `sudo -n`) or a WSL
 distribution on this Windows PC (as root through `wsl -u root`, no password either). A plugin names its target
 by its own variable: `local`, `wsl` (the default distribution) or `wsl:<distribution>`; on Linux `local` is
-the default, on Windows `wsl`. A runner stands in for the commands in tests."""
+the default, on Windows Liminal's own distribution when one is installed (Liminal-Ubuntu, then Liminal-Fedora,
+Liminal-Gentoo: the user, 2026-11-07, "Yes, do it" to targeting Liminal's WSL distribution by default), never the
+user's own. A runner stands in for the commands in tests."""
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
+import time
 
 from .plugin import LIMINAL_PREFIX, CommandError, liminal_scoped
 
 TIMEOUT_S = 120.0
+FOUND_S = 30.0  # the WSL distributions listed are kept this long
+PREFERRED = ("Ubuntu", "Fedora", "Gentoo")  # Liminal's distributions in the order a target takes them
+_found: tuple[float, list[str]] | None = None
 DENIED = ("a password is required", "a terminal is required", "permission denied", "must be root", "are you root",
           "operation not permitted", "need to be root", "you need root")
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def wsl_distributions() -> list[str]:
+    """The WSL distributions installed (`wsl --list --quiet`, windowless); [] when WSL cannot say. Kept FOUND_S."""
+    global _found
+    now = time.monotonic()
+    if _found is not None and now - _found[0] < FOUND_S:
+        return list(_found[1])
+    names: list[str] = []
+    if _on_windows() and shutil.which("wsl"):
+        try:
+            out = subprocess.run(["wsl", "--list", "--quiet"], capture_output=True, timeout=30, **_no_window()).stdout or b""
+            text = out.decode("utf-16-le", "replace") if b"\x00" in out else out.decode("utf-8", "replace")
+            names = [n.strip().lstrip("\ufeff") for n in text.replace("\x00", "").splitlines() if n.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            names = []
+    _found = (now, names)
+    return names
+
+
+def liminal_distribution(names) -> str:
+    """Liminal's own WSL distribution a Linux target takes: Liminal-Ubuntu, then Liminal-Fedora, Liminal-Gentoo, then
+    any other of Liminal's; "" when none is installed."""
+    own = [n for n in names if liminal_scoped(n)]
+    for d in PREFERRED:
+        for n in own:
+            if n.lower() == f"{LIMINAL_PREFIX}{d}".lower():
+                return n
+    return own[0] if own else ""
 
 
 class Shell:
     """Commands on the target. `runner(args, timeout) -> (code, stdout bytes or text, stderr bytes or text)`."""
 
-    def __init__(self, target: str | None = None, runner=None):
+    def __init__(self, target: str | None = None, runner=None, distributions=None):
         raw = (target or "").strip()
-        self.target = raw if raw else ("wsl" if os.name == "nt" else "local")
+        self.liminal_missing = False  # no target named, on Windows, and no distribution of Liminal's installed
+        if raw:
+            self.target = raw
+        elif not _on_windows():
+            self.target = "local"
+        else:  # Liminal's own distribution when one is installed: `distributions` lists them (a test's); with a runner, none
+            listed = distributions if distributions is not None else (wsl_distributions if runner is None else None)
+            name = liminal_distribution(listed()) if listed is not None else ""
+            self.target = f"wsl:{name}" if name else "wsl"
+            self.liminal_missing = listed is not None and not name
         if not (self.target == "local" or self.target == "wsl" or self.target.startswith("wsl:")):
             raise CommandError(f"a target is local, wsl or wsl:<distribution>, not {self.target!r}")
         self._runner = runner
@@ -41,6 +89,8 @@ class Shell:
         """Why the target is not Liminal's, in words ("" when it is)."""
         if self.scoped:
             return ""
+        if self.liminal_missing:
+            return f"no Liminal distribution in WSL yet: a WSL plugin's setup installs one ({LIMINAL_PREFIX}Ubuntu)"
         return (f"{self.where} is not Liminal's: its target is a WSL distribution of Liminal's own "
                 f"(wsl:{LIMINAL_PREFIX}Ubuntu, set up by a WSL plugin) or a Linux machine")
 
@@ -55,8 +105,8 @@ class Shell:
         if self._runner is not None:
             return True
         if self.target == "local":
-            return os.name != "nt"
-        return os.name == "nt" and shutil.which("wsl") is not None
+            return not _on_windows()
+        return _on_windows() and shutil.which("wsl") is not None
 
     def root(self) -> bool:
         """Whether a command here runs as root without asking: WSL's root; this machine's when the platform is root."""

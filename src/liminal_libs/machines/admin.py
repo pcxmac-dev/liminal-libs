@@ -163,6 +163,10 @@ class Admin(MachinePlugin):
 
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
+        note = self.scope_note()
+        if note:  # not Liminal's (the user's own distribution): asked nothing at all
+            return {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
+                    "summary": "not on Liminal's", "valid": False, "why": note}
         if not self.present():
             return {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
                     "summary": "not present", "valid": False, "why": "not present"}
@@ -195,6 +199,10 @@ class Admin(MachinePlugin):
             done.append({"step": what, "ok": ok, "detail": detail})
             log(f"{self.name}: {what}: {'ok' if ok else 'skipped' if ok is None else 'FAILED'}: {detail}")
 
+        note = self.scope_note()
+        if note:  # never on the user's own: nothing changed
+            step(wanted[0] if wanted else "setup", False, note)
+            return done
         if not self.present():
             step(wanted[0] if wanted else "setup", False, "not the system this plugin drives")
             return done

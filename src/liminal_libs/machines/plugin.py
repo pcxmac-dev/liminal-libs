@@ -75,3 +75,13 @@ class MachinePlugin(PlatformPlugin):
         if isinstance(sh, Shell):
             return sh.scoped, sh.where
         return True, "this machine"
+
+    def scope_note(self) -> str:
+        """Why what it works on is not Liminal's, in words ("" when it is): a Linux plugin's target."""
+        from .linux import Shell
+
+        try:
+            sh = getattr(self, "shell", None)
+        except CommandError as e:
+            return f"its target: {e}"
+        return sh.scope_note if isinstance(sh, Shell) else ""

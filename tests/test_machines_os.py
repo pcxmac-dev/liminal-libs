@@ -121,3 +121,23 @@ def test_a_linux_target_is_liminals_own_or_not():
         name, title, about, api = "on-wsl", "On WSL", "a plugin on a Linux target", "2.1"
         shell = Shell("wsl:Ubuntu")
     assert OnWsl().scope() == (False, "WSL's Ubuntu") and MachinePlugin().scope() == (True, "this machine")
+
+
+def test_on_windows_a_linux_target_is_liminals_own_distribution_and_never_the_users(monkeypatch):
+    """No target named: on Windows, Liminal's own distribution when one is installed (Ubuntu's first), else none; the
+    user's own distribution is never taken for it."""
+    from liminal_libs.machines import linux
+
+    monkeypatch.setattr(linux, "_on_windows", lambda: True)
+    assert linux.liminal_distribution(["Ubuntu", "Liminal-Gentoo", "Liminal-Ubuntu"]) == "Liminal-Ubuntu"
+    assert linux.liminal_distribution(["Ubuntu", "Liminal-Gentoo", "liminal-fedora"]) == "liminal-fedora"
+    assert linux.liminal_distribution(["Ubuntu", "Debian"]) == "" and linux.liminal_distribution(["Liminal-Arch"]) == "Liminal-Arch"
+    sh = Shell(None, distributions=lambda: ["Ubuntu", "Liminal-Ubuntu"])
+    assert (sh.target, sh.scoped, sh.scope_note, sh.liminal_missing) == ("wsl:Liminal-Ubuntu", True, "", False)
+    none = Shell(None, distributions=lambda: ["Ubuntu"])
+    assert (none.target, none.scoped, none.liminal_missing) == ("wsl", False, True)
+    assert none.scope_note == "no Liminal distribution in WSL yet: a WSL plugin's setup installs one (Liminal-Ubuntu)"
+    assert Shell(None, runner=lambda a, t: (0, b"", b"")).target == "wsl"  # a stand-in: nothing listed
+    assert Shell("wsl:Ubuntu").target == "wsl:Ubuntu"  # named by its variable: as named (and not Liminal's)
+    monkeypatch.setattr(linux, "_on_windows", lambda: False)
+    assert Shell(None).target == "local" and Shell(None).scoped
