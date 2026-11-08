@@ -45,7 +45,16 @@ def test_a_machine_plugin_conforms_is_found_and_offers_its_instances(monkeypatch
     # the contract's own defaults: not there, nothing to set up, no commands, no instances
     bare = MachinePlugin()
     assert not bare.present() and bare.status() == {"present": False, "summary": "not present"} and bare.setup() == [] and bare.instances() == ()
-    assert bare.STEPS == ()
+    assert bare.STEPS == () and bare.ICON == "chip"
+    from liminal_libs.machines.admin import Admin
+    from liminal_libs.machines.firewall import Firewall
+    from liminal_libs.machines.wsl import WslDistribution
+    from liminal_libs.ui import STATIC
+
+    icons = (STATIC / "icons.js").read_text(encoding="utf-8")
+    for kind in (MachinePlugin, Firewall, Admin, WslDistribution):
+        assert f"    {kind.ICON}: '" in icons  # every machine plugin's icon is drawn by the apps
+    assert (Firewall.ICON, Admin.ICON, WslDistribution.ICON) == ("shield", "wrench", "terminal")
     from liminal_libs.machines import CommandError
 
     with pytest.raises(CommandError):

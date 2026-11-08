@@ -211,6 +211,7 @@ class WslDistribution(MachinePlugin):
     else `tarball_url()` to import from a root file system tarball)."""
 
     STEPS = STEPS
+    ICON = "terminal"
     distribution = ""  # the WSL name: Ubuntu, FedoraLinux-42, Gentoo
     family = ""  # apt | dnf | emerge
     install_name = ""  # what `wsl --install -d` takes; "" to import a tarball

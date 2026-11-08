@@ -146,6 +146,7 @@ class Firewall(MachinePlugin):
 
     HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted")  # what the platform may ask by name (Plugin.ask)
     STEPS = STEPS
+    ICON = "shield"
 
     # -- the backend: a subclass's -----------------------------------------------------------------
     def backend(self) -> str:

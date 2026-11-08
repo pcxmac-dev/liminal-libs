@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.21.0 (2026-11-07)
+
+The apps' layout as the user gave it: "the specifics are on the right hand side before the icons on the very
+right, and the larger window from the left to right is used to describe or display data"; "plugins are
+better described as a list of details w/ the specifics in the right hand column, just like the charts had a
+right hand column". `liminal.css`: `.app-main.cols` holding `.app-list` (what there is), `.app-data` (the
+selected item's data) and `.app-side` (its specifics, before the tray), list items, `.chip`. `icons.js`:
+`shield`, `wrench`, `terminal`. Every machine plugin has an `ICON` for the platform's tray ("active plugins,
+will be part of the tray on the very right side"): a firewall's the shield, an admin's the wrench, a WSL
+distribution's the terminal, the chip otherwise.
+
 ## 1.20.2 (2026-11-07)
 
 Commands in a WSL distribution go through `wsl --exec` (machines.linux.Shell, machines.wsl.Wsl, the engine's

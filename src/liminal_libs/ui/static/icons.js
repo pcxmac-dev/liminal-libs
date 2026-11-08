@@ -66,6 +66,9 @@
     plug: '<g stroke-width="1.5"><path d="M9 2.2v4.6M15 2.2v4.6"/><path d="M6.2 6.8h11.6v3.4a5.8 5.4 0 0 1-11.6 0z"/><path d="M12 15.6v2.2a3.2 3.2 0 0 0 3.2 3.2H19"/></g>',
     // the Resources view: a chip with its leads (three on each side) and its die
     chip: '<g stroke-width="1.5"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.3" y="9.3" width="5.4" height="5.4" rx=".6"/><path stroke-width="1.3" d="M9 2.4V6M12 2.4V6M15 2.4V6M9 18v3.6M12 18v3.6M15 18v3.6M2.4 9H6M2.4 12H6M2.4 15H6M18 9h3.6M18 12h3.6M18 15h3.6"/></g>',
+    shield: '<path d="M12 2.8 4.6 5.6v5.6c0 4.7 3.1 8.4 7.4 9.9 4.3-1.5 7.4-5.2 7.4-9.9V5.6z"/><path d="m8.8 12.1 2.2 2.2 4.3-4.4"/>',
+    wrench: '<path d="M14.6 6.4a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.6-3.6a6 6 0 0 1-7.9 7.9l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8a6 6 0 0 1 7.9-7.9z"/>',
+    terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15h4.5"/>',
     // the News view: a thermometer (the markets' temperature)
     thermometer: '<g stroke-width="1.5"><path d="M14 14.6V4.75a2 2 0 0 0-4 0v9.85a4 4 0 1 0 4 0z"/><path stroke-width="2" d="M12 8v8.3"/><circle cx="12" cy="17.75" r="1.7" fill="currentColor" stroke="none"/><path stroke-width="1.1" d="M16 5.5h2.2M16 8.25h1.4M16 11h2.2M16 13.75h1.4"/></g>',
     // the Datasets view (research series): a scroll

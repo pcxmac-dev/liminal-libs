@@ -26,6 +26,7 @@ class MachinePlugin(PlatformPlugin):
     KIND = "machine"
     HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
     STEPS: tuple = ()  # the setup's steps, in order: what the platform's page offers one at a time
+    ICON = "chip"  # its icon in the platform's tray (icons.js) when it is active
 
     def present(self) -> bool:
         """Whether the software or hardware is there."""
