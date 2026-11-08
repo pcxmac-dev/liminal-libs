@@ -44,8 +44,11 @@ def test_a_machine_plugin_conforms_is_found_and_offers_its_instances(monkeypatch
     assert box.interface()["hooks"] and set(box.interface()["hooks"]) >= {"present", "status", "setup", "run", "instances"}
     # the contract's own defaults: not there, nothing to set up, no commands, no instances
     bare = MachinePlugin()
-    assert not bare.present() and bare.status() == {"present": False} and bare.setup() == [] and bare.instances() == ()
-    with pytest.raises(RuntimeError):
+    assert not bare.present() and bare.status() == {"present": False, "summary": "not present"} and bare.setup() == [] and bare.instances() == ()
+    assert bare.STEPS == ()
+    from liminal_libs.machines import CommandError
+
+    with pytest.raises(CommandError):
         bare.run("ls")
     # found by the registry as the fourth kind (MACHINE in a module), listed apart, with its variables
     module = SimpleNamespace(MACHINE=box)

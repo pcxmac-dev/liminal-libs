@@ -210,6 +210,7 @@ class WslDistribution(MachinePlugin):
     its package family (`family`: apt, dnf or emerge) and how it is got (`install_name` for Microsoft's list,
     else `tarball_url()` to import from a root file system tarball)."""
 
+    STEPS = STEPS
     distribution = ""  # the WSL name: Ubuntu, FedoraLinux-42, Gentoo
     family = ""  # apt | dnf | emerge
     install_name = ""  # what `wsl --install -d` takes; "" to import a tarball
@@ -252,6 +253,10 @@ class WslDistribution(MachinePlugin):
                "engine": {"installed": False, "version": "", "running": False}}
         if d is not None:
             out["engine"] = self.engine()
+        e = out["engine"]
+        out["summary"] = (f"{self.distribution_name} ({d.state}, WSL {d.version}); Docker inside: "
+                          + (("running " if e["running"] else "installed, not running ") + e["version"] if e["installed"] else "none")
+                          if d is not None else ("not installed" if wsl.get("present") else "WSL is not here"))
         return out
 
     def engine(self) -> dict:

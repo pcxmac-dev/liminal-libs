@@ -121,6 +121,7 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     # with Docker inside, the plugin is present and offers the engine as a named instance
     fake.docker_installed = True
     assert p.present() and p.status()["engine"] == {"installed": True, "version": "28.1.1", "running": True}
+    assert p.status()["summary"] == "Ubuntu (Stopped, WSL 2); Docker inside: running 28.1.1" and p.STEPS == wsl_mod.STEPS
     (inst,) = p.instances()
     assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Ubuntu docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
     assert p.run("ls", "/") == "ls /\n"

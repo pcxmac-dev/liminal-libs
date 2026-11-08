@@ -5,7 +5,7 @@ found by the registry like every plugin (`machines()`), each offering the Docker
 (`liminal_libs.docker.instances`)."""
 from __future__ import annotations
 
-from .plugin import MachinePlugin  # noqa: F401
+from .plugin import CommandError, MachinePlugin  # noqa: F401
 
 
 def machines() -> dict:

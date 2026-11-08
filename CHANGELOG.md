@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.20.0 (2026-11-07)
+
+The firewall and admin bases of the platform's plugins (the user: "i also need a windows and linux firewall
+plugin for the platform"; "and a windows and linux admin plugin for platform"):
+
+- `machines/firewall.py`: `Rule` (one of Liminal's own, or another's read as it is), `app_ports` (the framework's
+  pages), `host_port` (what a `docker run -p` entry publishes on every address), `service_rules` (a domain login's
+  mail server container on this machine), `Firewall(MachinePlugin)`: the backend a plugin implements (`state`,
+  `list_rules`, `add_rule`, `delete_rule`, `enable`, `can_enable`, `exposing`), `allow`/`remove` (Liminal's rules
+  only, group "Liminal"), the status and the setup (`enable`, `exposure`: a finding, never a change, `rules`).
+- `machines/admin.py`: `SystemService`, `Startup`, `APPS` and `start_command`, `app_of`, `Admin(MachinePlugin)`:
+  the rights and how they are had, the framework's services (started when stopped, never an SSH server), the
+  apps' startups (read, run, ended, made or removed when asked; the setup makes none), the framework's processes.
+- `machines/windows.py`: `PowerShell` (an encoded, wrapped script; failures in their own words, `denied` for an
+  administrator's; `json`; `run_elevated` through UAC; `run_admin`: elevated only with LIMINAL_ELEVATE=prompt),
+  `is_elevated`, `quote`. `machines/linux.py`: `Shell` (root here through `sudo -n`, or in a WSL distribution
+  through `wsl -u root`; targets local, wsl, wsl:<distribution>).
+- `machines.CommandError` (`denied`); `MachinePlugin.STEPS` and a `summary` in every status (the WSL base's too).
+
 ## 1.19.2 (2026-11-07)
 
 `WslDistribution` is a plugin base, not a contract class: the hooks it gives count as the plugin's own
