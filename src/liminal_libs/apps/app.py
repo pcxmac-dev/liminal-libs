@@ -151,6 +151,10 @@ class App:
             return 200, {"plugins": self.plugins()}
         if method == "GET" and path == "/api/interface":
             return 200, self.interface()
+        if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
+            from ..ui import preferences
+
+            return 200, preferences()
         raise Refused(HTTPStatus.NOT_FOUND, "not found")
 
     # -- the server ------------------------------------------------------------------------------

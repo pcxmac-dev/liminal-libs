@@ -113,6 +113,7 @@ def test_every_liminal_apps_process_and_its_role():
     assert framework_role('"C:\\venv\\Scripts\\pythonw.exe" -m liminal_platform serve')[:2] == ("platform", "Platform")
     assert framework_role("python -m liminal_charts gui --port 8765")[:2] == ("gui", "Chart app · port 8765")
     assert framework_role("python -m something")[0] == "other"
+    assert framework_role("pythonw.exe -m liminal_charts host feed-massive")[:2] == ("host", "Host: feed-massive")  # not "host command"
 
 
 def test_the_system_disk_is_listed_once(tmp_path, monkeypatch):

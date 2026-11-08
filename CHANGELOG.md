@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.23.0 (2026-11-07)
+
+The apps' charts and two controls in `ui/static`, for every app's page (the user: "allow me to right click on
+the icons to disable them on the right icon menu, also allow for enable disable switch (left to right) on the
+plugin description"): `charts.js` (`LiminalCharts.cards/draw/update`: line charts of series over time by the
+data-viz rules, a crosshair and one tooltip for every line, the keyboard's arrows, the samples as a table,
+redrawn in place on new samples), `menu.js` (`LiminalMenu.open`: a context menu at the pointer), and in
+`liminal.css` the switch, the menu, the charts and the categorical slots `--series-1..7` for the dark and
+light themes, validated against the page. The UI's preferences (the user: "add a preferences plugin for the
+'UI' and add the different themes"): `ui.THEMES` (Dark, Midnight, Graphite, Light, Paper: liminal.css's),
+`ui.preferences()`/`save_preferences()` over one file for every app on the machine (the data folder's
+`ui.json`, LIMINAL_UI_FILE), `GET /api/ui` on every app's frame, and `theme.js`, which paints a page in it.
+`resources.role_of`: the charts app's host processes are named by what they host ("Host: fetcher", "Host:
+feed-massive") rather than "host command".
+
 ## 1.22.1 (2026-11-07)
 
 Docker's repository is the distribution plugin's (`WslDistribution.docker_repository`), filled into the

@@ -137,6 +137,8 @@ def role_of(command: str) -> tuple[str, str, str]:
         label = "Fetcher: run for opened symbols"
     elif sub == "sync" and feed and "--only" in rest:
         label = f"Fetcher: {feed}"
+    elif sub == "host" and len(rest) > 1:  # the fetcher's host and each feed's (host fetcher, host feed-massive)
+        label = f"Host: {rest[1]}"
     if sub == "gui" and "--port" in args[:-1]:
         label += f" · port {args[args.index('--port') + 1]}"
     return sub or "other", label, " ".join(args)
