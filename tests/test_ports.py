@@ -80,6 +80,30 @@ def test_a_connection_out_open_refused_or_blocked_and_the_server_not_reached():
     assert ports.reach_out([25], OUT, connect=lambda h, p, t: None, control=443)[25].state == "open"
 
 
+def test_a_listener_notes_each_connection_that_arrives_then_lets_the_port_go():
+    lis = ports.Listener(0, host="127.0.0.1", clock=lambda: 9.0)  # port 0: any free one (loopback: no firewall question)
+    lis.start()
+    port = lis._sock.getsockname()[1]
+    lis.port = port
+    for _ in range(2):
+        c = socket.socket()
+        c.connect(("127.0.0.1", port))  # the fixture refuses create_connection only: this one stays here
+        c.close()
+    import time
+    for _ in range(100):
+        if len(lis.arrivals) == 2:
+            break
+        time.sleep(0.01)
+    got = lis.stop()
+    assert [(a.address, a.at) for a in got] == [("127.0.0.1", 9.0), ("127.0.0.1", 9.0)] and got[0].as_dict()["address"] == "127.0.0.1"
+    again = ports.Listener(port, host="127.0.0.1")  # the port let go
+    again.start()
+    taken = ports.Listener(port, host="127.0.0.1")
+    with pytest.raises(OSError):
+        taken.start()  # another listener holds it
+    again.stop()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows probe")
 def test_the_windows_probe_names_a_process():
     from liminal_libs.resources import WindowsProbe

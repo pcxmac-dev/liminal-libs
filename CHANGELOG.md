@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.30.0 (2026-11-08)
+
+A port's way in, checked hop by hop, for the hw-stats plugin's path check (the user: "i have this computer as DMZ host
+so, basically the check needs to validate the computer, the router/gateway to the computer, then the internet to the
+computer"; "i don't think the plugin is able to check if there is a listener or to listen on the port in order to
+validate the traffic"; "if there is a python-tcpdump that would be good ... as a listener"):
+
+- `capture.py`: a tcpdump in Python. Packets on a port watched through libpcap by ctypes, no package: Npcap's
+  wpcap.dll on Windows (non-administrators too, unless Npcap was installed for administrators only), libpcap on Linux
+  (root or CAP_NET_RAW). `Capture(address, ports)` opens the adapter holding the address (not promiscuous), filters TCP
+  on the ports, keeps each packet's addresses, ports and flags (`Packet`; no payload) until `stop()`; `parse` reads
+  Ethernet (VLAN tags too), loopback, raw IP and Linux cooked frames, IPv4 and IPv6; `available()`. Packets are seen at
+  the adapter, before the firewall decides.
+- `netpath.py`: `local_route()` (this machine's address and gateway: GetBestRoute on Windows, /proc/net/route on
+  Linux), `ping`, `hops(target, count)` (tracert, else traceroute or tracepath), `kind` (public, private, shared:
+  a carrier's NAT, loopback, link-local).
+- `ports.Listener`: a port listened on for a while, each connection accepted, noted (`Arrival`) and closed.
+
 ## 1.29.0 (2026-11-08)
 
 This network's public address and its ports checked, for the platform's hw-stats plugin (the user: "lets make sure

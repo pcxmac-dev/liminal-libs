@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -137,6 +138,78 @@ def here(conns, ports, names=None, at: float | None = None) -> dict[int, Outcome
         detail = tuple(f"{who}, {reach(addresses)}" for who, addresses in sorted(programs.items()))
         out[p] = Outcome("listening", "listening: " + "; ".join(detail), at, detail)
     return out
+
+
+@dataclass(frozen=True)
+class Arrival:
+    """A connection that reached a Listener: from where, when."""
+    address: str
+    port: int
+    at: float
+
+    def as_dict(self) -> dict:
+        return {"address": self.address, "port": self.port, "at": self.at}
+
+
+class Listener:
+    """A port listened on for a while, so a connection has somewhere to arrive (the user, 2026-11-08: "listen on the
+    port in order to validate the traffic"): every connection is accepted, noted (its address, when) and closed;
+    nothing is read or sent. On every address of this machine by default (Windows may ask once whether Python may
+    accept connections: the answer is the firewall's rule for it). OSError from start() when the port is taken."""
+
+    def __init__(self, port: int, host: str = "0.0.0.0", clock=time.time, most: int = 200):
+        self.port, self.host, self.clock, self.most = int(port), host, clock, most
+        self._sock: socket.socket | None = None
+        self._arrivals: list[Arrival] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: never shares a port another program holds
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            s.bind((self.host, self.port))
+            s.listen(16)
+            s.settimeout(0.2)
+        except OSError:
+            s.close()
+            raise
+        self._sock = s
+        self._thread = threading.Thread(target=self._accept, name=f"listener-{self.port}", daemon=True)
+        self._thread.start()
+
+    def _accept(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, (address, port, *_) = self._sock.accept()
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                break
+            with self._lock:
+                if len(self._arrivals) < self.most:
+                    self._arrivals.append(Arrival(address, port, self.clock()))
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def stop(self, wait: float = 2.0) -> list[Arrival]:
+        """Listening ended; every connection that arrived."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(wait)
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+        return self.arrivals
+
+    @property
+    def arrivals(self) -> list[Arrival]:
+        with self._lock:
+            return list(self._arrivals)
 
 
 # -- out: a connection from this machine ----------------------------------------------------------------------
