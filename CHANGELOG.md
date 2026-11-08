@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.2 (2026-11-07)
+
+`docker.wsl()`: on Windows, whether WSL 2 is there (what a local engine runs its Linux VM in); `describe()`
+carries it when no engine is installed and no context or host names another machine. INTEGRATION.md says what
+containers need: WSL 2 for a local engine on a Windows PC, nothing for a context, native on Linux; every app
+runs without containers.
+
 ## 1.18.1 (2026-11-07)
 
 The container command is a setting (the user: Rancher): `Docker(command=)` or LIMINAL_DOCKER_COMMAND, `docker`

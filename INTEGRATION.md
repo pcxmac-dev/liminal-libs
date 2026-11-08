@@ -133,6 +133,18 @@ to the app with that login. The integrator's fetcher and the charts app hold an 
 daemon can hold a login session of its own; the login app lists the pairs the plugins ask for
 (`GET /api/pairs/known`) so a user adds a key under the name the plugin reads.
 
+## Containers (liminal-libs 1.18)
+
+`liminal_libs.docker` drives the docker command (or Rancher Desktop's `nerdctl`: LIMINAL_DOCKER_COMMAND) for
+the containers an app or a plugin needs, on this machine's engine or another machine's through a Docker
+context or host (LIMINAL_DOCKER_CONTEXT, LIMINAL_DOCKER_HOST: a VPS over SSH). The first use is a domain
+login's mail server, declared under `[server]` in `liminal-login.cfg`. Containers are optional: every Liminal
+app runs without one. What they need (the user, 2026-11-07: "a hard constraint for liminal framework, is WSL
+is required"): on a Windows PC, a local engine runs its Linux VM in WSL 2 (Docker Desktop by default, Rancher
+Desktop always; Docker Desktop's Hyper-V backend is the one exception), so containers on this PC need WSL 2;
+a context to another machine needs none here; on Linux the engine is native. `Docker.describe()` says
+whether WSL is there when no engine is installed on Windows.
+
 ## Keys and accounts
 
 Keys live only in your user environment variables (the Windows registry's user `Environment` key;

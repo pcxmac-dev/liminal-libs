@@ -219,6 +219,8 @@ class Docker:
 
     def describe(self) -> dict:
         out: dict = {"where": self.where, "command": self.name, "installed": self.installed(), "available": False}
+        if not out["installed"] and not self.context and not self.host and os.name == "nt":
+            out["wsl"] = wsl()  # what a local engine would run in
         if out["installed"]:
             try:
                 out.update(self.version())
@@ -226,6 +228,27 @@ class Docker:
             except DockerError as e:
                 out["problem"] = str(e)
         return out
+
+
+def wsl() -> dict | None:
+    """Windows only: whether WSL 2 is there, which is what Docker Desktop and Rancher Desktop run their Linux
+    VM in (the user, 2026-11-07: "a hard constraint for liminal framework, is WSL is required": for containers
+    on a Windows PC, not for the framework; a context to another machine needs none). None elsewhere."""
+    if os.name != "nt":
+        return None
+    try:
+        done = subprocess.run(["wsl", "--status"], capture_output=True, timeout=15, **_no_window())
+    except (OSError, subprocess.SubprocessError):
+        return {"present": False, "version": "", "distribution": ""}
+    raw = done.stdout or b""
+    text = raw.decode("utf-16-le", "ignore") if b"\x00" in raw else raw.decode("utf-8", "ignore")
+    fields = {}
+    for line in text.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fields[k.strip().lower()] = v.strip()
+    return {"present": done.returncode == 0 and bool(text.strip()), "version": fields.get("default version", ""),
+            "distribution": fields.get("default distribution", "")}
 
 
 def command_line(service: Service, command: str = "docker") -> str:

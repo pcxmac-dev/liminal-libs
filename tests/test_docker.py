@@ -123,7 +123,20 @@ def test_what_is_said_when_docker_fails_or_is_not_there(monkeypatch):
     monkeypatch.setattr(docker.shutil, "which", lambda name: None)
     absent = Docker(env={})
     assert not absent.installed() and not absent.available()
-    assert absent.describe() == {"where": "this machine", "command": "docker", "installed": False, "available": False}
+    described = absent.describe()
+    assert {k: v for k, v in described.items() if k != "wsl"} == {"where": "this machine", "command": "docker", "installed": False, "available": False}
+    # on Windows, whether WSL 2 is there for a local engine (Docker Desktop, Rancher Desktop run in it)
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(docker.os, "name", "nt")
+    status = "Default Distribution: Ubuntu\r\nDefault Version: 2\r\n".encode("utf-16-le")
+    monkeypatch.setattr(docker.subprocess, "run", lambda args, **kw: SimpleNamespace(returncode=0, stdout=status))
+    assert docker.wsl() == {"present": True, "version": "2", "distribution": "Ubuntu"} and Docker(env={}).describe()["wsl"]["present"]
+    monkeypatch.setattr(docker.subprocess, "run", lambda args, **kw: (_ for _ in ()).throw(OSError("no wsl")))
+    assert docker.wsl() == {"present": False, "version": "", "distribution": ""}
+    assert "wsl" not in Docker(context="vps", env={}).describe()  # another machine's engine: WSL does not matter
+    monkeypatch.setattr(docker.os, "name", "posix")
+    assert docker.wsl() is None
     with pytest.raises(DockerError) as e:
         absent.containers()
     assert "docker is not installed" in str(e.value) and "nerdctl" in str(e.value)
