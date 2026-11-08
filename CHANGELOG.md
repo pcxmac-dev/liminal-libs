@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.31.0 (2026-11-08)
+
+A setting kept through the login (the user: "i need a way to put my credentials in to the namecheap plugin and allow it
+to function"; earlier, "all plugin states/keys will be stored with the associated user", "but we will add login
+later"):
+
+- `Login.save(variable, value)`: the setting kept for the signed-in user, its pair named by the variable (None forgets
+  it); where, in words. The base refuses (Unauthorized); `EnvironmentLogin` keeps it among the user's environment
+  variables (Windows' user Environment key and this process, so it holds at once and after a restart; elsewhere this
+  process only); `LoginClient` as a pair of the login app (PUT or DELETE /api/pairs/<pair>).
+- `EnvironmentLogin(saved=...)`: an app's choice (the platform's) to read the variables saved after its process
+  started too, under the process's own: `saved_variables()` (Windows' user Environment key). Off by default, so a
+  plugin's own login and a test read the process's environment alone.
+
 ## 1.30.0 (2026-11-08)
 
 A port's way in, checked hop by hop, for the hw-stats plugin's path check (the user: "i have this computer as DMZ host

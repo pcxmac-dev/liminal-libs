@@ -140,6 +140,16 @@ class LoginClient(Login):
     def remove(self, name: str) -> dict:
         return self._call("DELETE", f"/api/pairs/{urllib.parse.quote(name, safe='')}")
 
+    def save(self, variable: str, value: str | None) -> str:
+        """The setting kept as the signed-in user's pair, named by its variable (Login.save)."""
+        from .authorization import pair_name
+
+        if value is None:
+            self.remove(pair_name(variable))
+        else:
+            self.put(pair_name(variable), value, kind="key", label=variable)
+        return "your login's pairs"
+
     def key(self, plugin: str) -> str:
         return self.vector(f"{plugin}-account-api-key")
 

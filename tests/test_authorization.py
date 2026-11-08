@@ -191,3 +191,38 @@ def test_the_pairs_are_named_by_the_variables_and_a_login_fills_the_settings(mon
     assert set(app.plugins()) == set(names)
     for n in names:
         app.detach(n)
+
+
+def test_a_setting_is_kept_through_the_login_and_saved_variables_are_read():
+    """Login.save (1.31.0; the user: "i need a way to put my credentials in to the namecheap plugin"): the environment
+    login keeps a setting among the user's variables (here a test's own), the login client as a pair of the login app;
+    a variable saved after the process started is read too, the process's own value winning."""
+    import types
+
+    env = {"MASSIVE_API_KEY": "k1"}
+    login = EnvironmentLogin(env=env)
+    assert login.save("NAMECHEAP_API_KEY", "abc") == "the login's variables" and env["NAMECHEAP_API_KEY"] == "abc"
+    assert login.variables(["NAMECHEAP_API_KEY", "NAMECHEAP_API_USER"]) == {"NAMECHEAP_API_KEY": "abc"}
+    login.save("NAMECHEAP_API_KEY", None)
+    assert "NAMECHEAP_API_KEY" not in env
+    with pytest.raises(Unauthorized, match="not a setting's name"):
+        login.save("bad name;", "x")
+    with pytest.raises(Unauthorized, match="cannot be changed"):
+        EnvironmentLogin(env=types.MappingProxyType({})).save("A_B", "c")
+    saved = EnvironmentLogin(saved=lambda: {"LIMINAL_TEST_SAVED_ONLY": "from-the-registry", "PATH": "not this one"})
+    assert saved.variables(["LIMINAL_TEST_SAVED_ONLY"]) == {"LIMINAL_TEST_SAVED_ONLY": "from-the-registry"}
+    assert saved.vector("path") != "not this one"  # the process's own value wins
+
+    class Refusing(Login):
+        def user(self):
+            return {"name": "x"}
+
+        def vector(self, name):
+            raise Unauthorized("no")
+    with pytest.raises(Unauthorized, match="keeps no settings"):
+        Refusing().save("A", "b")
+    client, calls = LoginClient("http://127.0.0.1:1"), []
+    client._call = lambda method, path, body=None: calls.append((method, path, body)) or {}
+    assert client.save("NAMECHEAP_API_KEY", "v") == "your login's pairs" and client.save("NAMECHEAP_API_KEY", None)
+    assert calls == [("PUT", "/api/pairs/namecheap-api-key", {"value": "v", "kind": "key", "label": "NAMECHEAP_API_KEY"}),
+                     ("DELETE", "/api/pairs/namecheap-api-key", None)]

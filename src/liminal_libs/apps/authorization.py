@@ -76,6 +76,13 @@ class Login(ABC):
         policy for the login's realm to refine; everything the user has, by default."""
         return self.signed_in
 
+    def save(self, variable: str, value: str | None) -> str:
+        """A setting kept for the signed-in user (the user, 2026-11-08: "i need a way to put my credentials in to the
+        namecheap plugin and allow it to function"; "all plugin states/keys will be stored with the associated
+        user"): its pair named by the variable (NAMECHEAP_API_KEY is `namecheap-api-key`); `value` None forgets it.
+        Where it is kept, in words. Unauthorized when this login keeps none."""
+        raise Unauthorized(f"{type(self).__name__} keeps no settings", 405)
+
     def names(self) -> set[str] | None:
         """The pairs the signed-in user has, by name, when the realization can list them (one call
         instead of one per variable); None when it cannot."""
@@ -117,25 +124,91 @@ class EnvironmentLogin(Login):
     """The keys' store until every plugin is attached through an app: the user environment variables
     (the machine's user is the signed-in user). `pairs` maps a pair's name to its variable
     (`massive-account-api-key` -> MASSIVE_API_KEY), built by the app from each plugin's `keys`; a
-    name not mapped is read as a variable named after it (MASSIVE_ACCOUNT_API_KEY)."""
+    name not mapped is read as a variable named after it (MASSIVE_ACCOUNT_API_KEY).
+
+    `saved` (an app's choice, the platform's): with the process's environment (`env` None), the variables saved
+    to the user's environment after this process started are read too, under the process's own (`saved_variables`:
+    Windows' user Environment key, where `save` and tools/set-key.ps1 keep them), so a setting entered on a page
+    holds across a restart however the process was started. Off by default: a plugin's own login and a test read
+    the process's environment alone."""
 
     NAMESPACE = "environment"
 
-    def __init__(self, pairs: Mapping[str, str] | None = None, env: Mapping[str, str] | None = None):
+    def __init__(self, pairs: Mapping[str, str] | None = None, env: Mapping[str, str] | None = None, saved=None):
         self.pairs = dict(pairs or {})
         self.env = env  # None: the process's environment, read when asked
+        self._saved = saved  # None, or () -> {variable: value}: the user's saved variables (saved_variables)
 
     def user(self) -> dict:
         return {"name": getpass.getuser(), "email": None, "verified": False}
 
+    def _values(self) -> Mapping[str, str]:
+        """The variables as this login reads them: the given ones; else this process's, over the user's saved ones."""
+        if self.env is not None:
+            return self.env
+        saved = self._saved() if self._saved is not None else {}
+        return {**saved, **os.environ} if saved else os.environ
+
     def names(self) -> set[str]:
-        env = os.environ if self.env is None else self.env
+        env = self._values()
         return {pair_name(v) for v, value in env.items() if value} | {p for p, v in self.pairs.items() if env.get(v)}
 
     def vector(self, name: str) -> str:
-        env = os.environ if self.env is None else self.env
+        env = self._values()
         variable = self.pairs.get(name) or variable_name(name).replace(".", "_")
         value = env.get(variable)
         if not value:
             raise Unauthorized(f"no {name} here ({variable} is not set)", 404)
         return value
+
+    def save(self, variable: str, value: str | None) -> str:
+        """The setting kept as one of the user's environment variables: on Windows in the user Environment key
+        (where every plugin's keys are kept until the login app holds them) and in this process, so it holds at
+        once and after a restart; elsewhere in this process only, until it ends. A test's `env` is written as is."""
+        variable = str(variable or "").strip()
+        if not variable or not variable.replace("_", "").isalnum():
+            raise Unauthorized(f"not a setting's name: {variable!r}", 400)
+        if self.env is not None:
+            if not isinstance(self.env, dict):
+                raise Unauthorized("this login's variables cannot be changed", 405)
+            if value is None:
+                self.env.pop(variable, None)
+            else:
+                self.env[variable] = value
+            return "the login's variables"
+        if os.name == "nt":
+            from ..config import ConfigError, save_user_variable
+
+            try:
+                save_user_variable(variable, value)
+            except (ConfigError, OSError) as e:
+                raise Unauthorized(f"{variable} could not be kept in your user environment variables: {e}", 500) from None
+            return "your user environment variables"
+        if value is None:
+            os.environ.pop(variable, None)
+        else:
+            os.environ[variable] = value
+        return "this process's environment, until it ends (no user environment to keep it in here)"
+
+
+def saved_variables() -> dict[str, str]:
+    """The user's saved environment variables (Windows' user Environment key); {} elsewhere or unreadable."""
+    if os.name != "nt":
+        return {}
+    try:
+        import winreg
+
+        out = {}
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            i = 0
+            while True:
+                try:
+                    name, value, kind = winreg.EnumValue(key, i)
+                except OSError:
+                    break
+                i += 1
+                if kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) and value:
+                    out[name] = str(value)
+        return out
+    except OSError:
+        return {}
