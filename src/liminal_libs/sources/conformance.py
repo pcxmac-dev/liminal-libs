@@ -31,6 +31,7 @@ FEED_HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries
               "settings")
 PUBLISHER_HOOKS = ("moments", "calendar", "read", "scan", "settings")
 ASSISTANT_HOOKS = ("build", "scan", "settings")
+MACHINE_HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
 
 
 def problems(p: object) -> list[str]:
@@ -55,7 +56,7 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: SYSTEM {p.SYSTEM!r} is none of {sorted(SYSTEMS)}")
     expected = _kind_of(p)
     if expected is None:
-        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin nor an AssistantPlugin")
+        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin nor a MachinePlugin")
     elif p.KIND != expected:
         out.append(f"{tag}: KIND {p.KIND!r} for a {expected} plugin")
     refused = p.refusal()
@@ -73,7 +74,8 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: databases must be a tuple of layout.Database")
     if p.fetcher is not None and not isinstance(p.fetcher, Fetcher):
         out.append(f"{tag}: fetcher is not a sources.fetching.Fetcher")
-    hooks = FEED_HOOKS if expected == "feed" else PUBLISHER_HOOKS if expected == "publisher" else ASSISTANT_HOOKS
+    hooks = (FEED_HOOKS if expected == "feed" else PUBLISHER_HOOKS if expected == "publisher"
+             else MACHINE_HOOKS if expected == "machine" else ASSISTANT_HOOKS)
     for hook in hooks:
         if p.gives(hook) and not callable(getattr(p, hook, None)):
             out.append(f"{tag}: gives {hook} but it is not callable")
@@ -100,8 +102,9 @@ def _kind_of(p: Plugin) -> str | None:
     if isinstance(p, PublisherPlugin):
         return "publisher"
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import
+    from ..machines.plugin import MachinePlugin
 
-    return "assistant" if isinstance(p, AssistantPlugin) else None
+    return "assistant" if isinstance(p, AssistantPlugin) else "machine" if isinstance(p, MachinePlugin) else None
 
 
 def _variables(tag: str, p: Plugin) -> list[str]:

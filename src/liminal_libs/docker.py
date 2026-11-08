@@ -13,7 +13,7 @@ import os
 import shlex
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 CONTEXT_VAR = "LIMINAL_DOCKER_CONTEXT"  # a docker context's name (`docker context ls`): where the containers run
 HOST_VAR = "LIMINAL_DOCKER_HOST"  # or a Docker host outright: ssh://user@vps, tcp://host:2376, npipe:////./pipe/docker_engine
@@ -23,6 +23,26 @@ TIMEOUT_S = 120.0
 
 class DockerError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class Instance:
+    """A Docker engine the framework may use, by name (the user, 2026-11-07: "allow different docker instances
+    to support the liminal framework"): this machine's (`local`), a context's (`context:<name>`), a host's, or
+    one a machine plugin runs (`wsl-ubuntu`: `wsl -d Ubuntu docker`). `translate` turns a host path into the
+    engine's own view of it (a Windows path under WSL: /mnt/c/...)."""
+
+    name: str
+    where: str
+    command: str = "docker"
+    context: str = ""
+    host: str = ""
+    source: str = ""  # what offers it: the machine, a context, a plugin's name
+    translate: object = None  # callable(host path) -> the engine's path, when they differ
+
+    def describe(self) -> dict:
+        return {"name": self.name, "where": self.where, "command": self.command, "context": self.context, "host": self.host,
+                "source": self.source}
 
 
 @dataclass(frozen=True)
@@ -89,14 +109,18 @@ class Docker:
     """The docker command, on this machine or where a context or host says (`where`). `runner(args,
     timeout) -> (code, stdout, stderr)` stands in for the command in tests."""
 
-    def __init__(self, context: str | None = None, host: str | None = None, runner=None, log=None, env=None, command: str | None = None):
+    def __init__(self, context: str | None = None, host: str | None = None, runner=None, log=None, env=None, command: str | None = None,
+                 translate=None):
         env = os.environ if env is None else env
         self.context = (context or env.get(CONTEXT_VAR) or "").strip() or None
         self.host = (host or env.get(HOST_VAR) or "").strip() or None
         self._runner = runner
         self.log = log or (lambda m: None)
-        self.name = (command or env.get(COMMAND_VAR) or "docker").strip() or "docker"  # the command's name
+        # the command, with a prefix when the engine is reached through another program: `wsl -d Ubuntu docker`
+        self.argv = shlex.split((command or env.get(COMMAND_VAR) or "docker").strip() or "docker")
+        self.name = self.argv[0]  # the command's name
         self.command = shutil.which(self.name) or self.name  # its path when found
+        self.translate = translate  # a host path as the engine sees it (a Windows path under WSL)
 
     @property
     def where(self) -> str:
@@ -106,7 +130,7 @@ class Docker:
         return self._runner is not None or shutil.which(self.name) is not None
 
     def _run(self, *args: str, timeout: float = TIMEOUT_S, check: bool = True, stdin: str | None = None) -> str:
-        full = [self.command, *(("--context", self.context) if self.context else ()), *(("-H", self.host) if self.host else ()), *args]
+        full = [self.command, *self.argv[1:], *(("--context", self.context) if self.context else ()), *(("-H", self.host) if self.host else ()), *args]
         if self._runner is not None:
             code, out, err = self._runner(full, timeout)
         else:
@@ -157,7 +181,10 @@ class Docker:
         return self._run("pull", image, timeout=600)
 
     def run(self, service: Service) -> Container:
-        """A new container from `service` (it must not be there yet)."""
+        """A new container from `service` (it must not be there yet); its volumes' host paths as the engine
+        sees them (`translate`)."""
+        if self.translate is not None:
+            service = replace(service, volumes=tuple(self._volume(v) for v in service.volumes))
         self.log(f"docker: running {service.name} ({service.image}) on {self.where}")
         self._run(*service.run_args(), timeout=600)
         found = self.container(service.name)
@@ -217,8 +244,22 @@ class Docker:
         """`docker compose -f FILE ARGS` (up -d, down, ps, logs)."""
         return self._run("compose", "-f", str(file), *args, timeout=timeout)
 
+    def _volume(self, volume: str) -> str:
+        """A -v entry with its host side translated; a named volume (no path) stays."""
+        host_side, sep, rest = volume.partition(":")
+        if len(volume) > 1 and volume[1] == ":":  # a Windows drive: C:/x:/y
+            host_side, sep, rest = volume[:2] + rest.partition(":")[0], ":", rest.partition(":")[2]
+        if not sep or not ("/" in host_side or "\\" in host_side):
+            return volume
+        return f"{self.translate(host_side)}:{rest}"
+
+    @classmethod
+    def for_instance(cls, instance: Instance, **kw) -> "Docker":
+        return cls(context=instance.context or None, host=instance.host or None, command=instance.command,
+                   translate=instance.translate, env={}, **kw)
+
     def describe(self) -> dict:
-        out: dict = {"where": self.where, "command": self.name, "installed": self.installed(), "available": False}
+        out: dict = {"where": self.where, "command": " ".join(self.argv), "installed": self.installed(), "available": False}
         if not out["installed"] and not self.context and not self.host and os.name == "nt":
             out["wsl"] = wsl()  # what a local engine would run in
         if out["installed"]:
@@ -228,6 +269,52 @@ class Docker:
             except DockerError as e:
                 out["problem"] = str(e)
         return out
+
+
+def instances(machines=None, env=None) -> list[Instance]:
+    """The Docker instances there are, by name: this machine's `local` (the docker command, when installed),
+    its contexts (`context:<name>`), one named by LIMINAL_DOCKER_HOST (`host`), and what the machine plugins
+    run (`machines`: the registry's unless given)."""
+    env = os.environ if env is None else env
+    out: list[Instance] = []
+    local = Docker(env={}, command=(env.get(COMMAND_VAR) or "docker"))
+    if local.installed():
+        out.append(Instance("local", "this machine", command=" ".join(local.argv), source="the docker command"))
+        try:
+            raw = local._run("context", "ls", "--format", "{{json .}}", timeout=30)
+            for line in raw.splitlines():
+                if line.strip().startswith("{"):
+                    row = json.loads(line)
+                    name = row.get("Name", "")
+                    if name and name != "default":
+                        out.append(Instance(f"context:{name}", row.get("DockerEndpoint", "") or f"context {name}",
+                                            command=" ".join(local.argv), context=name, source="a docker context"))
+        except DockerError:
+            pass
+    host = (env.get(HOST_VAR) or "").strip()
+    if host:
+        out.append(Instance("host", host, command=" ".join(local.argv), host=host, source=HOST_VAR))
+    if machines is None:
+        try:
+            from .sources.registry import machines as found
+
+            machines = found().values()
+        except Exception:  # noqa: BLE001 - no registry here
+            machines = ()
+    for m in machines:
+        try:
+            out.extend(m.instances())
+        except Exception as e:  # noqa: BLE001 - one plugin's trouble is not the list's
+            out.append(Instance(m.name, f"{m.name}: {type(e).__name__}: {e}", source=m.name))
+    return out
+
+
+def instance(name: str, machines=None, env=None, **kw) -> Docker:
+    """The Docker of the instance named (`local`, `context:<name>`, `host`, a machine plugin's)."""
+    for i in instances(machines, env):
+        if i.name == name:
+            return Docker.for_instance(i, **kw)
+    raise DockerError(f"no Docker instance named {name!r}: " + (", ".join(i.name for i in instances(machines, env)) or "none at all"))
 
 
 def wsl() -> dict | None:

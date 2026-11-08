@@ -24,7 +24,7 @@ FILE_NAME = "liminal-login.cfg"
 CFG_VAR = "LIMINAL_LOGIN_CFG"
 MAIL_KEYS = ("host", "port", "security", "user", "from", "helo", "dkim_key", "dkim_selector", "dkim_domain")
 IMAP_KEYS = ("host", "port", "security", "user")  # the admin mailbox, read for the checks
-SERVER_KEYS = ("image", "name", "context", "host", "hostname", "ports", "volumes", "restart", "command")  # the mail server container
+SERVER_KEYS = ("image", "name", "instance", "context", "host", "hostname", "ports", "volumes", "restart", "command")  # the mail server container
 MEMBERS = ("domain", "any")
 _DOMAIN = r"[a-z0-9-]+(\.[a-z0-9-]+)+"
 
@@ -136,10 +136,14 @@ class Scope:
                        labels={"liminal.login": self.name})
 
     def docker(self, **kw):
-        """The Docker the server container runs on: the [server] context or host, else the environment's
-        (LIMINAL_DOCKER_CONTEXT, LIMINAL_DOCKER_HOST), else this machine."""
-        from ..docker import Docker
+        """The Docker the server container runs on: the [server] instance by name (docker.instance: local, a
+        context, a host, a machine plugin's such as wsl-ubuntu), else the [server] context or host, else the
+        environment's (LIMINAL_DOCKER_CONTEXT, LIMINAL_DOCKER_HOST), else this machine."""
+        from ..docker import Docker, instance
 
+        named = (self.server.get("instance") or "").strip()
+        if named:
+            return instance(named, **kw)
         return Docker(context=self.server.get("context"), host=self.server.get("host"), **kw)
 
     def imap_variables(self) -> dict[str, str]:

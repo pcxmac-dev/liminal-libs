@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.19.0 (2026-11-07)
+
+The machine kind of platform plugin, and named Docker instances (the user: "the platform is the interface
+for the software/hardware which facilitates the liminal framework"; "the ubuntu plugin needs to be able to
+install docker (do everything manually) and allow different docker instances to support the liminal
+framework"): `machines.MachinePlugin(PlatformPlugin)` (KIND machine; hooks present, status, setup, run,
+instances, scan, settings), found by the registry as `MACHINE`/`MACHINES` and listed by
+`registry.machines()`, conforming (`MACHINE_HOOKS`), attached by `attach_registry`, its variables among
+the plugins'. `docker.Instance` and `docker.instances()` (this machine's `local`, its contexts
+`context:<name>`, a `host`, and what the machine plugins run), `docker.instance(name)`,
+`Docker.for_instance`; `Docker(command="wsl -d Ubuntu docker")`, a command with a prefix; `translate`: a
+volume's host path as the engine sees it (a Windows path under WSL). A login file's `[server] instance =
+name` picks the engine.
+
 ## 1.18.2 (2026-11-07)
 
 `docker.wsl()`: on Windows, whether WSL 2 is there (what a local engine runs its Linux VM in); `describe()`

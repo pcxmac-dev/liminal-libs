@@ -57,6 +57,16 @@ def test_a_domain_login_is_the_domains_users_with_its_own_mail_record_unless_a_s
     assert svc.ports == ("25:25", "587:587", "993:993") and svc.env == {"MADDY_DOMAIN": "hypokrites.me"} and svc.labels == {"liminal.login": "hypokrites.me"}
     assert svc.volumes == (f"{(tmp_path / 'mail').as_posix()}:/data", "certs:/certs")
     assert boxed.docker(env={}).where == "context vps" and boxed.describe()["server"] == "foxcpp/maddy:0.8"
+    # an instance by name: a machine plugin's engine (wsl-ubuntu, say), asked of the registry
+    from liminal_libs import docker as docker_mod
+
+    named = Scope.parse("[login]\nscope = https://hypokrites.me\n\n[server]\nimage = foxcpp/maddy:0.8\ninstance = wsl-ubuntu\n")
+    seen = []
+    monkeypatch_instance = lambda name, **kw: seen.append(name) or docker_mod.Docker(command="wsl -d Ubuntu docker", env={}, **kw)  # noqa: E731
+    import unittest.mock as mock
+
+    with mock.patch.object(docker_mod, "instance", monkeypatch_instance):
+        assert named.docker().argv == ["wsl", "-d", "Ubuntu", "docker"] and seen == ["wsl-ubuntu"]
     again = Scope.parse(boxed.text())
     assert again.server["image"] == "foxcpp/maddy:0.8" and again.server["env_MADDY_DOMAIN"] == "hypokrites.me" and "[server]" in boxed.text()
     assert s.service() is None and Scope.local(tmp_path).service() is None

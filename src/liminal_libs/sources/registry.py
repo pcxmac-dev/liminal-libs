@@ -321,6 +321,7 @@ _lock = threading.RLock()
 _providers: dict[str, FeedPlugin] | None = None
 _publishers: dict[str, PublisherPlugin] = {}
 _assistants: dict[str, "AssistantPlugin"] = {}  # the AI assistants (2.0; assistants/plugin.py)
+_machines: dict[str, "MachinePlugin"] = {}  # the machine plugins (2.1; machines/plugin.py)
 _errors: list[tuple[str, str]] = []
 SELECTION_VAR = "LIMINAL_PLUGINS_LOADED"  # the plugins a process loads: names, `none`, or unset for all
 
@@ -357,7 +358,7 @@ class Selection:
 
 _selection = Selection()  # the one applied when the plugins were found
 
-NAMES = ("PLUGIN", "PUBLISHER", "ASSISTANT")  # what a module calls its plugin (the plural: several)
+NAMES = ("PLUGIN", "PUBLISHER", "ASSISTANT", "MACHINE")  # what a module calls its plugin (the plural: several)
 
 
 def _is_plugin_class(x) -> bool:
@@ -376,7 +377,7 @@ def _plugins_in(module, origin: str) -> list[Plugin]:
     if not found or not all(isinstance(p, Plugin) or _is_plugin_class(p) for p in found):
         raise TypeError("defines no PLUGIN (a FeedPlugin: a class, an instance, or a sources.registry.Provider record) "
                         "nor PUBLISHER (a PublisherPlugin, or a sources.publisher.Publisher record) nor ASSISTANT "
-                        "(an AssistantPlugin)")
+                        "(an AssistantPlugin) nor MACHINE (a MachinePlugin)")
     return [(p() if _is_plugin_class(p) else p).with_(origin=origin) for p in found]
 
 
@@ -473,23 +474,26 @@ def discover() -> tuple[dict[str, FeedPlugin], list[tuple[str, str]]]:
 def discover_all() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlugin], list[tuple[str, str]]]:
     """The providers and the publishers (both by name, in their order), and the plugins left out
     (discover_everything, without the assistants)."""
-    found, pubs, _, errors_ = discover_everything()
+    found, pubs, _, _, errors_ = discover_everything()
     return found, pubs, errors_
 
 
 def _kind(p: Plugin) -> str:
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import: the assistants import the client
+    from ..machines.plugin import MachinePlugin
 
-    return "publisher" if isinstance(p, PublisherPlugin) else "assistant" if isinstance(p, AssistantPlugin) else "provider"
+    return ("publisher" if isinstance(p, PublisherPlugin) else "assistant" if isinstance(p, AssistantPlugin)
+            else "machine" if isinstance(p, MachinePlugin) else "provider")
 
 
 def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlugin], dict[str, "AssistantPlugin"],
-                                   list[tuple[str, str]]]:
-    """The providers, the publishers and the assistants (each by name, in their order), and the
-    plugins left out: one that fails to load, one written for a contract this app does not offer
+                                   dict[str, "MachinePlugin"], list[tuple[str, str]]]:
+    """The providers, the publishers, the assistants and the machines (each by name, in their order), and
+    the plugins left out: one that fails to load, one written for a contract this app does not offer
     (api_refusal), a second of one name."""
     from . import plugins
     from ..assistants.plugin import AssistantPlugin
+    from ..machines.plugin import MachinePlugin
 
     found: list[Plugin] = []
     errors: list[tuple[str, str]] = []
@@ -506,6 +510,7 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
     out: dict[str, FeedPlugin] = {}
     pubs: dict[str, PublisherPlugin] = {}
     assts: dict[str, AssistantPlugin] = {}
+    machs: dict[str, MachinePlugin] = {}
     keys: dict[str, str] = {}  # a feed's key -> its publisher (keys name the state kept)
     sets: dict[str, str] = {}  # a dataset's name -> its publisher (names its state and versions)
     lives: dict[str, str] = {}  # a live feed's name -> its provider (names its bars, status and kills)
@@ -513,9 +518,10 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
     # the built-ins first, so an installed package never takes the name, a feed or a dataset of one
     # (whatever its order); all listed in their order after
     for p in sorted(found, key=lambda p: (p.origin != "built in", p.order, p.name)):
-        mine = pubs if isinstance(p, PublisherPlugin) else assts if isinstance(p, AssistantPlugin) else out
-        if p.name in out or p.name in pubs or p.name in assts:
-            first = (out.get(p.name) or pubs.get(p.name) or assts[p.name]).origin
+        mine = (pubs if isinstance(p, PublisherPlugin) else assts if isinstance(p, AssistantPlugin)
+                else machs if isinstance(p, MachinePlugin) else out)
+        if p.name in out or p.name in pubs or p.name in assts or p.name in machs:
+            first = (out.get(p.name) or pubs.get(p.name) or assts.get(p.name) or machs[p.name]).origin
             errors.append((p.origin, f"a second {_kind(p)} named {p.name!r}: the first kept ({first})"))
             continue
         why = p.refusal()
@@ -538,8 +544,8 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
             keys.update({f.key: p.name for f in p.feeds})
             sets.update({d.name: p.name for d in p.declared})
             files.update({d.provider: p.name for d in p.declared})
-        elif isinstance(p, AssistantPlugin):
-            pass  # an assistant has no feeds, datasets or live feeds to clash
+        elif isinstance(p, (AssistantPlugin, MachinePlugin)):
+            pass  # an assistant or a machine has no feeds, datasets or live feeds to clash
         else:
             # a live feed's name is its own provider's, or a name no other provider has
             clash = next((x.name for x in p.live if lives.get(x.name, p.name) != p.name
@@ -550,13 +556,13 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
             lives.update({x.name: p.name for x in p.live})
         mine[p.name] = p
     global _selection
-    _selection = _apply_selection(Selection.parse(os.environ.get(SELECTION_VAR)), out, pubs, assts)
+    _selection = _apply_selection(Selection.parse(os.environ.get(SELECTION_VAR)), out, pubs, assts, machs)
     from ..freshness import DELAYS  # when loaded, not on import: the freshness rules import the calendars
 
     for p in out.values():
         DELAYS.declare(p)  # its own publication delays and market hours (2.0)
     in_order = lambda d: dict(sorted(d.items(), key=lambda kv: (kv[1].order, kv[0])))  # noqa: E731
-    return in_order(out), in_order(pubs), in_order(assts), errors
+    return in_order(out), in_order(pubs), in_order(assts), in_order(machs), errors
 
 
 _databases_refused = databases_refused  # its name before 2.0 (sources/plugin.py: Plugin.refusal)
@@ -577,16 +583,17 @@ def _owner(p: Plugin, feeds: Mapping[str, FeedPlugin], pubs: Mapping[str, Publis
     return p.name
 
 
-def _apply_selection(chosen: Selection, feeds: dict, pubs: dict, assts: dict) -> Selection:
-    """The selection applied to what was found: the plugins not named taken out of the three (each
+def _apply_selection(chosen: Selection, feeds: dict, pubs: dict, assts: dict, machs: dict | None = None) -> Selection:
+    """The selection applied to what was found: the plugins not named taken out of the four (each
     with its parts), the names answering to no plugin noted. What applied."""
+    machs = {} if machs is None else machs
     if chosen.everything:
         return chosen
-    found = {**feeds, **pubs, **assts}
+    found = {**feeds, **pubs, **assts, **machs}
     owners = {n: _owner(p, feeds, pubs) for n, p in found.items()}
     wanted = {owners[n] for n in chosen.names if n in owners}
     left_out: list[str] = []
-    for d in (feeds, pubs, assts):
+    for d in (feeds, pubs, assts, machs):
         for n in list(d):
             if owners[n] not in wanted:
                 d.pop(n)
@@ -636,11 +643,13 @@ def providers() -> dict[str, FeedPlugin]:
     global _providers
     with _lock:
         if _providers is None:
-            _providers, found, found_assistants, found_errors = discover_everything()
+            _providers, found, found_assistants, found_machines, found_errors = discover_everything()
             _publishers.clear()
             _publishers.update(found)
             _assistants.clear()
             _assistants.update(found_assistants)
+            _machines.clear()
+            _machines.update(found_machines)
             _errors[:] = found_errors
         return _providers
 
@@ -661,6 +670,18 @@ def assistants() -> dict[str, "AssistantPlugin"]:
 
 def assistant(name: str) -> "AssistantPlugin | None":
     return assistants().get(name)
+
+
+def machines() -> dict[str, "MachinePlugin"]:
+    """The machine plugins by name, in their order (found with the providers; 2.1: the software and
+    hardware the framework runs on, the platform's)."""
+    with _lock:
+        providers()
+        return dict(_machines)
+
+
+def machine(name: str) -> "MachinePlugin | None":
+    return machines().get(name)
 
 
 def publisher_of(name: str) -> str:
@@ -688,6 +709,8 @@ def plugin_keys(name: str) -> list[KeyVar]:
     an assistant's (its key and its account)."""
     if name in assistants():
         return list(assistants()[name].keys)
+    if name in machines():
+        return list(machines()[name].keys)
     pubs = publishers()
     if name in pubs:
         found = [k for n in (name, *publisher_parts(name)) for k in pubs[n].keys]
@@ -856,7 +879,8 @@ def variables() -> tuple[str, ...]:
     (config.saved_names)."""
     return tuple(dict.fromkeys([*(n for p in providers().values() for n in (*p.key_names, *p.plan_vars, *p.options)),
                                 *(n for p in publishers().values() for k in p.keys for n in k.names),
-                                *(n for p in assistants().values() for n in (*p.key_names, *p.plan_vars, *p.options))]))
+                                *(n for p in assistants().values() for n in (*p.key_names, *p.plan_vars, *p.options)),
+                                *(n for p in machines().values() for n in (*p.key_names, *p.plan_vars, *p.options))]))
 
 
 def key_row(k: KeyVar, settings: "Settings | None" = None) -> dict:
