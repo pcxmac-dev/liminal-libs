@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.18.0 (2026-11-07)
+
+Docker in the framework (the user: "i want to integrate docker with the liminal framework"; "the container
+or email server, would be responsible for services rendered outside the local domain"): `docker.py`, a
+driver over the docker command alone, windowless (`Docker(context=, host=)`: this machine's Docker or
+another's through a context or a host, LIMINAL_DOCKER_CONTEXT/LIMINAL_DOCKER_HOST; `available`, `version`,
+`containers`, `container`, `pull`, `run`, `ensure` (made, started or left running), `start`, `stop`, `remove`,
+`logs`, `exec`, `inspect`, `health`, `compose`, `describe`; `Service` as `docker run` would make it; `Container`
+as `docker ps` lists it; `DockerError`; a runner stands in for the command in tests). A login's file declares
+its mail server container under `[server]` (`Scope.service()`, `Scope.docker()`: image, name, context or
+host, hostname (the admin host), ports, volumes (`./x:/y` under the login's data), `env_NAME` with the case
+kept, restart, command).
+
 ## 1.17.0 (2026-11-06)
 
 A domain's login has an account of its own, and the pieces to check its mail server with it (the user:

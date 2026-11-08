@@ -24,6 +24,7 @@ FILE_NAME = "liminal-login.cfg"
 CFG_VAR = "LIMINAL_LOGIN_CFG"
 MAIL_KEYS = ("host", "port", "security", "user", "from", "helo", "dkim_key", "dkim_selector", "dkim_domain")
 IMAP_KEYS = ("host", "port", "security", "user")  # the admin mailbox, read for the checks
+SERVER_KEYS = ("image", "name", "context", "host", "hostname", "ports", "volumes", "restart", "command")  # the mail server container
 MEMBERS = ("domain", "any")
 _DOMAIN = r"[a-z0-9-]+(\.[a-z0-9-]+)+"
 
@@ -38,6 +39,7 @@ class Scope:
     data: Path | None = None  # where the users' folders live; None: by the kind (data_dir)
     mail: dict = field(default_factory=dict)  # the [mail] section: host, port, security, user, from, helo, dkim_*
     imap: dict = field(default_factory=dict)  # the [imap] section: the admin mailbox (host, port, security, user)
+    server: dict = field(default_factory=dict)  # the [server] section: the mail server container (docker.py), env_* its environment
     admin: str = ""  # a domain's login's own account, admin@<a host under the domain> (the user, 2026-11-06)
     path: Path | None = None  # the file read, when one was
 
@@ -104,6 +106,42 @@ class Scope:
             out.setdefault("LIMINAL_SMTP_FROM", f"Liminal <{self.admin_address}>")
         return out
 
+    def service(self, data: Path | None = None):
+        """The mail server container the file declares ([server] image = ...; docker.Service), or None: its
+        name `liminal-mail-<domain>` unless said, its hostname the admin host, `./x:/y` volumes under the
+        login's data folder, `env_NAME = value` keys its environment."""
+        from ..docker import Service
+
+        sec = self.server
+        image = (sec.get("image") or "").strip()
+        if not image:
+            return None
+        base = Path(data) if data is not None else self.data_dir()
+        volumes = []
+        for v in (sec.get("volumes") or "").replace(";", ",").split(","):
+            v = v.strip()
+            if not v:
+                continue
+            if v.startswith("./"):  # under the login's data folder
+                host_path, _, inside = v[2:].partition(":")
+                v = f"{(base / host_path).as_posix()}:{inside}" if inside else (base / host_path).as_posix()
+            volumes.append(v)
+        import shlex
+
+        return Service(name=(sec.get("name") or f"liminal-mail-{self.name.replace('.', '-')}").strip(), image=image,
+                       ports=tuple(p.strip() for p in (sec.get("ports") or "").replace(";", ",").split(",") if p.strip()),
+                       env={k[4:]: v for k, v in sec.items() if k.startswith("env_") and k[4:]},
+                       volumes=tuple(volumes), hostname=(sec.get("hostname") or self.admin_host).strip(),
+                       restart=(sec.get("restart") or "unless-stopped").strip(), command=tuple(shlex.split(sec.get("command") or "")),
+                       labels={"liminal.login": self.name})
+
+    def docker(self, **kw):
+        """The Docker the server container runs on: the [server] context or host, else the environment's
+        (LIMINAL_DOCKER_CONTEXT, LIMINAL_DOCKER_HOST), else this machine."""
+        from ..docker import Docker
+
+        return Docker(context=self.server.get("context"), host=self.server.get("host"), **kw)
+
     def imap_variables(self) -> dict[str, str]:
         """The [imap] section as the mailbox reader's variables (LIMINAL_IMAP_*); the user is the admin
         address unless said."""
@@ -118,6 +156,7 @@ class Scope:
                 "root": str(self.root) if self.root is not None else None, "domain": self.domain,
                 "mailServer": (self.mail.get("host") or "the domain's own mail record") if self.kind == "domain" else "",
                 "admin": self.admin_address, "adminHost": self.admin_host, "mailbox": self.imap.get("host", ""),
+                "server": self.server.get("image", ""),
                 "path": str(self.path) if self.path is not None else None}
 
     @classmethod
@@ -131,11 +170,12 @@ class Scope:
     @classmethod
     def parse(cls, text: str, path: Path | None = None) -> "Scope":
         cfg = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+        cfg.optionxform = str  # the case of a key kept: a container's env_NAME
         cfg.read_string(text)
         where = path or FILE_NAME
-        if "login" not in cfg or not cfg["login"].get("scope", "").strip():
+        login = {k.strip().lower(): v for k, v in cfg["login"].items()} if "login" in cfg else {}
+        if not login.get("scope", "").strip():
             raise ValueError(f"{where}: a [login] section with `scope = file:///... or https://<domain>` is needed")
-        login = cfg["login"]
         url = login["scope"].strip()
         if "://" not in url and not url.lower().startswith("file:"):
             url = f"https://{url}"
@@ -149,8 +189,9 @@ class Scope:
             raise ValueError(f"{where}: members is domain or any, not {members!r}")
         mail = {k.strip().lower(): v.strip() for k, v in cfg["mail"].items()} if "mail" in cfg else {}
         imap = {k.strip().lower(): v.strip() for k, v in cfg["imap"].items()} if "imap" in cfg else {}
+        server = {(k.strip() if k.strip().startswith("env_") else k.strip().lower()): v.strip() for k, v in cfg["server"].items()} if "server" in cfg else {}
         scope = cls(url, title=login.get("title", "").strip(), serves=serves, port=int(port) if port.isdecimal() else None,
-                    members=members, data=Path(data).expanduser() if data else None, mail=mail, imap=imap,
+                    members=members, data=Path(data).expanduser() if data else None, mail=mail, imap=imap, server=server,
                     admin=login.get("admin", "").strip().lower(), path=Path(path) if path else None)
         if scope.kind == "domain" and not scope.domain:
             raise ValueError(f"{where}: the scope names no domain: {url}")
@@ -216,6 +257,15 @@ class Scope:
                 v = self.imap.get(k, "")
                 lines.append(f"{k} = {v}" if v else f"; {k} =")
             lines.append("; its password: `liminal-login mail setup` keeps it in Windows Credential Manager too")
+            lines += ["", "[server]", "; the mail server as a container (liminal_libs.docker; `liminal-login server up`): the image, on this",
+                      "; machine's Docker or a context's (a VPS: `docker context create vps --docker host=ssh://user@vps`);",
+                      "; it carries everything beyond the local domain; env_NAME = value sets its environment"]
+            for k in SERVER_KEYS:
+                v = self.server.get(k, "")
+                lines.append(f"{k} = {v}" if v else f"; {k} =")
+            for k, v in self.server.items():
+                if k.startswith("env_"):
+                    lines.append(f"{k} = {v}")
         return "\n".join(lines) + "\n"
 
     def write(self, path: Path) -> Path:

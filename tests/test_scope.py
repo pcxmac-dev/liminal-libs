@@ -49,6 +49,17 @@ def test_a_domain_login_is_the_domains_users_with_its_own_mail_record_unless_a_s
     assert back.admin == "admin@liminal.hypokrites.me" and back.imap["host"] == "mail.liminal.hypokrites.me" and "[imap]" in own.text()
     with pytest.raises(ValueError):
         Scope.parse("[login]\nscope = https://hypokrites.me\nadmin = admin@elsewhere.test\n")
+    # the mail server as a container the file declares: the image, its environment with the case kept
+    boxed = Scope.parse("[login]\nScope = https://hypokrites.me\nadmin = admin@liminal.hypokrites.me\n\n[server]\nimage = foxcpp/maddy:0.8\n"
+                        "ports = 25:25, 587:587; 993:993\nvolumes = ./mail:/data, certs:/certs\nenv_MADDY_DOMAIN = hypokrites.me\ncontext = vps\n")
+    svc = boxed.service(tmp_path)
+    assert svc.name == "liminal-mail-hypokrites-me" and svc.image == "foxcpp/maddy:0.8" and svc.hostname == "liminal.hypokrites.me"
+    assert svc.ports == ("25:25", "587:587", "993:993") and svc.env == {"MADDY_DOMAIN": "hypokrites.me"} and svc.labels == {"liminal.login": "hypokrites.me"}
+    assert svc.volumes == (f"{(tmp_path / 'mail').as_posix()}:/data", "certs:/certs")
+    assert boxed.docker(env={}).where == "context vps" and boxed.describe()["server"] == "foxcpp/maddy:0.8"
+    again = Scope.parse(boxed.text())
+    assert again.server["image"] == "foxcpp/maddy:0.8" and again.server["env_MADDY_DOMAIN"] == "hypokrites.me" and "[server]" in boxed.text()
+    assert s.service() is None and Scope.local(tmp_path).service() is None
     assert Scope.local(tmp_path).admin_address == "" and Scope.local(tmp_path).admin_host == ""
     with pytest.raises(ValueError):
         Scope.parse("[login]\nscope = https://hypokrites.me\nmembers = some\n")
