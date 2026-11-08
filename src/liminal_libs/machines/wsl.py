@@ -478,7 +478,7 @@ class WslDistribution(MachinePlugin):
             out["tables"] = [scan.table(name)]
         elif d is not None:
             seen = getattr(self, "_engine_seen", None) if ours else None
-            out["engine"] = {**(seen or out["engine"]), "running": False}
+            out["engine"] = {**seen, "running": False} if seen else {"asked": False, "running": False}  # asking would start it
             out["services"] = {"scanned": False, "why": (f"{name} is not running: nothing runs in it, and a status does not start it"
                                                           if ours else f"{name} is not Liminal's: nothing is asked inside it")}
         e = out["engine"]

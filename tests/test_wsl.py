@@ -359,6 +359,7 @@ def test_its_services_while_it_runs_and_a_stopped_one_never_started(tmp_path):
     st = p.status()
     assert not [c for c in fake.calls if c[1] == "-d"]  # nothing ran inside it
     assert st["valid"] and st["services"]["scanned"] is False and "tables" not in st
+    assert st["engine"] == {"asked": False, "running": False}  # not "installed: no": never asked, since asking would start it
     assert st["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: not asked while it is stopped"
     assert p.services() == {"scanned": False, "why": "Liminal-Ubuntu is not running: nothing to scan, and a scan does not start it"}
     (inst,) = p.instances()  # offered: the engine starts it when used
@@ -379,5 +380,7 @@ def test_its_services_while_it_runs_and_a_stopped_one_never_started(tmp_path):
     scan_call = next(c for c in fake.calls if c[-3:] == ["sh", "-s", "liminal-scan"])
     assert scan_call[:5] == ["wsl", "-d", "Liminal-Ubuntu", "-u", "root"]  # as root, the script on its standard input
     fake.distributions = [("Liminal-Ubuntu", "Stopped", "2")]
-    assert p.status()["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: installed 28.1.1"  # as last seen
+    st = p.status()
+    assert st["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: installed 28.1.1"  # as last seen
+    assert st["engine"] == {"installed": True, "version": "28.1.1", "running": False}
     assert "services" in p.interface()["hooks"]

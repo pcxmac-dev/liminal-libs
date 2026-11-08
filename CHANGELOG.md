@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.28.1 (2026-11-08)
+
+Docker inside a stopped WSL distribution never seen running is said as not asked (`{"asked": false}`): the
+platform's page had read "installed: no" for an engine nobody asked about, since asking would start the
+distribution; once seen, its version is kept and said with the distribution stopped.
+
 ## 1.28.0 (2026-11-08)
 
 The services of a WSL distribution (the user: "lets have, in the WSL plugins, a breakdown of the major services running, the 'scanning function' should be capable of using openrc or systemd to look for init type and differentiate between somewhat trivial processes and major services that are online"): `machines/services.py`, one script run as root (the init
