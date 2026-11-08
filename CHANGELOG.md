@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.24.0 (2026-11-07)
+
+A machine plugin says whether it is valid: set up for Liminal, on something of Liminal's own (the user: "if a plugin
+is not in a valid state it has to be disabled"; "there are no WSL-liminally scoped installs, so all three WSL
+plugins are invalid"; "only hardware stats and preferences seem valid atm"): `valid` and `why` in its status. A WSL
+distribution plugin is valid with its own distribution installed, named `LIMINAL_PREFIX` + the distribution
+(Liminal-Ubuntu): the user's own is never taken, and the setup installs Liminal's beside it (`wsl --install <source>
+--name <name> --location <folder>`, WSL 2.4.4 or later). A firewall is valid on, guarding Liminal's, with Liminal's rules
+and none of the framework's missing; an admin with the rights on Liminal's. `MachinePlugin.scope()`, `linux.Shell.scoped`
+(this Linux machine, or a WSL distribution of Liminal's own: WSL's default distribution is the user's), `liminal_scoped`.
+
 ## 1.23.0 (2026-11-07)
 
 The apps' charts and two controls in `ui/static`, for every app's page (the user: "allow me to right click on

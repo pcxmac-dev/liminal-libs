@@ -165,21 +165,25 @@ class Admin(MachinePlugin):
     def status(self) -> dict:
         if not self.present():
             return {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
-                    "summary": "not present"}
+                    "summary": "not present", "valid": False, "why": "not present"}
         try:
             elevated, how = self.elevated(), self.elevation()
             services, startups, processes = self.services(), self.startups(), self.processes()
         except CommandError as e:
             return {"present": True, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
-                    "problem": str(e), "summary": f"cannot be read: {e}"}
+                    "problem": str(e), "summary": f"cannot be read: {e}", "valid": False, "why": f"cannot be read: {e}"}
         running = [s.name for s in services if s.running]
         stopped = [s.name for s in services if s.present and not s.running]
         made = [s.app for s in startups if s.present]
         summary = (f"{'elevated' if elevated else 'not elevated'}; services: {len(running)} running"
                    + (f", stopped: {', '.join(stopped)}" if stopped else "")
                    + f"; startups: {', '.join(made) or 'none'}; {len(processes)} Liminal process(es)")
+        scoped, place = self.scope()
+        said = how if how.lower().startswith("not elevated") else f"not elevated: {how}"  # its words may say it already
+        why = f"{place} is not Liminal's" if not scoped else said if not elevated else ""
         return {"present": True, "elevated": elevated, "elevation": how, "services": [s.describe() for s in services],
-                "startups": [s.describe() for s in startups], "processes": processes, "summary": summary}
+                "startups": [s.describe() for s in startups], "processes": processes, "summary": summary,
+                "valid": not why, "why": why}
 
     def setup(self, log=print, steps=None) -> list[dict]:
         """`privileges` (reported), `services` (the framework's stopped services it may start, started),

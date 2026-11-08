@@ -38,7 +38,9 @@ class FakeWsl:
         if args[1:3] == ["--list", "--online"]:
             return 0, u16("The following is a list of valid distributions.\r\nNAME                FRIENDLY NAME\r\nUbuntu              Ubuntu\r\nFedoraLinux-42      Fedora Linux 42\r\n"), b""
         if args[1] in ("--install", "--update", "--set-default-version", "--terminate", "--import"):
-            if args[1] == "--install" and "-d" in args:
+            if args[1] == "--install" and "--name" in args:
+                self.distributions.append((args[args.index("--name") + 1], "Stopped", "2"))
+            elif args[1] == "--install" and "-d" in args:
                 self.distributions.append((args[args.index("-d") + 1], "Stopped", "2"))
             if args[1] == "--import":
                 self.distributions.append((args[2], "Stopped", "2"))
@@ -68,7 +70,7 @@ class UbuntuLike(WslDistribution):
     about = "Ubuntu in WSL 2 with Docker inside"
     api = "2.1"
     order = 700
-    distribution = "Ubuntu"
+    distribution = "Liminal-Ubuntu"
     family = "apt"
     install_name = "Ubuntu"
     docker_repository = "https://repository.test/linux/ubuntu/"
@@ -82,7 +84,7 @@ class GentooLike(WslDistribution):
     about = "Gentoo in WSL 2 with Docker inside"
     api = "2.1"
     order = 702
-    distribution = "Gentoo"
+    distribution = "Liminal-Gentoo"
     family = "emerge"
 
     def tarball_url(self) -> str:
@@ -110,21 +112,24 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     assert problems(p) == [] and p.KIND == "machine" and p.SYSTEM == "platform" and p.options == ("WSL_UBUNTU_DISTRIBUTION", "WSL_UBUNTU_USER")
     assert {"present", "status", "setup", "run", "instances"} <= set(p.interface()["hooks"])  # the base gives them: a plugin of its own, not the contract
     assert not p.present() and p.status()["present"] is False and p.status()["wsl"]["present"] is True and p.instances() == ()
+    assert p.status()["valid"] is False and p.status()["why"] == "no Liminal install: its setup installs Liminal-Ubuntu"
     # the whole setup on a machine with WSL and no Ubuntu: each step reported
     lines: list = []
     done = p.setup(log=lines.append)
     assert [(d["step"], d["ok"]) for d in done] == [("wsl", None), ("update", True), ("version", True), ("distribution", True), ("conf", True),
                                                    ("docker", True), ("engine", True), ("user", True)]
-    assert ["wsl", "--install", "-d", "Ubuntu", "--no-launch"] in fake.calls and ["wsl", "--set-default-version", "2"] in fake.calls
-    assert fake.files == {"cat > /etc/wsl.conf": "written"} and ["wsl", "--terminate", "Ubuntu"] in fake.calls
+    assert ["wsl", "--install", "Ubuntu", "--name", "Liminal-Ubuntu", "--location", str(tmp_path / "root"), "--no-launch"] in fake.calls
+    assert ["wsl", "--set-default-version", "2"] in fake.calls  # Liminal's own beside the user's, never the user's
+    assert fake.files == {"cat > /etc/wsl.conf": "written"} and ["wsl", "--terminate", "Liminal-Ubuntu"] in fake.calls
     assert len(fake.scripts) == 4 and all(who == "root" for who, _ in fake.scripts)  # the user, Docker, the engine, the group
     assert any("Docker installed by apt" in d["detail"] for d in done) and any("liminal in the docker group" in d["detail"] for d in done)
     # with Docker inside, the plugin is present and offers the engine as a named instance
     fake.docker_installed = True
     assert p.present() and p.status()["engine"] == {"installed": True, "version": "28.1.1", "running": True}
-    assert p.status()["summary"] == "Ubuntu (Stopped, WSL 2); Docker inside: running 28.1.1" and p.STEPS == wsl_mod.STEPS
+    assert p.status()["summary"] == "Liminal-Ubuntu (Stopped, WSL 2); Docker inside: running 28.1.1" and p.STEPS == wsl_mod.STEPS
+    assert p.status()["valid"] is True and p.status()["why"] == ""
     (inst,) = p.instances()
-    assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Ubuntu --exec docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
+    assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Liminal-Ubuntu --exec docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
     assert p.run("ls", "/") == "ls /\n"
     assert p.setup(log=lines.append, steps=("docker",)) == [{"step": "docker", "ok": None, "detail": "Docker is installed inside"}]
     fake.daemon = False
@@ -133,6 +138,9 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     monkeypatch.setenv("WSL_UBUNTU_DISTRIBUTION", "Ubuntu-24.04")
     monkeypatch.setenv("WSL_UBUNTU_USER", "ciara")
     assert p.distribution_name == "Ubuntu-24.04" and p.user == "ciara"
+    # the user's own distribution is never Liminal's: named by the variable, the plugin is not valid
+    mine = UbuntuLike(wsl=Wsl(runner=FakeWsl(distributions=[("Ubuntu-24.04", "Running", "2")])), data=tmp_path)
+    assert mine.present() and mine.status()["valid"] is False and "not one of Liminal's own" in mine.status()["why"]
     # without WSL at all: said at the first step, nothing else tried
     absent = UbuntuLike(wsl=Wsl(runner=FakeWsl(present=False)), data=tmp_path)
     assert [(d["step"], d["ok"]) for d in absent.setup(log=lambda m: None)] == [("wsl", False)] or absent.setup(log=lambda m: None)[0]["ok"] is True
@@ -149,14 +157,14 @@ def test_a_distribution_imported_from_a_tarball_and_the_families_recipes(tmp_pat
     done = g.setup(log=lambda m: None, steps=("distribution", "docker", "engine"))
     assert [(d["step"], d["ok"]) for d in done] == [("distribution", True), ("docker", True), ("engine", True)]
     assert got == ["https://distfiles.gentoo.org/releases/amd64/autobuilds/x/stage3-amd64-systemd-x.tar.xz"] and (tmp_path / "stage3-amd64-systemd-x.tar.xz").is_file()
-    assert ["wsl", "--import", "Gentoo", str(tmp_path / "root"), str(tmp_path / "stage3-amd64-systemd-x.tar.xz"), "--version", "2"] in fake.calls
+    assert ["wsl", "--import", "Liminal-Gentoo", str(tmp_path / "root"), str(tmp_path / "stage3-amd64-systemd-x.tar.xz"), "--version", "2"] in fake.calls
     assert "emerge" in wsl_mod.INSTALL_SCRIPTS["emerge"] and "app-containers/docker" in wsl_mod.INSTALL_SCRIPTS["emerge"]
     assert "{repository}/gpg" in wsl_mod.INSTALL_SCRIPTS["apt"] and "{repository}/docker-ce.repo" in wsl_mod.INSTALL_SCRIPTS["dnf"]
     assert "download.docker.com" not in "".join(wsl_mod.INSTALL_SCRIPTS.values())  # the plugins name the hosts
     ubuntu = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path).install_script()
     assert "curl -fsSL https://repository.test/linux/ubuntu/gpg " in ubuntu and "] https://repository.test/linux/ubuntu ${UBUNTU_CODENAME" in ubuntu
     assert g.install_script() == wsl_mod.INSTALL_SCRIPTS["emerge"]  # emerge: Gentoo's own tree, no repository
-    nameless = UbuntuLike(wsl=Wsl(runner=FakeWsl(distributions=[("Ubuntu", "Running", "2")])), data=tmp_path).with_(docker_repository="")
+    nameless = UbuntuLike(wsl=Wsl(runner=FakeWsl(distributions=[("Liminal-Ubuntu", "Running", "2")])), data=tmp_path).with_(docker_repository="")
     with pytest.raises(WslError, match="names no Docker repository for apt"):
         nameless.install_script()
     assert [(d["step"], d["ok"]) for d in nameless.setup(log=lambda m: None, steps=("docker",))] == [("docker", False)]

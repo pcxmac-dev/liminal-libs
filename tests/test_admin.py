@@ -98,6 +98,8 @@ def test_the_admin_plugin_conforms_checks_what_is_asked_and_reports():
     st = a.status()
     assert st["present"] and st["elevated"] is False and st["processes"][0]["app"] == "charts"
     assert st["summary"] == "not elevated; services: 2 running, stopped: sshd; startups: none; 1 Liminal process(es)"
+    assert st["valid"] is False and st["why"].startswith("not elevated: ")  # without the rights it is not valid
+    assert FakeAdmin(elevated=True).status()["valid"] is True
 
 
 def test_the_setup_starts_what_it_may_and_registers_nothing():

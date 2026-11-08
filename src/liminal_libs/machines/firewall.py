@@ -197,20 +197,28 @@ class Firewall(MachinePlugin):
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
         if not self.present():
-            return {"present": False, "backend": "", "enabled": False, "profiles": {}, "rules": [], "summary": "not present"}
+            return {"present": False, "backend": "", "enabled": False, "profiles": {}, "rules": [], "summary": "not present",
+                    "valid": False, "why": "not present"}
         try:
             backend = self.backend()
             st = self.state()
             rules = [r.describe() for r in self.list_rules()]
+            wanted = self.wanted()
         except CommandError as e:
             return {"present": True, "backend": "", "enabled": False, "profiles": {}, "rules": [], "problem": str(e),
-                    "summary": f"cannot be read: {e}"}
+                    "summary": f"cannot be read: {e}", "valid": False, "why": f"cannot be read: {e}"}
         profiles = st.get("profiles", {})
         on = [n for n, v in profiles.items() if v]
         off = [n for n, v in profiles.items() if not v]
         where = (f" ({', '.join(on)} on" + (f"; {', '.join(off)} off" if off else "") + ")") if on else (f" ({', '.join(off)} off)" if off else "")
         summary = f"{backend}: {'on' if st.get('enabled') else 'off'}{where}; {len(rules)} Liminal rule(s)"
-        return {"present": True, "backend": backend, **st, "rules": rules, "summary": summary}
+        scoped, place = self.scope()
+        missing = [w.name for w in wanted if w.name not in {r["name"] for r in rules}]
+        why = (f"{place} is not Liminal's" if not scoped else "off: its setup turns it on" if not st.get("enabled")
+               else f"{len(missing)} of the framework's rules missing: its setup adds them" if missing
+               else "no Liminal rules: nothing of the framework's is exposed here (a domain login's mail server would be)"
+               if not rules else "")
+        return {"present": True, "backend": backend, **st, "rules": rules, "summary": summary, "valid": not why, "why": why}
 
     def setup(self, log=print, steps=None) -> list[dict]:
         """`enable` (the firewall on where it is off), `exposure` (no rule lets another machine reach the

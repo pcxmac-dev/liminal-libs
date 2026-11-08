@@ -104,3 +104,20 @@ def test_linux_commands_run_as_root_here_or_in_wsl(monkeypatch):
     assert wsl.run("utf16") == "hello"  # wsl's own messages come in UTF-16
     with pytest.raises(CommandError):
         Shell("ssh:vps")
+
+
+def test_a_linux_target_is_liminals_own_or_not():
+    """This Linux machine, or a WSL distribution of Liminal's own, is Liminal's; WSL's default distribution and the user's
+    own named ones are not (1.24.0: a plugin on them is not valid)."""
+    from liminal_libs.machines import MachinePlugin
+    from liminal_libs.machines.plugin import liminal_scoped
+
+    assert Shell("local").scoped and Shell("wsl:Liminal-Ubuntu").scoped and Shell("wsl:liminal-gentoo").scoped
+    assert not Shell("wsl").scoped and not Shell("wsl:Ubuntu").scoped and Shell("local").scope_note == ""
+    assert "WSL's default distribution is not Liminal's" in Shell("wsl").scope_note and liminal_scoped("Liminal-Fedora")
+    assert not liminal_scoped("Ubuntu") and not liminal_scoped("")
+
+    class OnWsl(MachinePlugin):
+        name, title, about, api = "on-wsl", "On WSL", "a plugin on a Linux target", "2.1"
+        shell = Shell("wsl:Ubuntu")
+    assert OnWsl().scope() == (False, "WSL's Ubuntu") and MachinePlugin().scope() == (True, "this machine")

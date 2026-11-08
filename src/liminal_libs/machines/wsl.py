@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .. import layout
 from ..docker import Instance
-from .plugin import MachinePlugin
+from .plugin import LIMINAL_PREFIX, MachinePlugin, liminal_scoped
 
 TIMEOUT_S = 600.0
 INSTALL_TIMEOUT_S = 7200.0  # Gentoo compiles Docker
@@ -168,9 +168,16 @@ class Wsl:
     def set_default_version(self, version: int = 2) -> str:
         return self.own("--set-default-version", str(version), timeout=60)
 
-    def install(self, name: str) -> str:
-        """A distribution from Microsoft's list, not launched (its user made by the plugin)."""
-        return self.own("--install", "-d", name, "--no-launch", timeout=INSTALL_TIMEOUT_S)
+    def install(self, source: str, name: str | None = None, location: Path | None = None) -> str:
+        """A distribution from Microsoft's list (`source`), not launched (its user made by the plugin); with `name`,
+        installed under that name (a distribution of Liminal's own beside the user's: WSL 2.4.4 or later), its disk
+        in `location`."""
+        if not name:
+            return self.own("--install", "-d", source, "--no-launch", timeout=INSTALL_TIMEOUT_S)
+        extra = ("--location", str(location)) if location is not None else ()
+        if location is not None:
+            Path(location).mkdir(parents=True, exist_ok=True)
+        return self.own("--install", source, "--name", name, *extra, "--no-launch", timeout=INSTALL_TIMEOUT_S)
 
     def import_(self, name: str, folder: Path, tarball: Path) -> str:
         """A distribution from a root file system tarball (Gentoo's stage3), kept in `folder`."""
@@ -207,16 +214,17 @@ def wsl_path(windows_path: str) -> str:
 
 
 class WslDistribution(MachinePlugin):
-    """The base of the distribution plugins: a subclass names the distribution (`distribution`: its WSL name),
+    """The base of the distribution plugins: a subclass names the distribution (`distribution`: its WSL name, one of
+    Liminal's own, LIMINAL_PREFIX + the distribution: Liminal-Ubuntu; the user's own distributions are never taken),
     its package family (`family`: apt, dnf or emerge), Docker's repository for it (`docker_repository`, for apt
     and dnf) and how it is got (`install_name` for Microsoft's list, else `tarball_url()` to import from a
     root file system tarball)."""
 
     STEPS = STEPS
     ICON = "terminal"
-    distribution = ""  # the WSL name: Ubuntu, FedoraLinux-42, Gentoo
+    distribution = ""  # the WSL name, Liminal's own: Liminal-Ubuntu, Liminal-Fedora, Liminal-Gentoo
     family = ""  # apt | dnf | emerge
-    install_name = ""  # what `wsl --install -d` takes; "" to import a tarball
+    install_name = ""  # what `wsl --install` takes from Microsoft's list (Ubuntu), installed as `distribution`; "" to import a tarball
     docker_repository = ""  # Docker's package repository for the distribution (apt, dnf); emerge needs none
     default_user = "liminal"  # the user made in the distribution, in the docker group
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
@@ -268,9 +276,14 @@ class WslDistribution(MachinePlugin):
         if d is not None:
             out["engine"] = self.engine()
         e = out["engine"]
-        out["summary"] = (f"{self.distribution_name} ({d.state}, WSL {d.version}); Docker inside: "
+        name = self.distribution_name
+        out["summary"] = (f"{name} ({d.state}, WSL {d.version}); Docker inside: "
                           + (("running " if e["running"] else "installed, not running ") + e["version"] if e["installed"] else "none")
                           if d is not None else ("not installed" if wsl.get("present") else "WSL is not here"))
+        out["why"] = ("WSL is not here" if not wsl.get("present")
+                      else f"{name} is not one of Liminal's own distributions (named {LIMINAL_PREFIX}...)" if not liminal_scoped(name)
+                      else f"no Liminal install: its setup installs {name}" if d is None else "")
+        out["valid"] = not out["why"]
         return out
 
     def engine(self) -> dict:
@@ -318,8 +331,8 @@ class WslDistribution(MachinePlugin):
                 if self.wsl.distribution(name) is not None:
                     step("distribution", None, f"{name} is installed")
                 elif self.install_name:
-                    self.wsl.install(self.install_name)
-                    step("distribution", True, f"{self.install_name} installed from Microsoft's list, not launched")
+                    self.wsl.install(self.install_name, name=name, location=self.data / "root")
+                    step("distribution", True, f"{name} installed from Microsoft's {self.install_name} into {self.data / 'root'}, not launched")
                 else:
                     tarball = self.tarball()
                     self.wsl.import_(name, self.data / "root", tarball)

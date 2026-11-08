@@ -5,10 +5,23 @@ hardware offers the platform. Its hooks: `present` (is it there), `status` (what
 `summary` line for the platform's page), `setup` (set it up, as far as the plugin can; its `STEPS`, each
 reported), `run` (a command on it), `instances` (the Docker instances it runs: docker.Instance), `scan` and
 `settings` as every plugin. `CommandError` is what the machines' commands raise (windows.PowerShell,
-linux.Shell), `denied` when it wanted an administrator's or root's rights."""
+linux.Shell), `denied` when it wanted an administrator's or root's rights.
+
+A status may say whether the plugin is valid: set up for Liminal, on something of Liminal's own (the user,
+2026-11-07: "if a plugin is not in a valid state it has to be disabled"; "there are no WSL-liminally scoped
+installs, so all three WSL plugins are invalid"): `valid` (bool) and `why` (the words, when not). The platform
+disables a plugin that is not valid until it is; without them, present and no `problem` is valid. A WSL
+distribution of Liminal's own is named with LIMINAL_PREFIX (Liminal-Ubuntu): the user's own is never taken."""
 from __future__ import annotations
 
 from ..sources.plugin import PlatformPlugin
+
+LIMINAL_PREFIX = "Liminal-"  # a WSL distribution of Liminal's own: Liminal-Ubuntu, Liminal-Fedora, Liminal-Gentoo
+
+
+def liminal_scoped(name: str) -> bool:
+    """Whether a WSL distribution's name is one of Liminal's own (Liminal-...)."""
+    return bool(name) and name.lower().startswith(LIMINAL_PREFIX.lower())
 
 
 class CommandError(Exception):
@@ -49,3 +62,16 @@ class MachinePlugin(PlatformPlugin):
     def instances(self) -> tuple:
         """The Docker instances this machine runs (docker.Instance), none by default."""
         return ()
+
+    def scope(self) -> tuple[bool, str]:
+        """Whether what it works on is Liminal's, and where that is in words: this machine by default; a Linux
+        plugin's target (its `shell`, a linux.Shell): this Linux machine, or a WSL distribution of Liminal's own."""
+        from .linux import Shell
+
+        try:
+            sh = getattr(self, "shell", None)
+        except CommandError:
+            return False, "its target"
+        if isinstance(sh, Shell):
+            return sh.scoped, sh.where
+        return True, "this machine"

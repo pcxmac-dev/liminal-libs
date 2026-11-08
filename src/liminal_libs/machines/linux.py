@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 
-from .plugin import CommandError
+from .plugin import LIMINAL_PREFIX, CommandError, liminal_scoped
 
 TIMEOUT_S = 120.0
 DENIED = ("a password is required", "a terminal is required", "permission denied", "must be root", "are you root",
@@ -29,6 +29,20 @@ class Shell:
     @property
     def distribution(self) -> str:
         return self.target[4:] if self.target.startswith("wsl:") else ""
+
+    @property
+    def scoped(self) -> bool:
+        """Whether the target is Liminal's: this Linux machine, or a WSL distribution of Liminal's own
+        (wsl:Liminal-Ubuntu); WSL's default distribution is the user's own."""
+        return self.target == "local" or liminal_scoped(self.distribution)
+
+    @property
+    def scope_note(self) -> str:
+        """Why the target is not Liminal's, in words ("" when it is)."""
+        if self.scoped:
+            return ""
+        return (f"{self.where} is not Liminal's: its target is a WSL distribution of Liminal's own "
+                f"(wsl:{LIMINAL_PREFIX}Ubuntu, set up by a WSL plugin) or a Linux machine")
 
     @property
     def where(self) -> str:

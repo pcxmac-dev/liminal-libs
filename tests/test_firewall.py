@@ -104,9 +104,12 @@ def test_the_firewall_plugin_conforms_and_reports():
     st = fw.status()
     assert st["present"] and st["enabled"] and st["rules"][0]["label"] == "Liminal: web"
     assert st["summary"] == "the stand-in: on (Domain, Private, Public on); 1 Liminal rule(s)"
+    assert st["valid"] is True and st["why"] == "" and fw.scope() == (True, "this machine")  # on, with Liminal's rules
     assert fw.remove("web") and not fw.remove("web")
+    assert fw.status()["valid"] is False and fw.status()["why"].startswith("no Liminal rules")  # nothing of Liminal's here
     fw.profiles["Public"] = False
     assert fw.status()["summary"] == "the stand-in: off (Domain, Private on; Public off); 0 Liminal rule(s)"
+    assert fw.status()["why"] == "off: its setup turns it on"
 
 
 def test_the_setup_turns_it_on_finds_exposure_and_adds_the_services_rules():
