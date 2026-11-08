@@ -244,8 +244,8 @@ class Wsl:
         """WSL itself, without a distribution (Windows asks to confirm with elevation; a restart may follow)."""
         return self.own("--install", "--no-distribution", timeout=INSTALL_TIMEOUT_S)
 
-    def update(self) -> str:
-        return self.own("--update", timeout=INSTALL_TIMEOUT_S)
+    def update(self, out=None) -> str:
+        return self.own("--update", timeout=INSTALL_TIMEOUT_S, out=out)
 
     def set_default_version(self, version: int = 2) -> str:
         return self.own("--set-default-version", str(version), timeout=60)
@@ -435,6 +435,7 @@ class WslDistribution(MachinePlugin):
         script = UPDATE_SCRIPTS.get(self.family)
         if not script:
             return step(False, f"no update recipe for the family {self.family!r}")
+        log(f"{self.name}: packages: updating {name}'s packages by {self.family}; its output follows...")
         try:
             self.wsl.script(name, script, timeout=INSTALL_TIMEOUT_S, out=getattr(log, "write", None))
         except WslError as e:
@@ -499,8 +500,12 @@ class WslDistribution(MachinePlugin):
             log(f"{self.name}: {what}: {'ok' if ok else 'skipped' if ok is None else 'FAILED'}: {detail}")
             return ok is not False
 
+        def begin(what: str, doing: str) -> None:  # said before a step runs: a quiet one does not look stuck
+            log(f"{self.name}: {what}: {doing}...")
+
         try:
             if "wsl" in wanted:
+                begin("wsl", "looking for WSL")
                 if not self.wsl.here:
                     return done if step("wsl", False, "this is not Windows, or the wsl command is missing") else done
                 st = self.wsl.status()
@@ -510,22 +515,28 @@ class WslDistribution(MachinePlugin):
                     self.wsl.install_feature()
                     step("wsl", True, "WSL installed (Windows may ask to restart before a distribution runs)")
             if "update" in wanted:
-                self.wsl.update()
+                begin("update", "updating WSL (wsl --update): it can say nothing for a minute or two")
+                self.wsl.update(out=stream)
                 step("update", True, "WSL updated")
             if "version" in wanted:
+                begin("version", "making WSL 2 the version new distributions get")
                 self.wsl.set_default_version(2)
                 step("version", True, "new distributions get WSL 2")
             if "distribution" in wanted:
                 if self.wsl.distribution(name) is not None:
                     step("distribution", None, f"{name} is installed")
                 elif self.install_name:
+                    begin("distribution", f"installing {name} from Microsoft's {self.install_name} (wsl --install); the download follows")
                     self.wsl.install(self.install_name, name=name, location=self.data / "root", out=stream)
                     step("distribution", True, f"{name} installed from Microsoft's {self.install_name} into {self.data / 'root'}, not launched")
                 else:
-                    tarball = self.tarball()
+                    begin("distribution", f"getting {name}'s root file system")
+                    tarball = self.tarball(out=stream)
+                    begin("distribution", f"importing {name} from {tarball.name}")
                     self.wsl.import_(name, self.data / "root", tarball, out=stream)
                     step("distribution", True, f"{name} imported from {tarball.name} into {self.data / 'root'}")
             if "conf" in wanted:
+                begin("conf", f"writing /etc/wsl.conf (systemd, the default user {self.user}) and restarting {name}")
                 self.wsl.write_file(name, "/etc/wsl.conf", f"[boot]\nsystemd=true\n\n[user]\ndefault={self.user}\n")
                 self.wsl.script(name, f"id -u {shlex.quote(self.user)} >/dev/null 2>&1 || useradd -m -s /bin/bash {shlex.quote(self.user)}\n")
                 self.wsl.terminate(name)
@@ -534,12 +545,15 @@ class WslDistribution(MachinePlugin):
                 if self.engine()["installed"]:
                     step("docker", None, "Docker is installed inside")
                 else:
+                    begin("docker", f"installing Docker by {self.family} from Docker's own repository; its output follows")
                     self.wsl.script(name, self.install_script(), timeout=INSTALL_TIMEOUT_S, out=stream)
                     step("docker", True, f"Docker installed by {self.family} from Docker's own repository")
             if "engine" in wanted:
+                begin("engine", "starting the engine and enabling it at boot")
                 how = self.wsl.script(name, ENGINE_SCRIPT, timeout=600).strip().splitlines()
                 step("engine", True, f"the engine started and enabled ({how[-1] if how else 'started'})")
             if "user" in wanted:
+                begin("user", f"adding {self.user} to the docker group")
                 self.wsl.script(name, f"groupadd -f docker\nusermod -aG docker {shlex.quote(self.user)}\n")
                 step("user", True, f"{self.user} in the docker group")
         except WslError as e:
@@ -560,25 +574,40 @@ class WslDistribution(MachinePlugin):
         """Where the root file system tarball comes from; a subclass that imports says."""
         raise WslError(f"{self.name} has no tarball to import and no name on Microsoft's list")
 
-    def tarball(self) -> Path:
-        """The tarball downloaded into the plugin's data folder, once."""
+    def tarball(self, out=None) -> Path:
+        """The tarball downloaded into the plugin's data folder, once; with `out`, how far the download has got."""
         url = self.tarball_url()
         path = self.data / url.rsplit("/", 1)[-1]
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
-            (self._fetch or _download)(url, path)
+            if self._fetch is not None:
+                self._fetch(url, path)
+            else:
+                _download(url, path, out=out)
         return path
 
 
-def _download(url: str, path: Path) -> None:
+def _download(url: str, path: Path, out=None) -> None:
+    """`url` saved as `path` (a part file renamed once whole); with `out`, how far it has got, on one line rewritten."""
     import urllib.request
 
-    with urllib.request.urlopen(url, timeout=120) as r, open(path, "wb") as f:  # noqa: S310 - the plugin's own url
+    part = path.with_name(path.name + ".part")
+    with urllib.request.urlopen(url, timeout=120) as r, open(part, "wb") as f:  # noqa: S310 - the plugin's own url
+        total = int(r.headers.get("Content-Length") or 0)
+        got, said = 0, -1.0
         while True:
             chunk = r.read(1 << 20)
             if not chunk:
                 break
             f.write(chunk)
+            got += len(chunk)
+            now = time.monotonic()
+            if out is not None and now - said >= 1.0:
+                said = now
+                out(f"\rdownloading {path.name}: {got / 2**20:.0f} MB" + (f" of {total / 2**20:.0f} MB ({got * 100 // total}%)" if total else ""))
+        if out is not None:
+            out(f"\rdownloaded {path.name}: {got / 2**20:.0f} MB" + " " * 24 + "\n")
+    os.replace(part, path)
 
 
 def _version(text: str) -> tuple[int, ...]:

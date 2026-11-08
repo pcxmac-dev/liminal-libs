@@ -262,3 +262,39 @@ def test_a_login_terminal_into_liminals_own_distribution(tmp_path):
     assert argv[:8] == ["wsl", "-d", "Liminal-Ubuntu", "--cd", "~", "--exec", "sh", "-c"] and "script -qfc" in argv[8] and "pty.spawn" in argv[8]
     assert p.terminal(user="root")[3:5] == ["-u", "root"]
     assert wsl_mod._version("2.6.3.0") == (2, 6, 3, 0) and wsl_mod._version("") == ()
+
+
+def test_each_step_is_said_before_it_runs_and_a_download_shows_how_far_it_got(tmp_path, monkeypatch):
+    """The user: "Yes, do it" to a line when each step starts, so quiet steps do not look stuck."""
+    fake = FakeWsl(distributions=[])
+    kept = Kept()
+    UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path).setup(log=kept, steps=("update", "distribution", "docker"))
+    said = [line for line in kept.lines if line.endswith("...")]
+    assert said == ["wsl-ubuntu: update: updating WSL (wsl --update): it can say nothing for a minute or two...",
+                    "wsl-ubuntu: distribution: installing Liminal-Ubuntu from Microsoft's Ubuntu (wsl --install); the download follows...",
+                    "wsl-ubuntu: docker: installing Docker by apt from Docker's own repository; its output follows..."]
+    order = kept.lines
+    assert order.index(said[1]) < next(i for i, line in enumerate(order) if line.startswith("wsl-ubuntu: distribution: ok"))
+
+    class Answer:
+        headers = {"Content-Length": str(3 * 2**20)}
+
+        def __init__(self):
+            self.chunks = [b"x" * 2**20] * 3
+
+        def read(self, n):
+            return self.chunks.pop() if self.chunks else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout=0: Answer())
+    seen: list = []
+    target = tmp_path / "stage3.tar.xz"
+    wsl_mod._download("https://mirror.test/stage3.tar.xz", target, out=seen.append)
+    assert target.stat().st_size == 3 * 2**20 and not (tmp_path / "stage3.tar.xz.part").exists()
+    assert seen[0].startswith("\rdownloading stage3.tar.xz: 1 MB of 3 MB (33%)") and seen[-1].startswith("\rdownloaded stage3.tar.xz: 3 MB")

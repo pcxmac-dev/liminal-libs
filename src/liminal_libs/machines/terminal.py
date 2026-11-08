@@ -22,6 +22,8 @@ class Output:
         self._text = ""
         self._base = 0  # the offset of the first character kept
         self._lock = threading.Lock()
+        self._grew = threading.Condition(self._lock)  # told of every write, and of the end
+        self.finished = False
 
     def write(self, text: str) -> None:
         if not text:
@@ -32,6 +34,20 @@ class Output:
             if over > 0:
                 self._text = self._text[over:]
                 self._base += over
+            self._grew.notify_all()
+
+    def finish(self) -> None:
+        """No more text will come (the process ended): whoever waits is told now."""
+        with self._lock:
+            self.finished = True
+            self._grew.notify_all()
+
+    def wait(self, since: int, timeout: float) -> bool:
+        """Until there is text after `since`, the end, or `timeout` seconds: whether there is text (a page's read held
+        until there is something to show: its echo at once, one read at a time)."""
+        with self._grew:
+            self._grew.wait_for(lambda: self._base + len(self._text) > since or self.finished, timeout=max(0.0, timeout))
+            return self._base + len(self._text) > since
 
     def __call__(self, line: str) -> None:  # a log line (a setup's step)
         self.write(f"{line}\n")
@@ -79,13 +95,18 @@ class Terminal:
                 break
             self.output.write(decode.decode(chunk))
         self.output.write(decode.decode(b"", final=True))
+        self.output.finish()
 
     @property
     def alive(self) -> bool:
         return self.proc.poll() is None
 
-    def read(self, since: int = 0) -> dict:
+    def read(self, since: int = 0, wait: float = 0.0) -> dict:
+        """What it printed after `since`; with `wait`, held until there is some (or the end, or so many seconds)."""
         self.seen = time.monotonic()
+        if wait > 0 and self.alive:
+            self.output.wait(since, wait)
+            self.seen = time.monotonic()
         text, start, end = self.output.read(since)
         return {"text": text, "from": start, "offset": end, "alive": self.alive, "title": self.title}
 

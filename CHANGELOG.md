@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.26.1 (2026-11-08)
+
+A WSL plugin's setup says each step before it runs (the user: "Yes, do it" to a line when each step starts, so quiet
+steps do not look stuck): `wsl --update` streams what it prints, a root file system's download shows how far it has got
+on one line rewritten (saved as a part file, renamed once whole), the packages' update says it is starting. The
+platform's terminal: a read held until there is output (`Output.wait`, `finish`; `Terminal.read(since, wait)`), so a
+page keeps one read open and shows its echo at once (the user: "in the terminal, characters repeat": two reads at once
+drew the same output twice).
+
 ## 1.26.0 (2026-11-07)
 
 The WSL distribution plugins check this PC before installing their system (the user: "each plugin should have a scheme

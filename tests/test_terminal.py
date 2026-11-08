@@ -77,3 +77,16 @@ def test_a_terminal_keeps_what_the_process_prints_and_writes_the_keys():
     assert proc.stdin.getvalue() == b"ls\r"
     term.close()
     assert not term.alive and proc.code == -15
+
+
+def test_a_read_is_held_until_there_is_output():
+    """A page's read waits for the next output (its echo shows at once) or the end, never longer than asked."""
+    out = Output()
+    started = time.monotonic()
+    assert out.wait(0, 0.05) is False and time.monotonic() - started < 1.0  # nothing came: back after the timeout
+    threading.Timer(0.05, lambda: out.write("x")).start()
+    started = time.monotonic()
+    assert out.wait(0, 5.0) is True and time.monotonic() - started < 2.0 and out.read(0)[0] == "x"  # back when it came
+    threading.Timer(0.05, out.finish).start()
+    started = time.monotonic()
+    assert out.wait(1, 5.0) is False and time.monotonic() - started < 2.0 and out.finished  # the end said at once
