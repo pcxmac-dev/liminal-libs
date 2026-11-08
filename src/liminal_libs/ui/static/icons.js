@@ -69,6 +69,7 @@
     shield: '<path d="M12 2.8 4.6 5.6v5.6c0 4.7 3.1 8.4 7.4 9.9 4.3-1.5 7.4-5.2 7.4-9.9V5.6z"/><path d="m8.8 12.1 2.2 2.2 4.3-4.4"/>',
     wrench: '<path d="M14.6 6.4a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.6-3.6a6 6 0 0 1-7.9 7.9l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8a6 6 0 0 1 7.9-7.9z"/>',
     terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15h4.5"/>',
+    gauge: '<path d="M4.2 17.5a9 9 0 1 1 15.6 0"/><path d="M12 13.6 15.8 8.6"/><circle cx="12" cy="14" r="1.6"/><path d="M6.6 11.2h1.2M12 5.6v1.2M16.2 11.2h1.2"/>',
     // the News view: a thermometer (the markets' temperature)
     thermometer: '<g stroke-width="1.5"><path d="M14 14.6V4.75a2 2 0 0 0-4 0v9.85a4 4 0 1 0 4 0z"/><path stroke-width="2" d="M12 8v8.3"/><circle cx="12" cy="17.75" r="1.7" fill="currentColor" stroke="none"/><path stroke-width="1.1" d="M16 5.5h2.2M16 8.25h1.4M16 11h2.2M16 13.75h1.4"/></g>',
     // the Datasets view (research series): a scroll

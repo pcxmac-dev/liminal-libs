@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.22.0 (2026-11-07)
+
+The resources monitor on Linux as on Windows (the user: "i need the hardware monitoring that was in charts,
+it needs to be windows and linux agnostic, ie it runs on both ... hw-stats platform plugin"): `resources.
+LinuxProbe` reads /proc and /sys (the processes' CPU time, memory, I/O, threads and open files; the machine's
+CPU and memory; the adapters' bytes and link speed; every TCP connection, each with its process when it is
+one reported), the figures `WindowsProbe` gives, so the `Monitor` reads both alike; `default_probe(match)` picks
+it on Linux. The processes reported and their roles are parameters: `WindowsProbe(match)`, `LinuxProbe(match)`,
+`Monitor(roles=, own=)` (the charts app's by default: `is_app`, `role_of`); `is_framework` and `framework_role`
+take every Liminal app (the integrator, the login, the platform with their ports). `view()` says the `system`.
+`icons.js`: `gauge`.
+
 ## 1.21.1 (2026-11-07)
 
 `liminal.css`: a list item's icon keeps its size beside a long line; a chip stays on one line.

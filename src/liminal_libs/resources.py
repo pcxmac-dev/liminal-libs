@@ -11,8 +11,10 @@ one core and a small share of memory. It measures the CPU time each sample costs
 interval to stay under CPU_BUDGET (half the limit, leaving the rest for answering the view), and
 its history is capped (RECENT, HISTORY samples; MEMORY_CAP bytes).
 
-Process details come from Windows itself (ctypes over kernel32 and ntdll: no extra package), and
-only for the app's own processes (Python running liminal). Elsewhere the disks and files
+Process details come from the system itself, with no extra package: on Windows from kernel32,
+ntdll and iphlpapi (WindowsProbe), on Linux from /proc and /sys (LinuxProbe, the same figures); and
+only for the processes asked for (`match`: the charts app's by default, Python running liminal; the
+platform's hw-stats plugin asks for every Liminal app's, `is_framework`). Elsewhere the disks and files
 are shown, and this process alone.
 """
 from __future__ import annotations
@@ -144,6 +146,44 @@ def is_app(command: str) -> bool:
     return _app_index(command.replace('"', " ").split()) is not None
 
 
+# every Liminal app's module and console script by its role: the platform's monitor reports them all
+FRAMEWORK = {"liminal_integrator": ("integrator", "Integrator"), "liminal-integrator": ("integrator", "Integrator"),
+             "liminal_login": ("login", "Login"), "liminal-login": ("login", "Login"),
+             "liminal_platform": ("platform", "Platform"), "liminal-platform": ("platform", "Platform")}
+
+
+def _framework_index(words: list[str]) -> tuple[int, str] | None:
+    for i, word in enumerate(words):
+        name = word.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        if name in FRAMEWORK:
+            return i, name
+    return None
+
+
+def is_framework(command: str) -> bool:
+    """Any Liminal app's process: the charts app's (is_app), the integrator's, the login's, the platform's."""
+    return is_app(command) or _framework_index(command.replace('"', " ").split()) is not None
+
+
+def framework_role(command: str) -> tuple[str, str, str]:
+    """(role, label, args) of any Liminal app's command line: the charts app's as role_of says; the
+    integrator's (a daemon said so), the login's and the platform's by their app, with their port."""
+    if is_app(command):
+        return role_of(command)
+    words = command.replace('"', " ").split()
+    found = _framework_index(words)
+    if found is None:
+        return "other", "Python", ""
+    at, name = found
+    role, label = FRAMEWORK[name]
+    args = words[at + 1:]
+    if role == "integrator" and "--daemon" in args:
+        label += " (daemon)"
+    if "--port" in args[:-1]:
+        label += f" · port {args[args.index('--port') + 1]}"
+    return role, label, " ".join(args)
+
+
 def is_local(address: str) -> bool:
     """A loopback address (the browser talking to the chart app, say)."""
     a = address.strip("[").removeprefix("::ffff:")
@@ -153,10 +193,13 @@ def is_local(address: str) -> bool:
 # -- Windows ---------------------------------------------------------------------------------
 
 class WindowsProbe:
-    """The app's processes and the machine, from kernel32 and ntdll (a few milliseconds a sample)."""
+    """The app's processes and the machine, from kernel32 and ntdll (a few milliseconds a sample); `match`
+    picks the processes reported (the charts app's by default)."""
 
-    def __init__(self) -> None:
+    def __init__(self, match=None) -> None:
         import ctypes
+
+        self.match = match or is_app
         from ctypes import wintypes as w
 
         self.ct, self.w = ctypes, w
@@ -292,7 +335,7 @@ class WindowsProbe:
                 if key not in self._commands:
                     self._commands[key] = self._command(h)
                 command = self._commands[key]
-                if pid != me and not is_app(command):
+                if pid != me and not self.match(command):
                     continue
                 mem = self.MEMORY()
                 mem.cb = ct.sizeof(mem)
@@ -388,8 +431,178 @@ class WindowsProbe:
         return out
 
 
+# -- Linux -----------------------------------------------------------------------------------
+
+LINUX_TCP_STATES = {1: "established", 2: "syn-sent", 3: "syn-received", 4: "fin-wait-1", 5: "fin-wait-2", 6: "time-wait",
+                    7: "closed", 8: "close-wait", 9: "last-ack", 10: "listening", 11: "closing"}
+VIRTUAL_NET = ("lo", "docker", "veth", "br-", "virbr", "vnet", "tun", "tap", "wg", "zt", "cni", "flannel", "kube")
+
+
+def _fields(text: str) -> list[tuple[str, str]]:
+    """`Key:  value` lines (/proc/<pid>/status, /proc/meminfo, /proc/<pid>/io)."""
+    out = []
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            out.append((key.strip(), value.strip()))
+    return out
+
+
+def _kb(value: str | None) -> int:
+    """"16384 kB" as bytes (0 when absent)."""
+    words = (value or "").split()
+    return int(words[0]) * (1024 if len(words) > 1 and words[1].lower() == "kb" else 1) if words and words[0].isdigit() else 0
+
+
+def _hex_address(text: str, v6: bool) -> str:
+    """An address as /proc/net/tcp writes it (0100007F:1F90) as address:port (127.0.0.1:8080)."""
+    import socket
+
+    host, _, port = text.partition(":")
+    raw = bytes.fromhex(host)
+    if not v6:
+        return f"{socket.inet_ntoa(raw[::-1])}:{int(port, 16)}"
+    words = b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4))  # four 32-bit words, each little-endian
+    return f"[{socket.inet_ntop(socket.AF_INET6, words)}]:{int(port, 16)}"
+
+
+class LinuxProbe:
+    """The app's processes and the machine, from /proc and /sys (no extra package; a few milliseconds a
+    sample): the figures the Windows probe gives, so the monitor reads both alike. `match` picks the processes
+    reported (the charts app's by default; the platform's hw-stats plugin asks for the framework's); `proc` and
+    `net` are where /proc and /sys/class/net are, and the reads go through _read, _listdir and _readlink, so a
+    test stands in for the files."""
+
+    def __init__(self, match=None, proc: str = "/proc", net: str = "/sys/class/net", ticks: int | None = None) -> None:
+        self.match = match or is_app
+        self.proc, self.net = proc, net
+        self.ticks = ticks or (os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100)
+        self._commands: dict[tuple[int, float], str] = {}  # (pid, started) -> command line (read once)
+        self._pids: set[int] = set()  # the processes reported last (their sockets are the ones attributed)
+        self._boot = self._boot_time()
+
+    # the files (a test stands in for them)
+    def _read(self, path: str) -> str | None:
+        try:
+            with open(path, "rb") as f:
+                return f.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def _listdir(self, path: str) -> list[str]:
+        try:
+            return os.listdir(path)
+        except OSError:
+            return []
+
+    def _readlink(self, path: str) -> str | None:
+        try:
+            return os.readlink(path)
+        except OSError:
+            return None
+
+    def _boot_time(self) -> float:
+        for line in (self._read(f"{self.proc}/stat") or "").splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+        return 0.0
+
+    def processes(self) -> list[Proc]:
+        """The processes `match` picks (and this one): their CPU time, memory, I/O, threads and open files."""
+        me, out, alive, pids = os.getpid(), [], set(), set()
+        for name in self._listdir(self.proc):
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            stat = self._read(f"{self.proc}/{pid}/stat")
+            if not stat or ")" not in stat:
+                continue
+            fields = stat[stat.rindex(")") + 2:].split()  # after "pid (comm) ": the name may hold spaces and parentheses
+            try:
+                parent, utime, stime = int(fields[1]), int(fields[11]), int(fields[12])
+                threads, start = int(fields[17]), int(fields[19])
+            except (IndexError, ValueError):
+                continue
+            started = self._boot + start / self.ticks
+            key = (pid, started)
+            alive.add(key)
+            if key not in self._commands:
+                self._commands[key] = (self._read(f"{self.proc}/{pid}/cmdline") or "").replace("\x00", " ").strip()
+            command = self._commands[key]
+            if pid != me and not self.match(command):
+                continue
+            status = dict(_fields(self._read(f"{self.proc}/{pid}/status") or ""))
+            io = dict(_fields(self._read(f"{self.proc}/{pid}/io") or ""))
+            private = _kb(status.get("RssAnon")) + _kb(status.get("VmSwap"))
+            out.append(Proc(pid, parent, command, started, (utime + stime) / self.ticks, _kb(status.get("VmRSS")),
+                            private, int(io.get("rchar", "0") or 0), int(io.get("wchar", "0") or 0), threads,
+                            len(self._listdir(f"{self.proc}/{pid}/fd"))))
+            pids.add(pid)
+        for key in set(self._commands) - alive:  # ended: its command line is forgotten
+            del self._commands[key]
+        self._pids = pids
+        return out
+
+    def machine(self) -> Machine | None:
+        stat = self._read(f"{self.proc}/stat") or ""
+        cpu = next((line.split()[1:] for line in stat.splitlines() if line.startswith("cpu ")), None)
+        mem = dict(_fields(self._read(f"{self.proc}/meminfo") or ""))
+        if not cpu or "MemTotal" not in mem:
+            return None
+        ticks = [int(x) for x in cpu[:8]]  # user nice system idle iowait irq softirq steal (guest time is in user)
+        total = sum(ticks) / self.ticks
+        idle = (ticks[3] + ticks[4]) / self.ticks
+        cores = sum(1 for line in stat.splitlines() if line.startswith("cpu") and line[3:4].isdigit())
+        memory = _kb(mem.get("MemTotal"))
+        available = _kb(mem.get("MemAvailable")) or (_kb(mem.get("MemFree")) + _kb(mem.get("Cached")) + _kb(mem.get("Buffers")))
+        swap = _kb(mem.get("SwapTotal"))
+        return Machine(cores or os.cpu_count() or 1, total - idle, total, memory, available, memory + swap,
+                       available + _kb(mem.get("SwapFree")))
+
+    def network(self) -> Net | None:
+        """Bytes in and out of the adapters that are up: the hardware ones (a device behind them), else every
+        one that is not loopback or a bridge, tunnel or container's (WSL's and a VM's adapters have no device)."""
+        rows: dict[str, tuple[int, int]] = {}
+        for line in (self._read(f"{self.proc}/net/dev") or "").splitlines()[2:]:
+            name, sep, rest = line.partition(":")
+            values = rest.split()
+            if sep and len(values) >= 9:
+                rows[name.strip()] = (int(values[0]), int(values[8]))
+        if not rows:
+            return None
+        up = [n for n in rows if not n.startswith(VIRTUAL_NET)
+              and (self._read(f"{self.net}/{n}/operstate") or "up").strip() in ("up", "unknown")]
+        hardware = [n for n in up if self._readlink(f"{self.net}/{n}/device") is not None] or up
+        speeds = [int(s) for n in hardware if (s := (self._read(f"{self.net}/{n}/speed") or "").strip()).isdigit()]
+        return Net(sum(rows[n][0] for n in hardware), sum(rows[n][1] for n in hardware),
+                   max(speeds, default=0) * 1_000_000, tuple(hardware))
+
+    def connections(self) -> list[Conn]:
+        """Every TCP connection and listening socket (/proc/net/tcp, tcp6), each with its process when it is
+        one of those reported (their open sockets read from /proc/<pid>/fd); another's with pid 0."""
+        owner: dict[str, int] = {}
+        for pid in self._pids:
+            for fd in self._listdir(f"{self.proc}/{pid}/fd"):
+                link = self._readlink(f"{self.proc}/{pid}/fd/{fd}") or ""
+                if link.startswith("socket:["):
+                    owner[link[8:-1]] = pid
+        out = []
+        for name, v6 in (("tcp", False), ("tcp6", True)):
+            for line in (self._read(f"{self.proc}/net/{name}") or "").splitlines()[1:]:
+                f = line.split()
+                if len(f) < 10:
+                    continue
+                try:
+                    state = LINUX_TCP_STATES.get(int(f[3], 16), f[3])
+                    local, remote = _hex_address(f[1], v6), _hex_address(f[2], v6)
+                except (ValueError, OSError):
+                    continue
+                out.append(Conn(owner.get(f[9], 0), state, local, "" if state == "listening" else remote))
+        return out
+
+
 class OwnProbe:
-    """Not on Windows: this process alone (its CPU time), and no machine figures."""
+    """Neither Windows nor Linux: this process alone (its CPU time), and no machine figures."""
 
     def processes(self) -> list[Proc]:
         t = os.times()
@@ -409,11 +622,17 @@ class OwnProbe:
 _STARTED = time.time()
 
 
-def default_probe():
+def default_probe(match=None):
+    """This system's probe (Windows', Linux's, else this process alone), reporting the processes `match` picks."""
     if sys.platform == "win32":
         try:
-            return WindowsProbe()
+            return WindowsProbe(match)
         except (OSError, AttributeError):
+            pass
+    elif sys.platform.startswith("linux") and os.path.isdir("/proc"):
+        try:
+            return LinuxProbe(match)
+        except OSError:
             pass
     return OwnProbe()
 
@@ -438,9 +657,12 @@ class Monitor:
     """Samples in a thread of its own (start), at the cadence of whoever looks (view)."""
 
     def __init__(self, data_dir: Path, probe=None, clock: Callable[[], float] = time.monotonic,
-                 wall: Callable[[], float] = time.time, cpu_clock: Callable[[], float] = time.thread_time) -> None:
+                 wall: Callable[[], float] = time.time, cpu_clock: Callable[[], float] = time.thread_time,
+                 roles: Callable[[str], tuple[str, str, str]] | None = None, own: tuple[str, str] = ("gui", "Chart app")) -> None:
         self.data_dir = Path(data_dir)
         self.probe = probe if probe is not None else default_probe()
+        self.roles = roles or role_of  # a process's (role, label, args): the charts app's by default
+        self.own = own  # this process's role and label when its command line says nothing (a test, a one-off)
         self.clock, self.wall, self.cpu_clock = clock, wall, cpu_clock
         self.recent: deque = deque(maxlen=RECENT)
         self.history: deque = deque(maxlen=HISTORY)
@@ -552,7 +774,9 @@ class Monitor:
             self._prev[key] = (now, p)
             dt = now - prev[0] if prev else 0.0
             r = root(p)
-            role, label, args = role_of(r.command) if r.pid != me or is_app(r.command) else ("gui", "Chart app", "")
+            role, label, args = self.roles(r.command)
+            if r.pid == me and role == "other":
+                role, label, args = self.own[0], self.own[1], ""
             row = rows.setdefault(r.pid, {
                 "key": f"{role}:{r.pid}", "role": role, "label": label, "command": args, "pids": [],
                 "started": _iso(r.started), "self": False, "cpu": None, "memory": 0, "private": 0,
@@ -568,8 +792,8 @@ class Monitor:
                     row[k] = (row[k] or 0.0) + max(v, 0.0)
         for key in set(self._prev) - seen:  # ended
             del self._prev[key]
-        order = {"gui": 0, "sync": 1, "live": 2}
-        return sorted(rows.values(), key=lambda r: (order.get(r["role"], 3), r["started"]))
+        order = {"gui": 0, "sync": 1, "live": 2, "integrator": 3, "login": 4, "platform": 5}
+        return sorted(rows.values(), key=lambda r: (order.get(r["role"], 6), r["started"]))
 
     @staticmethod
     def _connect(groups: list[dict], conns: list[Conn]) -> dict:
@@ -662,8 +886,8 @@ class Monitor:
                            "files": [{"path": p, "size": s, "modified": _iso(m), "growth": growth(s, then_files.get(p))}
                                      for p, s, m in largest if (p.split("/", 1)[0] if "/" in p else ".") == folder][:12]})
         disks, anchors = [], {}
-        for what, path in (("data", self.data_dir), ("app", Path(__file__).resolve()),
-                           ("system", Path(os.environ.get("SystemDrive", "/") + os.sep))):
+        system = Path(os.environ["SystemDrive"] + os.sep) if os.environ.get("SystemDrive") else Path("/")  # never "//"
+        for what, path in (("data", self.data_dir), ("app", Path(__file__).resolve()), ("system", system)):
             anchors.setdefault(path.anchor or "/", []).append(what)
         for anchor, holds in anchors.items():
             try:
@@ -711,4 +935,5 @@ class Monitor:
             "machine": machine, "network": net, "connections": links, "processes": groups, "files": files,
             "series": series,
             "windows": isinstance(self.probe, WindowsProbe),
+            "system": "windows" if isinstance(self.probe, WindowsProbe) else "linux" if isinstance(self.probe, LinuxProbe) else "other",
         }
