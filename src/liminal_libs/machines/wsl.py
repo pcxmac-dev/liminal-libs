@@ -200,7 +200,7 @@ class Wsl:
 
 def wsl_path(windows_path: str) -> str:
     """A Windows path as the distribution sees it: C:\\Users\\x -> /mnt/c/Users/x; a path without a drive stays."""
-    p = str(windows_path).replace("\\", "/")
+    p = re.sub(r"/+", "/", str(windows_path).replace("\\", "/"))  # doubled separators collapsed
     m = re.match(r"^([A-Za-z]):/?(.*)$", p)
     return f"/mnt/{m.group(1).lower()}/{m.group(2)}".rstrip("/") if m else p
 

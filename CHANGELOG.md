@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.19.1 (2026-11-07)
+
+`machines.wsl.wsl_path` collapses doubled separators.
+
 ## 1.19.0 (2026-11-07)
 
 The machine kind of platform plugin, and named Docker instances (the user: "the platform is the interface
