@@ -16,6 +16,49 @@ def u16(text: str) -> bytes:
     return text.encode("utf-16-le")
 
 
+SCAN_SAMPLE = """== liminal-scan 1
+== init systemd systemd
+== units
+containerd.service          loaded    active   running containerd container runtime
+cron.service                loaded    active   running Regular background program processing daemon
+dbus.service                loaded    active   running D-Bus System Message Bus
+docker.service              loaded    active   running Docker Application Container Engine
+firewalld.service           not-found inactive dead    firewalld.service
+getty@tty1.service          loaded    failed   failed  Getty on tty1
+ssh.service                 loaded    inactive dead    OpenBSD Secure Shell server
+console-setup.service       loaded    active   exited  Set console font and keymap
+systemd-journald.service    loaded    active   running Journal Service
+== memory
+Id=containerd.service
+MainPID=220
+MemoryCurrent=58208256
+
+Id=cron.service
+MainPID=109
+MemoryCurrent=774144
+
+Id=dbus.service
+MainPID=114
+MemoryCurrent=[not set]
+
+Id=docker.service
+MainPID=289
+MemoryCurrent=154206208
+
+Id=systemd-journald.service
+MainPID=44
+MemoryCurrent=11640832
+== processes
+      1 15752 systemd         /sbin/init
+     44 14308 systemd-journal /usr/lib/systemd/systemd-journald
+    109  3120 cron            /usr/sbin/cron -f -P
+    220 44924 containerd      /usr/bin/containerd
+    289 92496 dockerd         /usr/bin/dockerd -H fd://
+    705  4068 ps              ps -eo pid=,rss=,comm=,args=
+== end
+"""  # a scan's answer, modelled on Liminal-Ubuntu's (2026-11-08)
+
+
 class FakeWsl:
     """Answers the wsl command: WSL there or not, the distributions, what runs inside."""
 
@@ -28,6 +71,8 @@ class FakeWsl:
         self.calls: list = []
         self.scripts: list = []
         self.files: dict = {}
+        self.scan_output = SCAN_SAMPLE  # what the services scan answers
+        self.scans = 0
 
     def __call__(self, args, timeout):
         self.calls.append(list(args))
@@ -57,6 +102,9 @@ class FakeWsl:
                 return (0, b"Docker version 28.1.1, build 4eba377\n", b"") if self.docker_installed else (127, b"", b"docker: command not found")
             if command[:2] == ["docker", "info"]:
                 return (0, b"28.1.1\n", b"") if self.docker_installed and self.daemon else (1, b"", b"Cannot connect to the Docker daemon")
+            if command[:3] == ["sh", "-s", "liminal-scan"]:
+                self.scans += 1
+                return 0, self.scan_output.encode(), b""
             if command[:2] == ["sh", "-s"]:
                 self.scripts.append(("root" if "-u" in args and args[args.index("-u") + 1] == "root" else "user", "script"))
                 return 0, b"systemd\n", b""
@@ -128,8 +176,10 @@ def test_a_distribution_plugin_conforms_reports_sets_up_and_offers_its_engine(mo
     assert any("Docker installed by apt" in d["detail"] for d in done) and any("liminal in the docker group" in d["detail"] for d in done)
     # with Docker inside, the plugin is present and offers the engine as a named instance
     fake.docker_installed = True
+    fake.distributions = [(n, "Running", v) for n, _, v in fake.distributions]  # asked inside only while it runs
     assert p.present() and p.status()["engine"] == {"installed": True, "version": "28.1.1", "running": True}
-    assert p.status()["summary"] == "Liminal-Ubuntu (Stopped, WSL 2); Docker inside: running 28.1.1" and p.STEPS == wsl_mod.STEPS
+    assert p.status()["summary"] == ("Liminal-Ubuntu (Running, WSL 2); Docker inside: running 28.1.1; "
+                                     "services: docker, containerd (+3 of the system's own)") and p.STEPS == wsl_mod.STEPS
     assert p.status()["valid"] is True and p.status()["why"] == ""
     (inst,) = p.instances()
     assert inst.name == "wsl-ubuntu" and inst.command == "wsl -d Liminal-Ubuntu --exec docker" and inst.translate("C:\\x") == "/mnt/c/x" and inst.source == "wsl-ubuntu"
@@ -298,3 +348,36 @@ def test_each_step_is_said_before_it_runs_and_a_download_shows_how_far_it_got(tm
     wsl_mod._download("https://mirror.test/stage3.tar.xz", target, out=seen.append)
     assert target.stat().st_size == 3 * 2**20 and not (tmp_path / "stage3.tar.xz.part").exists()
     assert seen[0].startswith("\rdownloading stage3.tar.xz: 1 MB of 3 MB (33%)") and seen[-1].startswith("\rdownloaded stage3.tar.xz: 3 MB")
+
+
+def test_its_services_while_it_runs_and_a_stopped_one_never_started(tmp_path):
+    """The user, 2026-11-08: "a breakdown of the major services running ... using openrc or systemd to look for init
+    type": scanned only while the distribution runs (a status, the Docker check, the instances never start it), the
+    major services apart from the system's own, kept SCAN_S."""
+    fake = FakeWsl(distributions=[("Liminal-Ubuntu", "Stopped", "2")], docker_installed=True)
+    p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path)
+    st = p.status()
+    assert not [c for c in fake.calls if c[1] == "-d"]  # nothing ran inside it
+    assert st["valid"] and st["services"]["scanned"] is False and "tables" not in st
+    assert st["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: not asked while it is stopped"
+    assert p.services() == {"scanned": False, "why": "Liminal-Ubuntu is not running: nothing to scan, and a scan does not start it"}
+    (inst,) = p.instances()  # offered: the engine starts it when used
+    assert inst.name == "wsl-ubuntu" and not [c for c in fake.calls if c[1] == "-d"]
+    fake.distributions = [("Liminal-Ubuntu", "Running", "2")]
+    st = p.status()
+    services = st["services"]
+    assert (services["init"], services["pid1"], services["scanned"]) == ("systemd", "systemd", True)
+    assert [(s["name"], s["state"], s["what"], s["memoryMb"]) for s in services["major"]] == [
+        ("docker", "running", "containers: Docker Engine", 147), ("containerd", "running", "containers: Docker's runtime", 56)]
+    assert services["system"] == ["cron", "dbus", "systemd-journald"] and services["failed"] == ["getty@tty1"]
+    (table,) = st["tables"]
+    assert table["title"] == "Services in Liminal-Ubuntu" and table["rows"][0] == ["docker", "running", "containers: Docker Engine", "147 MB"]
+    assert table["note"].startswith("systemd (PID 1: systemd) · the system's own running: 3 (cron, dbus, systemd-journald) · "
+                                    "failed: getty@tty1 · 6 processes, 171 MB resident")
+    assert fake.scans == 1 and p.services()["init"] == "systemd" and fake.scans == 1  # kept SCAN_S
+    assert p.services(fresh=True)["scanned"] and fake.scans == 2 and p.services(fresh="false")["scanned"] and fake.scans == 2
+    scan_call = next(c for c in fake.calls if c[-3:] == ["sh", "-s", "liminal-scan"])
+    assert scan_call[:5] == ["wsl", "-d", "Liminal-Ubuntu", "-u", "root"]  # as root, the script on its standard input
+    fake.distributions = [("Liminal-Ubuntu", "Stopped", "2")]
+    assert p.status()["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: installed 28.1.1"  # as last seen
+    assert "services" in p.interface()["hooks"]

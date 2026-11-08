@@ -14,7 +14,10 @@ The plugin also checks whether this PC can install its system at all (`check`: t
 should have a scheme for checking the environment to see if it supports installing the operating system it has in
 its name"), streams what its commands print while they run (a setup's `log` with a `write`: the platform's terminal
 panel), updates the system's packages (`update_packages`) and gives the command of a login terminal into it
-(`terminal`)."""
+(`terminal`). Its services (`services`; the user, 2026-11-08: "a breakdown of the major services running"): the init
+system found (systemd or OpenRC, or SysV scripts) and the services that run, the major ones apart from the system's own
+(machines.services); scanned only while the distribution runs: a status, a scan, the Docker check or the instance list
+never starts a stopped one."""
 from __future__ import annotations
 
 import codecs
@@ -33,8 +36,10 @@ from pathlib import Path
 from .. import layout
 from ..docker import Instance
 from .plugin import LIMINAL_PREFIX, MachinePlugin, liminal_scoped
+from .services import SCRIPT as SCAN_SCRIPT, Scan, parse as parse_scan
 
 TIMEOUT_S = 600.0
+SCAN_S = 30.0  # a services scan is kept this long: the platform asks the status every few seconds
 INSTALL_TIMEOUT_S = 7200.0  # Gentoo compiles Docker
 FAMILIES = ("apt", "dnf", "emerge")
 DOCKER_PACKAGES = "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
@@ -311,7 +316,7 @@ class WslDistribution(MachinePlugin):
     default_user = "liminal"  # the user made in the distribution, in the docker group
     space_gb = 4.0  # the free space its install needs on the data folder's drive
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
-    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal")
+    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services")
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
 
@@ -321,6 +326,8 @@ class WslDistribution(MachinePlugin):
         self._fetch = fetch  # (url, path) -> None: a download, for a tarball; urllib unless given
         self._system = system  # () -> {"windows", "build", "machine"}: a test's; this PC's otherwise
         self._free = free  # (path) -> bytes free: a test's; the disk's otherwise
+        self._scan: tuple[float, Scan] | None = None  # the last services scan (monotonic time, scan), kept SCAN_S
+        self._engine_seen: dict | None = None  # Docker inside as last seen while it ran (a stopped one is not asked)
 
     def install_script(self) -> str:
         """The family's Docker install, from the plugin's `docker_repository` (WslError: no recipe for the
@@ -461,13 +468,32 @@ class WslDistribution(MachinePlugin):
         out = {"present": d is not None, "wsl": wsl, "distribution": self.distribution_name, "family": self.family,
                "state": d.state if d else "", "version": d.version if d else "", "user": self.user,
                "engine": {"installed": False, "version": "", "running": False}}
-        if d is not None:
-            out["engine"] = self.engine()
-        e = out["engine"]
         name = self.distribution_name
-        out["summary"] = (f"{name} ({d.state}, WSL {d.version}); Docker inside: "
-                          + (("running " if e["running"] else "installed, not running ") + e["version"] if e["installed"] else "none")
-                          if d is not None else ("not installed" if wsl.get("present") else "WSL is not here"))
+        ours = liminal_scoped(name)
+        scan = None
+        if d is not None and ours and _running(d):  # asked inside only while it runs: a status never starts it
+            out["engine"] = self._engine_seen = self.engine()
+            scan = self._scan_of(d)
+            out["services"] = scan.describe()
+            out["tables"] = [scan.table(name)]
+        elif d is not None:
+            seen = getattr(self, "_engine_seen", None) if ours else None
+            out["engine"] = {**(seen or out["engine"]), "running": False}
+            out["services"] = {"scanned": False, "why": (f"{name} is not running: nothing runs in it, and a status does not start it"
+                                                          if ours else f"{name} is not Liminal's: nothing is asked inside it")}
+        e = out["engine"]
+        if d is None:
+            out["summary"] = "not installed" if wsl.get("present") else "WSL is not here"
+        elif scan is not None:
+            out["summary"] = (f"{name} ({d.state}, WSL {d.version}); Docker inside: "
+                              + (("running " if e["running"] else "installed, not running ") + e["version"] if e["installed"] else "none")
+                              + f"; services: {scan.summary()}")
+        elif not ours:
+            out["summary"] = f"{name} ({d.state}, WSL {d.version}): not Liminal's, nothing asked inside"
+        else:
+            seen = getattr(self, "_engine_seen", None)
+            out["summary"] = (f"{name} ({d.state}, WSL {d.version}): not started to look; Docker inside: "
+                              + ("not asked while it is stopped" if seen is None else f"installed {e['version']}" if e["installed"] else "none"))
         out["why"] = ("WSL is not here" if not wsl.get("present")
                       else f"{name} is not one of Liminal's own distributions (named {LIMINAL_PREFIX}...)" if not liminal_scoped(name)
                       else f"no Liminal install: its setup installs {name}" if d is None else "")
@@ -487,6 +513,34 @@ class WslDistribution(MachinePlugin):
         except WslError:
             running = False
         return {"installed": True, "version": m.group(1) if m else version, "running": running}
+
+    def services(self, fresh=False) -> dict:
+        """What runs in Liminal's own distribution (the user, 2026-11-08: "a breakdown of the major services running"): its
+        init system (systemd or OpenRC, or SysV scripts), the major services online apart from the system's own
+        (machines.services); scanned only while it runs, kept SCAN_S (`fresh`: scanned again now)."""
+        name = self.distribution_name
+        d = self.wsl.distribution(name) if self.wsl.here and liminal_scoped(name) else None
+        if d is None:
+            return {"scanned": False, "why": f"{name} is not installed" if liminal_scoped(name) else f"{name} is not Liminal's: nothing is asked inside it"}
+        scan = self._scan_of(d, fresh=fresh is True or str(fresh).lower() in ("1", "true", "yes"))
+        if scan is None:
+            return {"scanned": False, "why": f"{name} is not running: nothing to scan, and a scan does not start it"}
+        return scan.describe()
+
+    def _scan_of(self, d: Distribution, fresh: bool = False) -> Scan | None:
+        """The services scan, kept SCAN_S; None while the distribution is not running (a scan never starts it)."""
+        if d is None or not _running(d):
+            return None
+        kept = getattr(self, "_scan", None)
+        if kept is not None and not fresh and time.monotonic() - kept[0] < SCAN_S:
+            return kept[1]
+        name = self.distribution_name
+        try:  # one script on standard input, as root; the argument only names it (a stand-in's wsl tells it apart)
+            scan = parse_scan(self.wsl.run(name, "sh", "-s", "liminal-scan", user="root", stdin=SCAN_SCRIPT, timeout=60))
+        except WslError as e:
+            scan = Scan(problem=f"the scan could not run in {name}: {e}", at=time.time())
+        self._scan = (time.monotonic(), scan)
+        return scan
 
     def setup(self, log=print, steps=None) -> list[dict]:
         """Everything, in order, each step reported; `steps`: only these. A step that fails ends it."""
@@ -564,9 +618,15 @@ class WslDistribution(MachinePlugin):
         return self.wsl.run(self.distribution_name, *command, user=user, stdin=stdin, timeout=timeout)
 
     def instances(self) -> tuple[Instance, ...]:
-        if not self.present() or not self.engine()["installed"]:
-            return ()
         name = self.distribution_name
+        d = self.wsl.distribution(name) if self.wsl.here else None
+        if d is None:
+            return ()
+        if _running(d):
+            self._engine_seen = self.engine()
+        seen = getattr(self, "_engine_seen", None)
+        if seen is not None and not seen["installed"]:
+            return ()  # seen without Docker; a stopped one is not started to ask: its instance starts it when used
         return (Instance(self.name, f"Docker in {name} under WSL 2", command=f"wsl -d {name} --exec docker", source=self.name, translate=wsl_path),)
 
     # -- a distribution imported from a tarball (Gentoo) --------------------------------------------
@@ -608,6 +668,11 @@ def _download(url: str, path: Path, out=None) -> None:
         if out is not None:
             out(f"\rdownloaded {path.name}: {got / 2**20:.0f} MB" + " " * 24 + "\n")
     os.replace(part, path)
+
+
+def _running(d) -> bool:
+    """Whether WSL lists the distribution as running (a stopped one is never started to look inside it)."""
+    return str(getattr(d, "state", "")).lower() == "running"
 
 
 def _version(text: str) -> tuple[int, ...]:

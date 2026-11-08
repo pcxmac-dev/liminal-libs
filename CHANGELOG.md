@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.28.0 (2026-11-08)
+
+The services of a WSL distribution (the user: "lets have, in the WSL plugins, a breakdown of the major services running, the 'scanning function' should be capable of using openrc or systemd to look for init type and differentiate between somewhat trivial processes and major services that are online"): `machines/services.py`, one script run as root (the init
+system found and PID 1; systemd's units with the memory of those running, OpenRC's `rc-status --all`, SysV's
+`service --status-all`; the processes), `parse`, `classify` (major: Docker, databases, web, mail and DNS servers, SSH,
+VPNs, the firewall, Liminal's apps; other: shown with its own description; the system's own: counted and named in a
+note) and `Scan.table` for the platform's page; `WslDistribution.services` (a hook; the status carries the breakdown
+and its table). Scanned only while the distribution runs, kept 30 s. A status, the Docker check or the instance list
+no longer starts a stopped distribution (the plugin lifecycle: nothing runs that nobody uses); Docker inside is said
+as last seen.
+
 ## 1.27.0 (2026-11-08)
 
 The Linux plugins are for a native Linux machine only (the user: "the scope of linux administration is only on
