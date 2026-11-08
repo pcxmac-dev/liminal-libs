@@ -163,6 +163,9 @@ class Admin(MachinePlugin):
 
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
+        here = self.not_for_here()
+        if here:  # not for this machine at all (a Linux plugin on Windows or in WSL): asked nothing, no setup offered
+            return self.not_here_status(here, elevated=False, elevation="", services=[], startups=[], processes=[])
         note = self.scope_note()
         if note:  # not Liminal's (the user's own distribution): asked nothing at all
             return {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
@@ -199,8 +202,8 @@ class Admin(MachinePlugin):
             done.append({"step": what, "ok": ok, "detail": detail})
             log(f"{self.name}: {what}: {'ok' if ok else 'skipped' if ok is None else 'FAILED'}: {detail}")
 
-        note = self.scope_note()
-        if note:  # never on the user's own: nothing changed
+        note = self.not_for_here() or self.scope_note()
+        if note:  # not for this machine, or the user's own: nothing changed
             step(wanted[0] if wanted else "setup", False, note)
             return done
         if not self.present():

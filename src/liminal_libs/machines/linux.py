@@ -1,15 +1,18 @@
 """Linux for the machine plugins (the firewall and admin plugins of the platform): commands on a Linux
 machine, this one (with sudo when the platform is not root: never a password asked, `sudo -n`) or a WSL
-distribution on this Windows PC (as root through `wsl -u root`, no password either). A plugin names its target
-by its own variable: `local`, `wsl` (the default distribution) or `wsl:<distribution>`; on Linux `local` is
-the default, on Windows Liminal's own distribution when one is installed (Liminal-Ubuntu, then Liminal-Fedora,
-Liminal-Gentoo: the user, 2026-11-07, "Yes, do it" to targeting Liminal's WSL distribution by default), never the
-user's own. A runner stands in for the commands in tests."""
+distribution on this Windows PC (as root through `wsl -u root`, no password either). The Linux plugins work only
+on the native Linux machine the platform runs on (`why_not_native`; the user, 2026-11-08: "the scope of linux
+administration is only on native linux O/S", "it's not for administrating WSL instances", "Yes, firewall too"):
+they give their shell `local`. Without a target named, `local` on Linux, and on Windows Liminal's own distribution
+when one is installed (Liminal-Ubuntu, then Liminal-Fedora, Liminal-Gentoo), never the user's own. A runner stands
+in for the commands in tests."""
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
+import sys
 import time
 
 from .plugin import LIMINAL_PREFIX, CommandError, liminal_scoped
@@ -24,6 +27,25 @@ DENIED = ("a password is required", "a terminal is required", "permission denied
 
 def _on_windows() -> bool:
     return os.name == "nt"
+
+
+def why_not_native(what: str, system: str | None = None, release: str | None = None, env=None) -> str:
+    """Why the machine the platform runs on is not a native Linux one, in words naming `what` (Linux administration,
+    the Linux firewall): "" when it is, the only machine the Linux plugins work on. Windows and macOS are not Linux; a
+    WSL distribution is not native (its kernel's release names Microsoft or WSL, or WSL's variables are set), whether
+    the platform runs beside it or inside it. `system`, `release` and `env` stand in for sys.platform, the kernel's
+    release and the environment in tests."""
+    system = sys.platform if system is None else system
+    if not system.startswith("linux"):
+        name = {"win32": "Windows", "cygwin": "Windows", "darwin": "macOS"}.get(system, system)
+        return (f"{what} is for a native Linux machine, and this one runs {name}"
+                + ("; Liminal's WSL distributions are the WSL plugins'" if name == "Windows" else ""))
+    env = os.environ if env is None else env
+    release = (platform.release() if release is None else release).lower()
+    if "microsoft" in release or "wsl" in release or env.get("WSL_DISTRO_NAME") or env.get("WSL_INTEROP"):
+        where = f"WSL's {env['WSL_DISTRO_NAME']}" if env.get("WSL_DISTRO_NAME") else "a WSL distribution"
+        return f"{what} is for a native Linux machine, not a WSL instance, and this is {where} on Windows"
+    return ""
 
 
 def wsl_distributions() -> list[str]:

@@ -147,3 +147,14 @@ def test_on_a_target_not_liminals_the_firewall_asks_nothing_and_changes_nothing(
     assert (st["present"], st["valid"], st["summary"]) == (False, False, "not on Liminal's") and "is not Liminal's" in st["why"]
     done = fw.setup(log=lambda m: None)
     assert [d["ok"] for d in done] == [False] and ran == []
+
+
+def test_a_firewall_not_for_this_machine_asks_nothing_and_changes_nothing():
+    """Not for this machine at all (the Linux firewall on Windows or in WSL; 1.27.0): applies False, nothing asked."""
+    fw = FakeFirewall()
+    fw.not_for_here = lambda: "for a native Linux machine"
+    fw.backend = fw.state = fw.list_rules = fw.enable = fw.present = lambda *a: pytest.fail("asked")
+    assert fw.status() == {"present": False, "backend": "", "enabled": False, "profiles": {}, "rules": [], "summary": "not for this machine",
+                           "valid": False, "why": "for a native Linux machine", "applies": False}
+    assert fw.setup(log=lambda m: None) == [{"step": "enable", "ok": False, "detail": "for a native Linux machine"}]
+    assert fw.rules == {} and fw.enabled_calls == 0

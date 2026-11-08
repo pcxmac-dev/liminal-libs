@@ -11,9 +11,10 @@ A status may say whether the plugin is valid: set up for Liminal, on something o
 2026-11-07: "if a plugin is not in a valid state it has to be disabled"; "there are no WSL-liminally scoped
 installs, so all three WSL plugins are invalid"): `valid` (bool) and `why` (the words, when not). The platform
 disables a plugin that is not valid until it is; without them, present and no `problem` is valid. A plugin that
-is not for this machine at all says `applies` False beside them (Linux administration on Windows or in WSL: the
-user, 2026-11-08, "the scope of linux administration is only on native linux O/S"): the platform offers no setup
-for it, since none can make it valid here. A WSL distribution of Liminal's own is named with LIMINAL_PREFIX
+is not for this machine at all says why in `not_for_here()` (the Linux plugins, through linux.why_not_native, on
+Windows, macOS or in WSL; the user, 2026-11-08: "the scope of linux administration is only on native linux O/S",
+"Yes, firewall too"): its status says `applies` False beside them (`not_here_status`), its setup changes nothing,
+and the platform offers no setup for it, since none can make it valid here. A WSL distribution of Liminal's own is named with LIMINAL_PREFIX
 (Liminal-Ubuntu): the user's own is never taken."""
 from __future__ import annotations
 
@@ -48,8 +49,22 @@ class MachinePlugin(PlatformPlugin):
         """Whether the software or hardware is there."""
         return False
 
+    def not_for_here(self) -> str:
+        """Why this machine is not one the plugin is for at all, in words ("" when it is): a Linux plugin on Windows,
+        macOS or in a WSL distribution (linux.why_not_native). Honored before anything else by this base's status and
+        by the Admin and Firewall bases' status and setup: nothing asked, nothing changed, `applies` False."""
+        return ""
+
+    def not_here_status(self, note: str, **empty) -> dict:
+        """The status of a plugin not for this machine (`note`: why): nothing asked, not valid, `applies` False;
+        `empty`: the keys a subclass's status always has, empty."""
+        return {"present": False, **empty, "summary": "not for this machine", "valid": False, "why": note, "applies": False}
+
     def status(self) -> dict:
         """What it is and how it does, for the platform's page and a check ("summary": one line of it)."""
+        note = self.not_for_here()
+        if note:
+            return self.not_here_status(note)
         present = self.present()
         return {"present": present, "summary": "present" if present else "not present"}
 

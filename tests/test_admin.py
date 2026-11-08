@@ -127,3 +127,15 @@ def test_on_a_target_not_liminals_the_admin_asks_nothing_and_changes_nothing():
     assert (st["present"], st["valid"], st["summary"]) == (False, False, "not on Liminal's") and "WSL's Ubuntu is not Liminal's" in st["why"]
     done = a.setup(log=lambda m: None)
     assert [d["ok"] for d in done] == [False] and "is not Liminal's" in done[0]["detail"] and ran == []
+
+
+def test_an_admin_not_for_this_machine_asks_nothing_and_changes_nothing():
+    """Not for this machine at all (Linux administration on Windows or in WSL; 1.27.0): applies False, nothing asked."""
+    a = FakeAdmin(elevated=True)
+    a.not_for_here = lambda: "for a native Linux machine"
+    a.services = a.startups = a.processes = a.elevated = a.present = lambda: pytest.fail("asked")
+    assert a.status() == {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
+                          "summary": "not for this machine", "valid": False, "why": "for a native Linux machine", "applies": False}
+    said: list = []
+    assert a.setup(log=said.append) == [{"step": "privileges", "ok": False, "detail": "for a native Linux machine"}]
+    assert said == ["fake-admin: privileges: FAILED: for a native Linux machine"] and a.actions == []

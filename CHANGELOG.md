@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.27.0 (2026-11-08)
+
+The Linux plugins are for a native Linux machine only (the user: "the scope of linux administration is only on
+native linux O/S"; "it's not for administrating WSL instances"; "Yes, firewall too"): `machines.linux.why_not_native(what)`
+says why the machine the platform runs on is not one (Windows, macOS, a WSL distribution by its kernel's release or
+WSL's variables), "" on a native Linux machine. `MachinePlugin.not_for_here()` ("" by default) is honored first by
+the base status and by the Admin and Firewall bases' status and setup: the status says `applies` False with the
+reason (`not_here_status`; the key documented since 24a07f6), the setup changes nothing, the platform offers no setup.
+plugin-platform-admin-linux 0.4.0 and plugin-platform-firewall-linux 0.3.0 use them.
+
 ## 1.26.1 (2026-11-08)
 
 A WSL plugin's setup says each step before it runs (the user: "Yes, do it" to a line when each step starts, so quiet
