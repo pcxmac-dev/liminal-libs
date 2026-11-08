@@ -122,7 +122,13 @@ def test_what_is_said_when_docker_fails_or_is_not_there(monkeypatch):
     assert not no_engine.available() and "no Docker engine answers on this machine" in no_engine.describe()["problem"]
     monkeypatch.setattr(docker.shutil, "which", lambda name: None)
     absent = Docker(env={})
-    assert not absent.installed() and not absent.available() and absent.describe() == {"where": "this machine", "installed": False, "available": False}
+    assert not absent.installed() and not absent.available()
+    assert absent.describe() == {"where": "this machine", "command": "docker", "installed": False, "available": False}
     with pytest.raises(DockerError) as e:
         absent.containers()
-    assert "not installed" in str(e.value)
+    assert "docker is not installed" in str(e.value) and "nerdctl" in str(e.value)
+    # Rancher Desktop with containerd: the command is nerdctl, named in the environment or outright
+    monkeypatch.setattr(docker.shutil, "which", lambda name: "C:/Rancher/nerdctl.exe" if name == "nerdctl" else None)
+    rancher = Docker(env={"LIMINAL_DOCKER_COMMAND": "nerdctl"}, runner=Runner())
+    assert rancher.name == "nerdctl" and rancher.installed() and rancher.available() and rancher.describe()["command"] == "nerdctl"
+    assert Docker(command="nerdctl", env={}).command == "C:/Rancher/nerdctl.exe" and docker.command_line(Service("x", "img"), "nerdctl").startswith("nerdctl run")

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 CONTEXT_VAR = "LIMINAL_DOCKER_CONTEXT"  # a docker context's name (`docker context ls`): where the containers run
 HOST_VAR = "LIMINAL_DOCKER_HOST"  # or a Docker host outright: ssh://user@vps, tcp://host:2376, npipe:////./pipe/docker_engine
+COMMAND_VAR = "LIMINAL_DOCKER_COMMAND"  # the command: docker (Docker Desktop, Rancher Desktop's dockerd), nerdctl (Rancher's containerd), podman
 TIMEOUT_S = 120.0
 
 
@@ -88,38 +89,40 @@ class Docker:
     """The docker command, on this machine or where a context or host says (`where`). `runner(args,
     timeout) -> (code, stdout, stderr)` stands in for the command in tests."""
 
-    def __init__(self, context: str | None = None, host: str | None = None, runner=None, log=None, env=None):
+    def __init__(self, context: str | None = None, host: str | None = None, runner=None, log=None, env=None, command: str | None = None):
         env = os.environ if env is None else env
         self.context = (context or env.get(CONTEXT_VAR) or "").strip() or None
         self.host = (host or env.get(HOST_VAR) or "").strip() or None
         self._runner = runner
         self.log = log or (lambda m: None)
-        self.command = shutil.which("docker") or "docker"
+        self.name = (command or env.get(COMMAND_VAR) or "docker").strip() or "docker"  # the command's name
+        self.command = shutil.which(self.name) or self.name  # its path when found
 
     @property
     def where(self) -> str:
         return f"context {self.context}" if self.context else (f"host {self.host}" if self.host else "this machine")
 
     def installed(self) -> bool:
-        return self._runner is not None or shutil.which("docker") is not None
+        return self._runner is not None or shutil.which(self.name) is not None
 
     def _run(self, *args: str, timeout: float = TIMEOUT_S, check: bool = True, stdin: str | None = None) -> str:
         full = [self.command, *(("--context", self.context) if self.context else ()), *(("-H", self.host) if self.host else ()), *args]
         if self._runner is not None:
             code, out, err = self._runner(full, timeout)
         else:
-            if shutil.which("docker") is None:
-                raise DockerError("docker is not installed on this machine (Docker Desktop, or the docker command), "
-                                  f"and no context or host names another ({CONTEXT_VAR}, {HOST_VAR})")
+            if shutil.which(self.name) is None:
+                raise DockerError(f"{self.name} is not installed on this machine (Docker Desktop or Rancher Desktop give the docker "
+                                  f"command; Rancher's containerd gives nerdctl: {COMMAND_VAR}=nerdctl), and no context or host names "
+                                  f"another ({CONTEXT_VAR}, {HOST_VAR})")
             try:
                 done = subprocess.run(full, capture_output=True, text=True, timeout=timeout, input=stdin, **_no_window())
             except subprocess.TimeoutExpired:
-                raise DockerError(f"docker {' '.join(args[:2])} took more than {timeout:g} s on {self.where}") from None
+                raise DockerError(f"{self.name} {' '.join(args[:2])} took more than {timeout:g} s on {self.where}") from None
             except OSError as e:
-                raise DockerError(f"docker could not run: {e}") from None
+                raise DockerError(f"{self.name} could not run: {e}") from None
             code, out, err = done.returncode, done.stdout or "", done.stderr or ""
         if code != 0 and check:
-            raise DockerError((err or out or f"docker {' '.join(args[:2])} failed ({code})").strip())
+            raise DockerError((err or out or f"{self.name} {' '.join(args[:2])} failed ({code})").strip())
         return out
 
     def available(self) -> bool:
@@ -215,7 +218,7 @@ class Docker:
         return self._run("compose", "-f", str(file), *args, timeout=timeout)
 
     def describe(self) -> dict:
-        out: dict = {"where": self.where, "installed": self.installed(), "available": False}
+        out: dict = {"where": self.where, "command": self.name, "installed": self.installed(), "available": False}
         if out["installed"]:
             try:
                 out.update(self.version())
@@ -225,9 +228,9 @@ class Docker:
         return out
 
 
-def command_line(service: Service) -> str:
-    """What `docker run` would be asked, for a page or a log."""
-    return "docker " + " ".join(shlex.quote(a) for a in service.run_args())
+def command_line(service: Service, command: str = "docker") -> str:
+    """What `docker run` (or nerdctl's) would be asked, for a page or a log."""
+    return f"{command} " + " ".join(shlex.quote(a) for a in service.run_args())
 
 
 def _no_window() -> dict:

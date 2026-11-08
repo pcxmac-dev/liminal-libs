@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.18.1 (2026-11-07)
+
+The container command is a setting (the user: Rancher): `Docker(command=)` or LIMINAL_DOCKER_COMMAND, `docker`
+by default (Docker Desktop, Rancher Desktop's dockerd engine), `nerdctl` for Rancher Desktop's containerd
+engine, `podman` likewise; `describe()` names it, and a missing command says what gives it.
+
 ## 1.18.0 (2026-11-07)
 
 Docker in the framework (the user: "i want to integrate docker with the liminal framework"; "the container
