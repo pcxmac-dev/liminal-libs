@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import sys
 import threading
 import time
 import webbrowser
@@ -25,7 +26,16 @@ from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
+from .traffic import RecordingLogin, Traffic, node_of
 from .tray import Tray, TrayItem
+
+TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
+
+
+def _caller(handler) -> str:
+    """Who sent a request: the app's page in a browser (it names its origin), else a program."""
+    h = handler.headers
+    return "page" if (h.get("Origin") or h.get("Sec-Fetch-Site") or h.get("Referer")) else "client"
 
 
 class Refused(Exception):
@@ -48,6 +58,12 @@ class App:
     STATIC: Path | None = None  # the app's own page files (index.html, its scripts)
     INDEX = "index.html"
     API = "1.0"  # the app's own API version, for its clients
+    # who talks to whom (apps.traffic; `GET /api/traffic`): the page's requests, the plugins attached and detached and
+    # asked by name are noted in every app; an app may also note what its plugins read and keep through its login
+    # (each plugin lent a login noting it) and the programs and hosts the app and its plugins reach (once served)
+    TRACE_LOGIN = False
+    WATCH_OUTSIDE = False
+    READ_HOOKS: tuple[str, ...] = ()  # hooks asked by name that only read (noted as reads, not asks)
 
     def __init__(self, log=print, login=None):
         self.log = log
@@ -57,14 +73,26 @@ class App:
         self._plugins: dict[str, object] = {}  # the plugins attached, by name (attach)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.traffic = Traffic()  # what is said, between whom (apps.traffic)
+        self.traffic.me = self.NAME
+        self.traffic.own(self, self.NAME)
+
+    def login_for(self, name: str):
+        """The login `name` (a plugin, or the app itself by its own name) is lent: the app's; noting what it reads and
+        keeps there when the app traces its login (TRACE_LOGIN)."""
+        if self.login is None or not self.TRACE_LOGIN:
+            return self.login
+        return RecordingLogin(self.login, name, self.traffic)
 
     # -- the plugins attached (the user, 2026-11-06: "the app itself (either chart or integrator) has
     # plugin ABC as well"; "the plugin ABC will enumerate attached plugins and their API") ------------
     def attach(self, plugin) -> dict:
         """A plugin attached to this app: it gets this app and its login (the one way to its keys);
         returns the interface the plugin offers (what `plugins` enumerates)."""
-        interface = plugin.attach(self, self.login)
+        interface = plugin.attach(self, self.login_for(plugin.name))
         self._plugins[plugin.name] = plugin
+        self.traffic.own(plugin, plugin.name)
+        self.traffic.record(self.NAME, plugin.name, "attach", "attached")
         self.log(f"{self.NAME}: {plugin.name} attached ({plugin.KIND}; hooks {', '.join(interface['hooks']) or 'none'})")
         return interface
 
@@ -73,6 +101,7 @@ class App:
         if plugin is None:
             return False
         plugin.detach()
+        self.traffic.record(self.NAME, name, "attach", "detached")
         self.log(f"{self.NAME}: {name} detached")
         return True
 
@@ -84,17 +113,59 @@ class App:
         return {name: p.interface() for name, p in self._plugins.items()}
 
     def ask(self, name: str, hook: str, *args, **kwargs):
-        """One attached plugin's hook called by name (LookupError: no such plugin or hook)."""
+        """One attached plugin's hook called by name (LookupError: no such plugin or hook); noted as asked by whoever
+        calls (a plugin asking another through its app, else the app)."""
         plugin = self._plugins.get(name)
         if plugin is None:
             raise LookupError(f"no plugin {name!r} is attached to {self.NAME}")
-        return plugin.ask(hook, *args, **kwargs)
+        caller = self.traffic.actor(sys._getframe(1)) or self.NAME
+        with self.traffic.timed(caller, name, "read" if hook in self.READ_HOOKS else "ask", hook):
+            return plugin.ask(hook, *args, **kwargs)
+
+    # -- who talks to whom (apps.traffic) ---------------------------------------------------------------------------
+    def classify(self, method: str, path: str) -> str:
+        """A request's class (traffic.CLASSES): a GET reads, anything else asks for a change; an app knows its streams
+        and its asks."""
+        return "read" if method == "GET" else "change"
+
+    def known_ports(self) -> dict[int, str]:
+        """This machine's ports of the framework's apps, by port (a link to one is drawn as that app); the frame knows
+        none but its own."""
+        return {}
+
+    def plugin_node(self, p) -> dict:
+        """A plugin as the connections picture draws it."""
+        return {"id": p.name, "role": "plugin", "title": getattr(p, "title", "") or p.name, "icon": getattr(p, "ICON", "") or "plug",
+                "state": "attached" if self._plugins.get(p.name) is p else "detached", "attached": self._plugins.get(p.name) is p}
+
+    def connections(self, last: int = 200) -> dict:
+        """Who talks to whom (`GET /api/traffic`): the app, its page, its login, its plugins and whatever they reached,
+        as nodes; the links counted by class; the latest rows."""
+        snap = self.traffic.snapshot(last)
+        nodes: dict[str, dict] = {self.NAME: {"id": self.NAME, "role": "app", "title": self.TITLE or self.NAME,
+                                              "icon": self.ICON or "chip", "sub": f"this app, at {self.served or self.url()}"}}
+        if self.login is not None:
+            try:
+                d = self.login.describe()
+            except Exception:  # noqa: BLE001 - a login that cannot say
+                d = {}
+            kind = str(d.get("kind") or type(self.login).__name__)
+            sub = "the user's environment variables" if kind == "EnvironmentLogin" else "the login app" if kind == "LoginClient" else kind
+            nodes["login"] = {"id": "login", "role": "login", "title": "Login", "icon": "user", "sub": sub,
+                              "signedIn": bool(d.get("signedIn"))}
+        for p in self._plugins.values():
+            nodes[p.name] = self.plugin_node(p)
+        for link in snap["links"]:
+            for end in (link["from"], link["to"]):
+                if end not in nodes:
+                    nodes[end] = node_of(end)
+        return {"app": self.NAME, **snap, "nodes": list(nodes.values())}
 
     def interface(self) -> dict:
         """What this app offers (the same shape a plugin gives of itself: `GET /api/interface`): its
         name and API version, the methods a plugin or another app may call on it."""
         methods = {}
-        for name in ("describe", "tray", "plugins", "attach", "detach", "ask", "interface"):
+        for name in ("describe", "tray", "plugins", "attach", "detach", "ask", "interface", "connections"):
             try:
                 methods[name] = str(inspect.signature(getattr(self, name)))
             except (TypeError, ValueError):
@@ -151,6 +222,9 @@ class App:
             return 200, {"plugins": self.plugins()}
         if method == "GET" and path == "/api/interface":
             return 200, self.interface()
+        if method == "GET" and path == TRAFFIC_PATH:
+            raw = str(query.get("last") or "200")
+            return 200, self.connections(min(int(raw), 400) if raw.isdecimal() else 200)
         if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
             from ..ui import preferences
 
@@ -171,6 +245,8 @@ class App:
             httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self))
         self._httpd = httpd
         self.served = f"http://127.0.0.1:{httpd.server_address[1]}/"
+        if self.WATCH_OUTSIDE:  # the programs and hosts it and its plugins reach, from now on
+            self.traffic.watch({**self.known_ports(), httpd.server_address[1]: self.NAME})
         self._thread = threading.Thread(target=httpd.serve_forever, name=f"{self.NAME}-server", daemon=True)
         self._thread.start()
         self.log(f"{self.NAME}: its page at {self.served}")
@@ -180,6 +256,7 @@ class App:
 
     def stop(self) -> None:
         """End the server (the page stops answering)."""
+        self.traffic.unwatch()
         httpd, self._httpd = self._httpd, None
         if httpd is not None:
             httpd.shutdown()
@@ -286,15 +363,22 @@ def make_handler(app: App):
 
         def _answer(self, method: str, parts, body: dict | None) -> None:
             query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
+            began, status = time.perf_counter(), HTTPStatus.INTERNAL_SERVER_ERROR
             try:
-                out = app.api(self, method, parts.path, query, body)
-            except Refused as e:
-                return web.send_json(self, {"error": e.reason}, e.status)
-            except Exception as e:  # noqa: BLE001 - the app's fault, logged there; the page gets no detail
-                app.log(f"{app.NAME}: {method} {parts.path} failed: {type(e).__name__}: {e}")
-                return web.send_json(self, {"error": f"{app.NAME} could not answer; see its log"},
-                                     HTTPStatus.INTERNAL_SERVER_ERROR)
-            status, data, *rest = out
-            web.send_json(self, data, status, rest[0] if rest else None)
+                try:
+                    out = app.api(self, method, parts.path, query, body)
+                except Refused as e:
+                    status = e.status
+                    return web.send_json(self, {"error": e.reason}, e.status)
+                except Exception as e:  # noqa: BLE001 - the app's fault, logged there; the page gets no detail
+                    app.log(f"{app.NAME}: {method} {parts.path} failed: {type(e).__name__}: {e}")
+                    return web.send_json(self, {"error": f"{app.NAME} could not answer; see its log"},
+                                         HTTPStatus.INTERNAL_SERVER_ERROR)
+                status, data, *rest = out
+                web.send_json(self, data, status, rest[0] if rest else None)
+            finally:  # every request noted (its path, never its query or body) but the picture's own
+                if parts.path != TRAFFIC_PATH:
+                    app.traffic.record(_caller(self), app.NAME, app.classify(method, parts.path), f"{method} {parts.path}",
+                                       (time.perf_counter() - began) * 1000, int(status) < 400)
 
     return Handler

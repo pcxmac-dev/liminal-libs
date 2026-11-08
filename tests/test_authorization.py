@@ -108,7 +108,7 @@ def test_a_plugin_enumerates_the_hooks_it_offers_and_asks_its_login_for_its_key(
         app.ask("nobody", "build")
     face = app.interface()
     assert face["name"] == "demo" and face["plugins"] == ["acme"] and face["login"]["namespace"] == "charts"
-    assert set(face["methods"]) == {"describe", "tray", "plugins", "attach", "detach", "ask", "interface"}
+    assert set(face["methods"]) == {"describe", "tray", "plugins", "attach", "detach", "ask", "interface", "connections"}
     assert problems(p) == []
     # served: the app's plugins and interface
     app.start(0)

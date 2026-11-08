@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.32.0 (2026-11-08)
+
+Who talks to whom, for an app's connections picture (the user: "the root plugin (platform) will need to visually
+illustrate how plugins are connected to each other or to the main app/plugin/icon via IPC, all requests and
+interactions should be classified and give the user a way to understand how the app and it's plugins communicate,
+visually"):
+
+- `apps/traffic.py`: `Traffic` notes each interaction (from, to, its class, what, how long, whether it went through):
+  the latest 400 rows (the same thing said again within 30 s is one row, counted), a count per link (from, to, class:
+  how many, how many failed, the mean time, the last), at most 300 links. `CLASSES`: read, change, ask, stream,
+  attach, login, process, network. Never a value: a setting by its name, no hook's arguments, a program by its name
+  alone, a host by its name or address and port.
+- `Traffic.watch()`: the programs started and the hosts reached by an app's code and its plugins' noted, through one
+  audit hook per process (`sys.addaudithook`: subprocess.Popen, os.system and the spawns, socket.connect and sendto;
+  the name looked up just before a connect names its host). Who reached it is read off the calling code: the innermost
+  frame whose `self` is owned (`Traffic.own`: a plugin, the app) or whose module is an owned plugin's package; code of
+  no owner (the library alone, a test) is not noted. A link to this machine at a port of the framework's apps is drawn
+  as that app.
+- `RecordingLogin`: the login as one plugin (or the app itself) is lent it, its reads, listings, policy questions and
+  saves noted by name.
+- `App`: `traffic`; every request of its page noted (`classify`: a GET reads, anything else changes; a page in a
+  browser apart from a program), the plugins attached, detached and asked by name (by whoever asks: a plugin asking
+  another through its app names itself); `GET /api/traffic` = `connections()` (nodes: the app, its page, its login,
+  its plugins, what they reached; the links; the latest rows); `login_for(name)`; opt-ins `TRACE_LOGIN` (a plugin
+  attached is lent a RecordingLogin), `WATCH_OUTSIDE` (watched once served), `READ_HOOKS`, `known_ports()`,
+  `plugin_node()`. `interface()` lists `connections`.
+
 ## 1.31.0 (2026-11-08)
 
 A setting kept through the login (the user: "i need a way to put my credentials in to the namecheap plugin and allow it
