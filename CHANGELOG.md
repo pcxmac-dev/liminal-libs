@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.33.0 (2026-11-08)
+
+The platform's plugins by their makers' marks (the user: "for the icons, WSL, use the distribution's mascot or icon";
+"for the firewalls, lets use an icon of TUX penguin or Windows and then convert it to a patchwork of bricks"; "for name
+cheap, use it's icon"; "for the AI icons, lets use the respective mascot/icon from the business, logo, etc.."; "for the
+docker and kubernetes plugins, use their respective logos"; "same with LXD and hyperv for windows"): fourteen icons in
+icons.js, each drawn in the set's own line and colour (currentColor: the theme's) from the mark it stands for:
+`ubuntu` (the circle of friends), `fedora` (the bubble and its f), `gentoo` (the g with its hole), `tuxbricks` (Tux, his
+body a wall of bricks: the Linux firewall), `windowsbricks` (the four panes of Windows as brick walls: the Windows
+firewall), `namecheap` (its N), `claude` (the spark), `openai` (the knot: the Codex plugin's), `grok`, `copilot`
+(GitHub Copilot's pilot), `docker` (the whale and its containers), `kubernetes` (the helm), `lxd` (a cube of cubes),
+`hyperv` (a machine within a machine). `icon()` draws a name the set lacks as the plug rather than an empty square.
+
 ## 1.32.0 (2026-11-08)
 
 Who talks to whom, for an app's connections picture (the user: "the root plugin (platform) will need to visually

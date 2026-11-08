@@ -85,8 +85,59 @@
         globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
     record: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4" fill="currentColor"/>',
         sort: '<path d="M7 4v16"/><path d="m3 16 4 4 4-4"/><path d="M17 20V4"/><path d="m13 8 4-4 4 4"/>',
+    // The platform's plugins by their makers' marks, each drawn in this set's own line (the user, 2026-11-08: "for the
+    // icons, WSL, use the distribution's mascot or icon"; "for the firewalls, lets use an icon of TUX penguin or Windows
+    // and then convert it to a patchwork of bricks"; "for name cheap, use it's icon"; "for the AI icons, lets use the
+    // respective mascot/icon from the business, logo, etc.."; "for the docker and kubernetes plugins, use their
+    // respective logos"; "same with LXD and hyperv for windows")
+    // Ubuntu's circle of friends: three heads about a ring broken beside each
+    ubuntu: '<path stroke-width="1.6" d="M17.86 8.55a6.8 6.8 0 0 1 0 6.9M12.06 18.8a6.8 6.8 0 0 1-5.98-3.45M6.08 8.65a6.8 6.8 0 0 1 5.98-3.45"/>'
+      + '<g fill="currentColor" stroke="none"><circle cx="5.2" cy="12" r="2.2"/><circle cx="15.4" cy="6.11" r="2.2"/><circle cx="15.4" cy="17.89" r="2.2"/></g>',
+    // Fedora's bubble, its corner square, and its f closing on an infinity's loop
+    fedora: '<g stroke-width="1.5"><path d="M20.5 12A8.5 8.5 0 1 0 12 20.5h8.5z"/><path d="M14.8 7.2H14a3.6 3.6 0 0 0-3.6 3.6v4.4a2.6 2.6 0 1 1-2.6-2.6H14"/></g>',
+    // Gentoo's g: the round swirl with its hole, its tail hooked below
+    gentoo: '<g stroke-width="1.5"><path d="M6.2 20.8c2.4-1.2 3.4-3.2 2.2-5.2-1.8-3.2-.8-7.8 2.4-10.2 3.2-2.4 7.8-2 9.4 1.2 1.6 3.2 0 7.2-3.8 9.8-3 2-6.6 3.8-10.2 4.4z"/>'
+      + '<ellipse cx="15.2" cy="9.8" rx="2.6" ry="1.8" transform="rotate(-35 15.2 9.8)"/></g>',
+    // the Linux firewall: Tux, his body a wall of bricks
+    tuxbricks: '<g stroke-width="1.5"><path d="M12 2.5c2.3 0 3.7 1.8 3.7 4.3 0 1.6-.6 2.4-.1 3.5 1 2 3 3.7 3 6.5s-2.4 4.4-6.6 4.4-6.6-1.6-6.6-4.4 2-4.5 3-6.5c.5-1.1-.1-1.9-.1-3.5 0-2.5 1.4-4.3 3.7-4.3z"/>'
+      + '<path d="M5.6 21.4c1.2-.5 2.8-.6 4.2-.1M14.2 21.3c1.4-.5 3-.4 4.2.1"/></g>'
+      + '<path stroke-width="1" d="M9 10.4h6M7.8 12.6h8.4M6.4 15.6h11.2M6.6 18.6h10.8M12 10.4v2.2M9.4 12.6v3M14.6 12.6v3M12 15.6v3M9.4 18.6v2.1M14.6 18.6v2.1M10.6 7.9 12 7.3l1.4.6-1.4 1.1z"/>'
+      + '<g fill="currentColor" stroke="none"><circle cx="10.7" cy="5.9" r=".85"/><circle cx="13.3" cy="5.9" r=".85"/></g>',
+    // the Windows firewall: the four panes of Windows, each a wall of bricks
+    windowsbricks: '<g stroke-width="1.4"><rect x="3" y="3" width="8" height="8" rx=".6"/><rect x="13" y="3" width="8" height="8" rx=".6"/>'
+      + '<rect x="3" y="13" width="8" height="8" rx=".6"/><rect x="13" y="13" width="8" height="8" rx=".6"/></g>'
+      + '<path stroke-width="1" d="M3 7h8M13 7h8M3 17h8M13 17h8M7 3v4M17 3v4M7 13v4M17 13v4M5 7v4M9 7v4M15 7v4M19 7v4M5 17v4M9 17v4M15 17v4M19 17v4"/>',
+    // Namecheap's N, its strokes rounded
+    namecheap: '<path stroke-width="2.6" d="M6 18.5V6.8c0-.9 1.1-1.3 1.7-.6l8.6 11.6c.6.7 1.7.3 1.7-.6V5.5"/>',
+    // Claude's spark: rays of uneven length about an open heart
+    claude: '<path stroke-width="2.1" d="M12 10V2.8M13.18 10.38 16.11 6.34M13.9 11.38l6.28-2.04M13.9 12.62l5.33 1.73M13.18 13.62l4.11 5.66M12 14v4.9'
+      + 'M10.82 13.62l-3.99 5.5M10.1 12.62l-5.14 1.67M10.1 11.38 3.34 9.19M10.82 10.38 7.77 6.18"/>',
+    // OpenAI's knot (the Codex plugin's): three links turned a sixth of a turn apart
+    openai: '<g stroke-width="1.5"><rect x="8.9" y="3.2" width="6.2" height="17.6" rx="3.1"/>'
+      + '<rect x="8.9" y="3.2" width="6.2" height="17.6" rx="3.1" transform="rotate(60 12 12)"/>'
+      + '<rect x="8.9" y="3.2" width="6.2" height="17.6" rx="3.1" transform="rotate(120 12 12)"/></g>',
+    // Grok's mark: a ring open at its upper right, a stroke through it and out
+    grok: '<g stroke-width="1.8"><path d="M19.09 10.75A7.2 7.2 0 1 1 13.25 4.91"/><path d="M4.2 19.8 20.6 3.4"/></g>',
+    // GitHub Copilot's pilot: the head, its goggles, its eyes
+    copilot: '<g stroke-width="1.5"><path d="M4 13.5c0-1.1.4-2.2 1.1-3V9.2C5.1 6 8.2 4 12 4s6.9 2 6.9 5.2v1.3c.7.8 1.1 1.9 1.1 3v2.2c0 2.6-3.6 4.8-8 4.8s-8-2.2-8-4.8z"/>'
+      + '<rect x="6.4" y="7" width="4.8" height="4" rx="1.8"/><rect x="12.8" y="7" width="4.8" height="4" rx="1.8"/><path stroke-width="1.8" d="M10 14.6v1.6M14 14.6v1.6"/></g>',
+    // Docker's whale, its containers on its back
+    docker: '<path stroke-width="1.5" d="M2.4 12.2h16.2c.6-1.4 1.9-2.2 3.2-2 .2 1.2-.3 2.4-1.4 3C19 17.6 15.6 20 11 20c-4.6 0-7.8-2.6-8.6-7.8z"/>'
+      + '<g stroke-width="1"><rect x="4" y="9.6" width="2.2" height="2.2"/><rect x="6.6" y="9.6" width="2.2" height="2.2"/><rect x="9.2" y="9.6" width="2.2" height="2.2"/>'
+      + '<rect x="11.8" y="9.6" width="2.2" height="2.2"/><rect x="14.4" y="9.6" width="2.2" height="2.2"/><rect x="9.2" y="7" width="2.2" height="2.2"/>'
+      + '<rect x="11.8" y="7" width="2.2" height="2.2"/><rect x="14.4" y="7" width="2.2" height="2.2"/><rect x="11.8" y="4.4" width="2.2" height="2.2"/></g>'
+      + '<circle cx="6.4" cy="15.2" r=".75" fill="currentColor" stroke="none"/>',
+    // Kubernetes' helm: the heptagon, the wheel, its seven spokes
+    kubernetes: '<g stroke-width="1.5"><path d="M12 2.4 19.51 6.01 21.36 14.14 16.17 20.65H7.83L2.64 14.14 4.49 6.01z"/><circle cx="12" cy="12" r="5.2"/><circle cx="12" cy="12" r="1.5"/></g>'
+      + '<path stroke-width="1.3" d="M12 10.5V4.6M13.17 11.06l4.62-3.67M13.46 12.33l5.75 1.32M12.65 13.35l2.56 5.32M11.35 13.35l-2.56 5.32M10.54 12.33l-5.75 1.32M10.83 11.06 6.21 7.39"/>',
+    // LXD's cube of cubes (a container of containers)
+    lxd: '<g stroke-width="1.5"><path d="M12 3 19.8 7.5v9L12 21l-7.8-4.5v-9z"/><path d="M4.2 7.5 12 12l7.8-4.5M12 12v9"/></g>'
+      + '<path stroke-width="1" d="M15.9 5.25 8.1 9.75M8.1 5.25l7.8 4.5M8.1 9.75v9M4.2 12 12 16.5M15.9 9.75v9M12 16.5l7.8-4.5"/>',
+    // Hyper-V's machine within a machine: a screen showing another
+    hyperv: '<g stroke-width="1.5"><rect x="2.5" y="3.5" width="19" height="13" rx="1.6"/><path d="M12 16.5v3.4M8.6 20.5h6.8"/></g>'
+      + '<g stroke-width="1.2"><rect x="7.4" y="6.6" width="9.2" height="5.6" rx=".8"/><path d="M12 12.2v1.5M10.2 13.9h3.6"/></g>',
   };
-  const icon = (name, size = 16, cls = '') => SVG(PATHS[name], cls, size);
+  const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 
   function progressRing(fraction, size) {
     const r = 9, c = 2 * Math.PI * r, f = Math.max(0.04, Math.min(1, fraction || 0));
