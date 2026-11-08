@@ -178,3 +178,11 @@ def test_this_windows_machines_disks_are_read_without_rights():
 
     found = WindowsProbe().disks()
     assert isinstance(found, list) and all(isinstance(d, Disk) and d.name.endswith(":") and d.read >= 0 for d in found)
+
+
+def test_a_process_is_named_by_its_comm_for_a_ports_listener():
+    f, links = files()
+    f.update({"/proc/4242/comm": "python3\n", "/proc/5000/comm": "nginx\n"})
+    probe = FakeProc(f, links)
+    assert probe.program_names() == {4242: "python3", 5000: "nginx"}  # 4300 and 6000 have no comm here
+    assert probe.program_names([5000, 7777]) == {5000: "nginx"}

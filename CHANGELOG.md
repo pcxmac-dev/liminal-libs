@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.29.0 (2026-11-08)
+
+This network's public address and its ports checked, for the platform's hw-stats plugin (the user: "lets make sure
+platform hw stats is able to get the current public IP, and verify that 'selected' ports are available or blocked";
+"there should be a way to check ports"):
+
+- `dns.public_address(version, servers)`: the IPv4 or IPv6 address the internet sees, asked directly of the name
+  servers the caller names that answer with the asker's own address (an A or AAAA record, or a text record holding
+  it); a global address of that version only; (the address, whose answer it was) or (None, why). `dns.query` takes
+  the server to ask and nslookup's wait.
+- `ports.py`: `parse_ports` ("25, 80 443; 8765-8768", at most 12 at once); `here` (what listens on each port here,
+  from a probe's sockets: each program, on every address or this machine's own only); `reach_out` (a connection out
+  to a host the caller names, a server answering on every TCP port, its port 80 tried first); `Outcome` (open, closed
+  when refused, blocked when nothing answered, failed; listening, free), `tally`, `listening_pids`. The services
+  asked (the servers, the port testers) are the plugin's to name, as every outside host is a plugin's.
+- `WindowsProbe.program_names` and `LinuxProbe.program_names`: a process's program by pid (a port's listener named).
+
 ## 1.28.1 (2026-11-08)
 
 Docker inside a stopped WSL distribution never seen running is said as not asked (`{"asked": false}`): the

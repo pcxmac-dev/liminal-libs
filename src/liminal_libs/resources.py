@@ -476,6 +476,12 @@ class WindowsProbe:
                 out.append(Conn(r.pid, state, local, "" if state == "listening" else remote))
         return out
 
+    def program_names(self, pids=None) -> dict[int, str]:
+        """The program (its executable's file name) of each process by pid, of `pids` only when given: a port's
+        listener named (liminal_libs.ports.here). One snapshot of the processes, no rights needed."""
+        wanted = None if pids is None else set(pids)
+        return {pid: exe for pid, _, _, exe in self._snapshot() if wanted is None or pid in wanted}
+
 
 # -- Linux -----------------------------------------------------------------------------------
 
@@ -662,6 +668,17 @@ class LinuxProbe:
                 except (ValueError, OSError):
                     continue
                 out.append(Conn(owner.get(f[9], 0), state, local, "" if state == "listening" else remote))
+        return out
+
+    def program_names(self, pids=None) -> dict[int, str]:
+        """The program (/proc/<pid>/comm) of each process by pid, of `pids` only when given (comm is readable for
+        every user's processes; a socket's owner is known only for the processes reported, see connections)."""
+        found = [int(n) for n in self._listdir(self.proc) if n.isdigit()] if pids is None else [int(p) for p in pids]
+        out = {}
+        for pid in found:
+            name = (self._read(f"{self.proc}/{pid}/comm") or "").strip()
+            if name:
+                out[pid] = name
         return out
 
 

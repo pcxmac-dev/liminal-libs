@@ -1,15 +1,19 @@
 """What the machine's own resolver says about a name (nslookup, windowless): the addresses of a host, the
 mail exchangers of a domain, the text records of a name. For the login's checks of its own mail host (the
-user, 2026-11-06: an admin account "would need to be valid in the DNS record"). Nothing here is cached:
-a check wants the answer now."""
+user, 2026-11-06: an admin account "would need to be valid in the DNS record"). And this network's public
+address, asked of name servers that answer with the asker's own (`public_address`, the servers named by the
+caller: the platform's hw-stats plugin, the user, 2026-11-08: "make sure platform hw stats is able to get the
+current public IP"). Nothing here is cached: a check wants the answer now."""
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import subprocess
 
 NAME_FORM = r"[a-z0-9_-]+(\.[a-z0-9_-]+)+"
 IP_FORM = re.compile(r"^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]+:[0-9a-f:]*)$", re.I)
+PUBLIC_WAIT_S = 3  # nslookup's wait for each answer of a server asked for the asker's address (once more if none)
 
 
 def valid_name(name: str) -> str:
@@ -18,11 +22,13 @@ def valid_name(name: str) -> str:
     return name if re.fullmatch(NAME_FORM, name) else ""
 
 
-def query(name: str, rtype: str) -> str | None:
-    """nslookup's answer for `name` of `rtype` (a, aaaa, mx, txt), None when it could not run."""
+def query(name: str, rtype: str, server: str | None = None, wait: int | None = None) -> str | None:
+    """nslookup's answer for `name` of `rtype` (a, aaaa, mx, txt), asked of the machine's resolver or of `server`
+    (`wait`: the seconds nslookup waits for each answer, tried twice); None when it could not run or never ended."""
+    args = ["nslookup", f"-type={rtype}", *([f"-timeout={wait}", "-retry=1"] if wait else []), name, *([server] if server else [])]
     try:
-        return subprocess.run(["nslookup", f"-type={rtype}", name], capture_output=True, text=True, timeout=15,
-                              **_no_window()).stdout or ""
+        return subprocess.run(args, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+                              stdin=subprocess.DEVNULL, **_no_window()).stdout or ""
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -86,7 +92,40 @@ def txt_records(name: str) -> list[str] | None:
     out = query(name, "txt")
     if out is None:
         return None
+    return _texts(out)
+
+
+def _texts(out: str) -> list[str]:
+    """The text records in nslookup's answer, each one's quoted strings joined."""
     return ["".join(re.findall(r'"([^"]*)"', record)) for record in re.findall(r'((?:"[^"]*"\s*)+)', out)]
+
+
+def public_address(version: int, servers) -> tuple[str | None, str]:
+    """This network's public address of `version` (4 or 6) as the internet sees it (a home router's, behind its
+    NAT), asked of `servers` in turn: each (the name, its type: a, aaaa or txt, the name server asked directly,
+    whose), a server answering that name with the asker's own address (an A or AAAA record, or a text record holding
+    it); only a public (global) address of that version counts, so an IPv6 address is asked of a server's IPv6
+    address. (the address, whose answer it was), or (None, why there is none: a machine without an IPv6 route has
+    no IPv6 address to give)."""
+    if version not in (4, 6):
+        raise ValueError(f"an IP version is 4 or 6, not {version!r}")
+    asked = []
+    for name, rtype, server, whose in servers:
+        asked.append(whose)
+        out = query(name, rtype, server, wait=PUBLIC_WAIT_S)
+        if not out:
+            continue
+        for text in (_texts(out) if rtype == "txt" else _addresses_in(out)):
+            try:
+                ip = ipaddress.ip_address(text.strip())
+            except ValueError:
+                continue
+            if ip.version == version and ip.is_global:
+                return str(ip), whose
+    if not asked:
+        return None, "no server to ask"
+    return None, (f"{asked[0]} did not answer" if len(asked) == 1 else f"neither {' nor '.join(asked)} answered") + \
+        f" with a public IPv{version} address"
 
 
 def spf_record(domain: str) -> str | None:
