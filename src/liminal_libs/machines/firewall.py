@@ -144,6 +144,7 @@ class Firewall(MachinePlugin):
     """The base of the firewall plugins. A subclass drives one firewall through the backend methods below;
     the hooks (status, setup) and the platform's asks (allow, remove, wanted) are this base's."""
 
+    HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted")  # what the platform may ask by name (Plugin.ask)
     STEPS = STEPS
 
     # -- the backend: a subclass's -----------------------------------------------------------------

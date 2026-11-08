@@ -78,6 +78,7 @@ def test_the_apps_and_how_each_is_started():
 def test_the_admin_plugin_conforms_checks_what_is_asked_and_reports():
     a = FakeAdmin()
     assert problems(a) == [] and a.STEPS == ("privileges", "services", "startup") and a.KIND == "machine"
+    assert {"service", "startup", "register", "unregister", "processes"} <= set(a.interface()["hooks"])
     a.service("docker", "start")
     assert a.actions[-1] == ("docker", "start")
     with pytest.raises(AdminError):

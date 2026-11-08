@@ -95,6 +95,7 @@ class Admin(MachinePlugin):
     """The base of the admin plugins. A subclass drives one system through the backend methods below; the hooks
     (status, setup) and the checks of what is asked are this base's."""
 
+    HOOKS = (*MachinePlugin.HOOKS, "service", "startup", "register", "unregister", "processes")  # what the platform may ask by name
     STEPS = STEPS
     SERVICES: tuple = ()  # (name, title, what of the framework uses it, may the setup start it)
 

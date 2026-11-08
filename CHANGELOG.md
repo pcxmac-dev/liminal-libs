@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.20.1 (2026-11-07)
+
+The firewall plugins offer `allow`, `remove` and `wanted`, the admin plugins `service`, `startup`, `register`,
+`unregister` and `processes`, by name (`Plugin.ask`, `interface()`): what the platform's page asks of them.
+
 ## 1.20.0 (2026-11-07)
 
 The firewall and admin bases of the platform's plugins (the user: "i also need a windows and linux firewall

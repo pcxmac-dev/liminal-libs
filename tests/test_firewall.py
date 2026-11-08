@@ -96,6 +96,8 @@ def test_the_rules_a_logins_services_need_on_this_machine(tmp_path):
 def test_the_firewall_plugin_conforms_and_reports():
     fw = FakeFirewall()
     assert problems(fw) == [] and fw.STEPS == ("enable", "exposure", "rules") and fw.KIND == "machine"
+    assert {"allow", "remove", "wanted", "status", "setup"} <= set(fw.interface()["hooks"])  # asked by name (Plugin.ask)
+    assert fw.ask("allow", "asked", [9000]).name == "asked" and fw.ask("remove", "asked") is True
     fw.allow("web", (8443,), detail="a test")
     with pytest.raises(FirewallError):
         fw.allow("web", (8443,))
