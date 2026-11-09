@@ -7,8 +7,8 @@ import xml.etree.ElementTree as ET
 
 from liminal_libs.ui import STATIC
 
-MARKS = ("ubuntu", "fedora", "gentoo", "tuxbricks", "windowsbricks", "namecheap", "claude", "openai", "grok", "copilot",
-         "docker", "kubernetes", "lxd", "hyperv")
+MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "claude", "openai", "grok", "copilot",
+         "docker", "kubernetes", "lxd", "hyperv", "libvirt")
 
 
 def _paths() -> dict[str, str]:
@@ -32,6 +32,7 @@ def _paths() -> dict[str, str]:
 def test_every_icon_is_well_formed_and_the_plugins_marks_are_there():
     paths = _paths()
     assert set(MARKS) <= set(paths) and len(paths) >= 50
+    assert "tuxbricks" not in paths and "windowsbricks" not in paths  # the firewalls' marks the user replaced (1.34.0)
     for name, markup in paths.items():
         assert markup, name
         ET.fromstring(f"<svg>{markup}</svg>")  # a tag left open or an attribute unquoted raises

@@ -98,15 +98,17 @@
     // Gentoo's g: the round swirl with its hole, its tail hooked below
     gentoo: '<g stroke-width="1.5"><path d="M6.2 20.8c2.4-1.2 3.4-3.2 2.2-5.2-1.8-3.2-.8-7.8 2.4-10.2 3.2-2.4 7.8-2 9.4 1.2 1.6 3.2 0 7.2-3.8 9.8-3 2-6.6 3.8-10.2 4.4z"/>'
       + '<ellipse cx="15.2" cy="9.8" rx="2.6" ry="1.8" transform="rotate(-35 15.2 9.8)"/></g>',
-    // the Linux firewall: Tux, his body a wall of bricks
-    tuxbricks: '<g stroke-width="1.5"><path d="M12 2.5c2.3 0 3.7 1.8 3.7 4.3 0 1.6-.6 2.4-.1 3.5 1 2 3 3.7 3 6.5s-2.4 4.4-6.6 4.4-6.6-1.6-6.6-4.4 2-4.5 3-6.5c.5-1.1-.1-1.9-.1-3.5 0-2.5 1.4-4.3 3.7-4.3z"/>'
-      + '<path d="M5.6 21.4c1.2-.5 2.8-.6 4.2-.1M14.2 21.3c1.4-.5 3-.4 4.2.1"/></g>'
-      + '<path stroke-width="1" d="M9 10.4h6M7.8 12.6h8.4M6.4 15.6h11.2M6.6 18.6h10.8M12 10.4v2.2M9.4 12.6v3M14.6 12.6v3M12 15.6v3M9.4 18.6v2.1M14.6 18.6v2.1M10.6 7.9 12 7.3l1.4.6-1.4 1.1z"/>'
-      + '<g fill="currentColor" stroke="none"><circle cx="10.7" cy="5.9" r=".85"/><circle cx="13.3" cy="5.9" r=".85"/></g>',
-    // the Windows firewall: the four panes of Windows, each a wall of bricks
-    windowsbricks: '<g stroke-width="1.4"><rect x="3" y="3" width="8" height="8" rx=".6"/><rect x="13" y="3" width="8" height="8" rx=".6"/>'
-      + '<rect x="3" y="13" width="8" height="8" rx=".6"/><rect x="13" y="13" width="8" height="8" rx=".6"/></g>'
-      + '<path stroke-width="1" d="M3 7h8M13 7h8M3 17h8M13 17h8M7 3v4M17 3v4M7 13v4M17 13v4M5 7v4M9 7v4M15 7v4M19 7v4M5 17v4M9 17v4M15 17v4M19 17v4"/>',
+    // the Linux firewall: a brick wall with a flame before it (the user's picture, 2026-11-08: "use this icon for linux
+    // firewall")
+    wallfire: '<g stroke-width="1.5"><path d="M7.4 21.6C4.4 21.6 2.3 19.4 2.3 16.5 2.3 12.6 5.6 10.4 5.9 4.2c2.5 2.1 3.5 4.4 3.4 7 .9-.7 1.5-1.6 1.8-2.8 1.1 2 1.5 4.3 1.5 6.9 0 3.7-2 6.3-5.2 6.3z"/>'
+      + '<path d="M8.6 6.8V4.5A1.5 1.5 0 0 1 10.1 3h10.2a1.5 1.5 0 0 1 1.5 1.5v15.6a1.5 1.5 0 0 1-1.5 1.5h-8.7"/></g>'
+      + '<g stroke-width="1.2"><path d="M7.5 19.9c-1.5 0-2.5-1.1-2.5-2.6 0-1.9 1.3-2.9 2.2-5 1.4 1.7 2.8 3 2.8 5 0 1.5-1 2.6-2.5 2.6z"/>'
+      + '<path d="M9.7 7.65h12.1M13.5 12.3h8.3M13.6 16.95h8.2M15.2 3v4.65M18.5 7.65v4.65M15.2 12.3v4.65M18.5 16.95v4.65"/></g>',
+    // the Windows firewall: a brick wall in three dimensions, the globe behind it (the user's picture: "this one for
+    // windows firewall")
+    wallglobe: '<g stroke-width="1.5"><path d="M9.81 7.6A6 6 0 1 1 18.7 13.25"/><path d="M2.5 11h12.5v10.5H2.5zM2.5 11l2.6-2.2h12.5L15 11M17.6 8.8v10.5L15 21.5"/></g>'
+      + '<g stroke-width="1.1"><path d="M13.2 7.6a2.6 6 0 0 1 5.2 0M10.6 5q5.2 1.6 10.4 0"/>'
+      + '<path d="M2.5 14.5H15M2.5 18H15M6.7 11v3.5M10.9 11v3.5M4.6 14.5V18M8.8 14.5V18M13 14.5V18M6.7 18v3.5M10.9 18v3.5M6.7 11l2.6-2.2M10.9 11l2.6-2.2M15 14.5l2.6-2.2M15 18l2.6-2.2"/></g>',
     // Namecheap's N, its strokes rounded
     namecheap: '<path stroke-width="2.6" d="M6 18.5V6.8c0-.9 1.1-1.3 1.7-.6l8.6 11.6c.6.7 1.7.3 1.7-.6V5.5"/>',
     // Claude's spark: rays of uneven length about an open heart
@@ -133,6 +135,14 @@
     // LXD's cube of cubes (a container of containers)
     lxd: '<g stroke-width="1.5"><path d="M12 3 19.8 7.5v9L12 21l-7.8-4.5v-9z"/><path d="M4.2 7.5 12 12l7.8-4.5M12 12v9"/></g>'
       + '<path stroke-width="1" d="M15.9 5.25 8.1 9.75M8.1 5.25l7.8 4.5M8.1 9.75v9M4.2 12 12 16.5M15.9 9.75v9M12 16.5l7.8-4.5"/>',
+    // libvirt's tin, turned as its logo has it: penguins packed head to toe, the lid rolled back on its key (the user:
+    // "the platform icon matches libvirt's ... libvirt has a can of tuna as an icon")
+    libvirt: '<g transform="rotate(-20 12 12)"><g stroke-width="1.5"><rect x="2.6" y="6.2" width="18.8" height="11.6" rx="2.3"/>'
+      + '<path d="M14.1 6.6a1.3 1.3 0 0 1 2.6 0v10.8a1.3 1.3 0 0 1-2.6 0z"/><path d="M15.4 18.7v.8"/><circle cx="15.4" cy="20.7" r="1.2"/></g>'
+      + '<g stroke-width="1.1"><path d="M14.1 6.6a1.3 1.1 0 0 0 2.6 0"/>'
+      + '<ellipse cx="6.1" cy="11.7" rx="1.8" ry="3.8"/><ellipse stroke-width=".9" cx="6.55" cy="12.3" rx=".95" ry="2.5"/><path d="M5.2 16.2h.9M6.5 16.2h.9"/>'
+      + '<ellipse cx="11.2" cy="12.3" rx="1.8" ry="3.8"/><ellipse stroke-width=".9" cx="10.75" cy="11.7" rx=".95" ry="2.5"/><path d="M10.3 7.9h.9M11.6 7.9h.9"/>'
+      + '<path stroke-width="1" d="M18.4 8.4h1.3a.8.8 0 0 1 .8.8v5.6a.8.8 0 0 1-.8.8h-1.3"/></g></g>',
     // Hyper-V's machine within a machine: a screen showing another
     hyperv: '<g stroke-width="1.5"><rect x="2.5" y="3.5" width="19" height="13" rx="1.6"/><path d="M12 16.5v3.4M8.6 20.5h6.8"/></g>'
       + '<g stroke-width="1.2"><rect x="7.4" y="6.6" width="9.2" height="5.6" rx=".8"/><path d="M12 12.2v1.5M10.2 13.9h3.6"/></g>',

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.34.0 (2026-11-08)
+
+The firewalls' icons the user picked, and libvirt's own: `wallfire` (a brick wall with a flame before it: the user, "use
+this icon for linux firewall") and `wallglobe` (a brick wall in three dimensions with the globe behind it: "this one for
+windows firewall") take the place of `tuxbricks` and `windowsbricks`, which are gone; `libvirt` (its logo's open tin,
+turned, penguins packed head to toe, the lid rolled back on its key: "the platform icon matches libvirt's ... libvirt
+has a can of tuna as an icon"), so the libvirt plugin no longer borrows the platform's chip. Each in the set's own line
+and colour.
+
 ## 1.33.0 (2026-11-08)
 
 The platform's plugins by their makers' marks (the user: "for the icons, WSL, use the distribution's mascot or icon";
