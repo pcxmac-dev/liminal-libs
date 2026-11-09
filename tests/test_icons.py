@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from liminal_libs.ui import STATIC
 
 MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "claude", "openai", "grok", "copilot",
-         "docker", "kubernetes", "lxd", "hyperv", "libvirt")
+         "cursor", "docker", "kubernetes", "lxd", "hyperv", "libvirt")
 
 
 def _paths() -> dict[str, str]:

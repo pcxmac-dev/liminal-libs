@@ -123,6 +123,9 @@
     // GitHub Copilot's pilot: the head, its goggles, its eyes
     copilot: '<g stroke-width="1.5"><path d="M4 13.5c0-1.1.4-2.2 1.1-3V9.2C5.1 6 8.2 4 12 4s6.9 2 6.9 5.2v1.3c.7.8 1.1 1.9 1.1 3v2.2c0 2.6-3.6 4.8-8 4.8s-8-2.2-8-4.8z"/>'
       + '<rect x="6.4" y="7" width="4.8" height="4" rx="1.8"/><rect x="12.8" y="7" width="4.8" height="4" rx="1.8"/><path stroke-width="1.8" d="M10 14.6v1.6M14 14.6v1.6"/></g>',
+    // Cursor's cube (the user, 2026-11-09: "lets add an AI plugin for cursor"): the hexagon of its 2D mark, and the arrow
+    // cut out of it, its top edge level, its tip at the cube's foot, its notch at the cube's centre
+    cursor: '<g stroke-width="1.5"><path d="M12 2.2 20.49 7.1v9.8L12 21.8 3.51 16.9V7.1z"/><path d="M4.4 7.45H19.6L12 20.6V12.05z"/></g>',
     // Docker's whale, its containers on its back
     docker: '<path stroke-width="1.5" d="M2.4 12.2h16.2c.6-1.4 1.9-2.2 3.2-2 .2 1.2-.3 2.4-1.4 3C19 17.6 15.6 20 11 20c-4.6 0-7.8-2.6-8.6-7.8z"/>'
       + '<g stroke-width="1"><rect x="4" y="9.6" width="2.2" height="2.2"/><rect x="6.6" y="9.6" width="2.2" height="2.2"/><rect x="9.2" y="9.6" width="2.2" height="2.2"/>'

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.40.0 (2026-11-09)
+
+Cursor's mark for its AI assistant (the user: "lets add an AI plugin for cursor"): `cursor` in icons.js among the makers'
+marks, drawn in the set's own line and colour from the 2D logomark on Cursor's brand page: the cube's hexagon and the
+arrow cut out of it, its top edge level, its tip at the cube's foot, its notch at the cube's centre. The plugin
+(plugin-platform-cursor) names it in its `ICON`.
+
 ## 1.39.0 (2026-11-09)
 
 Update packages among an install's tasks (the user: "move the update packages on to the TASK"): `update_packages` brings
