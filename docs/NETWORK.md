@@ -1,9 +1,11 @@
 # Liminal as a network of nodes, in Rust: the design
 
 Status: **draft for review**. It was first written on 2026-11-09 for Python on a Rust core, then revised the same day
-for a full rewrite in Rust. Nothing here is built yet. Decisions 1–8 and 63 are decided, and the decisions the
-rewrite retires are marked so. Every other decision in the log (§10) stays open until the user decides it, and the
-code follows only decided items.
+for a full rewrite in Rust. Nothing here is built yet.
+- Decided: 1–8, 13–15, 17–20, 27, 36, 39, 43–56, 58, 60, 63, 67, 70–73 and 79–83.
+- Retired by the rewrite: the rows marked so.
+- Every other decision in the log (§10) stays open until the user decides it, and the code follows only decided
+  items.
 
 ## 1. What the user asked for
 
@@ -763,21 +765,21 @@ Every row is **open** until the user decides it, unless it is marked decided or 
 | 10 | Processes for plugins | one each; grouped | one each, its executable, for isolation. A Rust node's memory is measured in Phase 2 (Python's take 30–45 MB) | open |
 | 11 | Shared parts as nodes of their own | where sharing pays; never | where sharing pays: one `Wsl` | open |
 | 12 | Nodes in one process | direct calls; always through the dendrites | direct: hot loops pay nothing | open |
-| 13 | Starting and letting go | at the first request, and after 120 s quiet, with a 10 s grace; host.py's 60 s idle | at the first request, quiet 120 s: nothing runs unless used | open |
-| 14 | Address scope | the reaching app's state (its database or folder), through host.py's digest; the user's | the reaching app's state: previews stay apart, and each login serves only its own plugins | open |
-| 15 | Reach | this machine only; other machines too | this machine only for now, with the transport pluggable. The user did not answer this one | open |
+| 13 | Starting and letting go | at the first request, and after 120 s quiet, with a 10 s grace; host.py's 60 s idle | at the first request, quiet 120 s: nothing runs unless used | **decided**: as recommended |
+| 14 | Address scope | the reaching app's state (its database or folder), through host.py's digest; the user's | the reaching app's state: previews stay apart, and each login serves only its own plugins | **decided**: as recommended |
+| 15 | Reach | this machine only; other machines too | this machine only for now, with the transport pluggable | **decided**: as recommended |
 | 16 | *(replaced by 36: pickle is Python-only, and R3 rules it out)* | | | — |
-| 17 | Nodes and callables in messages | by handle, released explicitly; by copy | by handle: a node is live state | open |
-| 18 | Default access | a plugin admits its app's namespace, and an app admits its plugins; anyone with the key | as recommended | open |
-| 19 | Errors | records whose kind is named as today's class, mapped to an error enum in Rust and rebuilt as classes on the bridge; text only | records: the platform's 400/502 and `accept` depend on the kind | open |
-| 20 | Coalescing state signals | 250 ms; another interval | 250 ms | open |
+| 17 | Nodes and callables in messages | by handle, released explicitly; by copy | by handle: a node is live state | **decided**: as recommended |
+| 18 | Default access | a plugin admits its app's namespace, and an app admits its plugins; anyone with the key | as recommended | **decided**: as recommended |
+| 19 | Errors | records whose kind is named as today's class, mapped to an error enum in Rust and rebuilt as classes on the bridge; text only | records: the platform's 400/502 and `accept` depend on the kind | **decided**: as recommended |
+| 20 | Coalescing state signals | 250 ms; another interval | 250 ms | **decided**: as recommended |
 | 21 | Pushing to the pages | keep polling; server-sent events | keep polling: the existing UI is the reference | open |
 | 22 | A plugin's status watch | 5 s while linked; other | 5 s while linked, and at once on a background reader's change | open |
 | 23 | The abstract members | | becomes the traits' required methods (§9's table) | retired |
 | 24 | Records (`Provider`, `Publisher`) with `record_form` | | records are structs | retired |
 | 25 | The plugin API's version | 3.0 for Rust plugins, with 2.x still loading through the bridge; 2.2 | 3.0: a plugin is a node now | open |
 | 26 | `App.api` abstract | | becomes a trait method | retired |
-| 27 | A plugin's process ending | 10 s after its last synapse, a request in progress let finish; at once | 10 s, and let finish | open |
+| 27 | A plugin's process ending | 10 s after its last synapse, a request in progress let finish; at once | 10 s, and let finish | **decided**: as recommended |
 | 28 | A setup outliving the platform | finishes, its lines in the node's log; stopped | finishes: a half-done install is worse | open |
 | 29 | host.py rebuilt on the network | | the bridge period (§4.10) | retired |
 | 30 | Old dict asks | | stay on host.py's own pipes until each host moves (§4.10) | retired |
@@ -786,54 +788,54 @@ Every row is **open** until the user decides it, unless it is marked decided or 
 | 33 | The integrator's and charts' first moves | the FetcherService, the plugins' jobs, "Try it"; re-planned with Phase 4 | re-planned when Phase 4 starts | open |
 | 34 | Feed runs, scans, extras, recorder | processes as now, nodes in Phase 4; earlier | in Phase 4 | open |
 | 35 | Tests | stand-ins only, and a live check on a scratch preview | as listed | open |
-| 36 | The wire's encoding | JSON; CBOR; MessagePack; Protocol Buffers; Cap'n Proto | JSON: every language reads it, and it is readable. CBOR later if measured | open |
+| 36 | The wire's encoding | JSON; CBOR; MessagePack; Protocol Buffers; Cap'n Proto | JSON: every language reads it, and it is readable. CBOR later if measured | **decided**: as recommended |
 | 37 | How other languages link in | Rust nodes link liminal-net; C++ through its C ABI; Python through the bridge while it remains | as listed | open |
 | 38 | The IDL's source | the Rust traits, the JSON generated from them; a hand-written schema; Protocol Buffers, Cap'n Proto, Thrift | the traits: the Rust is the single source | open |
-| 39 | The handshake | our own HMAC-SHA256 challenge, documented; `multiprocessing`'s | our own (§5.3) | open |
+| 39 | The handshake | our own HMAC-SHA256 challenge, documented; `multiprocessing`'s | our own (§5.3) | **decided**: as recommended |
 | 40 | Types in descriptions | from the Rust types (§6's table); untyped | from the Rust types | open |
 | 41 | Python proxies named as the interface | | becomes a Rust client per trait, generated (§7) | retired |
 | 42 | In-process delivery | direct, with a test mode that encodes; always encoded | direct, with the test mode | open |
-| 43 | Signal kinds | state (coalesced, latest wins) and stream (every item, in order); one kind | both: a status is state, and a setup's lines are a stream | open |
-| 44 | Where a handle is answered | at its owner's dendrites (a synapse each way when both sides start conversations); on the same connection both ways | at its owner's dendrites: every link stays directed | open |
-| 45 | Frames | 4-byte big-endian length and UTF-8 JSON, at most 16 MB; other | as recommended | open |
-| 46 | Protocol versions | `proto` in the hello, a newer major refused with words | as recommended | open |
-| 47 | Request timeouts | none unless the caller gives one; a default | none by default: a setup step takes hours | open |
-| 48 | Ordering | concurrent per axon, answers matched by id; one at a time | concurrent, as today's threaded servers | open |
-| 49 | Synaptic functions | a chain at each synapse, applied in order to every stimulus before the receiving node takes it in; none | a chain at each synapse (R7) | open |
-| 50 | Where they run | the receiver's end by default (its own code, any function); the sender's end only as declared built-ins; anywhere | as recommended: a receiver's function never leaves its process, and an unwanted signal need not be sent | open |
-| 51 | The built-in vocabulary | `only`, `pick`/`rename`, `changed`, `throttle`, `debounce`, `in_order`, `gate`, `batch`; more | these eight, extended when a case needs one; every language implements the same set | open |
-| 52 | Variable functions | replaceable on a live link (`tune`) by its maker or the receiving node, noted in Connections; fixed per link | replaceable: the user's "variable functions" | open |
-| 53 | On requests | ordering and refusal only; everything, reshaping included; nothing | ordering and refusal only: the interface stays the contract | open |
-| 54 | Order across the network | per synapse (streams in order, state latest-wins), global only through a function ordering by a shared field; a global clock | per synapse, with functions for the rest | open |
-| 55 | What a synaptic function is | an object of the synapse's (a `SynapticFunction` trait, not a node); a node of its own | the synapse's own: it has no dendrites of its own to be reached at | open |
-| 56 | Showing them | in Connections' existing text (a link's hover, the Latest table); a new control | the existing text: the existing UI is the reference | open |
+| 43 | Signal kinds | state (coalesced, latest wins) and stream (every item, in order); one kind | both: a status is state, and a setup's lines are a stream | **decided**: as recommended |
+| 44 | Where a handle is answered | at its owner's dendrites (a synapse each way when both sides start conversations); on the same connection both ways | at its owner's dendrites: every link stays directed | **decided**: as recommended |
+| 45 | Frames | 4-byte big-endian length and UTF-8 JSON, at most 16 MB; other | as recommended | **decided**: as recommended |
+| 46 | Protocol versions | `proto` in the hello, a newer major refused with words | as recommended | **decided**: as recommended |
+| 47 | Request timeouts | none unless the caller gives one; a default | none by default: a setup step takes hours | **decided**: as recommended |
+| 48 | Ordering | concurrent per axon, answers matched by id; one at a time | concurrent, as today's threaded servers | **decided**: as recommended |
+| 49 | Synaptic functions | a chain at each synapse, applied in order to every stimulus before the receiving node takes it in; none | a chain at each synapse (R7) | **decided**: as recommended |
+| 50 | Where they run | the receiver's end by default (its own code, any function); the sender's end only as declared built-ins; anywhere | as recommended: a receiver's function never leaves its process, and an unwanted signal need not be sent | **decided**: as recommended |
+| 51 | The built-in vocabulary | `only`, `pick`/`rename`, `changed`, `throttle`, `debounce`, `in_order`, `gate`, `batch`; more | these eight, extended when a case needs one; every language implements the same set | **decided**: as recommended |
+| 52 | Variable functions | replaceable on a live link (`tune`) by its maker or the receiving node, noted in Connections; fixed per link | replaceable: the user's "variable functions" | **decided**: as recommended |
+| 53 | On requests | ordering and refusal only; everything, reshaping included; nothing | ordering and refusal only: the interface stays the contract | **decided**: as recommended |
+| 54 | Order across the network | per synapse (streams in order, state latest-wins), global only through a function ordering by a shared field; a global clock | per synapse, with functions for the rest | **decided**: as recommended |
+| 55 | What a synaptic function is | an object of the synapse's (a `SynapticFunction` trait, not a node); a node of its own | the synapse's own: it has no dendrites of its own to be reached at | **decided**: as recommended |
+| 56 | Showing them | in Connections' existing text (a link's hover, the Latest table); a new control | the existing text: the existing UI is the reference | **decided**: as recommended |
 | 57 | Python on a Rust core | | becomes Rust everywhere (R8) | retired |
-| 58 | Where liminal-net lives | its own repository, local at `source\liminal\net`, on GitHub on the user's yes; inside liminal-libs | its own repository: every repository's crates depend on it. Creating the GitHub repository needs the user's yes | open |
+| 58 | Where liminal-net lives | its own repository, local at `source\liminal\net`, on GitHub on the user's yes; inside liminal-libs | its own repository: every repository's crates depend on it. Creating the GitHub repository needs the user's yes | **decided**: as recommended |
 | 59 | PyO3 bindings for the Python on top | | the bridge only (62) | retired |
-| 60 | Node code | async on tokio; plain functions run on worker threads | plain functions on worker threads, with tokio inside liminal-net: today's code is synchronous, so its ports read the same | open |
+| 60 | Node code | async on tokio; plain functions run on worker threads | plain functions on worker threads, with tokio inside liminal-net: today's code is synchronous, so its ports read the same | **decided**: as recommended |
 | 61 | Python callbacks from Rust | | the bridge only (§4.9) | retired |
 | 62 | The bridge | PyO3 bindings of liminal-net (abi3, maturin); a small pure-Python speaker of the protocol | PyO3: one implementation of the network, checked once | open |
 | 63 | The toolchain here | rustup's stable MSVC toolchain (the VS 2022 C++ tools give the linker); the GNU toolchain | the MSVC toolchain | **decided**: the user installed it on 2026-11-09 (rustup 1.29.3, `stable-x86_64-pc-windows-msvc`, rustc and cargo 1.99.1, in `~\.cargo\bin`). maturin comes with the bridge (a PyPI download: the user's yes then) |
 | 64 | The repositories' CI | every repository builds its crate; wheels only | every repository builds its crate | open |
 | 65 | C++ | the crate's C ABI (cbindgen's `liminal_node.h`); a C++ port of the core | the C ABI: still one implementation | open |
 | 66 | The order with Rust | | set by the user's scope answers (§1) | retired |
-| 67 | How nodes organize their side | from their links and what they touch, recomputed as links change; also announced by the nodes | from links and touches (§3.1): nothing to declare, and Connections shows it | open |
+| 67 | How nodes organize their side | from their links and what they touch, recomputed as links change; also announced by the nodes | from links and touches (§3.1): nothing to declare, and Connections shows it | **decided**: as recommended |
 | 68 | How Python processes start | | the bridge period: Python-started processes while Python remains | retired |
 | 69 | Python classes on a Rust node: composition | | the bridge only | retired |
-| 70 | Integers and floats | `int` (64-bit) and `float` (64-bit) apart; one `number` | apart: nanosecond timestamps need the integer, and the data specs already say `int64` (`sources/data.py:325`) | open |
-| 71 | Key order | kept (`serde_json`'s `preserve_order`); sorted | kept: Python keeps insertion order, and the outputs stay as they are | open |
-| 72 | NaN and infinity | null; a tagged value | null, as the charts server does for the page (`gui/server.py:40`); the library's `web.py:59` refuses them | open |
-| 73 | Time, bytes, sets | ISO-8601 text, base64 text, a list; other | as listed | open |
+| 70 | Integers and floats | `int` (64-bit) and `float` (64-bit) apart; one `number` | apart: nanosecond timestamps need the integer, and the data specs already say `int64` (`sources/data.py:325`) | **decided**: as recommended |
+| 71 | Key order | kept (`serde_json`'s `preserve_order`); sorted | kept: Python keeps insertion order, and the outputs stay as they are | **decided**: as recommended |
+| 72 | NaN and infinity | null; a tagged value | null, as the charts server does for the page (`gui/server.py:40`); the library's `web.py:59` refuses them | **decided**: as recommended |
+| 73 | Time, bytes, sets | ISO-8601 text, base64 text, a list; other | as listed | **decided**: as recommended |
 | 74 | The HTTP side | axum (on hyper); hyper alone; tiny_http | axum: routing reads like today's tables, and every header and check of §8.2 is kept | open |
 | 75 | Tables | Polars for the pandas work and ndarray for numpy; DataFusion | Polars and ndarray | open |
 | 76 | The calendars' port | from exchange_calendars 4.13.2's rules (Apache-2.0, its notice kept), checked against the Python's sessions for every exchange over decades of dates; by hand from the exchanges' notices | from exchange_calendars' rules, checked | open |
 | 77 | How an app finds its Rust plugins | each plugin a node executable of its own, found by a manifest, enabled and disabled as `plugins.json` does; compiled into the app; dynamic libraries | executables with manifests: compiled in would break the separate repositories, and dynamic libraries have no stable Rust ABI and would put plugins back into the app's process | open |
 | 78 | The goldens | recorded from today's Python, black-box, on scratch fixtures, and kept in each repository's tests; with §8.4's details kept exactly | as recommended | open |
-| 79 | Crates and toolchain | edition 2024 on Rust 1.99 stable, the dependency list approved once; per crate as needed | edition 2024 on stable; the list approved once, before the first build | open |
-| 80 | This document's home | liminal-net, as the protocol's specification, once its repository exists; liminal-libs | liminal-net: the specification beside its implementation, and liminal-libs keeps a pointer | open |
-| 81 | The new crates' versions | each new crate from 0.1.0, the Python's versions counting on until retired; the crates taking the Python's next major | 0.1.0 for each new crate | open |
-| 82 | The network's addresses | a new prefix, `liminal-net-`, with host.py's digest; host.py's names | the new prefix: old pickle clients and new nodes never meet on one pipe | open |
-| 83 | host.py's known flaws | fixed; copied | fixed: the handshake holding up the accept thread, stale socket files, a duplicate host starting while one secures its data, a bad pid in the hello, the pipe's default access list, the key's creation race | open |
+| 79 | Crates and toolchain | edition 2024 on Rust 1.99 stable, the dependency list approved once; per crate as needed | edition 2024 on stable; the list approved once, before the first build | **decided**: as recommended |
+| 80 | This document's home | liminal-net, as the protocol's specification, once its repository exists; liminal-libs | liminal-net: the specification beside its implementation, and liminal-libs keeps a pointer | **decided**: as recommended |
+| 81 | The new crates' versions | each new crate from 0.1.0, the Python's versions counting on until retired; the crates taking the Python's next major | 0.1.0 for each new crate | **decided**: as recommended |
+| 82 | The network's addresses | a new prefix, `liminal-net-`, with host.py's digest; host.py's names | the new prefix: old pickle clients and new nodes never meet on one pipe | **decided**: as recommended |
+| 83 | host.py's known flaws | fixed; copied | fixed: the handshake holding up the accept thread, stale socket files, a duplicate host starting while one secures its data, a bad pid in the hello, the pipe's default access list, the key's creation race | **decided**: as recommended |
 | 84 | liminal-libs' Rust layout | a workspace of four crates (core, storage, contract, engine), every module keeping its name; one crate | four crates: a platform plugin builds against core and contract only. Today any platform plugin loads pandas just by importing `machines.plugin`, through `sources/__init__` | open |
 | 85 | pandas-shaped output | reproduced by hand where the charts and the CLI show it (`to_json` records, `Timestamp.isoformat()`, `to_csv`, `to_string`); Polars' own formats | reproduced: the outputs stay as they are | open |
 | 86 | Hook signatures | the descriptions carry today's Python signature text; text generated from the Rust | carried: `/api/plugins` and `/api/interface` show the same | open |
