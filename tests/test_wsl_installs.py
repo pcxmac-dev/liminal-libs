@@ -129,14 +129,15 @@ def test_an_install_is_chosen_by_a_click_on_its_row_and_its_tasks_follow(machine
     assert table["select"] == {"hook": "pick_install", "value": "Liminal-Ubuntu", "title": "Choose an install"} and "options" not in table
     tasks = table["tasks"]
     assert tasks["title"] == "Task" and tasks["subject"] == "Liminal-Ubuntu"
-    assert [a["title"] for a in tasks["actions"]] == ["Terminal", "Start", "Pause", "Stop…", "Rename…", "Uninstall…"]
-    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, False, True, True, False, False]  # stopped: Start, not Pause or Stop
+    assert [a["title"] for a in tasks["actions"]] == ["Terminal", "Start", "Pause", "Stop…", "Update packages", "Rename…", "Uninstall…"]
+    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, False, True, True, False, False, False]  # stopped: Start, not Pause or Stop
+    assert tasks["actions"][4]["job"] == "update"  # the packages' update: a job, its output in the terminal panel
     assert p.pick_install("ubuntu")["said"] == "Ubuntu chosen: a terminal opens into it"
     assert p.terminal()[:3] == ["wsl", "-d", "Ubuntu"] and p.terminal_title() == "Ubuntu, as its default user"
     st = p.status()
     tasks = st["tables"][0]["tasks"]
     assert st["terminalInto"] == "Ubuntu" and tasks["subject"] == "Ubuntu"
-    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, True, False, False, False, False]  # running: Pause and Stop
+    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, True, False, False, False, False, False]  # running: Pause and Stop
     assert tasks["actions"][0]["terminal"] is True and {f["id"] for f in st["forms"]} == {"stop", "rename", "uninstall"}
     with pytest.raises(LookupError):
         p.pick_install("Debian")  # not of its system
@@ -212,3 +213,18 @@ def test_an_install_renamed_in_wsls_own_record_and_liminals_own_followed_through
     assert own["ok"] and p.login.env == {"WSL_UBUNTU_DISTRIBUTION": "Liminal-Ubuntu-Dev"}
     assert p.distribution_name == "Liminal-Ubuntu-Dev" and p.status()["valid"]  # the plugin follows its own
     assert p.rename_install("Liminal-Ubuntu-Dev", "Liminal-Ubuntu-Dev")["said"] == "Liminal-Ubuntu-Dev is named so already"
+
+
+def test_update_packages_updates_the_install_chosen(machine):
+    """The user: "move the update packages on to the TASK": the chosen install's packages brought up to date by its family's
+    manager, as root; Liminal's own unless the user chose another."""
+    fake, wsl, tmp_path, _ = machine
+    p = UbuntuLike(wsl=wsl, data=tmp_path)
+    lines: list = []
+    done = p.update_packages(log=lines.append)
+    assert done[-1]["ok"] and "Liminal-Ubuntu's packages brought up to date by apt" in done[-1]["detail"]
+    assert any(c[:3] == ["wsl", "-d", "Liminal-Ubuntu"] and "sh" in c for c in fake.calls)
+    p.pick_install("Ubuntu")
+    done = p.update_packages(log=lines.append)
+    assert done[-1]["ok"] and done[-1]["detail"] == "Ubuntu's packages brought up to date by apt"
+    assert any(c[:3] == ["wsl", "-d", "Ubuntu"] and "sh" in c for c in fake.calls)  # the user's own: they chose it

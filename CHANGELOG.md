@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.39.0 (2026-11-09)
+
+Update packages among an install's tasks (the user: "move the update packages on to the TASK"): `update_packages` brings
+the install chosen up to date by its family's manager (apt, dnf, emerge) as root, Liminal's own unless the user chose
+another, one of the user's own when they did; the Task bar's `{job: "update", title: "Update packages"}` after Stop….
+
 ## 1.38.0 (2026-11-09)
 
 An install renamed (the user: "lets allow renaming the o/s on all three plugins"): the Task bar's Rename… (`rename_install`,

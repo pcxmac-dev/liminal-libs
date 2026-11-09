@@ -623,17 +623,18 @@ class WslDistribution(MachinePlugin):
                                                else f"{self.distribution_name} is installed" if installed else "")}
 
     def update_packages(self, log=print) -> list[dict]:
-        """The packages of Liminal's own distribution brought up to date by its family's manager, as root, what it prints
-        given to the log as it comes (the user: \"after the install is complete, the user can use the plugin to update
-        the environment's packages\")."""
-        name, done = self.distribution_name, []
+        """The packages of the install chosen (Liminal's own unless another is: `chosen`; 1.39.0, the user: \"move the update
+        packages on to the TASK\") brought up to date by its family's manager, as root, what it prints given to the log as
+        it comes (the user: \"after the install is complete, the user can use the plugin to update the environment's
+        packages\"). One of the user's own only when the user chose it: a task they asked for."""
+        name, done = (self.chosen() if self.wsl.here else "") or self.distribution_name, []
 
         def step(ok, detail: str) -> list[dict]:
             done.append({"step": "packages", "ok": ok, "detail": detail})
             log(f"{self.name}: packages: {'ok' if ok else 'FAILED'}: {detail}")
             return done
 
-        if not liminal_scoped(name) or not self.wsl.here or self.wsl.distribution(name) is None:
+        if not self.wsl.here or self.wsl.distribution(name) is None:
             return step(False, f"{name} is not installed: install it first")
         script = UPDATE_SCRIPTS.get(self.family)
         if not script:
@@ -885,6 +886,8 @@ class WslDistribution(MachinePlugin):
                 {"hook": "pause_install", "args": [picked.name], "title": "Pause", "disabled": not running or paused,
                  "note": "freezes its running services (systemd's freezer); Start resumes them"},
                 {"form": "stop", "title": "Stop…", "values": {"name": picked.name}, "disabled": not running, "label": f"Stop {picked.name}"},
+                {"job": "update", "title": "Update packages", "note": f"brings {picked.name}'s packages up to date by {self.family}, "
+                 "as root" + ("" if running else f"; {picked.name} starts to do it")},
                 {"form": "rename", "title": "Rename…", "values": {"name": picked.name, "to": picked.name}, "label": f"Rename {picked.name}",
                  "disabled": not picked.key},
                 {"form": "uninstall", "title": "Uninstall…", "values": {"name": picked.name}, "label": f"Uninstall {picked.name}"}]}
