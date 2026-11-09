@@ -358,7 +358,7 @@ def test_its_services_while_it_runs_and_a_stopped_one_never_started(tmp_path):
     p = UbuntuLike(wsl=Wsl(runner=fake), data=tmp_path)
     st = p.status()
     assert not [c for c in fake.calls if c[1] == "-d"]  # nothing ran inside it
-    assert st["valid"] and st["services"]["scanned"] is False and "tables" not in st
+    assert st["valid"] and st["services"]["scanned"] is False and [t["title"] for t in st["tables"]] == ["Ubuntu installs"]  # 1.36.0
     assert st["engine"] == {"asked": False, "running": False}  # not "installed: no": never asked, since asking would start it
     assert st["summary"] == "Liminal-Ubuntu (Stopped, WSL 2): not started to look; Docker inside: not asked while it is stopped"
     assert p.services() == {"scanned": False, "why": "Liminal-Ubuntu is not running: nothing to scan, and a scan does not start it"}
@@ -371,7 +371,7 @@ def test_its_services_while_it_runs_and_a_stopped_one_never_started(tmp_path):
     assert [(s["name"], s["state"], s["what"], s["memoryMb"]) for s in services["major"]] == [
         ("docker", "running", "containers: Docker Engine", 147), ("containerd", "running", "containers: Docker's runtime", 56)]
     assert services["system"] == ["cron", "dbus", "systemd-journald"] and services["failed"] == ["getty@tty1"]
-    (table,) = st["tables"]
+    installs, table = st["tables"]  # every Ubuntu install first (1.36.0), then its services
     assert table["title"] == "Services in Liminal-Ubuntu" and table["rows"][0] == ["docker", "running", "containers: Docker Engine", "147 MB"]
     assert table["note"].startswith("systemd (PID 1: systemd) · the system's own running: 3 (cron, dbus, systemd-journald) · "
                                     "failed: getty@tty1 · 6 processes, 171 MB resident")

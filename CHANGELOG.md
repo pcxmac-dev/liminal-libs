@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.36.0 (2026-11-08)
+
+Every install of a WSL plugin's system, and a selector for them (the user: "for the WSL plugins, they need to list all the
+'operating systems' that are installed under the plugin's regime, like ubuntu shows all ubuntu installs, fedora --
+installs, gentoo -- installs"; "also the ability to uninstall and select which one to terminal in to"; "basically a
+selector for different installs"). `machines.wsl`: `lxss_registry()` reads WSL's own record of each distribution
+installed for this Windows user (HKCU's Lxss keys: the flavor and OS version WSL read from its os-release at install, its
+Store package, its folder and disk), starting none; `Wsl.installed()` joins it with `wsl --list --verbose` (`Installed`:
+name, state, WSL version, default, flavor, OS version, package, folder, disk, size); `Wsl(registry=)` for a stand-in (a
+stand-in runner reads none unless given one); `Wsl.unregister`. `WslDistribution`: `owns` (the flavor, else the name or
+the Store package: FLAVORS, NAMES, PACKAGES, the system's own name by default), `installs`, the status's table
+"<System> installs" first (state, system and version, WSL, default, disk, whose: Liminal's own or the user's),
+`installs` in words, one `wsl --list` for both; a selector (`pick_install`, `chosen`: the one picked, else Liminal's own,
+never one of the user's chosen for them) whose install the terminal opens into (`terminal`, `terminal_title`, as its
+default user; `terminalInto` in the status) and `uninstall` names (`wsl --unregister`, its disk deleted for good; one of
+the user's own refused with `UninstallRefused`, `accept = "accept_risk"`, until accepted a second time; its form in
+`install_forms`). Nothing else of the user's own installs is asked or changed.
+
 ## 1.35.0 (2026-11-08)
 
 A firewall's rules in groups (the user: "for both firewalls, i need to have groups, like system or application and then

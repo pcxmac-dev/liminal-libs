@@ -17,7 +17,18 @@ panel), updates the system's packages (`update_packages`) and gives the command 
 (`terminal`). Its services (`services`; the user, 2026-11-08: "a breakdown of the major services running"): the init
 system found (systemd or OpenRC, or SysV scripts) and the services that run, the major ones apart from the system's own
 (machines.services); scanned only while the distribution runs: a status, a scan, the Docker check or the instance list
-never starts a stopped one."""
+never starts a stopped one.
+
+Every install of its system (1.36.0; the user, 2026-11-08: "for the WSL plugins, they need to list all the 'operating
+systems' that are installed under the plugin's regime, like ubuntu shows all ubuntu installs, fedora -- installs, gentoo
+-- installs"): `Wsl.installed` reads WSL's own record of each distribution installed for this Windows user (its Lxss
+registry key: the flavor and OS version WSL read from its os-release when it installed it, its Store package, its folder
+and disk) beside `wsl --list --verbose` (its state, the default), starting none; the plugin's status lists those of its
+system (`owns`: the flavor, else the name or the Store package) as a table, Liminal's own and the user's alike. A
+selector chooses one of them (the user: "also the ability to uninstall and select which one to terminal in to";
+"basically a selector for different installs"): the platform's terminal opens into the install chosen, and Uninstall
+unregisters it (`wsl --unregister`: its disk deleted for good), one of the user's own only after a second confirmation
+(`accept_risk`). Nothing else of the user's own installs is changed."""
 from __future__ import annotations
 
 import codecs
@@ -100,6 +111,13 @@ class WslError(Exception):
     pass
 
 
+class UninstallRefused(ValueError):
+    """An uninstall of one of the user's own distributions, refused until accepted in so many words (`accept`: the
+    argument that accepts it; the platform asks a second time)."""
+
+    accept = "accept_risk"
+
+
 @dataclass(frozen=True)
 class Distribution:
     name: str
@@ -108,13 +126,78 @@ class Distribution:
     default: bool = False
 
 
+LXSS = r"Software\Microsoft\Windows\CurrentVersion\Lxss"  # under HKEY_CURRENT_USER: WSL's record of each distribution
+
+
+@dataclass(frozen=True)
+class Installed:
+    """A distribution installed for this Windows user, as WSL records it and `wsl --list --verbose` says: its name, state
+    (Running, Stopped...), WSL version, whether it is the default; the flavor and OS version WSL read from its os-release
+    when it installed it (ubuntu 24.04; none for one imported from a tarball by an older way), its Store package (a Store
+    install's), its folder and its disk (the file and its size in bytes, None when not read)."""
+
+    name: str
+    state: str = ""
+    version: str = ""
+    default: bool = False
+    flavor: str = ""
+    os_version: str = ""
+    package: str = ""
+    folder: str = ""
+    disk: str = ""
+    size: int | None = None
+
+    def describe(self) -> dict:
+        return {"name": self.name, "state": self.state, "version": self.version, "default": self.default, "flavor": self.flavor,
+                "osVersion": self.os_version, "package": self.package, "folder": self.folder, "disk": self.disk, "size": self.size}
+
+
+def lxss_registry() -> list[dict]:
+    """WSL's record of each distribution installed for this Windows user: its Lxss key's values (DistributionName,
+    Flavor, OsVersion, Version, BasePath, VhdFileName, PackageFamilyName...); [] off Windows or unreadable. A read of the
+    registry alone: no distribution is started."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+
+        out = []
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LXSS) as root:
+            i = 0
+            while True:
+                try:
+                    guid = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                i += 1
+                values = {"guid": guid}
+                try:
+                    with winreg.OpenKey(root, guid) as key:
+                        j = 0
+                        while True:
+                            try:
+                                name, value, _kind = winreg.EnumValue(key, j)
+                            except OSError:
+                                break
+                            j += 1
+                            values[name] = value
+                except OSError:
+                    continue
+                out.append(values)
+        return out
+    except OSError:
+        return []
+
+
 class Wsl:
     """The wsl command. `runner(args, timeout) -> (code, stdout bytes, stderr bytes)` stands in for it."""
 
-    def __init__(self, runner=None, log=None):
+    def __init__(self, runner=None, log=None, registry=None):
         self._runner = runner
         self.log = log or (lambda m: None)
         self._online: tuple[float, list[str]] | None = None
+        # WSL's record of the distributions (lxss_registry); a stand-in runner's tests read none unless given one
+        self._registry = registry if registry is not None else (lambda: []) if runner is not None else lxss_registry
 
     @property
     def here(self) -> bool:
@@ -212,6 +295,21 @@ class Wsl:
     def distribution(self, name: str) -> Distribution | None:
         return next((d for d in self.distributions() if d.name.lower() == name.lower()), None)
 
+    def installed(self, listed: list[Distribution] | None = None) -> list[Installed]:
+        """Every distribution installed for this Windows user, nothing started: `wsl --list --verbose` (`listed`, when
+        read already) joined by name with WSL's own record of each (lxss_registry), in the list's order; one the record
+        lacks is still listed, one the list lacks (being installed or removed) too."""
+        listed = self.distributions() if listed is None else listed
+        try:
+            records = {str(r.get("DistributionName") or "").lower(): r for r in self._registry() if r.get("DistributionName")}
+        except Exception:  # noqa: BLE001 - a record that cannot be read: the list alone
+            records = {}
+        out = []
+        for d in listed:
+            out.append(_installed(d.name, records.pop(d.name.lower(), {}), d))
+        out += [_installed(str(r["DistributionName"]), r, None) for r in records.values()]
+        return out
+
     def version(self) -> dict:
         """`wsl --version`: {"wsl": "2.6.3.0", "kernel": "6.6.87.2-1"} ({} when it cannot say: an old WSL has no
         --version)."""
@@ -271,6 +369,10 @@ class Wsl:
         Path(folder).mkdir(parents=True, exist_ok=True)
         return self.own("--import", name, str(folder), str(tarball), "--version", "2", timeout=INSTALL_TIMEOUT_S, out=out)
 
+    def unregister(self, name: str) -> str:
+        """A distribution unregistered: its disk and everything in it deleted for good (one that runs is stopped first)."""
+        return self.own("--unregister", name, timeout=600)
+
     def terminate(self, name: str) -> str:
         return self.own("--terminate", name, timeout=60)
 
@@ -291,6 +393,27 @@ class Wsl:
     def write_file(self, name: str, path: str, text: str) -> None:
         """A file written in the distribution, as root."""
         self.run(name, "sh", "-c", f"cat > {shlex.quote(path)}", user="root", stdin=text)
+
+
+def _installed(name: str, r: dict, d: Distribution | None) -> Installed:
+    folder = str(r.get("BasePath") or "")
+    if folder.startswith("\\\\?\\"):
+        folder = folder[4:]
+    disk = str(Path(folder) / str(r.get("VhdFileName") or "ext4.vhdx")) if folder else ""
+    try:
+        size = os.stat(disk).st_size if disk else None
+    except OSError:
+        size = None
+    version = d.version if d else str(r.get("Version") or "")
+    return Installed(name, d.state if d else "not listed by wsl", version, d.default if d else False, str(r.get("Flavor") or "").lower(),
+                     str(r.get("OsVersion") or ""), str(r.get("PackageFamilyName") or ""), folder, disk, size)
+
+
+def size_words(n: int | None) -> str:
+    """Bytes as GB (or MB under one GB); "not read" for None."""
+    if n is None:
+        return "not read"
+    return f"{n / 1024 ** 3:.1f} GB" if n >= 1024 ** 3 else f"{n / 1024 ** 2:.0f} MB"
 
 
 def wsl_path(windows_path: str) -> str:
@@ -316,9 +439,14 @@ class WslDistribution(MachinePlugin):
     default_user = "liminal"  # the user made in the distribution, in the docker group
     space_gb = 4.0  # the free space its install needs on the data folder's drive
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
-    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services")
+    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall")
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
+    # its system's installs (1.36.0): those WSL records with one of these flavors, else named or packaged so (any case);
+    # () for the system's own name, from `distribution` (Liminal-Ubuntu: ubuntu)
+    FLAVORS: tuple = ()
+    NAMES: tuple = ()
+    PACKAGES: tuple = ()
 
     def __init__(self, wsl: Wsl | None = None, data: Path | None = None, fetch=None, system=None, free=None):
         self.wsl = wsl if wsl is not None else Wsl(log=lambda m: None)
@@ -327,6 +455,7 @@ class WslDistribution(MachinePlugin):
         self._system = system  # () -> {"windows", "build", "machine"}: a test's; this PC's otherwise
         self._free = free  # (path) -> bytes free: a test's; the disk's otherwise
         self._scan: tuple[float, Scan] | None = None  # the last services scan (monotonic time, scan), kept SCAN_S
+        self._pick = {"name": ""}  # the install chosen (pick_install); a dict, so the registry's copies share it
         self._engine_seen: dict | None = None  # Docker inside as last seen while it ran (a stopped one is not asked)
 
     def install_script(self) -> str:
@@ -450,32 +579,151 @@ class WslDistribution(MachinePlugin):
         return step(True, f"{name}'s packages brought up to date by {self.family}")
 
     def terminal(self, user: str | None = None) -> list[str]:
-        """The command of a login terminal into Liminal's own distribution, as its default user (or `user`): a shell with
-        a terminal of its own inside Linux, for the platform's terminal panel (the user: \"the plugin also allows for a
-        user to login through a terminal in to the environment\")."""
-        name = self.distribution_name
-        if not liminal_scoped(name) or not self.wsl.here or self.wsl.distribution(name) is None:
-            raise WslError(f"{name} is not installed: install it first")
+        """The command of a login terminal into the install chosen (Liminal's own unless another is: `chosen`), as its
+        default user (or `user`): a shell with a terminal of its own inside Linux, for the platform's terminal panel (the
+        user: \"the plugin also allows for a user to login through a terminal in to the environment\"; \"select which one
+        to terminal in to\"). A stopped one starts: the user asked for it."""
+        name = self.chosen() if self.wsl.here else ""
+        if not name or self.wsl.distribution(name) is None:
+            raise WslError(f"{name or self.distribution_name} is not installed: install it first")
         return ["wsl", "-d", name, *(("-u", user) if user else ()), "--cd", "~", "--exec", "sh", "-c", LOGIN]
+
+    def terminal_title(self) -> str:
+        """Whose terminal into which install, for the terminal panel's head."""
+        name = self.chosen() if self.wsl.here else self.distribution_name
+        return f"{self.user} in {name}" if name.lower() == self.distribution_name.lower() else f"{name}, as its default user"
 
     # -- the hooks ---------------------------------------------------------------------------------
     def present(self) -> bool:
         return self.wsl.here and self.wsl.distribution(self.distribution_name) is not None
 
+    # -- every install of its system (the user: "they need to list all the 'operating systems' that are installed under
+    # the plugin's regime, like ubuntu shows all ubuntu installs") ------------------------------------------------------
+    @property
+    def system_name(self) -> str:
+        """Its system's name: Ubuntu for Liminal-Ubuntu."""
+        d = self.distribution
+        return d[len(LIMINAL_PREFIX):] if d.lower().startswith(LIMINAL_PREFIX.lower()) else d
+
+    def owns(self, i: Installed) -> bool:
+        """Whether an install is of this plugin's system: its own distribution; one WSL records with the system's flavor;
+        one with no flavor recorded, named or packaged as the system (Ubuntu-22.04, FedoraLinux-42, CanonicalGroupLimited...)."""
+        if i.name.lower() == self.distribution_name.lower():
+            return True
+        own = self.system_name.lower()
+        flavors = tuple(f.lower() for f in (self.FLAVORS or (own,)))
+        if i.flavor:
+            return i.flavor in flavors
+        names = tuple(n.lower() for n in (self.NAMES or (own,)))
+        packages = tuple(p.lower() for p in self.PACKAGES)
+        return i.name.lower().startswith(names) or bool(packages and i.package.lower().startswith(packages))
+
+    def installs(self, listed: list[Distribution] | None = None) -> list[Installed]:
+        """Every install of its system for this Windows user, Liminal's own and the user's, nothing started."""
+        return [i for i in self.wsl.installed(listed) if self.owns(i)] if self.wsl.here else []
+
+    def chosen(self, installs: list[Installed] | None = None) -> str:
+        """The install chosen: the one the user picked (pick_install) while it is installed, else Liminal's own when it
+        is; "" for none (one of the user's own is never chosen for them)."""
+        names = [i.name for i in (self.installs() if installs is None else installs)]
+        picked = (self._pick.get("name") or "").lower()
+        own = self.distribution_name.lower()
+        return next((n for n in names if n.lower() == picked), None) or next((n for n in names if n.lower() == own), None) or ""
+
+    def pick_install(self, name) -> dict:
+        """An install of its system chosen: the terminal opens into it, Uninstall names it."""
+        found = next((i for i in self.installs() if i.name.lower() == str(name or "").strip().lower()), None)
+        if found is None:
+            raise LookupError(f"no {self.system_name} install named {name!r} here")
+        self._pick["name"] = found.name
+        return {"said": f"{found.name} chosen: a terminal opens into it", "ok": True}
+
+    def uninstall(self, name, accept_risk=False) -> dict:
+        """An install of its system unregistered from WSL (`wsl --unregister`): its disk and everything in it deleted for
+        good, stopped first if it runs. One of the user's own only once accepted in so many words (`accept_risk`); what
+        Liminal downloaded for its own (a tarball) is kept, so its setup installs it again."""
+        target = next((i for i in self.installs() if i.name.lower() == str(name or "").strip().lower()), None)
+        if target is None:
+            raise LookupError(f"no {self.system_name} install named {name!r} here")
+        ours = target.name.lower() == self.distribution_name.lower()
+        if not ours and accept_risk is not True:
+            raise UninstallRefused(
+                f"{target.name} is yours, not Liminal's: unregistering it deletes its disk ({size_words(target.size)}) and everything "
+                "in it, your files, your packages and your home folder, for good"
+                + (f"; its Store app ({target.package}) stays installed, and opening it installs a fresh one" if target.package else ""))
+        self.wsl.unregister(target.name)
+        if (self._pick.get("name") or "").lower() == target.name.lower():
+            self._pick["name"] = ""
+        if ours:
+            self._scan, self._engine_seen = None, None
+        left = any(i.name.lower() == target.name.lower() for i in self.installs())
+        return {"said": f"{target.name} is still installed" if left else f"{target.name} uninstalled", "ok": not left,
+                "lines": [f"its disk was {size_words(target.size)}" + (f" in {target.folder}" if target.folder else "")]
+                + ([f"{self.distribution_name}'s setup installs it again"] if ours else [])}
+
+    def install_forms(self) -> list[dict]:
+        """The installs' forms: Uninstall (a second confirmation for one of the user's own: the refusal's accept_risk)."""
+        return [{"id": "uninstall", "hook": "uninstall", "title": "Uninstall a distribution",
+                 "fields": [{"name": "name", "label": "Distribution", "type": "fixed"},
+                            {"name": "accept_risk", "type": "accept", "title": "Delete your own distribution?", "yes": "Delete it for good",
+                             "words": "It is yours, not Liminal's: everything in it is deleted for good, and nothing here can put it back."}],
+                 "confirm": {"title": "Uninstall {name}?",
+                             "words": "{name} is unregistered from WSL: its disk and everything in it are deleted for good, stopped first "
+                                      "if it runs. This cannot be undone.",
+                             "yes": "Uninstall it", "danger": True}}]
+
+    def installs_table(self, installs: list[Installed]) -> dict:
+        """The installs of its system as a table: each its state, its system and version as WSL recorded it, WSL 1 or 2,
+        the default or not, its disk, and whose (this plugin's own, or the user's: listed only, never changed here)."""
+        rows = []
+        for i in installs:
+            ours = i.name.lower() == self.distribution_name.lower()
+            system = f"{i.flavor.capitalize() if i.flavor else self.system_name} {i.os_version}".strip()
+            rows.append([{"text": i.name, "sub": i.package} if i.package else i.name, i.state or "?",
+                         system if i.flavor else {"text": system, "sub": "its version not recorded by WSL"},
+                         f"WSL {i.version}" if i.version else "?", "yes" if i.default else "",
+                         {"text": size_words(i.size), "sub": i.folder} if i.folder else size_words(i.size),
+                         "Liminal's: this plugin's" if ours else {"text": "yours", "sub": "opened or uninstalled only when you choose it"}])
+        theirs = [i.name for i in installs if i.name.lower() != self.distribution_name.lower()]
+        chosen = self.chosen(installs)
+        choices = [{"value": i.name, "title": i.name,
+                    "note": " · ".join(x for x in (f"{i.flavor.capitalize() if i.flavor else self.system_name} {i.os_version}".strip(),
+                                                    "Liminal's" if i.name.lower() == self.distribution_name.lower() else "yours",
+                                                    (i.state or "").lower()) if x)} for i in installs]
+        return {"title": f"{self.system_name} installs",
+                "options": [{"title": "Chosen", "hook": "pick_install", "value": chosen, "choices": choices}] if installs else [],
+                "actions": [{"terminal": True, "title": f"Open a terminal in {chosen}"},
+                            {"form": "uninstall", "title": f"Uninstall {chosen}…", "values": {"name": chosen}, "label": f"Uninstall {chosen}"}]
+                if chosen else [],
+                "note": (f"every {self.system_name} distribution installed for this Windows user, from WSL's own record (none started "
+                         f"to look); the one chosen is the one a terminal opens into and Uninstall removes; this plugin sets up "
+                         f"{self.distribution_name} alone" + (f"; yours: {', '.join(theirs)}" if theirs else "")),
+                "columns": [{"title": "Distribution"}, {"title": "State"}, {"title": "System"}, {"title": "WSL"}, {"title": "Default"},
+                            {"title": "Disk"}, {"title": "Whose"}],
+                "rows": rows, "empty": f"No {self.system_name} distribution installed here."}
+
     def status(self) -> dict:
         wsl = self.wsl.status() if self.wsl.here else {"present": False, "version": "", "distribution": ""}
-        d = self.wsl.distribution(self.distribution_name) if wsl.get("present") else None
+        listed = self.wsl.distributions() if wsl.get("present") else []  # one list for its own and its system's installs
+        d = next((x for x in listed if x.name.lower() == self.distribution_name.lower()), None)
         out = {"present": d is not None, "wsl": wsl, "distribution": self.distribution_name, "family": self.family,
                "state": d.state if d else "", "version": d.version if d else "", "user": self.user,
                "engine": {"installed": False, "version": "", "running": False}}
         name = self.distribution_name
         ours = liminal_scoped(name)
         scan = None
+        installs = self.installs(listed) if wsl.get("present") else []
+        if wsl.get("present"):
+            out["installs"] = (", ".join(f"{i.name} ({'Liminal' if i.name.lower() == name.lower() else 'yours'}, {i.state.lower()})"
+                                         for i in installs) or f"no {self.system_name} distribution")
+            out["tables"] = [self.installs_table(installs)]
+            out["forms"] = self.install_forms()
+            out["terminalInto"] = self.chosen(installs)
         if d is not None and ours and _running(d):  # asked inside only while it runs: a status never starts it
             out["engine"] = self._engine_seen = self.engine()
             scan = self._scan_of(d)
             out["services"] = scan.describe()
-            out["tables"] = [scan.table(name)]
+            out["tables"] = [*out.get("tables", []), scan.table(name)]
         elif d is not None:
             seen = getattr(self, "_engine_seen", None) if ours else None
             out["engine"] = {**seen, "running": False} if seen else {"asked": False, "running": False}  # asking would start it
