@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.35.0 (2026-11-08)
+
+A firewall's rules in groups (the user: "for both firewalls, i need to have groups, like system or application and then
+unassociated rules not tied to a specific application or system process can be in an other, i can create labels, like
+system or application, as well and move the rules in to that"; "just use basic expansion like a (+) to open and close
+labels"): `machines/rulegroups.py`. `Sorted(group, why)`: a rule's own group as its plugin finds it (system,
+application or other) and why; `key_of(...)`: a rule's key, ten hex digits of what names it; `Grouping`: the user's
+labels and the rules moved by hand, kept as one JSON value (`{"v": 1, "labels": [...], "moved": {group: [keys]}}`, under
+30,000 characters: an environment variable's room); `RuleGroups(variable, login_of)`: read and kept through the plugin's
+login (`Login.save`; nothing kept without a login), `new_label`, `rename_label` (its rules follow it), `remove_label`
+(its rules back in their own groups), `move(keys, group, own)` (to a label, to another of the three, or `own`; a rule
+moved to its own group is simply back there), `table(base, rows, per_group=, notes=)` (a status table with `groups`,
+rows `{cells, key, group, own, why, moved}`, `move` and New label…: what liminal-platform 0.11.0 draws with (+) and (−))
+and `forms()` (New label, Rename, Remove). The `Firewall` base offers the hooks `move_rules`, `new_label`,
+`rename_label`, `remove_label` over `sorted_rules()` (a subclass's) and keeps them under `<NAME>_GROUPS`
+(`GROUPS_VARIABLE`). Nothing of a label or a move changes the firewall.
+
 ## 1.34.0 (2026-11-08)
 
 The firewalls' icons the user picked, and libvirt's own: `wallfire` (a brick wall with a flame before it: the user, "use

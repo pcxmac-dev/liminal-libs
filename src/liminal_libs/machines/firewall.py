@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 
 from .plugin import CommandError, MachinePlugin
+from .rulegroups import RuleGroups, Sorted
 
 GROUP = "Liminal"  # Windows' rule group; a rule's display name is "Liminal: <name>"
 PREFIX = "liminal"  # a Linux rule's comment (liminal:<name>) or service (liminal-<name>)
@@ -142,11 +143,15 @@ def service_rules(scope=None) -> list[Rule]:
 
 class Firewall(MachinePlugin):
     """The base of the firewall plugins. A subclass drives one firewall through the backend methods below;
-    the hooks (status, setup) and the platform's asks (allow, remove, wanted) are this base's."""
+    the hooks (status, setup) and the platform's asks (allow, remove, wanted) are this base's, and so are the rules'
+    groups (1.35.0, rulegroups: System, Application, Other and the user's labels; a subclass sorts its rules with
+    `sorted_rules` and draws its rules table through `groups.table`)."""
 
-    HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted")  # what the platform may ask by name (Plugin.ask)
+    HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted",  # what the platform may ask by name (Plugin.ask)
+             "move_rules", "new_label", "rename_label", "remove_label")
     STEPS = STEPS
     ICON = "shield"
+    GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS
 
     # -- the backend: a subclass's -----------------------------------------------------------------
     def backend(self) -> str:
@@ -176,6 +181,34 @@ class Firewall(MachinePlugin):
     def exposing(self, ports) -> list[tuple[int, str]]:
         """The rules letting another machine reach any of `ports` inbound: (the port, the rule's name)."""
         raise NotImplementedError
+
+    # -- the rules' groups (the user: "for both firewalls, i need to have groups, like system or application and then
+    # unassociated rules not tied to a specific application or system process can be in an other, i can create labels,
+    # like system or application, as well and move the rules in to that") ---------------------------------------------
+    @property
+    def groups(self) -> RuleGroups:
+        """The user's labels and moves for this firewall's rules, kept through the plugin's login (FIREWALL_WINDOWS_GROUPS ...)."""
+        variable = self.GROUPS_VARIABLE or re.sub(r"[^A-Z0-9]+", "_", str(self.name or "firewall").upper()).strip("_") + "_GROUPS"
+        return RuleGroups(variable, lambda: getattr(self, "login", None))
+
+    def sorted_rules(self) -> dict[str, Sorted]:
+        """Every rule this firewall reads, by its key (rulegroups.key_of), with the group found for it: a subclass's."""
+        return {}
+
+    def move_rules(self, keys, group) -> dict:
+        """Rules moved into a group: a label of the user's, system, application or other, or own (back to their own)."""
+        return self.groups.move(keys, group, self.sorted_rules())
+
+    def new_label(self, name) -> dict:
+        """A label of the user's made, for rules moved into it."""
+        return self.groups.new_label(name)
+
+    def rename_label(self, name, to) -> dict:
+        return self.groups.rename_label(name, to)
+
+    def remove_label(self, name) -> dict:
+        """A label removed, its rules back in their own groups (nothing in the firewall changes)."""
+        return self.groups.remove_label(name)
 
     # -- what the platform asks ---------------------------------------------------------------------
     def wanted(self) -> list[Rule]:
