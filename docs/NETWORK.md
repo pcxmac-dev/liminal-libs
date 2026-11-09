@@ -24,6 +24,8 @@ In the user's words, 2026-11-09:
   i will have rust and maybe c++"
 - "this is going to be a very extensive rewrite and conceptual design"; "we will have to walk through a lot of the
   decisions you make in order to make sure nothing is skipped over"
+- "at each synapse, callbacks or variable functions can be used to filter stimulus our input in order to logically
+  order output correctly"
 
 The requirements drawn from them:
 
@@ -35,6 +37,8 @@ The requirements drawn from them:
 | R4 | Structured like a neural network, on three sides: public-facing, intermediary, back side. |
 | R5 | Stateful nodes interacting in real time. Nothing runs unless used (the user's rule of 2026-11-01). |
 | R6 | Every decision is walked through with the user; nothing is skipped over. |
+| R7 | At each synapse, callbacks or variable functions filter the stimulus (the input), so that output comes out in the right logical order. |
+| R8 | The user: "can we do this in rust, the base networking, and run python abstractions on top ?" The axon, dendrite, synapse, protocol and synaptic functions are written once, in Rust, and the Python ABCs sit on top (§3.4). |
 
 ## 2. The terms
 
@@ -48,6 +52,8 @@ biology it is the other way round. The user's mapping is the one used everywhere
 | **axon** | A node's input interface. It accepts connections from other nodes' dendrites, admits or refuses them, and receives their requests and the signals fired into it. |
 | **dendrite** | A node's link out to another node. It extends to that node's axon, requests access, then carries requests there and brings the answers back. Through it, the node holds the other node as that node's own ABC (a proxy). |
 | **synapse** | Where one dendrite meets one axon: a single connection. (The word is this design's, not the user's: decision 2.) |
+| **stimulus** | Whatever crosses a synapse towards an axon: a request or a signal. |
+| **synaptic function** | A callback or variable function at a synapse, applied in order to each stimulus crossing it, before the axon's node takes it in. It filters, reshapes, orders, holds or combines, so that the output comes out in the right logical order (R7). "Variable": it can be replaced while the link is live (§4.8). |
 | **request** | A call of one of a node's interface methods, along a dendrite into the node's axon, answered back. |
 | **signal** | Something a node fires: a status changed, a line printed, a sample taken. It travels along the dendrites linked to receive it, into those nodes' axons, and is integrated by their hillocks. It is never answered. |
 | **message** | Data that travels between nodes (a status, a rule, an argument, a report), carried by value. A message is not a node: this is the user's "not all". |
@@ -65,6 +71,9 @@ biology it is the other way round. The user's mapping is the one used everywhere
 - **Requests** go along a dendrite into an axon and come back answered.
 - **Signals propagate forward, like activations.** A node fires. Its signal enters every axon its dendrites reach
   for that signal. Each receiving hillock integrates it into its node's state, and may fire in turn.
+- **Synaptic functions on every link** (R7). Each stimulus crossing a synapse passes the link's functions in order
+  before it reaches the axon (§4.8). Per link, they filter, reshape and order. Per node, the hillock integrates what
+  all its links deliver.
 - **Integration at the hillock**, as in a neuron:
   - a burst of the same state signal becomes one, the latest, at most once per interval (decision 20);
   - nothing fires when nothing changed;
@@ -127,6 +136,82 @@ flowchart LR
 ```
 
 Dashed: new in this rewrite. Today the platform's plugins run inside the platform's own process.
+
+### 3.4 The code's layers: a Rust core, Python abstractions on top (R8)
+
+```mermaid
+flowchart TB
+  subgraph py[Python: the abstractions, in liminal-libs and the apps and plugins]
+    H[Hillock and the ABCs: Plugin's family, App, Login, DataSource, Assistant]
+    P[the proxies: MachineProxy, AssistantProxy, FeedProxy, PublisherProxy]
+    F[receiver-end synaptic functions written in Python]
+  end
+  subgraph bind[the bindings]
+    PY["liminal_net: a Python extension module (PyO3, one abi3 wheel per platform)"]
+    C["liminal_node.h: a C ABI (cbindgen), for C++"]
+  end
+  subgraph core[Rust: the base networking, the liminal-net crate]
+    T[transport: Windows named pipes, Unix sockets]
+    HS[the handshake: HMAC-SHA256 with your key]
+    FR[frames and the codec: JSON, later CBOR]
+    R[requests and answers, handles, signal routing]
+    SF[the built-in synaptic functions]
+    L["lifecycle: dendrites counted, process watch, grace, a windowless start"]
+  end
+  H --> PY
+  P --> PY
+  F --> PY
+  PY --> core
+  C --> core
+  RN[a Rust node] --> core
+  CN[a C++ node] --> C
+```
+
+**One implementation, three ways in.**
+- A Rust node uses the crate directly.
+- C++ uses its C ABI.
+- Python uses its extension module. No language reimplements the protocol, so nothing can drift between them.
+
+**What the Rust core holds:**
+- the transport (named pipes on Windows and Unix sockets elsewhere, through tokio);
+- the handshake (the `hmac` and `sha2` crates);
+- the frames and codec (`serde_json`, and later `ciborium`);
+- requests and answers matched by id, the handle tables, the routing of signals to the links made for them;
+- the eight built-in synaptic functions;
+- the lifecycle: dendrites counted, the process watch, the grace, the windowless and detached start of a resident
+  node's process (CREATE_NO_WINDOW);
+- the integration of state signals: coalescing to the latest.
+
+**What stays Python, on top:**
+- the `Hillock` ABC itself and every interface ABC;
+- the proxies and their local/remote rule;
+- `interface()` and the IDL's description of the Python ABCs;
+- every node's own logic;
+- the receiver-end synaptic functions written in Python;
+- `integrate` beyond the default.
+
+The existing modules keep their place (R1). `liminal_libs.ipc` becomes the Python face of `liminal_net`.
+
+**How Python and Rust meet:**
+- The Python side sees blocking calls and callbacks, as today's code expects. No asyncio is required.
+- Rust's own runtime runs in its own threads, without the GIL.
+- A Python callback (a receiver-end function, a `log`, `integrate`) is called on a Rust worker thread, holding the
+  GIL only for the call. A slow callback is queued and never stalls the synapse's reader.
+
+**What it takes:**
+- **The Rust toolchain on this PC.**
+  - rustup and its stable MSVC toolchain. Visual Studio Professional 2022 with the C++ x64 tools is already here,
+    and gives the linker.
+  - maturin in the venv, to build the extension.
+  - Installing them is your decision (decision 63).
+- **Python 3.15.** PyO3 builds for the stable ABI (abi3, from 3.12), so one wheel per platform serves 3.12 to 3.15.
+  - If PyO3 does not know 3.15 yet, `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` builds the abi3 wheel anyway.
+  - The venv is not free-threaded, so the GIL stays as described.
+- **A new repository and package, `liminal-net`**: the crate, its Python wheel and its C header.
+  - liminal-libs depends on it.
+  - Its CI builds the wheels for Windows and Linux (maturin's action). The other repositories' CIs then install it
+    as any dependency, and need no Rust.
+  - Creating the repository is your decision (decision 58).
 
 ## 4. The rules
 
@@ -226,6 +311,70 @@ the plugin runs.
 - A disabled plugin's whole page (its row, its Settings, Connections, the tray) is answered locally. The survey of
   2026-11-09 checked every access.
 
+### 4.8 Synaptic functions
+
+The user: "at each synapse, callbacks or variable functions can be used to filter stimulus our input in order to
+logically order output correctly".
+
+```mermaid
+flowchart LR
+  A[node A fires or requests] --> D[A's dendrite]
+  D -- "sender's end: declared functions" --> S((synapse))
+  S -- "receiver's end: functions in its own code" --> X[B's axon]
+  X --> H[B's hillock integrates]
+  H --> N[B's state]
+  N -- fires --> O[along B's dendrites, through their synapses' functions]
+```
+
+**What one function is.** It takes one stimulus and gives back none, one, or several. That covers every case:
+- dropping one (none);
+- passing it on, or reshaping it (one);
+- splitting one, or releasing several held back (several).
+
+A function may keep state (what it holds back, the last value it passed), so a function is a small object of its
+own. It is not a node: it has no axon (decision 55).
+
+**What the functions do.** Each row is a built-in function. Rust and C++ implement the same vocabulary, so it
+works whichever language the other side of the link is written in (decision 51):
+
+| function | does | e.g. in Liminal |
+|---|---|---|
+| `only(where)` | passes a stimulus whose fields match (equal, in, less or more than, present) | only an `error` row of the traffic |
+| `pick(fields)` / `rename(map)` | reshapes, keeping some fields or renaming them | a status cut to what the platform's list draws |
+| `changed(fields)` | passes only when those fields differ from the last passed | a plugin's `status` only when `valid`, `state` or `summary` changed |
+| `throttle(seconds)` | at most one per interval, the latest kept | hw-stats' samples at 2 s while the page shows them, 30 s otherwise |
+| `debounce(seconds)` | one after a quiet interval, the latest | a burst of firewall rule changes taken as one |
+| `in_order(by)` | restores order by a sequence or a time field, holding early ones back until the gap fills or a limit passes | a setup's lines in the order printed; a request's progress before its end |
+| `gate(until)` | holds everything until a condition is met, then releases it in order | a job's lines held until its `started` arrives |
+| `batch(n, seconds)` | gathers up to n, or what came within the interval, into one | traffic rows to Connections every 250 ms |
+
+On requests only two of them apply, so a node's interface stays its contract (decision 53):
+- ordering: `in_order`, or one at a time per key, so a `stop` never overtakes its `start`;
+- refusal: `only`, as an access policy beside `admits`.
+
+The arguments are never reshaped.
+
+**Where they run** (decision 50):
+- **At the receiver's end**, in the receiver's own code and language: any callback, including a Python callable,
+  since it never leaves its process. This is the default.
+- **At the sender's end**, so an unwanted signal is never sent at all: only the built-ins, declared as data in the
+  `link` (§5.3). A Rust or C++ sender runs them too.
+- A callback of a third node (a handle) is possible, but it costs a round trip per stimulus. It is never on a hot
+  link.
+
+**Variable** (decision 52):
+- A live link's functions can be replaced (`tune`, §5.3). This is like a synapse's strength changing: the next
+  stimulus already meets the new functions.
+- The node that made the link may do it, or the axon's node.
+- The change is noted in Connections, in its existing text (the link's hover, the Latest table): no new control.
+
+**Ordering, overall** (decision 54):
+- Per synapse, stream signals arrive in the order fired. Each carries a sequence per source and signal, and
+  `in_order` restores it when concurrency mixes them.
+- State signals: the latest wins.
+- Across synapses there is no global order, unless a function orders by a field both sides share (a time, a job's
+  id). That is how the logical order the user asked for is made explicit, link by link.
+
 ## 5. The protocol (language-neutral, for Rust and C++)
 
 ### 5.1 Frames
@@ -265,7 +414,8 @@ the key is said.
 | `answer` | axon → dendrite | `{"op":"answer","id":7,"value":…}` | the request's answer |
 | `error` | axon → dendrite | `{"op":"error","id":7,"error":{"$error":…}}` | the request failed |
 | `fire` | dendrite → axon | `{"op":"fire","signal":"status","from":"wsl-ubuntu","seq":42,"data":…}` | a signal, along the firing node's dendrite |
-| `link` / `unlink` | dendrite → axon | `{"op":"link","signal":"status","to":{"node":"platform","scope":"…"}}` | asks the node to extend a dendrite to `to` for that signal |
+| `link` / `unlink` | dendrite → axon | `{"op":"link","signal":"status","to":{"node":"platform","scope":"…"},"functions":[{"fn":"changed","fields":["valid","state","summary"]}]}` | asks the node to extend a dendrite to `to` for that signal; `functions` are the built-ins run at the sender's end (§4.8) |
+| `tune` | dendrite → axon | `{"op":"tune","signal":"status","to":{…},"functions":[{"fn":"throttle","seconds":2}]}` | replaces a live link's sender-end functions |
 | `release` | either | `{"op":"release","handles":[12,13]}` | handles no longer held |
 | `detach` | dendrite → axon | `{"op":"detach"}` | the dendrite goes; the connection closes after |
 
@@ -283,7 +433,7 @@ dict asks of today) is still answered while the running tasks predate the rewrit
 
 `Hillock.interface()` describes each node's ABC language-neutrally. `python -m liminal_libs.ipc describe` writes
 every ABC's description as JSON (decision 38). From them come, later:
-- a Rust trait per ABC, implemented by a Rust node and served at its axon by a small `liminal-node` crate;
+- a Rust trait per ABC, implemented by a Rust node and served at its axon by the `liminal-net` crate (§3.4);
 - a C++ abstract class per ABC.
 
 An ABC, a trait and a pure-virtual class are the same idea.
@@ -366,9 +516,19 @@ classDiagram
   Hillock <|-- Login
   Hillock <|-- DataSource
   Hillock <|-- Assistant
+  class Synapse {
+    functions
+    tune(functions)
+  }
+  class SynapticFunction {
+    <<abstract>>
+    apply(stimulus) list
+  }
   Hillock *-- Axon
   Hillock *-- "0..*" Dendrite
   Dendrite --> Axon : a synapse
+  Dendrite *-- Synapse
+  Synapse o-- "0..*" SynapticFunction
 ```
 
 ## 8. The inputs and outputs kept (R1)
@@ -413,11 +573,12 @@ through the login, as now.
 | 0 | liminal-libs | — | this document, reviewed |
 | 1 | the docker, hw-stats and kubernetes plugins | tests make `App()` directly | a minimal subclass, passing on 1.40 and on 1.41 |
 | 1 | liminal-libs 1.41.0 | plain bases with `NotImplementedError` stubs | `ipc.Hillock`; every interface base an ABC on it (the table below); `record_form` for `Provider`/`Publisher`; `Plugin.shutdown()`; plugin API 2.2 |
-| 2 | liminal-libs 1.42.0 | `host.py` `Host`/`Attachment` with dict asks | `ipc.axon`, `ipc.dendrite`, `ipc.synapse` (the protocol of §5), `ipc.resident`, the proxies, `registry.PluginSpec`/`load_spec`; `Host` and `Attachment` keep their API on top |
+| 2a | liminal-net 0.1.0 (a new repository: decision 58) | — | the Rust core of §3.4: transport, handshake, frames, requests, handles, signals, the built-in synaptic functions, the lifecycle; its PyO3 module (abi3 wheels); `cargo test` and Python tests through the bindings |
+| 2b | liminal-libs 1.42.0 | `host.py` `Host`/`Attachment` with dict asks | `ipc` as the Python face of `liminal_net`: `Axon`, `Dendrite`, `Synapse`, `ipc.resident`, the proxies, `registry.PluginSpec`/`load_spec`; `Host` and `Attachment` keep their API on top |
 | 3 | liminal-platform 0.15.0 | plugins attached in-process | each plugin a resident node behind its proxy; the integrated state answering the polls; Connections filled with the real nodes; `--in-process` kept until proven |
 | 4 | liminal-integrator 1.9.0, liminal-charts | `FetcherLink`'s dict asks; `Runner`'s jobs in the fetcher host; "Try it" in the page process | a `FetcherService` node; each plugin's jobs in its own node; the evaluation in the assistant's node |
 | 5 | liminal-libs, the plugins | parts as plain objects | the parts as nodes (`Wsl`, `PowerShell`/`Shell` on a `CommandRunner`, Docker engines, the terminal, hw-stats' monitor, the firewalls' readers, Namecheap's reader, a feed's source and limiter, the `Assistant`, `Recorder`, `Collector`, `Reader`) |
-| 6 | a new `liminal-node` crate (its repository is the user's decision) | — | Rust nodes on the same protocol, a reference node, then the C ABI (`liminal_node.h`) for libraries linked in-process; C++ likewise if taken on |
+| 6 | liminal-net | — | Rust nodes on the crate directly: a reference node (a back-side part, say a sampler for hw-stats); then `liminal_node.h` (cbindgen) for C++ nodes and libraries; Rust traits and C++ abstract classes generated from the IDL |
 
 The ABCs of step 1, with what each must implement:
 
@@ -479,7 +640,7 @@ Every row is **open** until the user decides it.
 | 34 | Feed runs, scans, extras, recorder | processes as now, nodes in Phase 5; now | in Phase 5 | open |
 | 35 | Tests | stand-ins only, and a live check on a scratch preview | as listed | open |
 | 36 | The wire's encoding | JSON; CBOR; MessagePack; Protocol Buffers; Cap'n Proto | JSON: every language reads it, and it is readable. CBOR later if measured | open |
-| 37 | How Rust and C++ link in | over the wire; through a C ABI in-process; both | both: the wire first, the C ABI after. PyO3 (Rust in-process, Python-only) is its own decision later | open |
+| 37 | How Rust and C++ link in | over the wire; through a C ABI in-process; both | both. With R8 the Rust core is linked into every Python process through PyO3 anyway; Rust nodes link the crate; C++ uses its C ABI | open |
 | 38 | The IDL | our own JSON from the ABCs; Protocol Buffers, Cap'n Proto, Thrift | our own: the Python stays the single source, and a trait or abstract class is generated from it | open |
 | 39 | The handshake | our own HMAC-SHA256 challenge; `multiprocessing`'s | our own: documented, for Rust and C++ | open |
 | 40 | Types in descriptions | from annotations, annotated as they move; untyped | from annotations | open |
@@ -491,3 +652,21 @@ Every row is **open** until the user decides it.
 | 46 | Protocol versions | `proto` in the hello, a newer major refused with words | as recommended | open |
 | 47 | Request timeouts | none unless the caller gives one; a default | none by default: a setup step takes hours | open |
 | 48 | Ordering | concurrent per dendrite, answers matched by id; one at a time | concurrent, as today's threaded server | open |
+| 49 | Synaptic functions | a chain at each synapse, applied in order to every stimulus before the axon's node takes it in; none | a chain at each synapse (R7) | open |
+| 50 | Where they run | the receiver's end by default (its own code, any callback); the sender's end only as declared built-ins; anywhere | as recommended: a Python callable never has to cross to Rust, and an unwanted signal need not be sent | open |
+| 51 | The built-in vocabulary | `only`, `pick`/`rename`, `changed`, `throttle`, `debounce`, `in_order`, `gate`, `batch`; more | these eight, extended when a case needs one; Rust and C++ implement the same set | open |
+| 52 | Variable functions | replaceable on a live link (`tune`) by its maker or the axon's node, noted in Connections; fixed per link | replaceable: the user's "variable functions" | open |
+| 53 | On requests | ordering and refusal only; everything, reshaping included; nothing | ordering and refusal only: the interface stays the contract | open |
+| 54 | Order across the network | per synapse (stream signals in order, state latest-wins), global only through a function ordering by a shared field; a global clock | per synapse, with functions for the rest | open |
+| 55 | What a synaptic function is | an object of the synapse's (a `SynapticFunction` ABC, not a node); a node of its own | the synapse's own: it has no axon of its own to be reached at | open |
+| 56 | Showing them | in Connections' existing text (a link's hover, the Latest table); a new control | the existing text: the existing UI is the reference | open |
+| 57 | The base networking in Rust, Python on top (R8) | Rust core with PyO3 bindings; pure Python | Rust: one implementation for Rust, C++ and Python, the hot path without the GIL | open |
+| 58 | Where the Rust lives | a new repository and package `liminal-net` (crate, wheels, C header), which liminal-libs depends on; inside liminal-libs as a mixed project | a repository of its own: the library stays pure Python, and its CI and the plugins' need no Rust. Creating it needs your yes | open |
+| 59 | The bindings | PyO3 with maturin, abi3 from Python 3.12, one wheel per platform; cffi on the C ABI | PyO3 with abi3 | open |
+| 60 | Rust's concurrency | tokio in its own threads, blocking calls and callbacks on the Python side; asyncio throughout | tokio inside, blocking outside: today's code is threaded and synchronous | open |
+| 61 | Python callbacks from Rust | on a Rust worker thread holding the GIL for the call only, a slow one queued; on the reader thread | on worker threads, queued | open |
+| 62 | A second, pure-Python implementation | none; one kept as a fallback | none. `host.py` stays as it is until the core is proven, then is rebuilt on it | open |
+| 63 | The toolchain here | rustup's stable MSVC toolchain (the VS 2022 C++ tools already here give the linker) and maturin in the venv; the GNU toolchain | the MSVC toolchain. The downloads and installs are yours to approve | open |
+| 64 | The repositories' CI | liminal-net builds wheels for Windows and Linux (maturin's action) and the others install it; every CI builds Rust | wheels: only liminal-net's CI needs Rust | open |
+| 65 | C++ | the crate's C ABI (cbindgen's `liminal_node.h`); a C++ port of the core | the C ABI: still one implementation | open |
+| 66 | The order with Rust | the Python ABCs (step 1) go ahead now, with no Rust needed; liminal-net (2a) once the toolchain is in; then libs 1.42 on it | as listed: step 1 waits for nothing | open |
