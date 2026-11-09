@@ -159,10 +159,12 @@ class Installed:
     folder: str = ""
     disk: str = ""
     size: int | None = None
+    key: str = ""  # its Lxss registry key ({GUID}): what a rename changes
 
     def describe(self) -> dict:
         return {"name": self.name, "state": self.state, "version": self.version, "default": self.default, "flavor": self.flavor,
-                "osVersion": self.os_version, "package": self.package, "folder": self.folder, "disk": self.disk, "size": self.size}
+                "osVersion": self.os_version, "package": self.package, "folder": self.folder, "disk": self.disk, "size": self.size,
+                "key": self.key}
 
 
 def lxss_registry() -> list[dict]:
@@ -205,9 +207,10 @@ def lxss_registry() -> list[dict]:
 class Wsl:
     """The wsl command. `runner(args, timeout) -> (code, stdout bytes, stderr bytes)` stands in for it."""
 
-    def __init__(self, runner=None, log=None, registry=None, spawn=None):
+    def __init__(self, runner=None, log=None, registry=None, spawn=None, rename=None):
         self._runner = runner
         self._spawn = spawn  # (args) -> a process: a stand-in for keep_running's; else subprocess, windowless
+        self._rename = rename  # (key, name) -> None: a stand-in for rename_registered
         self.log = log or (lambda m: None)
         self._online: tuple[float, list[str]] | None = None
         # WSL's record of the distributions (lxss_registry); a stand-in runner's tests read none unless given one
@@ -392,6 +395,18 @@ class Wsl:
         return subprocess.Popen([_which("wsl") or "wsl", *args[1:]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, **_no_window())
 
+    def rename(self, key: str, name: str) -> None:
+        """A stopped distribution renamed in WSL's own record (rename_registered); WslError in words when it cannot be."""
+        if self._rename is not None:
+            self._rename(key, name)
+            return
+        if os.name != "nt" or not key:
+            raise WslError("WSL's record of it is not here to rename")
+        try:
+            rename_registered(key, name)
+        except OSError as e:
+            raise WslError(f"WSL's record of it could not be changed: {e}") from None
+
     def unregister(self, name: str) -> str:
         """A distribution unregistered: its disk and everything in it deleted for good (one that runs is stopped first)."""
         return self.own("--unregister", name, timeout=600)
@@ -429,7 +444,19 @@ def _installed(name: str, r: dict, d: Distribution | None) -> Installed:
         size = None
     version = d.version if d else str(r.get("Version") or "")
     return Installed(name, d.state if d else "not listed by wsl", version, d.default if d else False, str(r.get("Flavor") or "").lower(),
-                     str(r.get("OsVersion") or ""), str(r.get("PackageFamilyName") or ""), folder, disk, size)
+                     str(r.get("OsVersion") or ""), str(r.get("PackageFamilyName") or ""), folder, disk, size, str(r.get("guid") or ""))
+
+
+DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # a WSL distribution's name, as wsl --install --name takes
+
+
+def rename_registered(key: str, name: str) -> None:
+    """A distribution's name changed in WSL's own record (its Lxss key's DistributionName, this Windows user's: no
+    administrator needed); WSL 3.0.3 has no command for it. OSError when the key is not there."""
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, LXSS + "\\" + key, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, "DistributionName", 0, winreg.REG_SZ, name)
 
 
 def _count(n: int, word: str) -> str:
@@ -467,7 +494,7 @@ class WslDistribution(MachinePlugin):
     space_gb = 4.0  # the free space its install needs on the data folder's drive
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
     HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall",
-             "start_install", "pause_install", "stop_install")
+             "start_install", "pause_install", "stop_install", "rename_install")
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
     # its system's installs (1.36.0): those WSL records with one of these flavors, else named or packaged so (any case);
@@ -503,7 +530,18 @@ class WslDistribution(MachinePlugin):
 
     @property
     def distribution_name(self) -> str:
-        named = (os.environ.get(self.DISTRIBUTION_VAR) or "").strip() if self.DISTRIBUTION_VAR else ""
+        """Its own distribution's WSL name: DISTRIBUTION_VAR through its login (where a rename of it is kept, 1.38.0), else
+        the environment's, else `distribution` (Liminal-Ubuntu)."""
+        var = self.DISTRIBUTION_VAR
+        named = ""
+        login = getattr(self, "login", None)
+        if var and login is not None:
+            try:
+                named = (login.variables([var]).get(var) or "").strip()
+            except Exception:  # noqa: BLE001 - a login that cannot say: the environment's
+                named = ""
+        if var and not named:
+            named = (os.environ.get(var) or "").strip()
         return named or self.distribution
 
     @property
@@ -767,6 +805,50 @@ class WslDistribution(MachinePlugin):
             self._scan = None
         return {"said": f"{target.name} stopped", "ok": True}
 
+    def rename_install(self, name, to) -> dict:
+        """An install renamed (the user: "lets allow renaming the o/s on all three plugins"): stopped first when it runs,
+        its name changed in WSL's own record (WSL 3.0.3 has no command for it), then listed again to be sure. Liminal's own
+        keeps Liminal- in front, so it stays Liminal's, and the plugin follows it (DISTRIBUTION_VAR kept through its
+        login). Windows Terminal's profile and the Start menu's shortcut open a distribution by its id: they keep working,
+        under its old title."""
+        target = self._install(name)
+        new = str(to or "").strip()
+        if not DISTRIBUTION_NAME.match(new):
+            raise ValueError("a distribution's name is letters, digits, dots, dashes and underscores (64 at most), starting with a "
+                             "letter or a digit")
+        if new == target.name:
+            return {"said": f"{target.name} is named so already", "ok": True}
+        taken = next((i.name for i in self.wsl.installed() if i.name.lower() == new.lower() and i.name != target.name), None)
+        if taken:
+            raise ValueError(f"there is a distribution named {taken} already")
+        ours = target.name.lower() == self.distribution_name.lower()
+        if ours and not liminal_scoped(new):
+            raise ValueError(f"{target.name} is this plugin's own: its new name keeps {LIMINAL_PREFIX} in front, so it stays "
+                             f"Liminal's ({LIMINAL_PREFIX}{self.system_name}-Dev, say)")
+        login = getattr(self, "login", None)
+        if ours and (login is None or not self.DISTRIBUTION_VAR):
+            raise ValueError(f"{target.name} is this plugin's own, and its new name is kept through the platform's login: open "
+                             "the plugin on the platform to rename it")
+        if not target.key:
+            raise ValueError(f"WSL's record of {target.name} was not read: it cannot be renamed here")
+        lines = []
+        if target.state == "Running":
+            self.wsl.terminate(target.name)
+            self._tasks["paused"].pop(target.name.lower(), None)
+            self._tasks["kept"].pop(target.name.lower(), None)
+            lines.append(f"{target.name} stopped first")
+        self.wsl.rename(target.key, new)
+        if ours:
+            where = login.save(self.DISTRIBUTION_VAR, new)
+            lines.append(f"the plugin follows it: {self.DISTRIBUTION_VAR} kept in {where}")
+        if (self._pick.get("name") or "").lower() == target.name.lower():
+            self._pick["name"] = new
+        listed = self.wsl.distribution(new) is not None
+        lines.append("Windows Terminal's profile and the Start menu's shortcut keep its old title; they still open it")
+        return {"said": f"{target.name} is {new} now" if listed else f"{target.name} renamed to {new} in WSL's record, but WSL does not list "
+                f"it so yet: restarting WSL (wsl --shutdown, which stops every distribution) makes it read it",
+                "ok": listed, "lines": lines}
+
     def installs_table(self, installs: list[Installed]) -> dict:
         """The installs of its system as a table to choose from by a click (`select`: its row's key is its name), each its
         state (paused when its services are), its system and version as WSL recorded it, WSL 1 or 2, the default or not,
@@ -803,14 +885,27 @@ class WslDistribution(MachinePlugin):
                 {"hook": "pause_install", "args": [picked.name], "title": "Pause", "disabled": not running or paused,
                  "note": "freezes its running services (systemd's freezer); Start resumes them"},
                 {"form": "stop", "title": "Stop…", "values": {"name": picked.name}, "disabled": not running, "label": f"Stop {picked.name}"},
+                {"form": "rename", "title": "Rename…", "values": {"name": picked.name, "to": picked.name}, "label": f"Rename {picked.name}",
+                 "disabled": not picked.key},
                 {"form": "uninstall", "title": "Uninstall…", "values": {"name": picked.name}, "label": f"Uninstall {picked.name}"}]}
         return out
 
     def task_forms(self) -> list[dict]:
-        """The tasks' forms: Stop (confirmed) and Uninstall (install_forms)."""
+        """The tasks' forms: Stop (confirmed), Rename (confirmed) and Uninstall (install_forms)."""
         return [{"id": "stop", "hook": "stop_install", "title": "Stop a distribution", "fields": [{"name": "name", "label": "Distribution", "type": "fixed"}],
                  "confirm": {"title": "Stop {name}?", "words": "Every program running in {name} ends now (wsl --terminate); Start brings it back.",
-                             "yes": "Stop it"}}, *self.install_forms()]
+                             "yes": "Stop it"}},
+                {"id": "rename", "hook": "rename_install", "title": "Rename a distribution",
+                 "note": (f"Letters, digits, dots, dashes and underscores. {self.distribution_name}, this plugin's own, keeps "
+                          f"{LIMINAL_PREFIX} in front."),
+                 "fields": [{"name": "name", "label": "Distribution", "type": "fixed"},
+                            {"name": "to", "label": "New name", "type": "text", "required": True, "placeholder": f"{self.system_name}-Work"}],
+                 "submit": "Review",
+                 "confirm": {"title": "Rename {name} to {to}?",
+                             "words": ("{name} is stopped first if it runs, and WSL then lists it as {to}: every wsl -d command names it so. "
+                                       "Windows Terminal's profile and the Start menu's shortcut keep its old title, and still open it."),
+                             "yes": "Rename it"}},
+                *self.install_forms()]
 
     def status(self) -> dict:
         wsl = self.wsl.status() if self.wsl.here else {"present": False, "version": "", "distribution": ""}

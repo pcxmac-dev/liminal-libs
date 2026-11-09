@@ -59,7 +59,8 @@ class FedoraLike(UbuntuLike):
 
 
 def record(name, folder=None, **values):
-    return {"DistributionName": name, "BasePath": str(folder) if folder else "", "VhdFileName": "ext4.vhdx", "Version": 2, **values}
+    return {"guid": "{" + name.lower() + "}", "DistributionName": name, "BasePath": str(folder) if folder else "", "VhdFileName": "ext4.vhdx",
+            "Version": 2, **values}
 
 
 @pytest.fixture
@@ -78,7 +79,14 @@ def machine(tmp_path):
         spawned.append(args)
         fake._set(args[2], "Running")
         return None
-    wsl = Wsl(runner=fake, registry=lambda: [r for r in registry if r["DistributionName"] not in fake.unregistered], spawn=spawn)
+    def rename(key, name):  # WSL's record changed, and its list follows it
+        r = next(r for r in registry if r["guid"] == key)
+        fake.distributions = [(name if n == r["DistributionName"] else n, s, v) for n, s, v in fake.distributions]
+        r["DistributionName"] = name
+        fake.renamed.append((key, name))
+    fake.renamed = []
+    wsl = Wsl(runner=fake, registry=lambda: [r for r in registry if r["DistributionName"] not in fake.unregistered], spawn=spawn,
+              rename=rename)
     return fake, wsl, tmp_path, spawned
 
 
@@ -95,7 +103,7 @@ def test_every_install_of_its_system_listed_from_wsls_own_record_none_started(ma
     ubuntu = UbuntuLike(wsl=wsl, data=tmp_path)
     found = {i.name: i for i in wsl.installed()}
     assert found["Ubuntu"] == Installed("Ubuntu", "Running", "2", True, "ubuntu", "24.04", "CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc",
-                                        str(tmp_path / "ubuntu"), str(tmp_path / "ubuntu" / "ext4.vhdx"), 2048)
+                                        str(tmp_path / "ubuntu"), str(tmp_path / "ubuntu" / "ext4.vhdx"), 2048, "{ubuntu}")
     assert found["Half-Gone"].state == "not listed by wsl" and found["Liminal-Ubuntu"].size is None  # its disk not there
     assert [i.name for i in ubuntu.installs()] == ["Ubuntu", "Liminal-Ubuntu", "Ubuntu-22.04", "Half-Gone"]  # by flavor, else by name
     assert [i.name for i in FedoraLike(wsl=wsl, data=tmp_path).installs()] == ["FedoraLinux-42"]  # no flavor recorded: its name
@@ -121,22 +129,22 @@ def test_an_install_is_chosen_by_a_click_on_its_row_and_its_tasks_follow(machine
     assert table["select"] == {"hook": "pick_install", "value": "Liminal-Ubuntu", "title": "Choose an install"} and "options" not in table
     tasks = table["tasks"]
     assert tasks["title"] == "Task" and tasks["subject"] == "Liminal-Ubuntu"
-    assert [a["title"] for a in tasks["actions"]] == ["Terminal", "Start", "Pause", "Stop…", "Uninstall…"]
-    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, False, True, True, False]  # stopped: Start, not Pause or Stop
+    assert [a["title"] for a in tasks["actions"]] == ["Terminal", "Start", "Pause", "Stop…", "Rename…", "Uninstall…"]
+    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, False, True, True, False, False]  # stopped: Start, not Pause or Stop
     assert p.pick_install("ubuntu")["said"] == "Ubuntu chosen: a terminal opens into it"
     assert p.terminal()[:3] == ["wsl", "-d", "Ubuntu"] and p.terminal_title() == "Ubuntu, as its default user"
     st = p.status()
     tasks = st["tables"][0]["tasks"]
     assert st["terminalInto"] == "Ubuntu" and tasks["subject"] == "Ubuntu"
-    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, True, False, False, False]  # running: Pause and Stop
-    assert tasks["actions"][0]["terminal"] is True and {f["id"] for f in st["forms"]} == {"stop", "uninstall"}
+    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, True, False, False, False, False]  # running: Pause and Stop
+    assert tasks["actions"][0]["terminal"] is True and {f["id"] for f in st["forms"]} == {"stop", "rename", "uninstall"}
     with pytest.raises(LookupError):
         p.pick_install("Debian")  # not of its system
     nothing = UbuntuLike(wsl=Wsl(runner=FakeWsl(distributions=[("Ubuntu", "Running", "2")])), data=tmp_path)
     assert nothing.chosen() == "" and "tasks" not in nothing.status()["tables"][0]  # the user's own is never chosen for them
     with pytest.raises(WslError, match="not installed"):
         nothing.terminal()
-    assert {"pick_install", "uninstall", "start_install", "pause_install", "stop_install"} <= set(WslDistribution.HOOKS)
+    assert {"pick_install", "uninstall", "start_install", "pause_install", "stop_install", "rename_install"} <= set(WslDistribution.HOOKS)
 
 
 def test_start_pause_resume_and_stop(machine, monkeypatch):
@@ -178,3 +186,29 @@ def test_uninstall_unregisters_and_the_users_own_only_after_a_second_confirmatio
     assert own["ok"] and own["lines"][-1] == "Liminal-Ubuntu's setup installs it again"
     with pytest.raises(LookupError):
         p.uninstall("Debian")
+
+
+def test_an_install_renamed_in_wsls_own_record_and_liminals_own_followed_through_the_login(machine):
+    """The user: "lets allow renaming the o/s on all three plugins". WSL 3.0.3 has no rename: WSL's record of it changes
+    (a stand-in's here), stopped first when it runs; Liminal's own keeps Liminal- in front and the plugin follows it."""
+    from liminal_libs.apps.authorization import EnvironmentLogin
+
+    fake, wsl, tmp_path, _ = machine
+    p = UbuntuLike(wsl=wsl, data=tmp_path)
+    p.pick_install("Ubuntu")
+    said = p.rename_install("Ubuntu", "Ubuntu-Work")  # the user's own, running: stopped first
+    assert said["ok"] and said["said"] == "Ubuntu is Ubuntu-Work now" and said["lines"][0] == "Ubuntu stopped first"
+    assert ["wsl", "--terminate", "Ubuntu"] in fake.calls and fake.renamed == [("{ubuntu}", "Ubuntu-Work")]
+    assert p.chosen() == "Ubuntu-Work" and [i.name for i in p.installs()][0] == "Ubuntu-Work"  # the choice follows it
+    for bad, words in (("Ubuntu Work", "letters, digits"), ("-x", "letters, digits"), ("ubuntu-22.04", "named Ubuntu-22.04 already")):
+        with pytest.raises(ValueError, match=words):
+            p.rename_install("Ubuntu-Work", bad)
+    with pytest.raises(ValueError, match="kept through the platform's login"):
+        p.rename_install("Liminal-Ubuntu", "Liminal-Ubuntu-Dev")  # its own, with no login to keep its new name in
+    p.login = EnvironmentLogin(env={})
+    with pytest.raises(ValueError, match="keeps Liminal- in front"):
+        p.rename_install("Liminal-Ubuntu", "Dev-Box")
+    own = p.rename_install("Liminal-Ubuntu", "Liminal-Ubuntu-Dev")
+    assert own["ok"] and p.login.env == {"WSL_UBUNTU_DISTRIBUTION": "Liminal-Ubuntu-Dev"}
+    assert p.distribution_name == "Liminal-Ubuntu-Dev" and p.status()["valid"]  # the plugin follows its own
+    assert p.rename_install("Liminal-Ubuntu-Dev", "Liminal-Ubuntu-Dev")["said"] == "Liminal-Ubuntu-Dev is named so already"

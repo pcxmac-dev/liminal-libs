@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.38.0 (2026-11-09)
+
+An install renamed (the user: "lets allow renaming the o/s on all three plugins"): the Task bar's Rename… (`rename_install`,
+its form `rename`, confirmed). WSL 3.0.3 has no command for it (`wsl --manage` moves, resizes, compacts and sets the
+user), so the distribution, stopped first when it runs, has its name changed in WSL's own record: its Lxss key's
+DistributionName, this Windows user's (`rename_registered`, `Wsl.rename`, `Wsl(rename=)` for a stand-in; each install's
+key now in `Installed.key`), then is listed again to be sure. A name WSL takes (letters, digits, dots, dashes,
+underscores, 64 at most), not another's. Liminal's own keeps Liminal- in front and the plugin follows it: its
+DISTRIBUTION_VAR kept through its login, and `distribution_name` read through the login first. Windows Terminal's
+profile and the Start menu's shortcut open a distribution by its id: they keep working, under its old title.
+
 ## 1.37.0 (2026-11-09)
 
 The installs' tasks (the user: "instead of chosen, put task and for the tasks lets do terminal, start, pause, stop, allow
