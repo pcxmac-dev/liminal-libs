@@ -127,6 +127,19 @@ class Distribution:
 
 
 LXSS = r"Software\Microsoft\Windows\CurrentVersion\Lxss"  # under HKEY_CURRENT_USER: WSL's record of each distribution
+KEEP_RUNNING = ("sh", "-c", "while :; do sleep 3600; done")  # a started install's session: WSL stops one with none
+NO_SYSTEMD = "LIMINAL-NO-SYSTEMD"
+# a pause: each running service but the system's own plumbing frozen by systemd's cgroup freezer (systemd 246+, cgroup v2)
+FREEZE_SCRIPT = (
+    f'[ "$(cat /proc/1/comm 2>/dev/null)" = systemd ] || {{ echo {NO_SYSTEMD}; exit 0; }}; '
+    "for u in $(systemctl list-units --type=service --state=running --plain --no-legend --no-pager | awk '{print $1}'); do "
+    'case "$u" in systemd-*|dbus*|user@*|*getty*|polkit.service) continue;; esac; '
+    'if systemctl freeze "$u" >/dev/null 2>&1; then echo "frozen $u"; else echo "failed $u"; fi; done')
+# a resume: the services named (its arguments) thawed, then any other service still frozen (a pause before a restart)
+THAW_SCRIPT = r"""for u in "$@"; do if systemctl thaw "$u" >/dev/null 2>&1; then echo "thawed $u"; fi; done
+for u in $(systemctl show -p Id -p FreezerState --type=service '*' 2>/dev/null | awk -F= '/^Id=/{id=$2} /^FreezerState=frozen/{print id}'); do
+  if systemctl thaw "$u" >/dev/null 2>&1; then echo "thawed $u"; fi
+done"""
 
 
 @dataclass(frozen=True)
@@ -192,8 +205,9 @@ def lxss_registry() -> list[dict]:
 class Wsl:
     """The wsl command. `runner(args, timeout) -> (code, stdout bytes, stderr bytes)` stands in for it."""
 
-    def __init__(self, runner=None, log=None, registry=None):
+    def __init__(self, runner=None, log=None, registry=None, spawn=None):
         self._runner = runner
+        self._spawn = spawn  # (args) -> a process: a stand-in for keep_running's; else subprocess, windowless
         self.log = log or (lambda m: None)
         self._online: tuple[float, list[str]] | None = None
         # WSL's record of the distributions (lxss_registry); a stand-in runner's tests read none unless given one
@@ -369,6 +383,15 @@ class Wsl:
         Path(folder).mkdir(parents=True, exist_ok=True)
         return self.own("--import", name, str(folder), str(tarball), "--version", "2", timeout=INSTALL_TIMEOUT_S, out=out)
 
+    def keep_running(self, name: str):
+        """A windowless session holding `name` up (WSL stops a distribution with no session): started, not waited for;
+        it ends when the distribution is stopped. A stand-in's spawner in tests."""
+        args = ["wsl", "-d", name, "--exec", *KEEP_RUNNING]
+        if self._spawn is not None:
+            return self._spawn(args)
+        return subprocess.Popen([_which("wsl") or "wsl", *args[1:]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **_no_window())
+
     def unregister(self, name: str) -> str:
         """A distribution unregistered: its disk and everything in it deleted for good (one that runs is stopped first)."""
         return self.own("--unregister", name, timeout=600)
@@ -409,6 +432,10 @@ def _installed(name: str, r: dict, d: Distribution | None) -> Installed:
                      str(r.get("OsVersion") or ""), str(r.get("PackageFamilyName") or ""), folder, disk, size)
 
 
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
 def size_words(n: int | None) -> str:
     """Bytes as GB (or MB under one GB); "not read" for None."""
     if n is None:
@@ -439,7 +466,8 @@ class WslDistribution(MachinePlugin):
     default_user = "liminal"  # the user made in the distribution, in the docker group
     space_gb = 4.0  # the free space its install needs on the data folder's drive
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
-    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall")
+    HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall",
+             "start_install", "pause_install", "stop_install")
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
     # its system's installs (1.36.0): those WSL records with one of these flavors, else named or packaged so (any case);
@@ -456,6 +484,7 @@ class WslDistribution(MachinePlugin):
         self._free = free  # (path) -> bytes free: a test's; the disk's otherwise
         self._scan: tuple[float, Scan] | None = None  # the last services scan (monotonic time, scan), kept SCAN_S
         self._pick = {"name": ""}  # the install chosen (pick_install); a dict, so the registry's copies share it
+        self._tasks = {"kept": {}, "paused": {}}  # the sessions holding started installs up; the services paused, by install
         self._engine_seen: dict | None = None  # Docker inside as last seen while it ran (a stopped one is not asked)
 
     def install_script(self) -> str:
@@ -652,6 +681,8 @@ class WslDistribution(MachinePlugin):
                 "in it, your files, your packages and your home folder, for good"
                 + (f"; its Store app ({target.package}) stays installed, and opening it installs a fresh one" if target.package else ""))
         self.wsl.unregister(target.name)
+        self._tasks["paused"].pop(target.name.lower(), None)
+        self._tasks["kept"].pop(target.name.lower(), None)
         if (self._pick.get("name") or "").lower() == target.name.lower():
             self._pick["name"] = ""
         if ours:
@@ -672,35 +703,114 @@ class WslDistribution(MachinePlugin):
                                       "if it runs. This cannot be undone.",
                              "yes": "Uninstall it", "danger": True}}]
 
+    # -- the installs' tasks (1.37.0; the user: "instead of chosen, put task and for the tasks lets do terminal, start, pause,
+    # stop, allow selection of the linux install by clicking on the list"; "tasks also include uninstall") --------------
+    def _install(self, name) -> Installed:
+        found = next((i for i in self.installs() if i.name.lower() == str(name or "").strip().lower()), None)
+        if found is None:
+            raise LookupError(f"no {self.system_name} install named {name!r} here")
+        return found
+
+    def paused(self, name: str) -> list[str]:
+        """The services this plugin paused in `name` (frozen while it runs); [] when none."""
+        return list(self._tasks["paused"].get(name.lower(), []))
+
+    def start_install(self, name) -> dict:
+        """An install started and kept running (WSL stops one with no session: a windowless session holds it, until Stop);
+        one paused, its services resumed. The user's own too: the user asked."""
+        target = self._install(name)
+        if target.state == "Running" and self.paused(target.name):
+            text = self.wsl.run(target.name, "sh", "-c", THAW_SCRIPT, "sh", *self.paused(target.name), user="root", timeout=120)
+            thawed = [line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("thawed ")]
+            self._tasks["paused"].pop(target.name.lower(), None)
+            return {"said": f"{target.name} resumed: {_count(len(thawed), 'service')} running again", "ok": True,
+                    "lines": [", ".join(thawed)] if thawed else []}
+        if target.state == "Running":
+            return {"said": f"{target.name} is running already", "ok": True}
+        self._tasks["kept"][target.name.lower()] = self.wsl.keep_running(target.name)
+        for _ in range(60):
+            d = self.wsl.distribution(target.name)
+            if d is not None and _running(d):
+                return {"said": f"{target.name} started: it runs until Stop", "ok": True}
+            time.sleep(0.5)
+        return {"said": f"{target.name} did not say it runs yet: Refresh shows it", "ok": False}
+
+    def pause_install(self, name) -> dict:
+        """An install's services paused: each running service but the system's own plumbing (systemd's, D-Bus, the
+        sessions) frozen by systemd's cgroup freezer, its terminals left as they are; Start resumes them. WSL itself
+        cannot pause a distribution; one without systemd as its init cannot be paused this way."""
+        target = self._install(name)
+        if target.state != "Running":
+            raise ValueError(f"{target.name} is not running: nothing to pause")
+        text = self.wsl.run(target.name, "sh", "-c", FREEZE_SCRIPT, user="root", timeout=120)
+        if NO_SYSTEMD in text:
+            raise ValueError(f"{target.name} does not run systemd as its init: its services cannot be paused, only stopped")
+        frozen = [line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("frozen ")]
+        failed = [line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("failed ")]
+        if frozen:
+            self._tasks["paused"][target.name.lower()] = frozen
+        return {"said": f"{target.name} paused: {_count(len(frozen), 'service')} frozen" if frozen else f"{target.name}: no service to pause",
+                "ok": bool(frozen) or not failed,
+                "lines": ([", ".join(frozen)] if frozen else []) + ([f"not paused: {', '.join(failed)}"] if failed else [])}
+
+    def stop_install(self, name) -> dict:
+        """An install stopped (`wsl --terminate`): every program in it ends; Start brings it back."""
+        target = self._install(name)
+        if target.state != "Running":
+            return {"said": f"{target.name} is stopped already", "ok": True}
+        self.wsl.terminate(target.name)
+        self._tasks["paused"].pop(target.name.lower(), None)
+        held = self._tasks["kept"].pop(target.name.lower(), None)
+        if held is not None and hasattr(held, "poll"):
+            held.poll()
+        if target.name.lower() == self.distribution_name.lower():
+            self._scan = None
+        return {"said": f"{target.name} stopped", "ok": True}
+
     def installs_table(self, installs: list[Installed]) -> dict:
-        """The installs of its system as a table: each its state, its system and version as WSL recorded it, WSL 1 or 2,
-        the default or not, its disk, and whose (this plugin's own, or the user's: listed only, never changed here)."""
+        """The installs of its system as a table to choose from by a click (`select`: its row's key is its name), each its
+        state (paused when its services are), its system and version as WSL recorded it, WSL 1 or 2, the default or not,
+        its disk, and whose; above it the tasks of the one chosen (`tasks`: Terminal, Start, Pause, Stop, Uninstall)."""
         rows = []
         for i in installs:
             ours = i.name.lower() == self.distribution_name.lower()
             system = f"{i.flavor.capitalize() if i.flavor else self.system_name} {i.os_version}".strip()
-            rows.append([{"text": i.name, "sub": i.package} if i.package else i.name, i.state or "?",
-                         system if i.flavor else {"text": system, "sub": "its version not recorded by WSL"},
-                         f"WSL {i.version}" if i.version else "?", "yes" if i.default else "",
-                         {"text": size_words(i.size), "sub": i.folder} if i.folder else size_words(i.size),
-                         "Liminal's: this plugin's" if ours else {"text": "yours", "sub": "opened or uninstalled only when you choose it"}])
+            state = "Paused" if i.state == "Running" and self.paused(i.name) else i.state or "?"
+            rows.append({"key": i.name, "cells": [
+                {"text": i.name, "sub": i.package} if i.package else i.name,
+                {"text": state, "sub": f"{_count(len(self.paused(i.name)), 'service')} frozen"} if state == "Paused" else state,
+                system if i.flavor else {"text": system, "sub": "its version not recorded by WSL"},
+                f"WSL {i.version}" if i.version else "?", "yes" if i.default else "",
+                {"text": size_words(i.size), "sub": i.folder} if i.folder else size_words(i.size),
+                "Liminal's: this plugin's" if ours else {"text": "yours", "sub": "changed only by a task you choose"}]})
         theirs = [i.name for i in installs if i.name.lower() != self.distribution_name.lower()]
         chosen = self.chosen(installs)
-        choices = [{"value": i.name, "title": i.name,
-                    "note": " · ".join(x for x in (f"{i.flavor.capitalize() if i.flavor else self.system_name} {i.os_version}".strip(),
-                                                    "Liminal's" if i.name.lower() == self.distribution_name.lower() else "yours",
-                                                    (i.state or "").lower()) if x)} for i in installs]
-        return {"title": f"{self.system_name} installs",
-                "options": [{"title": "Chosen", "hook": "pick_install", "value": chosen, "choices": choices}] if installs else [],
-                "actions": [{"terminal": True, "title": f"Open a terminal in {chosen}"},
-                            {"form": "uninstall", "title": f"Uninstall {chosen}…", "values": {"name": chosen}, "label": f"Uninstall {chosen}"}]
-                if chosen else [],
-                "note": (f"every {self.system_name} distribution installed for this Windows user, from WSL's own record (none started "
-                         f"to look); the one chosen is the one a terminal opens into and Uninstall removes; this plugin sets up "
-                         f"{self.distribution_name} alone" + (f"; yours: {', '.join(theirs)}" if theirs else "")),
-                "columns": [{"title": "Distribution"}, {"title": "State"}, {"title": "System"}, {"title": "WSL"}, {"title": "Default"},
-                            {"title": "Disk"}, {"title": "Whose"}],
-                "rows": rows, "empty": f"No {self.system_name} distribution installed here."}
+        picked = next((i for i in installs if i.name == chosen), None)
+        out = {"title": f"{self.system_name} installs",
+               "note": (f"every {self.system_name} distribution installed for this Windows user, from WSL's own record (none started "
+                        f"to look); click one to choose it for the tasks; this plugin sets up {self.distribution_name} alone"
+                        + (f"; yours: {', '.join(theirs)}" if theirs else "")),
+               "columns": [{"title": "Distribution"}, {"title": "State"}, {"title": "System"}, {"title": "WSL"}, {"title": "Default"},
+                           {"title": "Disk"}, {"title": "Whose"}],
+               "rows": rows, "empty": f"No {self.system_name} distribution installed here.",
+               "select": {"hook": "pick_install", "value": chosen, "title": "Choose an install"}}
+        if picked is not None:
+            running, paused = picked.state == "Running", bool(self.paused(picked.name))
+            out["tasks"] = {"title": "Task", "subject": picked.name, "actions": [
+                {"terminal": True, "title": "Terminal", "note": f"a terminal into {picked.name}" + ("" if running else ", which starts it")},
+                {"hook": "start_install", "args": [picked.name], "title": "Start", "disabled": running and not paused,
+                 "note": f"resumes {picked.name}'s services" if paused else f"starts {picked.name} and keeps it running until Stop"},
+                {"hook": "pause_install", "args": [picked.name], "title": "Pause", "disabled": not running or paused,
+                 "note": "freezes its running services (systemd's freezer); Start resumes them"},
+                {"form": "stop", "title": "Stop…", "values": {"name": picked.name}, "disabled": not running, "label": f"Stop {picked.name}"},
+                {"form": "uninstall", "title": "Uninstall…", "values": {"name": picked.name}, "label": f"Uninstall {picked.name}"}]}
+        return out
+
+    def task_forms(self) -> list[dict]:
+        """The tasks' forms: Stop (confirmed) and Uninstall (install_forms)."""
+        return [{"id": "stop", "hook": "stop_install", "title": "Stop a distribution", "fields": [{"name": "name", "label": "Distribution", "type": "fixed"}],
+                 "confirm": {"title": "Stop {name}?", "words": "Every program running in {name} ends now (wsl --terminate); Start brings it back.",
+                             "yes": "Stop it"}}, *self.install_forms()]
 
     def status(self) -> dict:
         wsl = self.wsl.status() if self.wsl.here else {"present": False, "version": "", "distribution": ""}
@@ -717,7 +827,10 @@ class WslDistribution(MachinePlugin):
             out["installs"] = (", ".join(f"{i.name} ({'Liminal' if i.name.lower() == name.lower() else 'yours'}, {i.state.lower()})"
                                          for i in installs) or f"no {self.system_name} distribution")
             out["tables"] = [self.installs_table(installs)]
-            out["forms"] = self.install_forms()
+            for i in installs:  # a paused install seen stopped: nothing paused any more
+                if i.state != "Running":
+                    self._tasks["paused"].pop(i.name.lower(), None)
+            out["forms"] = self.task_forms()
             out["terminalInto"] = self.chosen(installs)
         if d is not None and ours and _running(d):  # asked inside only while it runs: a status never starts it
             out["engine"] = self._engine_seen = self.engine()

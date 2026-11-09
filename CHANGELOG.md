@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.37.0 (2026-11-09)
+
+The installs' tasks (the user: "instead of chosen, put task and for the tasks lets do terminal, start, pause, stop, allow
+selection of the linux install by clicking on the list"; "tasks also include uninstall"). The "<System> installs" table
+is chosen from by a click on a row (`select`: {hook pick_install, value}; each row {cells, key}), the selector above it
+gone; above it `tasks` for the one chosen: Terminal, Start (`start_install`: a windowless session holds it up until Stop,
+WSL stopping one with none: `Wsl.keep_running`, `Wsl(spawn=)` for a stand-in; a paused one's services resumed), Pause
+(`pause_install`: each running service but the system's plumbing frozen by systemd's cgroup freezer, `FREEZE_SCRIPT`;
+WSL itself cannot pause a distribution; refused where systemd is not the init), Stop… (`stop_install`: `wsl --terminate`,
+confirmed) and Uninstall…, each `disabled` where it does not apply now; a paused install says Paused and how many of its
+services are frozen (`paused`; `THAW_SCRIPT` thaws them and any other still frozen). `task_forms`: Stop and Uninstall.
+
 ## 1.36.0 (2026-11-08)
 
 Every install of a WSL plugin's system, and a selector for them (the user: "for the WSL plugins, they need to list all the
