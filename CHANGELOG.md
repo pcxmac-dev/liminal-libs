@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.41.0 (2026-11-09)
+
+A firewall's System and Application rules grouped again, by name (the user: "for the windows and linux firewall, lets
+have the same system and application and other, but lets group by application under apps or system, try best to
+organize under system and applications. Like system has 'core networking' or WSD or UPnP or RA Server or Remote
+Assistance or network discovery or ... applications has like starcraft or edge"; "try to group the system by
+'services'"). A plugin names the service a System rule belongs to and the application an Application rule belongs to
+(`Sorted.name`), and the grouped table gives System and Application a heading per name (`children`, in the order of their
+titles; each row's `sub`), which the platform draws with (+) and (−) under its group. A name in any case is one heading.
+A rule moved into System or Application keeps its own name there; Other and the user's labels stay single lists. Each
+name lists its first rules up to the plugin's limit, so every service and application is listed, where a whole group
+listed only its first 100 before.
+
+A rule turned off is listed too, and passed as `(key, Sorted, cells, {"off": True})` so the page shows it dimmed (the
+user: "also rules that are turned off should be shown as well").
+
 ## 1.40.0 (2026-11-09)
 
 Cursor's mark for its AI assistant (the user: "lets add an AI plugin for cursor"): `cursor` in icons.js among the makers'

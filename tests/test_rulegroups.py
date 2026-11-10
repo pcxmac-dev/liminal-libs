@@ -126,6 +126,46 @@ def test_the_grouped_table_the_platform_draws():
                                                                "label-remove": "remove_label"}
 
 
+def test_system_and_application_are_grouped_again_by_their_names():
+    """The user: "try best to organize under system and applications. Like system has 'core networking' ... or Remote
+    Assistance or network discovery ... applications has like starcraft or edge"; "try to group the system by 'services'"."""
+    groups, login = store()
+    groups.new_label("Games")
+    k = [key_of(i) for i in range(8)]
+    rows = [(k[0], Sorted("system", "Windows' own rule group", "Network Discovery"), ["Network Discovery (WSD-In)"]),
+            (k[1], Sorted("system", "Windows' own rule group", "Core Networking"), ["Core Networking - DNS (UDP-Out)"]),
+            (k[2], Sorted("system", "Windows' own rule group", "network   Discovery "), ["Network Discovery (UPnP-In)"]),
+            (k[3], Sorted("application", "the program", "StarCraft II"), ["StarCraft II"]),
+            (k[4], Sorted("application", "the program", "Microsoft Edge"), ["Microsoft Edge (mDNS-In)"]),
+            (k[5], Sorted("system", "one of Windows' own rules"), ["no name"]),
+            (k[6], Sorted("other", "a port alone"), ["port 9"]),
+            (k[7], Sorted("application", "the program", "StarCraft II"), ["StarCraft II (UDP)"])]
+    groups.move([k[3]], "Games", {x: s for x, s, _ in rows})
+    groups.move([k[4]], "system", {x: s for x, s, _ in rows})
+    t = groups.table({"title": "Rules", "columns": [{"title": "Rule"}]}, rows, per_group=2)
+    by = {g["id"]: g for g in t["groups"]}
+    assert [(c["id"], c["title"], c["count"], c["listed"]) for c in by["system"]["children"]] == [
+        ("system:core networking", "Core Networking", 1, 1), ("system:microsoft edge", "Microsoft Edge", 1, 1),
+        ("system:network discovery", "Network Discovery", 2, 2)]  # a name in any case is one heading, as first spelled
+    assert (by["system"]["count"], by["system"]["listed"]) == (5, 5) and "with no service" not in by["system"]["note"]
+    assert [(c["id"], c["count"], c["listed"], c.get("note", "")) for c in by["application"]["children"]] == [
+        ("application:starcraft ii", 1, 1, "")]  # the other StarCraft II rule is in the label Games
+    assert "children" not in by["other"] and "children" not in by["label:Games"]
+    rows_by = {r["key"]: r for r in t["rows"]}
+    assert rows_by[k[0]]["sub"] == rows_by[k[2]]["sub"] == "system:network discovery" and "sub" not in rows_by[k[5]]
+    assert rows_by[k[4]]["sub"] == "system:microsoft edge" and rows_by[k[4]]["moved"]  # moved: it keeps its own name
+    assert rows_by[k[3]]["group"] == "label:Games" and "sub" not in rows_by[k[3]]  # a label is one list
+    t1 = groups.table({"title": "Rules"}, rows + [(key_of("y"), Sorted("system", "no name either"), ["also none"])], per_group=1)
+    sys1 = {g["id"]: g for g in t1["groups"]}["system"]
+    assert [(c["id"], c["count"], c["listed"]) for c in sys1["children"]][-1] == ("system:network discovery", 2, 1)
+    assert sys1["children"][-1]["note"] == "the first 1 of 2 listed: Find narrows them"
+    assert sys1["note"].endswith("the first 1 of 2 with no service listed: Find narrows them") and sys1["listed"] == 4
+    assert {g["id"]: g for g in t1["groups"]}["other"]["note"].endswith("tied to no program or service: a port or an address alone")
+    assert Sorted("system", name=None).name == "" and Sorted("other").name == ""
+    off = groups.table({"title": "Rules"}, [(k[0], rows[0][1], ["a"], {"off": True}), (k[1], rows[1][1], ["b"], {})])["rows"]
+    assert [r.get("off", False) for r in off] == [True, False]  # a rule turned off is listed, marked to be shown dimmed
+
+
 class _Wall(Firewall):
     name = "firewall-test"
 

@@ -13,7 +13,15 @@ file; nothing of them changes the firewall. A rule is known by its key: ten hex 
 same from one read to the next while the rule is.
 
 The platform draws such a table (`RuleGroups.table`, liminal-platform 0.11.0): a heading per group with (+) to open it
-and (−) to close it, a box to choose each rule (a group's box choosing every rule it lists), and Move to."""
+and (−) to close it, a box to choose each rule (a group's box choosing every rule it lists), and Move to.
+
+Within System and Application the rules are grouped again, by name (1.41.0; the user, 2026-11-09: "lets group by
+application under apps or system, try best to organize under system and applications. Like system has 'core networking'
+or WSD or UPnP or RA Server or Remote Assistance or network discovery or ... applications has like starcraft or edge";
+"try to group the system by 'services'"): a plugin names the service a System rule belongs to (Windows' own rule group:
+Core Networking, Network Discovery; a Linux service: SSH, mDNS) and the application an Application rule belongs to
+(StarCraft II, Microsoft Edge, Docker), `Sorted.name`, and each name is a heading of its own under its group, with (+)
+and (−) as well. Other and the user's labels stay single lists."""
 from __future__ import annotations
 
 import hashlib
@@ -38,16 +46,29 @@ KEY = re.compile(r"^[0-9a-f]{10}$")
 MOVE_HOOK = "move_rules"
 
 
+NAMED = ("system", "application")  # the groups whose rules are grouped again, by their service's or application's name
+
+
 @dataclass(frozen=True)
 class Sorted:
-    """The group a plugin finds for one of its rules (system, application or other) and why, in words."""
+    """The group a plugin finds for one of its rules (system, application or other) and why, in words; and `name`, the
+    service (a System rule's) or the application (an Application rule's) it belongs to, as the page shows it: its heading
+    within the group. "" when the plugin knows none (an Other rule has none)."""
 
     group: str
     why: str = ""
+    name: str = ""
 
     def __post_init__(self):
         if self.group not in AUTO_IDS:
             raise ValueError(f"a rule's own group is system, application or other, not {self.group!r}")
+        object.__setattr__(self, "name", " ".join(str(self.name or "").split()))
+
+
+def sub_id(group: str, name: str) -> str:
+    """The id of a name's heading within System or Application: system:core networking (a name in any case is one
+    heading, titled as it was first spelled)."""
+    return f"{group}:{name.casefold()}"
 
 
 def key_of(*parts) -> str:
@@ -243,24 +264,43 @@ class RuleGroups:
     # -- what the page draws ----------------------------------------------------------------------------------------
     def table(self, base: dict, rows, *, per_group: int = 100, notes: dict | None = None, grouping: Grouping | None = None) -> dict:
         """`base` (a status table: its title, note, columns, options, actions, empty) with `rows` ((key, Sorted, cells),
-        in the order listed) grouped: `groups` in order (System, Application, Other, then the user's labels), each {id,
-        title, kind (auto | label), count, listed, note, actions}; every row {cells, key, group, own, why, moved};
-        `move` {hook, title, choices}: what the page needs for a heading per group with (+) and (−), a box per rule and
-        Move to. Each group lists its first `per_group` rules; `actions` gains New label…."""
+        or (key, Sorted, cells, {"off": True}) for a rule turned off, which the page shows dimmed; in the order listed)
+        grouped: `groups` in order (System, Application, Other, then the user's labels), each {id,
+        title, kind (auto | label), count, listed, note, actions}; System and Application also with `children`, a heading
+        per name in the order of their titles, each {id (system:<name>), title, count, listed, note}; every row {cells,
+        key, group, sub (its name's heading, when it has one), own, why, moved}; `move` {hook, title, choices}: what the
+        page needs for a heading per group and per name with (+) and (−), a box per rule and Move to. Each name lists its
+        first `per_group` rules, and so does each group for its rules with no name; `actions` gains New label…. A rule
+        moved into System or Application keeps its own name there."""
         g = grouping if grouping is not None else self.read()
         words = {**NOTES, **(notes or {})}
         order = [(a, AUTO_TITLES[a], "auto") for a in AUTO_IDS] + [(LABEL + x, x, "label") for x in g.labels]
-        counts: dict = {}
-        listed: dict = {}
+        counts: dict = {}  # a group's or a name's id -> its rules
+        listed: dict = {}  # -> those listed
+        names: dict = {}  # a group's id -> {a name's id: its title}
         out_rows = []
-        for key, s, cells in rows:
+        for key, s, cells, *more in rows:
             moved = g.group_of(key, s.group)
             where = moved if moved in AUTO_IDS else LABEL + moved
+            sub = sub_id(where, s.name) if where in NAMED and s.name else None
             counts[where] = counts.get(where, 0) + 1
-            if listed.get(where, 0) >= per_group:
+            place = sub or where
+            if sub:
+                counts[sub] = counts.get(sub, 0) + 1
+                names.setdefault(where, {}).setdefault(sub, s.name)
+            mine = listed.get(place, 0) if sub else listed.get((where, None), 0)
+            if mine >= per_group:
                 continue
+            if sub:
+                listed[sub] = mine + 1
+            else:
+                listed[(where, None)] = mine + 1
             listed[where] = listed.get(where, 0) + 1
             row = {"cells": list(cells), "key": key, "group": where, "own": s.group, "why": s.why}
+            if sub:
+                row["sub"] = sub
+            if more and isinstance(more[0], dict) and more[0].get("off"):
+                row["off"] = True  # a rule turned off (1.41.0; the user: "also rules that are turned off should be shown as well")
             if where != s.group:
                 row["moved"] = True
             out_rows.append(row)
@@ -268,9 +308,21 @@ class RuleGroups:
         for gid, title, kind in order:
             n, shown = counts.get(gid, 0), listed.get(gid, 0)
             note = words.get(gid, "") if kind == "auto" else "your label"
-            if n > shown:
-                note += f"; the first {shown} of {n} listed: Find narrows them"
+            unnamed, direct = n - sum(counts.get(c, 0) for c in names.get(gid, {})), listed.get((gid, None), 0)
+            if unnamed > direct:
+                lacking = {"system": "with no service", "application": "with no application"}.get(gid, "")
+                note += (f"; the first {direct} of {unnamed} {lacking} listed: Find narrows them" if names.get(gid)
+                         else f"; the first {direct} of {unnamed} listed: Find narrows them")
             item = {"id": gid, "title": title, "kind": kind, "count": n, "listed": shown, "note": note}
+            if gid in NAMED:
+                children = []
+                for cid, ctitle in sorted(names.get(gid, {}).items(), key=lambda kv: (kv[1].casefold(), kv[1])):
+                    cn, cshown = counts.get(cid, 0), listed.get(cid, 0)
+                    child = {"id": cid, "title": ctitle, "count": cn, "listed": cshown}
+                    if cn > cshown:
+                        child["note"] = f"the first {cshown} of {cn} listed: Find narrows them"
+                    children.append(child)
+                item["children"] = children
             if kind == "label":
                 item["actions"] = [{"form": "label-rename", "title": "Rename…", "values": {"name": title}, "label": f"Rename the label {title}"},
                                    {"form": "label-remove", "title": "Remove…", "values": {"name": title}, "label": f"Remove the label {title}"}]
