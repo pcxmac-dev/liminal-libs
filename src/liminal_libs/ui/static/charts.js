@@ -7,6 +7,13 @@
 // The colours are liminal.css's categorical slots --series-1..7, fixed by a line's key (the entity), never by its
 // rank. Names come from plugins: every text is escaped or set with textContent.
 //
+// By a finger too (1.42.0; the user, 2026-11-10: "I want to support touch as well as mouse clicking on the
+// interface"): a finger (or a pen) held on a plot, or a tap, shows the crosshair and the tooltip at its time, the
+// tooltip above the finger, and a sideways move scrubs through the samples; an upward or downward swipe still scrolls
+// the page, nothing shown meanwhile (liminal.css: touch-action pan-y on the plot). The tooltip stays once the finger
+// lifts, until a tap elsewhere or a scroll. The plot is marked data-touch-own (touch.js: its long press is the plot's
+// own, no bubble there).
+//
 //   el.innerHTML = LiminalCharts.cards(spec, {id})   spec: {span: recent|day, t: [epoch s], charts: [{key, title,
 //   LiminalCharts.draw(el)                            unit: share|bytes|bytes/s, max, of, lines: [{key, name, values}]}]}
 //   LiminalCharts.update(el, spec, {id})              new samples for the same charts, drawn in place (false: not the same)
@@ -22,8 +29,9 @@
   const ROWS = 30;  // the table beneath: the latest samples
   const specs = new Map();  // a chart's id -> {chart, t, span}
   const opened = new Set();  // the tables shown, kept across redraws
-  let hover = null;  // {id, x, y}: the pointer over a chart
+  let hover = null;  // {id, x, y, touch}: the pointer over a chart (a finger's, `touch`, stays after it lifts)
   let focused = null;  // {id, t, last}: the sample focused from the keyboard (the newest while `last`)
+  let finger = null;  // {svg, id, x0, y0, x, y, timer}: a finger (or a pen) down on a plot, its tooltip due after a moment
   let tip = null;
 
   function bytes(n) {
@@ -96,7 +104,7 @@
       const legend = one ? '' : `<div class="chart-legend">${c.lines.map((ln, i) => `<span>${lineKey(slots[i])}${esc(ln.name)} <b>${esc(fmt(latest[i]))}</b></span>`).join('')}</div>`;
       const label = `${c.title}: ${c.lines.map((ln, i) => `${one ? '' : `${ln.name} `}${fmt(latest[i])}`).join(', ')}, ${spanWords(span)}`;
       return `<figure class="chart" data-chart="${esc(key)}">${head}${legend}`
-        + `<svg class="plot" data-chart="${esc(key)}" role="img" tabindex="0" aria-label="${esc(label)}" height="${H}"></svg>`
+        + `<svg class="plot" data-chart="${esc(key)}" data-touch-own role="img" tabindex="0" aria-label="${esc(label)}" height="${H}"></svg>`
         + `${table(key, c, t, span, fmt)}</figure>`;
     }).join('');
   }
@@ -192,7 +200,7 @@
     if (tip) tip.hidden = true;
     document.querySelectorAll('svg.plot g.cross').forEach((x) => x.setAttribute('visibility', 'hidden'));
   }
-  function show(svg, i, cx, cy) {
+  function show(svg, i, cx, cy, byFinger = false) {
     const s = specs.get(svg.dataset.chart), g = svg._g;
     if (!s || !g || i < 0 || i >= s.t.length) { hide(); return; }
     const { chart: c, t, span } = s, fmt = format(c.unit), slots = slotsOf(c.lines), x = g.x(t[i]);
@@ -233,8 +241,19 @@
     const px = cx ?? r.left + x * scale, py = cy ?? r.top + TOP;
     const tw = box.offsetWidth, th = box.offsetHeight;
     let left = px + 14, top = py + 14;
-    if (left + tw > innerWidth - 8) left = px - 14 - tw;
-    if (top + th > innerHeight - 8) top = py - 14 - th;
+    if (byFinger) {  // a finger's: above it, centred on it, clear of the fingertip; beside it where there is no room above
+      left = px - tw / 2;
+      top = py - 32 - th;
+      if (top < 8) {
+        top = py - th / 2;
+        left = px + 32 + tw <= innerWidth - 8 ? px + 32 : px - 32 - tw;
+      }
+      left = Math.min(left, innerWidth - 8 - tw);
+      top = Math.min(top, innerHeight - 8 - th);
+    } else {
+      if (left + tw > innerWidth - 8) left = px - 14 - tw;
+      if (top + th > innerHeight - 8) top = py - 14 - th;
+    }
     box.style.left = `${Math.max(8, left)}px`;
     box.style.top = `${Math.max(8, top)}px`;
     svg._shown = i;
@@ -248,19 +267,70 @@
     }
     if (hover) {
       const svg = byId(hover.id);
-      if (svg) { show(svg, indexAt(svg, hover.x), hover.x, hover.y); return; }
+      if (svg) { show(svg, indexAt(svg, hover.x), hover.x, hover.y, hover.touch); return; }
       hover = null;
     }
     hide();
   }
 
+  // A finger on a plot: the sample at its time after a moment held (a swipe up or down scrolls the page instead,
+  // cancelling it), at once when it moves sideways (it scrubs), or where it lifts (a tap); kept until a tap elsewhere or
+  // a scroll.
+  const fingerDown = (e) => e.pointerType === 'touch' || (e.pointerType === 'pen' && e.buttons > 0);
+  function fingerShow(f, x, y) {
+    clearTimeout(f.timer);
+    f.timer = 0;
+    if (!f.svg.isConnected) return;
+    hover = { id: f.svg.dataset.chart, x, y, touch: true };
+    show(f.svg, indexAt(f.svg, x), x, y, true);
+  }
+  document.addEventListener('pointerdown', (e) => {
+    const svg = fingerDown(e) && e.isPrimary && e.target instanceof Element ? e.target.closest('svg.plot[data-chart]') : null;
+    if (!svg) return;
+    if (finger) clearTimeout(finger.timer);
+    const f = { svg, id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, timer: 0 };
+    f.timer = setTimeout(() => { if (finger === f) fingerShow(f, f.x, f.y); }, 150);
+    finger = f;
+    try { svg.setPointerCapture(e.pointerId); } catch (err) { /* lifted already */ }
+  }, { passive: true });
+  document.addEventListener('pointerup', (e) => {
+    if (!finger || e.pointerId !== finger.id) return;
+    const f = finger;
+    finger = null;
+    if (f.timer) fingerShow(f, e.clientX, e.clientY);  // a tap: the tooltip at its time
+  }, true);
+  document.addEventListener('pointercancel', (e) => {  // the page scrolls instead: no tooltip left behind
+    if (!finger || e.pointerId !== finger.id) return;
+    clearTimeout(finger.timer);
+    finger = null;
+    if (hover && hover.touch) { hover = null; refreshTip(); }
+  }, true);
+  document.addEventListener('scroll', (e) => {  // a finger's tooltip does not stay behind a chart the page moved
+    if (!hover || !hover.touch || finger) return;
+    const svg = byId(hover.id);
+    if (e.target === document || !svg || (e.target instanceof Element && e.target.contains(svg))) { hover = null; refreshTip(); }
+  }, { capture: true, passive: true });
+
   document.addEventListener('pointermove', (e) => {
+    if (finger && e.pointerId === finger.id) {
+      // it scrubs once shown, or from a move mainly sideways; the start of one up or down (the page's scroll, whose
+      // pointercancel follows) and a still finger's tremble show nothing before the moment is up
+      const f = finger, dx = Math.abs(e.clientX - f.x0), dy = Math.abs(e.clientY - f.y0);
+      f.x = e.clientX;
+      f.y = e.clientY;
+      if (!f.timer || (dx > dy && dx > 4)) fingerShow(f, e.clientX, e.clientY);
+      return;
+    }
     const svg = e.target instanceof Element ? e.target.closest('svg.plot[data-chart]') : null;
     if (!svg) { if (hover) { hover = null; refreshTip(); } return; }
     hover = { id: svg.dataset.chart, x: e.clientX, y: e.clientY };
     show(svg, indexAt(svg, e.clientX), e.clientX, e.clientY);
   }, { passive: true });
-  document.documentElement.addEventListener('pointerleave', () => { hover = null; refreshTip(); });
+  document.documentElement.addEventListener('pointerleave', (e) => {
+    if (hover && hover.touch && e.pointerType !== 'mouse') return;  // a finger lifting: its tooltip stays
+    hover = null;
+    refreshTip();
+  });
   document.addEventListener('pointerdown', (e) => {  // a click or a right click elsewhere: the tooltip goes
     if (hover && !(e.target instanceof Element && e.target.closest('svg.plot[data-chart]'))) { hover = null; refreshTip(); }
   }, true);
@@ -268,6 +338,8 @@
     const svg = e.target instanceof Element ? e.target.closest('svg.plot[data-chart]') : null;
     const s = svg && specs.get(svg.dataset.chart);
     if (!s || !s.t.length) return;
+    // a finger's tap focused it: the time the finger picked stays, not the newest (a key afterwards steps from it)
+    if ((finger && finger.svg === svg) || (hover && hover.touch && hover.id === svg.dataset.chart)) return;
     focused = { id: svg.dataset.chart, t: s.t[s.t.length - 1], last: true };
     show(svg, s.t.length - 1);
   });

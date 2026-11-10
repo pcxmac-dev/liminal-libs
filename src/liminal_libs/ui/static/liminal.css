@@ -83,7 +83,8 @@ button, select, input {
   font: inherit; color: inherit; background: transparent;
   border: 1px solid transparent; border-radius: 4px; padding: 4px 8px; cursor: pointer;
 }
-button:hover, select:hover { background: var(--hover); }
+/* hover highlights are a mouse's (1.42.0): a tap leaves none stuck on a touch screen, here and below */
+@media (hover: hover) { button:hover, select:hover { background: var(--hover); } }
 button.active, button.toggle.on { color: var(--accent); background: var(--hover); }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 select { border-color: var(--border); background: var(--panel); }
@@ -117,7 +118,7 @@ dl.facts dd { margin: 0; overflow-wrap: anywhere; }
 table.list { border-collapse: collapse; width: 100%; }
 table.list th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 table.list td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-table.list tr:hover td { background: var(--hover); }
+@media (hover: hover) { table.list tr:hover td { background: var(--hover); } }
 
 /* An app's page as a list, its data and the selected item's specifics (the user, 2026-11-07: "the specifics
    are on the right hand side before the icons on the very right, and the larger window from the left to
@@ -136,7 +137,7 @@ table.list tr:hover td { background: var(--hover); }
   text-transform: uppercase; letter-spacing: .04em; }
 .app-list .item { display: flex; gap: 10px; align-items: center; width: 100%; padding: 7px 8px; border: 0;
   border-radius: 7px; background: none; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
-.app-list .item:hover { background: var(--hover); }
+@media (hover: hover) { .app-list .item:hover { background: var(--hover); } }
 .app-list .item.active { background: var(--hover); color: var(--accent); }
 .app-list .item > svg { flex: none; }  /* an icon keeps its size beside a long line */
 .app-list .item .what { display: flex; flex-direction: column; min-width: 0; }
@@ -156,7 +157,7 @@ table.list tr:hover td { background: var(--hover); }
   background: var(--card); border-radius: var(--radius); flex: none; overflow-y: auto; }
 #rail button { position: relative; width: 46px; height: 46px; padding: 0; display: grid; place-items: center;
   color: var(--muted); border-radius: 7px; }
-#rail button:hover { color: var(--text); }
+@media (hover: hover) { #rail button:hover { color: var(--text); } }
 #rail button.active { background: var(--hover); color: var(--accent); }
 #rail button.active::before { content: ""; position: absolute; left: -4px; top: 10px; bottom: 10px; width: 2px;
   border-radius: 1px; background: var(--accent); }
@@ -175,10 +176,10 @@ table.list tr:hover td { background: var(--hover); }
   border: 1px solid var(--border); border-radius: 10px; background: var(--panel); cursor: pointer; }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%;
   background: var(--muted); transition: transform .15s ease, background-color .15s ease; }
-.switch:hover { background: var(--hover); }
+@media (hover: hover) { .switch:hover { background: var(--hover); } }
 .switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
 .switch[aria-checked="true"]::after { transform: translateX(16px); background: #fff; }
-.switch[aria-checked="true"]:hover { background: var(--accent); filter: brightness(1.12); }
+@media (hover: hover) { .switch[aria-checked="true"]:hover { background: var(--accent); filter: brightness(1.12); } }
 .switch:disabled { opacity: .5; cursor: default; }
 .switch-row { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .switch::after { transition: none; } }
@@ -188,7 +189,8 @@ table.list tr:hover td { background: var(--hover); }
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 .menu-title { padding: 4px 10px 6px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .menu button { display: block; width: 100%; text-align: left; padding: 6px 10px; border: 0; border-radius: 5px; }
-.menu button:hover, .menu button:focus-visible { background: var(--hover); outline: none; }
+@media (hover: hover) { .menu button:hover { background: var(--hover); outline: none; } }
+.menu button:focus-visible { background: var(--hover); outline: none; }
 .menu button.danger { color: var(--down); }
 
 /* Charts (charts.js). The categorical slots, in this order, passed the dataviz validator against the page
@@ -232,3 +234,63 @@ body.light { --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --se
 .chart-tip .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .chart-tip .row span { color: var(--muted); }
 table.list th.num, table.list td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Touch screens and the on-screen keyboard (1.42.0; the user, 2026-11-10: "I want to support touch as well as mouse
+   clicking on the interface ... We'll make sure it works across all apps"; "Support for virtual keyboard on tablets
+   and phones"). touch.js gives <html> the class "touch" on a device with a touch screen; a mouse and a keyboard see
+   nothing new here. A double tap on a control does not zoom the page (a pinch still does). */
+button, select, input, textarea, summary, label, a[href], [role="button"], [role="switch"], [role="tab"],
+[role="menuitem"] { touch-action: manipulation; }
+/* a finger's targets, about 40 px, whenever the device has a touch screen; the fields' words at 16 px at least (an
+   iPhone zooms the page into a smaller one). The .switch and .menu rules here are in the charts page's style.css word
+   for word (.menu as .menu[role="menu"]): its test compares them. */
+@media (any-pointer: coarse) {
+  button:not(.switch), select { min-height: 40px; }
+  button:not(.switch) { min-width: 40px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="hidden"]) { min-height: 40px; }
+  input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
+  :root input:not([type]), :root input[type="text"], :root input[type="search"], :root input[type="email"],
+  :root input[type="url"], :root input[type="tel"], :root input[type="password"], :root input[type="number"],
+  :root input[type="date"], :root input[type="datetime-local"], :root input[type="month"], :root input[type="time"],
+  :root input[type="week"], :root textarea, :root select { font-size: 16px; font-size: max(16px, 1em); }
+  td > button + button { margin-left: 8px; }  /* a row's buttons side by side: room between them for a finger */
+  .app-list .item { min-height: 44px; }
+  .switch { width: 48px; height: 28px; border-radius: 14px; }
+  .switch::after { top: 3px; left: 3px; width: 20px; height: 20px; }
+  .switch[aria-checked="true"]::after { transform: translateX(20px); }
+  .switch-row { min-height: 44px; }
+  .menu button { min-height: 44px; }
+  .spans button { min-height: 40px; }
+  summary { min-height: 40px; box-sizing: border-box; padding-top: 10px; padding-bottom: 10px; }
+  .chart-table summary { padding: 10px 0; }
+  .chart svg.plot { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+}
+/* a chart's plot (charts.js): a sideways finger scrubs it, an upward or downward one scrolls the page, two pinch it
+   (Chrome, Edge, Firefox). Safari knows no pinch-zoom here and keeps pan-y alone: there a pinch begun on a plot does
+   not zoom the page, one begun beside it does (manipulation would let a sideways drag pan a pane instead of scrubbing) */
+.chart svg.plot { touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+/* The bubble a long press shows on whatever has a tooltip (touch.js, which carries the same rule for a page without
+   this file), near the finger, until the next tap, a scroll or a while */
+.touch-tip { position: fixed; z-index: 70; box-sizing: border-box; max-width: min(320px, calc(100vw - 16px)); padding: 8px 10px;
+  border-radius: 8px; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35); font-size: 13px; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere;
+  pointer-events: none; }
+/* words for touch screens only (what a mouse reads in a tooltip and a finger needs to act), and for a mouse only */
+html:not(.touch) .touch-only, html.touch .mouse-only { display: none !important; }
+/* The on-screen keyboard laid over the page (touch.js: Safari, or a browser without the viewport's
+   interactive-widget=resizes-content): the frame fits the height left above it, its panes scrolling as before */
+@media not all and (max-width: 700px) { html.keyboard body { height: var(--vvh, 100%); } }
+
+/* Phones (the user, 2026-11-10: below about 700 px wide an app's panes stack in one column in the same order, the
+   list, then the data, then the specifics, and the page scrolls as one; larger screens keep their layout exactly).
+   The rail stays at the right, held in view while the page scrolls; a wide table scrolls sideways in its pane. */
+@media (max-width: 700px) {
+  body { height: auto; min-height: 100%; }
+  .app-page { flex: 1 0 auto; }
+  .app-main { padding: 14px 14px 18px; overflow-x: auto; overflow-y: visible; }
+  .app-main.cols { grid-template-columns: minmax(0, 1fr); overflow: visible; }
+  .app-main.cols > .app-list, .app-main.cols > .app-data, .app-main.cols > .app-side { overflow-x: auto; overflow-y: visible; }
+  .app-list { border-right: none; border-bottom: 1px solid var(--border); }
+  #rail { position: sticky; top: var(--pad); max-height: calc(100vh - 2 * var(--pad)); max-height: calc(100dvh - 2 * var(--pad)); }
+  .charts { grid-template-columns: minmax(0, 1fr); }
+}

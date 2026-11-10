@@ -169,10 +169,19 @@
     retired: 'Retired: no longer listed, history only',
   };
 
-  // `d`: { state, progress } from /api/activity or /api/symbols.
-  function dataIcon(d, size = 14) {
+  // The words of a data-state icon, "Backfilling history (40%)": its title for a mouse and its name for a screen
+  // reader; a finger hovers nothing (1.42.0: a long press shows them, touch.js), so a page may show them as text too.
+  function dataLabel(d) {
     if (!d) return '';
-    const label = DATA_LABEL[d.state] || d.state;
+    const pctText = d.state === 'backfilling' && d.progress != null ? ` (${Math.round(d.progress * 100)}%)` : '';
+    return (DATA_LABEL[d.state] || d.state) + pctText;
+  }
+
+  // `d`: { state, progress } from /api/activity or /api/symbols. `{text: true}`: its words beside it as text (a page
+  // asks for them on a touch screen: dataIcon(d, 14, {text: LiminalTouch.touch})).
+  function dataIcon(d, size = 14, { text = false } = {}) {
+    if (!d) return '';
+    const words = dataLabel(d);
     const body = d.state === 'fetching' ? icon('sync', size, 'spin')
       : d.state === 'backfilling' ? progressRing(d.progress, size)
         : d.state === 'queued' ? icon('clock', size)
@@ -180,8 +189,11 @@
             : d.state === 'next' ? icon('next', size)
               : d.state === 'held' ? icon('pause', size)
                 : icon('check', size);
-    const pctText = d.state === 'backfilling' && d.progress != null ? ` (${Math.round(d.progress * 100)}%)` : '';
-    return `<span class="data-icon ${esc(d.state)}" title="${esc(label + pctText)}" role="img" aria-label="${esc(label + pctText)}">${body}</span>`;
+    if (text) {
+      return `<span class="data-icon ${esc(d.state)} with-text" style="display:inline-flex;align-items:center;gap:4px" title="${esc(words)}">`
+        + `${body}<span class="data-text">${esc(words)}</span></span>`;
+    }
+    return `<span class="data-icon ${esc(d.state)}" title="${esc(words)}" role="img" aria-label="${esc(words)}">${body}</span>`;
   }
 
   // A logo that fails to load falls back to the lettered badge.
@@ -194,5 +206,5 @@
     img.replaceWith(document.createTextNode(box.dataset.letter || '?'));
   }, true);
 
-  window.LiminalIcons = { symbolIcon, dataIcon, icon, DATA_LABEL, esc, safeUrl };
+  window.LiminalIcons = { symbolIcon, dataIcon, dataLabel, icon, DATA_LABEL, esc, safeUrl };
 })();

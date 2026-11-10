@@ -2,9 +2,11 @@
 graphics. The common themes and drawing methods"): `static/icons.js` (the rail's icons, a symbol's
 logo, the data-state icons; `LiminalIcons.icon(name, size)`), `static/liminal.css` (the themes'
 variables, the base controls, the rail, a small app's page, the charts, the switch, the menu),
-`static/charts.js` (line charts), `static/menu.js` (a context menu) and `static/theme.js` (the UI's
-theme on the page). An app serves them beside its own files (apps.App through web.static_file: its
-folder first, then STATIC here).
+`static/charts.js` (line charts), `static/menu.js` (a context menu), `static/theme.js` (the UI's
+theme on the page) and `static/touch.js` (touch screens and the on-screen keyboard, 1.42.0: a long
+press for a right click's menu and for a tooltip's words, a field's keyboard, the room the keyboard
+leaves; `LiminalTouch`, loaded right after theme.js). An app serves them beside its own files
+(apps.App through web.static_file: its folder first, then STATIC here).
 
 The UI's preferences (the user, 2026-11-07: "add a preferences plugin for the 'UI' and add the different
 themes"): one file for every app on this machine, the data folder's ui.json (LIMINAL_UI_FILE names another),

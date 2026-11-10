@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.42.0 (2026-11-10)
+
+Touch screens and the on-screen keyboard on every app's page (the user: "let's do an update. I want to support touch as
+well as mouse clicking on the interface ... We'll make sure it works across all apps"; "Support for virtual keyboard on
+tablets and phones"). A new `ui/static/touch.js` (`LiminalTouch`), which every page loads right after theme.js: whether
+the device has a touch screen (`(any-pointer: coarse)`, the class `touch` on `<html>`, kept current); `onLongPress(root,
+selector, callback)`, a finger or a pen held still about 500 ms (more than 8 px of movement, a scroll or the lift cancel
+it), the click after it swallowed and the browser's own menu and callout stopped there (on a picture inside it too), on
+every device (Safari never makes a contextmenu of a long press; Chrome's and Edge's becomes the same long press, once).
+While the finger is still down another finger's tap goes through (on the menu it opened, say), and a new tap of the same
+kind ends a press whose lift was never seen (what it pressed drawn again under it). The bubble: a long press on anything
+with a title (or `data-tip`) shows its words near the finger until the next tap, a scroll or a while, found as a mouse's
+hover finds them (a logo or an icon inside a button shows the button's words; a link to nowhere, `href="#"`, has
+words), never in an area marked `data-touch-own` (one with gestures of its own: a chart, the globe, a terminal), in a
+field, or on a link to an address or a player (their own menus stay); where a long press is served, its words show when
+its callback declines it. `.touch-only` and `.mouse-only` words. The keyboard: one name for each kind of field (ticker,
+search, number, decimal, signed, secret or key, plain, name, username, email, url, password, code, text, terminal) and
+the attributes it sets (`keyboard(kind, more)` for markup, `setKeyboard(el, kind, more)` in place of a kind set before,
+`data-keyboard="kind"` filling in only what the field does not say); an API key or a secret is kept out of password
+managers (autocomplete off, no capitals, no corrections). A redraw never interrupts typing: `typing(root)` and
+`whenIdle(root, fn)` follow the focus and the words a keyboard is composing. No keyboard pops up unasked on a touch
+screen: `autofocus(el)` focuses only when the user's last move was not a finger's (typing on the keyboard a finger called
+up, its Go or Send included, is still the finger's; a hardware keyboard's keys and a mouse are not), and
+`raiseKeyboard(el)` brings the keyboard back from a tap even when the field kept the focus. Room for the keyboard where
+it lies over the page (Safari ignores the viewport's interactive-widget): the class `keyboard` on `<html>`, `--vvh` (the
+height left above it) and `--vv-top` on `:root`; the field typed in brought into view there, when Chrome shrinks the page
+above its keyboard (after a finger's tap only), and for each next field while the keyboard is up. A field in a frame of
+the page's own origin (the charts page's bound login) counts as the page's.
+
+`menu.js`: the menus a right click opens on a rail icon open by a long press too, with no wiring in the apps (the
+platform's tray, the charts page's rail through panels.js): a contextmenu at the finger (pointerType touch or pen), and
+`LiminalMenu.longPress(root, selector)` for other elements. A menu opened so stands beside the finger, its head gives the
+pressed icon's own words (its data-tip, else its title), and a scroll closes it only while no finger holds it, a resize
+only when the width changes. A page that loads touch.js after menu.js still gets the long press (found once the page is
+read), and a page without it a word in the console. A mouse's right click is as it was. `charts.js`: a finger held on a
+plot, or a tap, shows the crosshair and the tooltip at its time, the tooltip above the finger; a sideways move scrubs, an
+upward or downward swipe still scrolls the page and shows nothing, and the tooltip stays after the lift until a tap
+elsewhere or a scroll. `icons.js`: `dataLabel(d)`, a data-state icon's words, and `dataIcon(d, size, {text: true})`
+showing them beside it.
+
+`liminal.css`: targets of about 40 px whenever the device has a touch screen (buttons, selects, fields, the switch at
+48 by 28, menu items, the charts' ranges and tables, list items, checkboxes at 22 px, room between a row's buttons), the
+fields' words at 16 px at least (an iPhone zooms the page into a smaller one), no double-tap zoom on controls, hover
+highlights for a mouse only, the bubble, the frame fitted above the keyboard, and below 700 px wide the list, the data
+and the specifics in one column, the page scrolling as one and the rail held in view. Larger screens keep their layout.
+Two fingers pinch the page over a chart's plot, except on Safari (it knows no `touch-action: pinch-zoom`; a pinch begun
+beside the plot zooms there). The charts page's style.css carries the switch's and the menu's rules word for word, as
+before (its test compares them): the touch sizes and the menu's hover split from its focus are to be copied there.
+
 ## 1.41.0 (2026-11-09)
 
 A firewall's System and Application rules grouped again, by name (the user: "for the windows and linux firewall, lets

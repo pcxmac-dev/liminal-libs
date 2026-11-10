@@ -73,6 +73,8 @@ def test_an_app_serves_its_page_the_librarys_files_its_tray_and_its_routes(demo)
     status, body, r = _get(port, "/icons.js")  # the library's, beside the app's own files
     assert status == 200 and b"window.LiminalIcons" in body and b"user:" in body and "javascript" in r.getheader("Content-Type")
     assert b"#rail" in _get(port, "/liminal.css")[1]
+    status, body, r = _get(port, "/touch.js")  # touch and the on-screen keyboard (1.42.0), for every app's page
+    assert status == 200 and b"window.LiminalTouch" in body and "javascript" in r.getheader("Content-Type")
     assert _get(port, "/../pyproject.toml")[0] == 404 and _get(port, "/nothing.js")[0] == 404
     status, body, _ = _get(port, "/api/tray")
     tray = json.loads(body)
