@@ -3,7 +3,8 @@
 ## 1.49.5 (2026-11-11)
 
 `RestClient.pages`: a next page on the same host with its port named (Azure's price list writes
-`prices.azure.com:443`) is the same host, followed as before; only another host is refused.
+`prices.azure.com:443`) is the same host, followed as before; only another host is refused. A pass stopped just
+before a write says so as the host's result ("not updated: the plugin was detached: nothing written").
 
 ## 1.49.4 (2026-11-11)
 

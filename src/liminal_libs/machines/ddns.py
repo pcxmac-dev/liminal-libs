@@ -300,6 +300,7 @@ class Keeper:
                          f"this network's address could not be asked again: {self.public_why or 'no answer'}")
             return
         if stop is not None and stop.is_set():  # detached while the address was asked again: nothing written (1.49.4)
+            st.checked_at, st.ok, st.result = now, False, "not updated: the plugin was detached: nothing written"
             return
         try:
             done = self._write(h, ip)

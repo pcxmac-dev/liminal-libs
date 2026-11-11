@@ -192,8 +192,9 @@ def test_dynamic_dns_never_cuts_several_addresses_writes_a_stale_one_or_runs_on_
         return ip, "x"
 
     slow = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set", public=public)
-    slow.run_pass(home, stop=late)
+    said = slow.run_pass(home, stop=late)
     assert written == [] and late.is_set()
+    assert said[0]["result"] == "not updated: the plugin was detached: nothing written"
     assert slow.known() == [] and keeper.known() == []  # nothing its own yet: none written, none taken
     keeper.take_over("lb.example.com")
     assert keeper.known() == ["lb.example.com"]
