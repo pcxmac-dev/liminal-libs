@@ -28,6 +28,12 @@ from the asset class's: Massive's SIP tape) and the contract gives the asset cla
 subclass) or takes the one for its kind (`document_data`). The fetching stays in each plugin's
 DataSource; the specs describe and judge what it fetches.
 
+Plugin API 2.2 adds what a plugin attaches to (sources/apis.py; the user, 2026-11-11: "each plugin should reflect the
+the API its attached to, and present links that provide documentation ... it should also expose more of what the API
+is about"): `apis`, an Api for each thing it talks to (a vendor's API, a command line, PowerShell's cmdlets, the
+kernel's interface ...) with the maker's pages, the API's parts and calls (those it uses and the rest), its limits and
+costs, and `api_facts()`, what it learned of them while it ran; every app's page draws both.
+
 A plugin instance is shared by every thread of a process: it holds what it declares, never a run's
 state. This module imports no registry and no collector: the contract knows nothing of who loads it.
 """
@@ -179,6 +185,10 @@ class Plugin:
     # its own fetching (API 1.9; sources/fetching.py): its jobs on the shared fetch queue, taken by a
     # worker of its own; None: fetched by the app (the bars sync, the news reader, `datasets`)
     fetcher: Fetcher | None = None
+    # what it attaches to (plugin API 2.2; sources/apis.py): an Api for each thing it talks to, with the maker's pages,
+    # the API's parts and calls (those it uses and the rest), drawn on its page in every app; a plugin written for 2.2
+    # declares at least one (conformance)
+    apis: tuple = ()
     # The IPC surface (the user, 2026-11-06: "the plugins use an ABC plugin to communicate IPC between
     # themselves and the APP for functionality"; "the plugin ABC will enumerate attached plugins and their
     # API"; "the app plugins need to use the Abstract Base Class login as the only way to present an
@@ -236,6 +246,12 @@ class Plugin:
         """Its own settings from the variables read (config.load_settings); None when it has none."""
         return self.settings(variables) if self.has_settings else None
 
+    def api_facts(self) -> Mapping[str, Mapping[str, str]]:
+        """What it learned of its APIs while it ran (plugin API 2.2): {api name (an Api of `apis`): {label: words}}, the
+        server's version, the requests left of a limit, the last answer and when; asking nothing to answer it (a page
+        asks it with every status). The contract's: nothing learned."""
+        return {}
+
     def gives(self, name: str) -> bool:
         """Whether this plugin answers a hook itself: a record's callback field set, an attribute set
         on the instance (with_, __init__), or a method of its class overriding the contract's (a
@@ -282,7 +298,8 @@ class Plugin:
             except (TypeError, ValueError):
                 hooks[name] = "(...)"
         return {"name": self.name, "kind": self.KIND, "system": self.SYSTEM, "api": self.api, "version": self.version,
-                "attached": self.app is not None, "hooks": hooks}
+                "attached": self.app is not None, "hooks": hooks,
+                "apis": [a.name for a in self.apis if hasattr(a, "name")]}
 
     def attach(self, app, login: "Login | None") -> dict:
         """Attached by `app`: the app and its login (the authorization interface of its namespace) are

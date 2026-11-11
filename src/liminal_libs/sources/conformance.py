@@ -87,12 +87,38 @@ def problems(p: object) -> list[str]:
             out.append(f"{tag}: with_() does not give a copy of the same kind and name")
     except Exception as e:  # noqa: BLE001 - what with_ raised is the problem
         out.append(f"{tag}: with_() failed: {type(e).__name__}: {e}")
+    out += _apis(tag, p)
     if expected == "feed":
         out += _feed(tag, p)
     elif expected == "publisher":
         out += _publisher(tag, p)
     elif expected == "assistant":
         out += _assistant(tag, p)
+    return out
+
+
+def _apis(tag: str, p: Plugin) -> list[str]:
+    """What it attaches to (plugin API 2.2, sources/apis.py): sound declarations whatever its version; declared at all
+    only by a plugin written for 2.2, and by every such plugin (the user, 2026-11-11: "each plugin should reflect the
+    the API its attached to, and present links that provide documentation"; "ensure this is true")."""
+    from .apis import problems as api_problems
+    from .registry import api_version
+
+    declared = getattr(p, "apis", ())
+    out = [f"{tag}: {why}" for why in api_problems(declared)]
+    if not callable(getattr(p, "api_facts", None)):
+        out.append(f"{tag}: api_facts is not callable")
+    try:
+        version = api_version(p.api)
+    except ValueError:
+        return out  # said by the api check already
+    if p.is_record:
+        return out
+    if version >= (2, 2) and not declared:
+        out.append(f"{tag}: written for plugin API {p.api} but declares no API it attaches to "
+                   "(apis: an sources.apis.Api for each thing it talks to)")
+    elif declared and version < (2, 2):
+        out.append(f"{tag}: declares apis (plugin API 2.2) but is written for {p.api}")
     return out
 
 

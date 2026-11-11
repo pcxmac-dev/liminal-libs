@@ -121,7 +121,12 @@ ENTRY_POINTS = "liminal.providers"
 #   document_data: DocumentData's ReleaseData, HeadlineData and FilingData, with Paragraph, Page and
 #   Statement), each with spec(), assess(frame, since, until) and integrity(frame); the contract's
 #   defaults where a plugin declares none, so a 2.0 plugin loads unchanged.
-PLUGIN_API = "2.1"
+# 2.2 (2026-11-11): what a plugin attaches to (sources/apis.py): Plugin.apis, an Api for each thing it talks to (a
+#   vendor's API, a command line, PowerShell's cmdlets, the kernel's interface ...) with the maker's pages (Link),
+#   the API's parts (Area: covered by the plugin or not) and calls (Call: used by it or not), its limits and costs and
+#   the day they were verified; Plugin.api_facts(), what it learned of them while it ran. A plugin written for 2.2
+#   declares at least one, each with a documentation link (conformance); a 2.0 or 2.1 plugin loads unchanged.
+PLUGIN_API = "2.2"
 RECORD_API = "1.12"  # the record form's contract: what a Provider or a Publisher may declare
 
 

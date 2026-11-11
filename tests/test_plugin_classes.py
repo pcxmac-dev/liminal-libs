@@ -200,9 +200,9 @@ def test_with_makes_a_changed_copy_of_a_class_instance_or_a_record():
 
 
 def test_the_contract_version_of_a_class_and_of_a_record():
-    assert PLUGIN_API == "2.1" and RECORD_API == "1.12"  # 2.1: the data specs; a 2.0 plugin loads unchanged
-    assert api_refusal("2.0") is None and api_refusal("2") is None and api_refusal("2.1") is None
-    assert "needs a newer app" in api_refusal("2.2") and "needs a newer app" in api_refusal("3.0")
+    assert PLUGIN_API == "2.2" and RECORD_API == "1.12"  # 2.2: what a plugin attaches to; a 2.0 or 2.1 plugin loads unchanged
+    assert api_refusal("2.0") is None and api_refusal("2") is None and api_refusal("2.1") is None and api_refusal("2.2") is None
+    assert "needs a newer app" in api_refusal("2.3") and "needs a newer app" in api_refusal("3.0")
     assert "needs a release for 2.x" in api_refusal("1.12")
     for api in ("1.0", "1", "1.12"):
         assert api_refusal(api, record=True) is None

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.49.0 (2026-11-11)
+
+Plugin API 2.2: what a plugin attaches to (the user: "each plugin should reflect the the API its attached to, and present
+links that provide documentation, the plugin interface should more or less contain what it already has, BUT, it should
+also expose more of what the API is about"; "please revisit all plugins and the two new ones, and ensure this is true").
+- `sources/apis.py`: `Api` (its maker, what it is about, its form, where it is reached, its version, how a caller proves
+  who it is, its limits, what costs money, the day its facts were read from the maker's pages), `Link` (the maker's
+  pages by kind: documentation, reference, guide, limits, pricing, status, changes, specification, console ...), `Area`
+  (every part of the API, covered by the plugin or not) and `Call` (the calls it makes and the others the API offers,
+  each saying whether it changes something or costs money); `problems`, `urls`, `facts_of` and `dead_links` (each
+  address asked once: the plugins' page check, the only part that sends anything).
+- `Plugin.apis` and `Plugin.api_facts()` (what it learned of its APIs while it ran: the server's version, the requests
+  left, the last answer, asking nothing to answer it); `interface()` names its APIs.
+- `registry.PLUGIN_API` is 2.2. Conformance: a plugin written for 2.2 declares at least one Api, each with a
+  documentation link and https addresses only; a plugin declaring apis is written for 2.2; a 2.0 or 2.1 plugin loads
+  unchanged.
+- `ui/static/apis.js`: `LiminalApis.html(apis, facts)` draws a plugin's APIs on its page (the maker's pages as links
+  opening in a tab of their own; the parts and calls it uses first, the rest behind "more of the API", kept open
+  across a redraw), its styles on the themes' variables, so the charts app's page draws it alike.
+
+For the cloud plugins (the user: "ALSO i would like to add two new plugins, Digital Ocean and LINODE"; "lets roll
+plugins for EC2, vultr, azure and google cloud"):
+- `machines/rest.py`: `RestClient`, a JSON REST API over HTTPS for a platform plugin (the plugin names the host and how
+  a request proves who sends it: `bearer`, a signer, a `TokenSource` for a token that expires); a rate limit waited out
+  (Retry-After), a read tried again, a write never sent twice; errors in words with the secrets taken out; what the
+  answers said of the API's limits kept for api_facts (`facts()`); `pages()` for a list across its pages.
+- `machines/ddns.py`: `Keeper`, hosts kept at this network's public IPv4 address through the provider's own DNS (the
+  plugin reads and sets a host's A record; the name servers asked for the address are the plugin's), `hosts_of`,
+  `split_host`, `minutes_of`, and the page's Dynamic DNS table.
+- icons.js: the clouds' marks (digitalocean, linode, ec2, vultr, azure, googlecloud).
+
 ## 1.48.0 (2026-11-11)
 
 The admin plugins' pages (the user: "the administration plugins don't seem to work right especially linux which doesn't

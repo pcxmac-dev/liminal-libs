@@ -155,6 +155,26 @@
     // Hyper-V's machine within a machine: a screen showing another
     hyperv: '<g stroke-width="1.5"><rect x="2.5" y="3.5" width="19" height="13" rx="1.6"/><path d="M12 16.5v3.4M8.6 20.5h6.8"/></g>'
       + '<g stroke-width="1.2"><rect x="7.4" y="6.6" width="9.2" height="5.6" rx=".8"/><path d="M12 12.2v1.5M10.2 13.9h3.6"/></g>',
+    // The clouds (the user, 2026-11-11: "ALSO i would like to add two new plugins, Digital Ocean and LINODE"; "lets roll
+    // plugins for EC2, vultr, azure and google cloud"), each its maker's mark:
+    // DigitalOcean's ring open at its lower left, its squares stepping down out of it
+    digitalocean: '<path stroke-width="2.4" d="M5.6 11.2a7.4 7.4 0 1 1 7.4 7.4"/>'
+      + '<g fill="currentColor" stroke="none"><rect x="9.6" y="15.4" width="3.4" height="3.4"/><rect x="6.4" y="18.8" width="3.2" height="2.7"/>'
+      + '<rect x="4" y="16.2" width="2.4" height="2.4"/></g>',
+    // Linode's prism: its faces stacked and turned, as the mark has them
+    linode: '<g stroke-width="1.4" stroke-linejoin="round"><path d="M6.2 4.4 13 2.6l1.2 6.4-6.6 2z"/><path d="M7.6 11 14.2 9l1.1 6-6.5 2.2z"/>'
+      + '<path d="M8.8 17.2l6.5-2.2.7 3.8-6.2 2.6z"/><path d="M14.2 9 18.6 7.6l.9 4.8-4.2 1.6M15.3 15l3.6-1.4.5 2.9-3.4 1.6"/></g>',
+    // EC2's chip, Amazon's smile and its arrow beneath
+    ec2: '<g stroke-width="1.4"><rect x="8" y="3.6" width="8" height="8" rx="1.2"/>'
+      + '<path d="M10.4 2v1.6M13.6 2v1.6M10.4 11.6v1.6M13.6 11.6v1.6M6.4 6h1.6M6.4 9.2h1.6M16 6h1.6M16 9.2h1.6"/></g>'
+      + '<g stroke-width="1.7"><path d="M3.2 16.4c4.8 3.4 12.4 3.6 17.4.2"/><path d="M17.6 15.2l3.1.9-.5 3"/></g>',
+    // Vultr's V: its bars side by side, the first the longest
+    vultr: '<g stroke-width="2.4"><path d="M4.2 4.6 11.6 19.4"/><path d="M10.4 4.6l3.4 6.8"/><path d="M16.6 4.6l1.5 3"/></g>',
+    // Azure's A: the leaning band, the wedge beside it
+    azure: '<g stroke-width="1.5" stroke-linejoin="round"><path d="M9.6 3.6h4.2L8 20.4H3z"/><path d="M15.2 7.4 21 20.4H9.6l6.2-1.6-4-4.6z"/></g>',
+    // Google Cloud's cloud and the hexagon at its heart
+    googlecloud: '<path stroke-width="1.6" d="M7.6 19h9.6a4.4 4.4 0 0 0 .7-8.74A6 6 0 0 0 6.3 9.7 4.7 4.7 0 0 0 7.6 19z"/>'
+      + '<path stroke-width="1.3" d="M12 11.2l2 1.15v2.3l-2 1.15-2-1.15v-2.3z"/>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 

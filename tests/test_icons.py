@@ -8,7 +8,8 @@ import xml.etree.ElementTree as ET
 from liminal_libs.ui import STATIC
 
 MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "claude", "openai", "grok", "copilot",
-         "cursor", "docker", "kubernetes", "lxd", "hyperv", "libvirt")
+         "cursor", "docker", "kubernetes", "lxd", "hyperv", "libvirt",
+         "digitalocean", "linode", "ec2", "vultr", "azure", "googlecloud")  # the clouds (1.49.0)
 
 
 def _paths() -> dict[str, str]:
@@ -20,7 +21,7 @@ def _paths() -> dict[str, str]:
     name = None
     for line in body.splitlines():
         stripped = line.strip()
-        named = re.match(r"([a-z]+):\s*(.*)$", stripped)
+        named = re.match(r"([a-z][a-z0-9]*):\s*(.*)$", stripped)  # ec2 too
         if named:
             name = named.group(1)
             out[name] = "".join(piece.findall(named.group(2)))

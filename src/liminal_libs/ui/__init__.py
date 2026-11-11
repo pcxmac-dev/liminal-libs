@@ -5,7 +5,8 @@ variables, the base controls, the rail, a small app's page, the charts, the swit
 `static/charts.js` (line charts), `static/menu.js` (a context menu), `static/theme.js` (the UI's
 theme on the page) and `static/touch.js` (touch screens and the on-screen keyboard, 1.42.0: a long
 press for a right click's menu and for a tooltip's words, a field's keyboard, the room the keyboard
-leaves; `LiminalTouch`, loaded right after theme.js). An app serves them beside its own files
+leaves; `LiminalTouch`, loaded right after theme.js) and `static/apis.js` (1.49.0: the API a plugin attaches to, drawn
+on its page: `LiminalApis.html(apis, facts)`, its own styles on the themes' variables). An app serves them beside its own files
 (apps.App through web.static_file: its folder first, then STATIC here).
 
 The UI's preferences (the user, 2026-11-07: "add a preferences plugin for the 'UI' and add the different
