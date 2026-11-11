@@ -124,6 +124,46 @@ def test_a_plugin_enumerates_the_hooks_it_offers_and_asks_its_login_for_its_key(
     assert app.detach("acme") is True and p.app is None and p.login is None and app.plugins() == {} and not app.detach("acme")
 
 
+def test_an_app_tells_a_login_it_inherits_who_it_is_and_the_pairs_its_plugins_ask_for(tmp_path):
+    """1.43.0 (the user, 2026-11-10: "the log-in app should not point to platform, integrator or charts, it should be
+    standalone"; "when its inherited it can point to it's superclass, charts, platform, or integrator"): the login knows
+    no plugin; the app that inherits it starts it with its name, title and address (inherited_by) and answers
+    GET /api/login/pairs with its attached plugins' pairs (pairs_wanted), one row a pair, named by the variables."""
+    from liminal_libs.apps import PAIRS_PATH, SUPER_TITLE_VAR, SUPER_URL_VAR, SUPER_VAR, inherited_by, pairs_wanted
+    from liminal_libs.sources.keys import KeyVar
+
+    assert inherited_by("charts", "Liminal Charts", "http://127.0.0.1:8765/") == {
+        SUPER_VAR: "charts", SUPER_TITLE_VAR: "Liminal Charts", SUPER_URL_VAR: "http://127.0.0.1:8765"}
+    assert inherited_by("platform") == {SUPER_VAR: "platform"} and SUPER_VAR == "LIMINAL_LOGIN_FOR"
+
+    class KeyedAcme(AcmePlugin):
+        name, title = "acme", "Acme"
+        keys = (KeyVar("ACME_API_KEY"), KeyVar("ACME_ACCOUNT", "account (email or name)", secret=False))
+
+    class KeyedPart(AcmePlugin):  # a part of Acme sharing its key: one row, Acme's own
+        name, title, part_of = "acme-fx", "Acme FX", "acme"
+        keys = (KeyVar("ACME_API_KEY"),)
+
+    rows = pairs_wanted([KeyedPart(), KeyedAcme()])
+    assert rows == [
+        {"name": "acme-account", "variable": "ACME_ACCOUNT", "plugin": "acme", "title": "Acme", "label": "account (email or name)",
+         "secret": False, "kind": "detail", "system": "integrator"},
+        {"name": "acme-api-key", "variable": "ACME_API_KEY", "plugin": "acme", "title": "Acme", "label": "API key",
+         "secret": True, "kind": "key", "system": "integrator"}]
+    DemoApp.STATIC = tmp_path
+    app = DemoApp(log=lambda m: None, login=FakeLogin())
+    assert app.login_pairs() == []  # nothing attached: nothing asked for
+    app.attach(KeyedAcme())
+    app.start(0)
+    try:
+        port = int(app.served.rstrip("/").rsplit(":", 1)[1])
+        conn = HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", PAIRS_PATH)
+        assert json.loads(conn.getresponse().read()) == {"pairs": pairs_wanted([KeyedAcme()])}
+    finally:
+        app.stop()
+
+
 def test_a_record_and_a_publisher_offer_their_hooks_the_same_way():
     record = Provider(name="acme-rec", title="Acme", build=lambda s, b: AcmeSource(b), assets=frozenset({"stock"}))
     face = record.interface()

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.43.0 (2026-11-10)
+
+The login app on its own knows no other app; the app that inherits it says so (the user: "the log-in app should not
+point to platform, integrator or charts, it should be standalone"; "when its inherited it can point to it's superclass,
+charts, platform, or integrator"). In `apps.login`: `inherited_by(name, title, url)`, the environment an app gives the
+login it starts (`LIMINAL_LOGIN_FOR`, `LIMINAL_LOGIN_FOR_TITLE`, `LIMINAL_LOGIN_FOR_URL`: `SUPER_VAR`,
+`SUPER_TITLE_VAR`, `SUPER_URL_VAR`); `pairs_wanted(plugins)`, the pairs plugins ask for named by their variables (one
+row a pair, a plugin's parts sharing the plugin's row; what the login computed from the registry itself until now);
+`PAIRS_PATH`, `/api/login/pairs`. Every `App` answers `GET /api/login/pairs` from the plugins attached to it
+(`App.login_pairs`), so charts, the platform or the integrator can each be a login's superclass. `Scope` drops `serves`:
+a login's file names no app it serves (an old file's `serves` line is read past, `text()` writes none).
+
 ## 1.42.1 (2026-11-10)
 
 Every field typed into looks alike in `ui/static/liminal.css`: email, url, tel and number fields take the border and the

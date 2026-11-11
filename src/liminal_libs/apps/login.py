@@ -28,6 +28,41 @@ URL_VAR = "LIMINAL_LOGIN_URL"
 DEFAULT_URL = "http://127.0.0.1:8795"
 SESSION_HEADER = "X-Liminal-Session"  # the session a client got at sign-in, on every request after
 
+# The login app on its own knows no other app (1.43.0; the user, 2026-11-10: "the log-in app should not point to
+# platform, integrator or charts, it should be standalone"; "when its inherited it can point to it's superclass, charts,
+# platform, or integrator"). The app that inherits it, its superclass, says so in the environment of the login it starts
+# (`inherited_by`), and answers PAIRS_PATH with the pairs its plugins ask for (`pairs_wanted`; every App does, from the
+# plugins attached to it): the login then keeps that superclass's users apart, names it on its page and offers its pairs.
+SUPER_VAR = "LIMINAL_LOGIN_FOR"  # the superclass's short name (charts, platform, integrator): its users' folder in the login
+SUPER_TITLE_VAR = "LIMINAL_LOGIN_FOR_TITLE"  # how the login names it on its page (Liminal Charts)
+SUPER_URL_VAR = "LIMINAL_LOGIN_FOR_URL"  # where the login asks it for the pairs its plugins ask for
+PAIRS_PATH = "/api/login/pairs"  # a superclass's answer: {"pairs": pairs_wanted(its plugins)}
+
+
+def inherited_by(name: str, title: str = "", url: str = "") -> dict[str, str]:
+    """The environment a superclass gives the login app it starts: its name, how the login names it, and where the login
+    asks it for its plugins' pairs (PAIRS_PATH)."""
+    env = {SUPER_VAR: name}
+    if title:
+        env[SUPER_TITLE_VAR] = title
+    if url:
+        env[SUPER_URL_VAR] = url.rstrip("/")
+    return env
+
+
+def pairs_wanted(plugins) -> list[dict]:
+    """The pairs `plugins` ask for, named by their variables (`massive-api-key` for MASSIVE_API_KEY; the user, 2026-11-06:
+    "By the variables"): one row a pair (a plugin's parts share theirs: the row is the plugin's own), with the plugin, its
+    title, the pair's label, whether it is a secret, the kind it is kept as and the plugin's system. What a superclass
+    answers a login it inherits at PAIRS_PATH; the login marks the ones the signed-in user has."""
+    rows: dict[str, dict] = {}
+    for p in sorted(plugins, key=lambda p: (getattr(p, "part_of", None) or p.name, p.name)):
+        for k in getattr(p, "keys", ()) or ():
+            rows.setdefault(k.pair, {"name": k.pair, "variable": k.name, "plugin": getattr(p, "part_of", None) or p.name,
+                                     "title": getattr(p, "title", "") or p.name, "label": k.label, "secret": k.secret,
+                                     "kind": "key" if k.secret else "detail", "system": getattr(p, "SYSTEM", "")})
+    return sorted(rows.values(), key=lambda r: (r["plugin"], r["name"]))
+
 
 class LoginRefused(Unauthorized):
     """The login app refused: not signed in, a wrong name or password, no such pair, a name it

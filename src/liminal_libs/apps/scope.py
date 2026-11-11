@@ -33,7 +33,8 @@ _DOMAIN = r"[a-z0-9-]+(\.[a-z0-9-]+)+"
 class Scope:
     url: str
     title: str = ""
-    serves: tuple[str, ...] = ("charts",)  # the apps (their users' namespaces) this login serves
+    # no `serves` (1.43.0): a login names no app it serves; the app that inherits one says so when it starts it
+    # (apps.login.inherited_by). A file's old `serves = ...` line is read past.
     port: int | None = None
     members: str = "domain"  # a domain's login: "domain" (addresses at the domain only) or "any"
     data: Path | None = None  # where the users' folders live; None: by the kind (data_dir)
@@ -156,7 +157,7 @@ class Scope:
 
     def describe(self) -> dict:
         return {"url": self.url, "kind": self.kind, "name": self.name, "label": self.label, "title": self.title or self.name,
-                "serves": list(self.serves), "members": self.members if self.kind == "domain" else "local",
+                "members": self.members if self.kind == "domain" else "local",
                 "root": str(self.root) if self.root is not None else None, "domain": self.domain,
                 "mailServer": (self.mail.get("host") or "the domain's own mail record") if self.kind == "domain" else "",
                 "admin": self.admin_address, "adminHost": self.admin_host, "mailbox": self.imap.get("host", ""),
@@ -185,7 +186,6 @@ class Scope:
             url = f"https://{url}"
         if not url.lower().startswith("file:"):  # a domain: its name alone, lowercased
             url = f"https://{(urlparse(url).hostname or '').lower().strip('.')}"
-        serves = tuple(s.strip().lower() for s in login.get("serves", "charts").replace(";", ",").split(",") if s.strip()) or ("charts",)
         port = login.get("port", "").strip()
         data = login.get("data", "").strip()
         members = (login.get("members", "domain").strip().lower()) or "domain"
@@ -194,7 +194,7 @@ class Scope:
         mail = {k.strip().lower(): v.strip() for k, v in cfg["mail"].items()} if "mail" in cfg else {}
         imap = {k.strip().lower(): v.strip() for k, v in cfg["imap"].items()} if "imap" in cfg else {}
         server = {(k.strip() if k.strip().startswith("env_") else k.strip().lower()): v.strip() for k, v in cfg["server"].items()} if "server" in cfg else {}
-        scope = cls(url, title=login.get("title", "").strip(), serves=serves, port=int(port) if port.isdecimal() else None,
+        scope = cls(url, title=login.get("title", "").strip(), port=int(port) if port.isdecimal() else None,
                     members=members, data=Path(data).expanduser() if data else None, mail=mail, imap=imap, server=server,
                     admin=login.get("admin", "").strip().lower(), path=Path(path) if path else None)
         if scope.kind == "domain" and not scope.domain:
@@ -236,7 +236,6 @@ class Scope:
                  f"scope = {self.url}"]
         if self.title:
             lines.append(f"title = {self.title}")
-        lines.append(f"serves = {', '.join(self.serves)}")
         if self.port:
             lines.append(f"port = {self.port}")
         if self.kind == "domain":

@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
+from .login import PAIRS_PATH, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
 from .tray import Tray, TrayItem
 
@@ -111,6 +112,11 @@ class App:
     def plugins(self) -> dict[str, dict]:
         """The plugins attached and their API, by name (`GET /api/plugins`)."""
         return {name: p.interface() for name, p in self._plugins.items()}
+
+    def login_pairs(self) -> list[dict]:
+        """The pairs this app's plugins ask for, for a login app it inherits (`GET /api/login/pairs`, 1.43.0): its
+        attached plugins' (apps.login.pairs_wanted). The login knows no plugin itself."""
+        return pairs_wanted(self._plugins.values())
 
     def ask(self, name: str, hook: str, *args, **kwargs):
         """One attached plugin's hook called by name (LookupError: no such plugin or hook); noted as asked by whoever
@@ -222,6 +228,8 @@ class App:
             return 200, {"plugins": self.plugins()}
         if method == "GET" and path == "/api/interface":
             return 200, self.interface()
+        if method == "GET" and path == PAIRS_PATH:  # what a login app this app inherits asks it (apps.login)
+            return 200, {"pairs": self.login_pairs()}
         if method == "GET" and path == TRAFFIC_PATH:
             raw = str(query.get("last") or "200")
             return 200, self.connections(min(int(raw), 400) if raw.isdecimal() else 200)
