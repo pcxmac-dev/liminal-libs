@@ -18,9 +18,13 @@ own user and never root, started again after a failure. The startups' own hooks 
 `unregister(app, "boot", accept_removal)` removes it, asked twice (refused until accepted: RemovalRefused). A
 subclass makes them on its system (BOOT_SERVICES: a scheduled task At startup on Windows, a system unit or an OpenRC
 service on Linux); the page's section is this base's: the status's `boot`, a table under `tables` and its forms under
-`forms`, each change confirmed in the page's dialog. The rights a change needs are had when the platform has them, or
-when they can be asked for (`may_elevate`: Windows' prompt, UAC, on a desktop; sudo without a password): either
-makes the plugin valid."""
+`forms`, each change confirmed in the page's dialog.
+
+The page (1.48.0; the user: "the administration plugins don't seem to work right especially linux which doesn't say
+anything about startup"): an admin plugin is valid whenever it can read (the rights are a fact: each change asks for
+them, Windows' prompt or sudo without a password, or says it needs them: `rights_words`), and its status is its own
+tables with their confirmed forms: the services, the startups at logon, the boot services, the processes. Where it is not
+for this machine, `elsewhere()` says what it does on one it is for."""
 from __future__ import annotations
 
 import importlib
@@ -301,8 +305,18 @@ class Admin(MachinePlugin):
 
     def may_elevate(self) -> bool:
         """Whether a change needing an administrator's (root's) rights can have them when it is asked (Windows' prompt on
-        a desktop; sudo without a password): the plugin is valid then too. None by default."""
+        a desktop; sudo without a password): what a change's words say. None by default."""
         return False
+
+    def rights_words(self, kind: str) -> str:
+        """How a change of `kind` (service, logon, boot) has its rights, in words for the page ("" when nothing is asked:
+        the platform has them, or none are needed)."""
+        return ""
+
+    def elsewhere(self) -> tuple[str, list[dict]]:
+        """What this plugin does on a machine it is for, said where it does not apply (not_for_here): a few words added
+        to the reason, and tables describing its sections. Nothing by default."""
+        return "", []
 
     def services(self) -> list[SystemService]:
         """The SERVICES as they are (absent when not installed)."""
@@ -310,6 +324,11 @@ class Admin(MachinePlugin):
 
     def _service_action(self, name: str, action: str) -> None:
         raise NotImplementedError
+
+    def _service_change(self, name: str, action: str) -> None:
+        """A service started, stopped or restarted as the user asked on the page (the setup's own starts go through
+        _service_action): the same by default; a subclass may ask for the rights here (Windows' prompt)."""
+        self._service_action(name, action)
 
     def startups(self) -> list[Startup]:
         """One per app (absent when it has none)."""
@@ -337,10 +356,6 @@ class Admin(MachinePlugin):
     def boot_details(self) -> str:
         """How a boot service is made here, in full (who it runs as and what that allows, how it is started again after
         a failure), for the form registering one."""
-        return ""
-
-    def boot_rights(self) -> str:
-        """How a boot service's change has its rights, in words ("" when the platform has them)."""
         return ""
 
     def boot_stopping(self) -> str:
@@ -389,7 +404,7 @@ class Admin(MachinePlugin):
         known = {s[0] for s in self.SERVICES}
         if name not in known:
             raise AdminError(f"{name} is not one of the framework's services here: {', '.join(sorted(known))}")
-        self._service_action(name, action)
+        self._service_change(name, action)
 
     def startup(self, app: str, action: str, at: str = "logon"):
         """run, end, enable or disable an app's startup at logon; `at` "boot": start or stop its boot service (its
@@ -480,10 +495,16 @@ class Admin(MachinePlugin):
 
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
-        empty = {"services": [], "startups": [], "boot": [], "processes": []}
+        """What the plugin reads, valid whenever it can read it (the rights are a fact: each change asks for them, or says
+        it needs them): the elevation, the summary, the raw lists (frameworkServices, logonStartups, bootServices,
+        frameworkProcesses) and the page's own tables and forms (the platform's status contract; its older admin tables,
+        drawn from `services`, `startups` and `processes` with buttons asking at once, are no longer sent)."""
+        empty = {"frameworkServices": [], "logonStartups": [], "bootServices": [], "frameworkProcesses": []}
         here = self.not_for_here()
         if here:  # not for this machine at all (a Linux plugin on Windows or in WSL): asked nothing, no setup offered
-            return self.not_here_status(here, elevated=False, elevation="", **empty)
+            words, described = self.elsewhere()  # what it does on a machine it is for, said here
+            return self.not_here_status(f"{here}. {words}" if words else here, elevated=False, elevation="", **empty,
+                                        tables=described, forms=[])
         note = self.scope_note()
         if note:  # not Liminal's (the user's own distribution): asked nothing at all
             return {"present": False, "elevated": False, "elevation": "", **empty, "summary": "not on Liminal's", "valid": False, "why": note}
@@ -492,11 +513,10 @@ class Admin(MachinePlugin):
         try:
             elevated, how = self.elevated(), self.elevation()
             services, startups, processes = self.services(), self.startups(), self.processes()
-            may = elevated or self.may_elevate()
         except CommandError as e:
             return {"present": True, "elevated": False, "elevation": "", **empty, "problem": str(e), "summary": f"cannot be read: {e}",
                     "valid": False, "why": f"cannot be read: {e}"}
-        boots, section = self._boot_status(startups)
+        boots, boot_section = self._boot_status(startups)
         running = [s.name for s in services if s.running]
         stopped = [s.name for s in services if s.present and not s.running]
         made = [s.app for s in startups if s.present]
@@ -506,14 +526,14 @@ class Admin(MachinePlugin):
                    + f"; startups: {', '.join(made) or 'none'}" + (f"; at boot: {', '.join(at_boot)}" if at_boot else "")
                    + f"; {len(processes)} Liminal process(es)")
         scoped, place = self.scope()
-        said = how if how.lower().startswith("not elevated") else f"not elevated: {how}"  # its words may say it already
-        why = f"{place} is not Liminal's" if not scoped else said if not may else ""
-        out = {"present": True, "elevated": elevated, "elevation": how, "services": [s.describe() for s in services],
-               "startups": [s.describe() for s in startups], "boot": [b.describe() for b in boots], "processes": processes,
-               "summary": summary, "valid": not why, "why": why}
-        if section is not None:
-            out["tables"], out["forms"] = [section[0]], section[1]
-        return out
+        why = "" if scoped else f"{place} is not Liminal's"
+        sections = [self.services_section(services), self.logon_section(startups)]
+        if boot_section is not None:
+            sections.append(boot_section)
+        return {"present": True, "elevated": elevated, "elevation": how, "summary": summary, "valid": not why, "why": why,
+                "frameworkServices": [s.describe() for s in services], "logonStartups": [s.describe() for s in startups],
+                "bootServices": [b.describe() for b in boots], "frameworkProcesses": processes,
+                "tables": [t for t, _ in sections] + [self.processes_table(processes)], "forms": [f for _, fs in sections for f in fs]}
 
     def _boot_status(self, logon: list[Startup]) -> tuple[list[Startup], tuple[dict, list[dict]] | None]:
         """The boot services and the page's section for them (None: this plugin makes none)."""
@@ -598,7 +618,107 @@ class Admin(MachinePlugin):
             return "; nothing starts at boot (a boot service is made only when you register one)"
         return "; at boot: " + ", ".join(f"{b.app} ({b.name}: {b.state})" for b in boots)
 
-    # -- the page's section for the boot services (status `tables` and `forms`; platform 0.7.0's cells and actions) --
+    # -- the page: its tables and forms (status `tables` and `forms`; platform 0.7.0's cells and actions) --------------
+    def services_section(self, services: list[SystemService]) -> tuple[dict, list[dict]]:
+        """The services the framework relies on as a table (a row each: its state, how it starts, what uses it, its
+        buttons) and the form changing one, confirmed with the exact change."""
+        rights = self.rights_words("service")
+        asked = f" {rights}." if rights else ""
+        rows = []
+        for s in services:
+            up = s.running
+            rows.append([{"text": s.name, "sub": s.title}, s.state, s.startup or "–", s.used_for or "–",
+                         {"form": "service", "title": "Stop…" if up else "Start…", "values": {"name": s.name, "action": "stop" if up else "start"},
+                          "label": f"{'Stop' if up else 'Start'} {s.name}"} if s.present else "",
+                         {"form": "service", "title": "Restart…", "values": {"name": s.name, "action": "restart"},
+                          "label": f"Restart {s.name}"} if up else ""])
+        present = [s for s in services if s.present]
+        table = {"title": "Services the framework relies on", "rows": rows,
+                 "note": f"The setup starts those stopped it may, never an SSH server; each change here is confirmed first.{asked}",
+                 "columns": [{"title": "Service"}, {"title": "State"}, {"title": "Starts"}, {"title": "For"}, {"title": "Change"},
+                             {"title": "Restart"}],
+                 "empty": "None of them here."}
+        if not present:
+            return table, []
+        table["actions"] = [{"form": "service", "title": "Start, stop or restart a service…"}]
+        form = {"id": "service", "hook": "service", "title": "Start, stop or restart a service", "submit": "Review",
+                "note": f"One of the services the framework relies on, never another.{asked}",
+                "fields": [{"name": "name", "label": "Service", "type": "choice", "value": present[0].name,
+                            "choices": [{"value": s.name, "title": f"{s.name} ({s.title})",
+                                         "note": f"{s.state}; {s.used_for}" + ("" if s.may_start else "; started only when you ask")}
+                                        for s in present]},
+                           {"name": "action", "label": "Change", "type": "choice", "value": "start", "choices": [
+                               {"value": "start", "title": "Start", "note": "runs it"},
+                               {"value": "stop", "title": "Stop", "note": "what relies on it stops working until it starts again"},
+                               {"value": "restart", "title": "Restart", "note": "stopped, then started again"}]}],
+                "confirm": {"title": "{action} {name}?", "yes": "Confirm",
+                            "words": "The service {name}: {action}. Only that service changes." + asked}}
+        return table, [form]
+
+    def logon_section(self, startups: list[Startup]) -> tuple[dict, list[dict]]:
+        """The apps' startups at the user's logon as a table (a row each: its task or unit, what it runs, its state, its
+        buttons; another of the same app, an integrator of its own, shown only) and the forms: Register… (each app
+        without one), Run…/End… (and enable, disable), Remove…, each confirmed with the exact change."""
+        rights = self.rights_words("logon")
+        asked = f" {rights}." if rights else ""
+        main: dict[str, Startup] = {}
+        for s in startups:
+            main.setdefault(s.app, s)  # the app's own: an integrator of its own (LiminalIntegrator-<name>) comes after it
+        fixed_at = {"name": "at", "label": "Starts", "type": "fixed", "value": "logon", "choices": [{"value": "logon", "title": "at your logon"}]}
+        rows, forms = [], []
+        for s in startups:
+            own = main.get(s.app) is s and s.app in APPS
+            command = s.command or (" ".join(start_command(s.app, getattr(self, "_python", None))) if s.app in APPS else "")
+            rows.append([s.app, {"text": s.name or "–", "sub": command if s.present else (f"would run {command}" if command else "")},
+                         {"text": s.state, "sub": s.detail} if s.detail else ("not registered" if not s.present else s.state),
+                         ({"form": "logon-startup", "title": "End…" if s.state == "running" else "Run…",
+                           "values": {"app": s.app, "action": "end" if s.state == "running" else "run"}, "label": f"Run or end {s.app}"}
+                          if own and s.present else {"form": f"logon-register:{s.app}", "title": "Register…", "label": f"Start {s.app} at your logon"}
+                          if own else ""),
+                         {"form": "logon-remove", "title": "Remove…", "values": {"app": s.app}, "label": f"Remove {s.app}'s startup"}
+                         if own and s.present else ""])
+            if own and not s.present:
+                forms.append({"id": f"logon-register:{s.app}", "hook": "register", "title": f"Start {s.app} at your logon",
+                              "fields": [{"name": "app", "label": "App", "type": "fixed", "value": s.app}, fixed_at],
+                              "confirm": {"title": f"Start {s.app} at your logon?", "yes": "Register it",
+                                          "words": (f"{s.name or 'Its startup'} starts {s.app} each time you sign in: {command}. Made, not run: "
+                                                    f"Run… runs it now.{asked}")}})
+        made = [s for s in startups if main.get(s.app) is s and s.app in APPS and s.present]
+        if made:
+            pick = {"name": "app", "label": "App", "type": "choice", "value": made[0].app,
+                    "choices": [{"value": s.app, "title": s.app, "note": f"{s.name}: {s.state}"} for s in made]}
+            forms.append({"id": "logon-startup", "hook": "startup", "title": "Run, end, enable or disable a startup at your logon",
+                          "submit": "Review", "note": f"The app's startup at your logon, as it is registered.{asked}",
+                          "fields": [pick, {"name": "action", "label": "Change", "type": "choice", "value": "run", "choices": [
+                              {"value": "run", "title": "Run", "note": "starts it now, as at your logon"},
+                              {"value": "end", "title": "End", "note": "ends it now; it starts again at your next logon"},
+                              {"value": "disable", "title": "Disable", "note": "it no longer starts at your logon, until enabled"},
+                              {"value": "enable", "title": "Enable", "note": "it starts at your logon again"}]}, fixed_at],
+                          "confirm": {"title": "{action} {app}'s startup at your logon?", "yes": "Confirm",
+                                      "words": "The startup of {app} at your logon: {action}." + asked}})
+            forms.append({"id": "logon-remove", "hook": "unregister", "title": "Remove a startup at your logon",
+                          "submit": "Review", "fields": [pick, fixed_at],
+                          "confirm": {"title": "Remove {app}'s startup at your logon?", "yes": "Remove it", "danger": True,
+                                      "words": "The startup of {app} at your logon is removed: {app} no longer starts when you sign in; "
+                                               "Register… makes it again." + asked}})
+        table = {"title": "Startups at your logon", "rows": rows,
+                 "note": ("Each app started when you sign in, made only when you ask (the setup makes none); its own task or unit, "
+                          f"on your desktop.{asked}"),
+                 "columns": [{"title": "App"}, {"title": "Startup"}, {"title": "State"}, {"title": "Change"}, {"title": "Remove"}],
+                 "empty": "None read."}
+        if made:
+            table["actions"] = [{"form": "logon-startup", "title": "Run, end, enable or disable…"}]
+        return table, forms
+
+    @staticmethod
+    def processes_table(processes: list[dict]) -> dict:
+        """The framework's processes running, as a table (shown only)."""
+        return {"title": "The framework's processes", "rows": [[str(p.get("pid", "")), p.get("app") or "–", f"{p.get('memoryMb', 0)} MB",
+                                                                 str(p.get("command", ""))] for p in processes],
+                "columns": [{"title": "Process", "num": True}, {"title": "App"}, {"title": "Memory", "num": True}, {"title": "Command"}],
+                "empty": "None running."}
+
+    # -- the page's section for the boot services ------------------------------------------------------------------
     def _served_port(self) -> int:
         """The port the app this plugin is attached to answers at now (0: not attached, or not serving)."""
         served = getattr(self.app, "served", None)
@@ -613,7 +733,7 @@ class Admin(MachinePlugin):
         command, its state, who it runs as, its log, and its buttons) and the forms its buttons open: Register… (the
         port), Start…, Stop…, Remove… (asked twice), each confirmed in the page's dialog with the exact change."""
         known = {a.name: a for a in apps}
-        rights = self.boot_rights()
+        rights = self.rights_words("boot")
         asked = f" {rights}." if rights else ""
         here, mine = self._served_port(), str(getattr(self.app, "NAME", "") or "")
         logon_of = {s.app: s for s in logon if s.present}

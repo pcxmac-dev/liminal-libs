@@ -103,10 +103,14 @@ def test_the_admin_plugin_conforms_checks_what_is_asked_and_reports():
     with pytest.raises(AdminError):
         a.unregister("nothing")
     st = a.status()
-    assert st["present"] and st["elevated"] is False and st["processes"][0]["app"] == "charts"
+    assert st["present"] and st["elevated"] is False and st["frameworkProcesses"][0]["app"] == "charts"
     assert st["summary"] == "not elevated; services: 2 running, stopped: sshd; startups: none; 1 Liminal process(es)"
-    assert st["valid"] is False and st["why"].startswith("not elevated: ")  # without the rights it is not valid
+    # valid whenever it reads (1.47.0): the rights are a fact beside it, each change asking for them or saying it needs them
+    assert st["valid"] is True and st["why"] == "" and st["elevation"].startswith("not elevated")
     assert FakeAdmin(elevated=True).status()["valid"] is True
+    # the raw lists under keys the platform's page draws nothing for: its tables are the plugin's own
+    assert not {"services", "startups", "processes"} & set(st)
+    assert [s["name"] for s in st["frameworkServices"]] == ["docker", "sshd", "dns"] and len(st["logonStartups"]) == len(APPS)
 
 
 def test_the_setup_starts_what_it_may_and_registers_nothing():
@@ -141,11 +145,52 @@ def test_an_admin_not_for_this_machine_asks_nothing_and_changes_nothing():
     a = FakeAdmin(elevated=True)
     a.not_for_here = lambda: "for a native Linux machine"
     a.services = a.startups = a.processes = a.elevated = a.present = lambda: pytest.fail("asked")
-    assert a.status() == {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "boot": [], "processes": [],
+    assert a.status() == {"present": False, "elevated": False, "elevation": "", "frameworkServices": [], "logonStartups": [],
+                          "bootServices": [], "frameworkProcesses": [], "tables": [], "forms": [],
                           "summary": "not for this machine", "valid": False, "why": "for a native Linux machine", "applies": False}
     said: list = []
     assert a.setup(log=said.append) == [{"step": "privileges", "ok": False, "detail": "for a native Linux machine"}]
     assert said == ["fake-admin: privileges: FAILED: for a native Linux machine"] and a.actions == []
+    # what it does on a machine it is for, said where it does not act: words after the reason, its sections as tables
+    a.elsewhere = lambda: ("On a native Linux machine it shows its services", [{"title": "What it does", "columns": [], "rows": []}])
+    st = a.status()
+    assert st["why"] == "for a native Linux machine. On a native Linux machine it shows its services" and st["applies"] is False
+    assert [t["title"] for t in st["tables"]] == ["What it does"] and st["forms"] == [] and a.actions == []
+
+
+def table_of(st, title):
+    return next(t for t in st["tables"] if t["title"] == title)
+
+
+def test_the_page_draws_the_services_and_the_startups_as_tables_with_confirmed_forms():
+    a = FakeAdmin()
+    a.register("platform", python="python")  # a startup at logon for the platform
+    st = a.status()
+    assert [t["title"] for t in st["tables"]] == ["Services the framework relies on", "Startups at your logon", "The framework's processes"]
+    forms = {f["id"]: f for f in st["forms"]}
+    assert set(forms) == {"service", "logon-register:charts", "logon-register:integrator", "logon-register:login", "logon-startup", "logon-remove"}
+    for f in forms.values():  # each form's fields are its hook's arguments, in order, and each change is confirmed
+        assert f["hook"] in a.HOOKS and [x["name"] for x in f["fields"]] == list(inspect.signature(getattr(a, f["hook"])).parameters)[:len(f["fields"])]
+        assert f["confirm"]["words"] and f["confirm"]["yes"]
+    services = table_of(st, "Services the framework relies on")
+    by_name = {r[0]["text"]: r for r in services["rows"]}
+    assert by_name["docker"][4] == {"form": "service", "title": "Start…", "values": {"name": "docker", "action": "start"}, "label": "Start docker"}
+    assert by_name["dns"][4]["title"] == "Stop…" and by_name["dns"][5]["values"] == {"name": "dns", "action": "restart"}
+    assert [c["value"] for c in forms["service"]["fields"][0]["choices"]] == ["docker", "sshd", "dns"]
+    assert "started only when you ask" in forms["service"]["fields"][0]["choices"][1]["note"]  # an SSH server: never by the setup
+    logon = table_of(st, "Startups at your logon")
+    rows = {r[0]: r for r in logon["rows"]}
+    assert rows["platform"][3]["form"] == "logon-startup" and rows["platform"][4] == {"form": "logon-remove", "title": "Remove…",
+                                                                                       "values": {"app": "platform"}, "label": "Remove platform's startup"}
+    assert rows["charts"][3]["form"] == "logon-register:charts" and rows["charts"][4] == "" and rows["charts"][2] == "not registered"
+    assert "-m liminal_charts gui --no-browser --port 8765" in rows["charts"][1]["sub"] and rows["charts"][1]["sub"].startswith("would run ")
+    assert forms["logon-remove"]["confirm"]["danger"] and [c["value"] for c in forms["logon-startup"]["fields"][0]["choices"]] == ["platform"]
+    assert [x["value"] for x in forms["logon-register:charts"]["fields"]] == ["charts", "logon"]
+    assert table_of(st, "The framework's processes")["rows"] == [["1", "charts", "100 MB", "pythonw -m liminal_charts gui"]]
+    # a change from the page goes through _service_change (a subclass asks for the rights there); the setup's own starts do not
+    a._service_change = lambda name, action: a.actions.append(("asked", name, action))
+    a.service("docker", "start")
+    assert a.actions[-1] == ("asked", "docker", "start")
 
 
 # -- the boot services (1.47.0) ----------------------------------------------------------------------------------------
@@ -211,8 +256,10 @@ class FakeBootAdmin(FakeAdmin):
     def boot_how(self):
         return "a stand-in service at boot"
 
-    def boot_rights(self):
-        return "" if self._elevated else "The stand-in asks you first"
+    def rights_words(self, kind):
+        if kind == "logon" or self._elevated:
+            return ""
+        return "The stand-in asks you first" if self.may else "It needs rights the stand-in cannot ask for here"
 
     def _made(self, app, port, state):
         return Startup(app.name, f"Liminal{app.name.capitalize()}Boot", state, " ".join(boot_command(app, port, "python")), "",
@@ -297,13 +344,15 @@ def test_a_boot_service_is_registered_started_stopped_and_removed_through_the_st
 def test_the_page_section_offers_each_change_as_a_confirmed_form():
     a = FakeBootAdmin()
     st = a.status()
-    assert st["valid"] and st["why"] == ""  # not elevated, but the rights can be asked for
-    assert [(b["app"], b["state"], b["at"]) for b in st["boot"]] == [("platform", "absent", "boot"), ("lab", "absent", "boot")]
-    (table,) = st["tables"]
-    assert table["title"] == "At boot, before anyone signs in" and "a stand-in service at boot" in table["note"]
+    assert st["valid"] and st["why"] == ""  # not elevated: a fact, each change asking for the rights
+    assert [(b["app"], b["state"], b["at"]) for b in st["bootServices"]] == [("platform", "absent", "boot"), ("lab", "absent", "boot")]
+    assert [t["title"] for t in st["tables"]] == ["Services the framework relies on", "Startups at your logon",
+                                                  "At boot, before anyone signs in", "The framework's processes"]
+    table = table_of(st, "At boot, before anyone signs in")
+    assert "a stand-in service at boot" in table["note"]
     assert "Unlike the startups at your logon" in table["note"] and "a removal twice" in table["note"]
     assert [c["title"] for c in table["columns"]][:5] == ["App", "Boot service", "State", "Runs as", "Log"]
-    forms = {f["id"]: f for f in st["forms"]}
+    forms = {f["id"]: f for f in st["forms"] if f["id"].startswith("boot-")}
     assert set(forms) == {"boot-register:platform", "boot-register:lab"}
     first = table["rows"][0]
     assert first[0] == {"text": "Liminal Platform", "sub": "platform · python -m liminal_platform"} and first[2] == "not registered"
@@ -318,11 +367,12 @@ def test_the_page_section_offers_each_change_as_a_confirmed_form():
     a.startup("platform", "start", "boot")
     st = a.status()
     assert st["summary"].endswith("; startups: none; at boot: platform (running); 1 Liminal process(es)")
-    forms = {f["id"]: f for f in st["forms"]}
+    forms = {f["id"]: f for f in st["forms"] if f["id"].startswith("boot-")}
     assert set(forms) == {"boot-register:platform", "boot-register:lab", "boot-start:platform", "boot-stop:platform", "boot-remove:platform"}
-    row = st["tables"][0]["rows"][0]
+    table = table_of(st, "At boot, before anyone signs in")
+    row = table["rows"][0]
     assert row[2] == "running" and row[5]["form"] == "boot-stop:platform" and row[6]["form"] == "boot-remove:platform"
-    assert {"form": "boot-register:platform", "title": "Change Liminal Platform's port…"} in st["tables"][0]["actions"]
+    assert {"form": "boot-register:platform", "title": "Change Liminal Platform's port…"} in table["actions"]
     # each form's fields are its hook's arguments, in order; a removal's second confirmation is its accept field
     for f in forms.values():
         hook = getattr(a, f["hook"])
@@ -332,8 +382,10 @@ def test_the_page_section_offers_each_change_as_a_confirmed_form():
     assert remove["confirm"]["danger"] and [x["type"] for x in remove["fields"]] == ["fixed", "fixed", "accept"]
     assert remove["fields"][2]["name"] == ACCEPT_REMOVAL and "for good" in remove["fields"][2]["yes"]
     assert [x["value"] for x in forms["boot-stop:platform"]["fields"]] == ["platform", "stop", "boot"]
-    # without the rights, and none to ask for: not valid, as before
-    assert FakeBootAdmin(may=False).status()["valid"] is False and FakeBootAdmin(elevated=True, may=False).status()["valid"]
+    # without the rights and none to ask for, still valid: each change says what it needs
+    unasked = FakeBootAdmin(may=False).status()
+    assert unasked["valid"] is True and "cannot ask for here" in table_of(unasked, "At boot, before anyone signs in")["note"]
+    assert "cannot ask for here" in next(f for f in unasked["forms"] if f["id"] == "service")["confirm"]["words"]
 
 
 def test_what_else_wants_a_port_is_said_beside_it_and_a_clash_only_when_it_is_the_same():
@@ -361,7 +413,7 @@ def test_a_registered_boot_service_of_an_app_not_known_is_shown_and_may_be_remov
     a.boots["gone"] = Startup("gone", "LiminalGoneBoot", "stopped", "pythonw -m liminal_gone serve --no-browser --port 8799", "",
                               "boot", "me", "/stand-in/gone-boot.log", 8799)
     st = a.status()
-    row = next(r for r in st["tables"][0]["rows"] if r[1]["text"] == "LiminalGoneBoot")
+    row = next(r for r in table_of(st, "At boot, before anyone signs in")["rows"] if r[1]["text"] == "LiminalGoneBoot")
     assert row[0] == {"text": "gone", "sub": "gone · not installed here"} and row[6]["form"] == "boot-remove:gone"
     ids = {f["id"] for f in st["forms"]}
     assert "boot-remove:gone" in ids and "boot-register:gone" not in ids  # never registered again: no app to run
@@ -384,7 +436,9 @@ def test_a_system_that_makes_no_boot_services_says_why_in_the_section():
             raise BootRefused("this machine's init is neither systemd nor OpenRC: no boot service is made here")
 
     st = NoInit().status()
-    assert st["boot"] == [] and st["forms"] == [] and "neither systemd nor OpenRC" in st["tables"][0]["empty"]
+    assert st["bootServices"] == [] and not [f for f in st["forms"] if f["id"].startswith("boot-")]
+    assert "neither systemd nor OpenRC" in table_of(st, "At boot, before anyone signs in")["empty"]
     with pytest.raises(BootRefused, match="neither systemd"):
         NoInit().register("platform", "boot", 8775)
-    assert "tables" not in FakeAdmin().status() and FakeAdmin().status()["boot"] == []  # a plugin making none: no section
+    plain = FakeAdmin().status()  # a plugin making none: no boot section
+    assert "At boot, before anyone signs in" not in [t["title"] for t in plain["tables"]] and plain["bootServices"] == []

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.48.0 (2026-11-11)
+
+The admin plugins' pages (the user: "the administration plugins don't seem to work right especially linux which doesn't
+say anything about startup"). In `machines.admin`:
+- An admin plugin is valid whenever it can read what it reads (on Liminal's own): not being elevated (root) no longer
+  makes it invalid, so the platform keeps it enabled and in the tray. The rights are a fact beside it (`elevated`,
+  `elevation`), and each change asks for them (Windows' prompt, sudo without a password) or says it needs them
+  (`rights_words(kind)`, for a service's, a startup's at logon and a boot service's changes).
+- Its page is its own tables and their confirmed forms (the platform's status contract): Services the framework relies
+  on (Start…, Stop…, Restart…: the form `service`), Startups at your logon (Register… for each app without one, Run… or
+  End…, Remove…: `logon-register:<app>`, `logon-startup` with run, end, enable, disable, `logon-remove`; an integrator
+  of its own shown only), At boot, before anyone signs in, and The framework's processes. The raw lists move to
+  `frameworkServices`, `logonStartups`, `bootServices` and `frameworkProcesses` (the status no longer carries
+  `services`, `startups`, `processes` or `boot`, which the platform's page drew as its older admin tables, their buttons
+  asking at once).
+- A service changed from the page goes through `_service_change` (a subclass asks for the rights there: Windows' prompt
+  once Windows wants an administrator); the setup's own starts keep `_service_action`.
+- Where a plugin is not for this machine (`not_for_here`), `elsewhere()` says what it does on one it is for: words after
+  the reason (the page shows them) and tables describing its sections, sent with no forms.
+- `boot_rights()` is `rights_words("boot")`.
+
 ## 1.47.0 (2026-11-11)
 
 Boot services for the platform's admin plugins (the user: "also windows and linux admin, need sections for starting
