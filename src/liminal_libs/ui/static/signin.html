@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <title>Liminal: sign in</title>
+  <link rel="stylesheet" href="liminal.css">
+</head>
+<!-- An app's sign-in while it inherits a login app (liminal-libs 1.46.0; the user, 2026-11-10: "make sure that the
+     platform inherits the login app so we can login to platform"): the login app's own page held here (its way in, the
+     secret user by default; sign in; sign up), through this app at /login/; once it says you are signed in, this app's
+     page opens. -->
+<body class="signin-page">
+  <script src="theme.js"></script>  <!-- first: painted in the UI's theme, the login app's page held in it -->
+  <script src="touch.js"></script>  <!-- then touch screens and the on-screen keyboard -->
+  <main class="signin">
+    <iframe id="signinFrame" title="Sign in" src="about:blank"></iframe>  <!-- its card names the app -->
+  </main>
+  <script src="signin.js"></script>
+</body>
+</html>

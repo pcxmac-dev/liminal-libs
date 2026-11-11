@@ -26,11 +26,21 @@ from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
-from .login import PAIRS_PATH, pairs_wanted
+import urllib.error
+import urllib.request
+
+from .binding import START_SECONDS, Binding, forward, start_app, wait_for
+from .login import PAIRS_PATH, inherited_by, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
 from .tray import Tray, TrayItem
 
 TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
+SIGNIN = "signin.html"  # an app's sign-in while it inherits a login app (ui/static, 1.46.0)
+LOGIN_PREFIX = "/login"  # where an app serves the login app it inherits
+
+
+def _is_login(path: str) -> bool:
+    return path == LOGIN_PREFIX or path.startswith(LOGIN_PREFIX + "/")
 
 
 def _caller(handler) -> str:
@@ -65,6 +75,12 @@ class App:
     TRACE_LOGIN = False
     WATCH_OUTSIDE = False
     READ_HOOKS: tuple[str, ...] = ()  # hooks asked by name that only read (noted as reads, not asks)
+    # the login app this app inherits (1.46.0; the user, 2026-11-10: "make sure that the platform inherits the login app
+    # so we can login to platform"): where it answers, LOGIN_URL_VAR in the environment else LOGIN_URL ("none" or "off":
+    # none); started for this app as its superclass when nothing answers there (apps.login.inherited_by), its page and
+    # API under /login/, its tray at /api/trays, and this app's page its sign-in until the browser is signed in there
+    LOGIN_URL_VAR = ""
+    LOGIN_URL = ""
 
     def __init__(self, log=print, login=None):
         self.log = log
@@ -77,6 +93,73 @@ class App:
         self.traffic = Traffic()  # what is said, between whom (apps.traffic)
         self.traffic.me = self.NAME
         self.traffic.own(self, self.NAME)
+        self._login_lock = threading.Lock()  # one start of its login app, however many pages ask at once
+
+    # -- the login app it inherits (1.46.0) ------------------------------------------------------------------------
+    def login_url(self) -> str | None:
+        """Where the login app this app inherits answers; None when it inherits none."""
+        if not (self.LOGIN_URL_VAR or self.LOGIN_URL):
+            return None
+        raw = (os.environ.get(self.LOGIN_URL_VAR) or "").strip() if self.LOGIN_URL_VAR else ""
+        if raw.lower() in ("none", "off"):
+            return None
+        return (raw or self.LOGIN_URL).rstrip("/") or None
+
+    def bound_login(self) -> Binding | None:
+        """Its login app, answering: at its address, or started for this app as its superclass and waited for. None:
+        it inherits none, or none could be started."""
+        url = self.login_url()
+        if url is None:
+            return None
+        bound = Binding("login", url, "liminal_login")
+        if bound.reachable():
+            return bound
+        with self._login_lock:
+            if bound.reachable():
+                return bound
+            if not self.start_login(bound.port):
+                return None
+            if wait_for(bound.port, START_SECONDS):
+                self.log(f"{self.NAME}: its login app answers at {url}/")
+                return bound
+        self.log(f"{self.NAME}: the login app started for it never answered at port {bound.port}")
+        return None
+
+    def start_login(self, port: int) -> bool:
+        """The login app started for this app, which it inherits: told so (its name, its title, this app's address, so
+        it asks this app for the pairs its plugins ask for) and given the login's file this app finds."""
+        from .scope import Scope
+
+        env = inherited_by(self.NAME, self.TITLE or self.NAME.capitalize(), (self.served or self.url()).rstrip("/"))
+        try:
+            scope = Scope.find()
+        except (OSError, ValueError):
+            scope = None
+        if scope is not None and scope.path is not None:
+            env["LIMINAL_LOGIN_CFG"] = str(scope.path)
+        return start_app("liminal_login", port, env, self.log)
+
+    def signed_in(self, handler) -> bool | None:
+        """Whether the browser of `handler` is signed in to its login app (asked with that browser's login cookies);
+        None when it inherits none or none answers."""
+        bound = self.bound_login()
+        if bound is None:
+            return None
+        cookies = "; ".join(c.strip() for c in (handler.headers.get("Cookie") or "").split(";")
+                            if c.strip().startswith("liminal_login"))
+        headers = {"Accept": "application/json", **({"Cookie": cookies} if cookies else {})}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(urllib.request.Request(bound.url + "/api/status", headers=headers), timeout=5) as resp:
+                return bool(json.loads(resp.read()).get("signedIn"))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return None
+
+    def trays(self) -> list[dict]:
+        """The trays of the apps this one binds (its login app's), for the foot of its rail."""
+        bound = self.bound_login()
+        tray = bound.tray() if bound is not None else None
+        return [tray] if tray else []
 
     def login_for(self, name: str):
         """The login `name` (a plugin, or the app itself by its own name) is lent: the app's; noting what it reads and
@@ -211,7 +294,11 @@ class App:
         return tuple(d for d in (self.STATIC, UI_STATIC) if d is not None)
 
     def page(self, handler) -> str:
-        """The file "/" serves (INDEX; a subclass may pick by the request: a sign-in page, say)."""
+        """The file "/" serves: INDEX; for an app that inherits a login app, its sign-in (the library's signin.html, the
+        login app's page held in it) until the browser is signed in there (1.46.0). Without a login app answering, the
+        app's page as before."""
+        if self.login_url() is not None and self.signed_in(handler) is False:
+            return SIGNIN
         return self.INDEX
 
     # -- the routes ------------------------------------------------------------------------------
@@ -327,6 +414,14 @@ def make_handler(app: App):
             if not web.local_only(self):
                 return
             parts = urlsplit(self.path)
+            if _is_login(parts.path) and app.login_url() is not None:  # the login app it inherits (1.46.0)
+                if web.from_this_app(self):
+                    self._login("GET")
+                return
+            if parts.path == "/api/trays" and app.login_url() is not None:
+                if web.from_this_app(self):
+                    web.send_json(self, {"trays": app.trays()})
+                return
             if parts.path.startswith("/api/"):
                 if web.from_this_app(self):
                     self._answer("GET", parts, None)
@@ -334,10 +429,27 @@ def make_handler(app: App):
             rel = app.page(self) if parts.path in ("", "/") else parts.path.lstrip("/")
             web.static_file(self, rel, app.static_dirs())
 
+        def _login(self, method: str) -> None:
+            """The request passed on to the login app this app inherits, as /<the rest>; its answer and its cookies
+            back, their path kept (its session at /, so this app's page sends it and the app can ask who is in)."""
+            bound = app.bound_login()
+            if bound is None:
+                raw = self.headers.get("Content-Length") or "0"
+                if raw.isdecimal() and 0 < int(raw) <= web.MAX_BODY:
+                    self.rfile.read(int(raw))
+                return web.send_json(self, {"error": f"the login app of {app.NAME} is not running (none answers, none could "
+                                                     "be started)"}, HTTPStatus.SERVICE_UNAVAILABLE)
+            path = self.path[len(LOGIN_PREFIX):]
+            if not path or path.startswith("?"):
+                path = "/" + path
+            forward(self, method, bound.url, path, unavailable="the login app does not answer; ask again shortly")
+
         def _write(self, method: str) -> None:
             app.touch()
             if not web.local_only(self) or not web.from_this_app(self):
                 return
+            if _is_login(urlsplit(self.path).path) and app.login_url() is not None:
+                return self._login(method)  # the login app checks its own write header and reads its own body
             if self.headers.get(web.WRITE_HEADER) != "1":
                 return web.send(self, HTTPStatus.FORBIDDEN, b"missing request header", "text/plain")
             parts = urlsplit(self.path)

@@ -116,6 +116,11 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation M
 .field label { color: var(--muted); font-size: 12px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
+
+/* An app's sign-in while it inherits a login app (signin.html, 1.46.0): the login app's page, its card naming the app */
+body.signin-page { background: var(--bg); }
+.signin { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 12px 16px 0; min-height: 0; }
+.signin iframe { flex: 1; width: min(640px, 100%); min-height: 560px; border: 0; background: transparent; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
 dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; overflow-wrap: anywhere; }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.46.0 (2026-11-10)
+
+An app that inherits a login app (the user: "we need to shift over to platform, but make sure that the platform inherits
+the login app so we can login to platform"; "using secret user"). An `App` naming `LOGIN_URL_VAR` and `LOGIN_URL` (the
+platform's: LIMINAL_PLATFORM_LOGIN_URL, 8796; "none" or "off": none):
+- `bound_login()`: its login app at that address, or started for it as its superclass when nothing answers
+  (`start_login`: `inherited_by` its name, its title and its own address, so the login asks it for its plugins' pairs,
+  and the login's file it finds), waited for.
+- Its page is `ui/static/signin.html` (+ signin.js) until the browser is signed in there (`signed_in`, asked with that
+  browser's login cookies): the login app's page in a frame, its way in the secret user by default; once it says you
+  are signed in, the app's page opens. Without a login app answering, the app's page as before.
+- `/login/...` passed on to the login app (its answers and its cookies back, the page's origin checked here first),
+  writes included; `/api/trays` its tray, for the foot of the app's rail (`trays()`).
+- liminal.css: the sign-in page.
+
 ## 1.45.0 (2026-11-10)
 
 Where the logins of other domains answer (the user: "make sure every login instance has a database, it's location can
