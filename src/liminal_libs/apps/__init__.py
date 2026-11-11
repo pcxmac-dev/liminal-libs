@@ -9,6 +9,6 @@ from .authorization import EnvironmentLogin, Login, Unauthorized, pair_name, sav
 from .binding import FORWARDED, PASSED_BACK, START_SECONDS, Binding, forward, start_app, tray_of, wait_for  # noqa: F401
 from .login import (DEFAULT_URL, PAIRS_PATH, SESSION_HEADER, SUPER_TITLE_VAR, SUPER_URL_VAR, SUPER_VAR, URL_VAR,  # noqa: F401
                     LoginClient, LoginRefused, LoginUnreachable, inherited_by, pairs_wanted)
-from .scope import CFG_VAR, FILE_NAME, Scope  # noqa: F401
+from .scope import CFG_VAR, FILE_NAME, REMOTES_VAR, Scope, remote_url, remotes_from  # noqa: F401
 from .traffic import CLASSES, RecordingLogin, Traffic, node_of, program_name  # noqa: F401
 from .tray import Tray, TrayItem  # noqa: F401

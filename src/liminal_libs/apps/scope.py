@@ -15,7 +15,7 @@ import configparser
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from urllib.request import url2pathname
 
 from .. import layout
@@ -27,6 +27,34 @@ IMAP_KEYS = ("host", "port", "security", "user")  # the admin mailbox, read for 
 SERVER_KEYS = ("image", "name", "instance", "context", "host", "hostname", "ports", "volumes", "restart", "command")  # the mail server container
 MEMBERS = ("domain", "any")
 _DOMAIN = r"[a-z0-9-]+(\.[a-z0-9-]+)+"
+REMOTES_VAR = "LIMINAL_LOGIN_REMOTES"  # `host=url;host=url`: where remote logins answer, over the file's [remotes] (1.45.0)
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def remote_url(value) -> str:
+    """The address of a remote login app (1.45.0; the user, 2026-11-10: "make sure every login instance has a database,
+    it's location can be remote"; "so domain should be local or some domain remote.tld"; "login apps can connect to
+    remote login apps"; "and shift context to the remote execution"; "remote users are like email format
+    user@remote.domain.tld"): a domain alone is its https address; a URL is kept as given, over https (http only to
+    this machine, for a test). ValueError for anything else."""
+    raw = str(value or "").strip()
+    url = raw if "://" in raw else f"https://{raw}"
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"a remote login is a domain (remote.tld) or its address, not {raw!r}")
+    if parts.scheme == "http" and parts.hostname not in LOOPBACK:
+        raise ValueError(f"a remote login is reached over https (http only to this machine): {raw!r}")
+    return f"{parts.scheme}://{parts.netloc}{parts.path}".rstrip("/")
+
+
+def remotes_from(text) -> dict[str, str]:
+    """`host=url;host=url` (REMOTES_VAR) as a map, each address checked (remote_url)."""
+    out: dict[str, str] = {}
+    for part in str(text or "").replace(",", ";").split(";"):
+        host, sep, url = part.partition("=")
+        if sep and host.strip():
+            out[host.strip().lower().strip(".")] = remote_url(url)
+    return out
 
 
 @dataclass(frozen=True)
@@ -43,6 +71,13 @@ class Scope:
     server: dict = field(default_factory=dict)  # the [server] section: the mail server container (docker.py), env_* its environment
     admin: str = ""  # a domain's login's own account, admin@<a host under the domain> (the user, 2026-11-06)
     path: Path | None = None  # the file read, when one was
+    remotes: dict = field(default_factory=dict)  # [remotes]: a domain -> where its login app answers (1.45.0)
+
+    def remote_url(self, host: str) -> str:
+        """Where the login app of `host` answers, for its users (name@host): the file's [remotes] says so (assigned
+        here), else the domain's own address, https://host (assigned there)."""
+        host = str(host or "").strip().lower().strip(".")
+        return remote_url(self.remotes.get(host) or host)
 
     @property
     def kind(self) -> str:
@@ -162,6 +197,7 @@ class Scope:
                 "mailServer": (self.mail.get("host") or "the domain's own mail record") if self.kind == "domain" else "",
                 "admin": self.admin_address, "adminHost": self.admin_host, "mailbox": self.imap.get("host", ""),
                 "server": self.server.get("image", ""),
+                "remotes": dict(self.remotes),
                 "path": str(self.path) if self.path is not None else None}
 
     @classmethod
@@ -188,6 +224,10 @@ class Scope:
             url = f"https://{(urlparse(url).hostname or '').lower().strip('.')}"
         port = login.get("port", "").strip()
         data = login.get("data", "").strip()
+        try:
+            remotes = {k.strip().lower().strip("."): remote_url(v) for k, v in cfg["remotes"].items()} if "remotes" in cfg else {}
+        except ValueError as e:
+            raise ValueError(f"{where}: [remotes]: {e}") from None
         members = (login.get("members", "domain").strip().lower()) or "domain"
         if members not in MEMBERS:
             raise ValueError(f"{where}: members is domain or any, not {members!r}")
@@ -196,7 +236,7 @@ class Scope:
         server = {(k.strip() if k.strip().startswith("env_") else k.strip().lower()): v.strip() for k, v in cfg["server"].items()} if "server" in cfg else {}
         scope = cls(url, title=login.get("title", "").strip(), port=int(port) if port.isdecimal() else None,
                     members=members, data=Path(data).expanduser() if data else None, mail=mail, imap=imap, server=server,
-                    admin=login.get("admin", "").strip().lower(), path=Path(path) if path else None)
+                    admin=login.get("admin", "").strip().lower(), path=Path(path) if path else None, remotes=remotes)
         if scope.kind == "domain" and not scope.domain:
             raise ValueError(f"{where}: the scope names no domain: {url}")
         if scope.kind == "domain":
@@ -269,6 +309,9 @@ class Scope:
             for k, v in self.server.items():
                 if k.startswith("env_"):
                     lines.append(f"{k} = {v}")
+        lines += ["", "[remotes]", "; the users of other logins sign in here as name@their.domain: their login app does the work, over",
+                  "; https. Each answers at https://their.domain unless named here: their.domain = https://login.their.domain:8443"]
+        lines += [f"{k} = {v}" for k, v in self.remotes.items()]
         return "\n".join(lines) + "\n"
 
     def write(self, path: Path) -> Path:

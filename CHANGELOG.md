@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.45.0 (2026-11-10)
+
+Where the logins of other domains answer (the user: "make sure every login instance has a database, it's location can
+be remote"; "login apps can connect to remote login apps"; "and shift context to the remote execution"; "remote users
+are like email format user@remote.domain.tld"; "IPC turns in to encrypted internet comms"): in `apps.scope`,
+`remote_url(value)` (a domain alone is its https address; a URL kept as given; over https, http only to this machine),
+`remotes_from("host=url;...")` (LIMINAL_LOGIN_REMOTES, `REMOTES_VAR`), and the login file's `[remotes]` section as
+`Scope.remotes`, with `Scope.remote_url(host)`: a domain named there answers at its address (assigned here), any other
+at https://its.domain (assigned there). `text()` writes the section.
+
 ## 1.44.0 (2026-11-10)
 
 Liminal's sign: the `lambda` icon in `ui/static/icons.js` (the user: "the liminal icon is the italic lambda"; "replace

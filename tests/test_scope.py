@@ -32,6 +32,31 @@ def test_a_local_login_is_a_project_folder_as_a_file_url(tmp_path):
     assert old.url == s.url and not hasattr(old, "serves")
 
 
+def test_the_users_of_another_login_are_reached_at_its_domain_over_https(tmp_path):
+    """1.45.0 (the user, 2026-11-10: "make sure every login instance has a database, it's location can be remote"; "login
+    apps can connect to remote login apps"; "remote users are like email format user@remote.domain.tld"; "IPC turns in
+    to encrypted internet comms"): every login keeps its own users; one of another login signs in as name@their.domain,
+    whose login app answers at https://their.domain unless the file's [remotes] names it (assigned here); over https,
+    http only to this machine (a test)."""
+    from liminal_libs.apps import remote_url, remotes_from
+
+    assert remote_url("remote.tld") == "https://remote.tld" and remote_url("https://Remote.tld:8443/login/") == "https://Remote.tld:8443/login"
+    assert remote_url("http://127.0.0.1:8799") == "http://127.0.0.1:8799" and remote_url("http://localhost:8799/") == "http://localhost:8799"
+    for bad in ("http://remote.tld", "ftp://remote.tld", "https://", ""):
+        with pytest.raises(ValueError):
+            remote_url(bad)
+    assert remotes_from("Remote.test=http://127.0.0.1:8799; other.tld = https://login.other.tld") == {
+        "remote.test": "http://127.0.0.1:8799", "other.tld": "https://login.other.tld"}
+    local = Scope.local(tmp_path)
+    assert local.remotes == {} and local.remote_url("Remote.TLD.") == "https://remote.tld" and "[remotes]" in local.text()
+    named = Scope.parse(f"[login]\nscope = {local.url}\n\n[remotes]\nremote.tld = https://login.remote.tld:8443\n")
+    assert named.remote_url("remote.tld") == "https://login.remote.tld:8443" and named.remote_url("other.tld") == "https://other.tld"
+    assert named.describe()["remotes"] == {"remote.tld": "https://login.remote.tld:8443"}
+    assert Scope.parse(named.text()).remotes == named.remotes
+    with pytest.raises(ValueError, match="https"):
+        Scope.parse(f"[login]\nscope = {local.url}\n\n[remotes]\nremote.tld = http://remote.tld\n")
+
+
 def test_a_domain_login_is_the_domains_users_with_its_own_mail_record_unless_a_server_is_named(tmp_path):
     s = Scope.for_domain("Hypokrites.me.")
     assert s.kind == "domain" and s.url == "https://hypokrites.me" and s.domain == "hypokrites.me" and s.name == "hypokrites.me" and s.label == "@hypokrites.me"
