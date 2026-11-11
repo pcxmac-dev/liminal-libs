@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.46.1 (2026-11-10)
+
+An app's page by its file's own name is the page "/" serves (found by a review of the platform's page asking its login
+every minute whether you are still signed in): `/index.html`, or another spelling this machine's file system finds the
+same file by (on Windows `/Index.html`, `/index.html.`), was served whatever the sign-in said, so a page opened there
+while signed out, told so, reloaded into itself and never showed the sign-in; and `/signin.html` signed in reloaded into
+itself, the login saying signed in. Both are now the sign-in until the browser is signed in, then the app's page. An app
+that inherits no login serves its page as before. `web.static_target`: the file `static_file` serves for a path.
+
 ## 1.46.0 (2026-11-10)
 
 An app that inherits a login app (the user: "we need to shift over to platform, but make sure that the platform inherits

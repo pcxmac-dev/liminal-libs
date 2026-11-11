@@ -301,6 +301,12 @@ class App:
             return SIGNIN
         return self.INDEX
 
+    def page_files(self) -> set:
+        """The files that are the page "/" serves, as the app's folders hold them: its INDEX and the sign-in (SIGNIN);
+        asked for by their own names they are that page too (1.46.1)."""
+        dirs = self.static_dirs()
+        return {t for t in (web.static_target(self.INDEX, dirs), web.static_target(SIGNIN, dirs)) if t is not None}
+
     # -- the routes ------------------------------------------------------------------------------
     def api(self, handler, method: str, path: str, query: dict, body: dict | None):
         """The app's routes: returns (status, data) or (status, data, headers) for an /api/ request,
@@ -426,8 +432,15 @@ def make_handler(app: App):
                 if web.from_this_app(self):
                     self._answer("GET", parts, None)
                 return
-            rel = app.page(self) if parts.path in ("", "/") else parts.path.lstrip("/")
-            web.static_file(self, rel, app.static_dirs())
+            # the page at "/", or by its file's own name, or the sign-in's, however this machine's file system finds them
+            # (1.46.1: /index.html, /Index.html or /index.html. on Windows was served whatever the sign-in said, and a
+            # page opened there while signed out reloaded into itself, never the sign-in; /signin.html signed in, the
+            # sign-in reloading into itself)
+            dirs = app.static_dirs()
+            rel = parts.path.lstrip("/")
+            if not rel or web.static_target(rel, dirs) in app.page_files():
+                rel = app.page(self)
+            web.static_file(self, rel, dirs)
 
         def _login(self, method: str) -> None:
             """The request passed on to the login app this app inherits, as /<the rest>; its answer and its cookies

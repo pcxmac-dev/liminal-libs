@@ -104,6 +104,48 @@ def test_an_app_that_inherits_a_login_opens_on_its_sign_in_until_the_browser_is_
         app.stop()
 
 
+def test_the_page_by_its_files_own_name_is_the_sign_in_too(tmp_path, monkeypatch, login_standin):
+    """1.46.1 (a review of the platform's page asking its login every minute whether you are still signed in, 2026-11-10):
+    the app's page by its file's own name (/index.html) was served whatever the sign-in said, so a page opened there
+    while signed out, told so, reloaded into itself every minute and never showed the sign-in. It is the sign-in there
+    too until the browser is signed in; an app that inherits no login serves the file as before."""
+    (tmp_path / "index.html").write_text("<html><title>Demo</title>the app's page</html>", encoding="utf-8")
+    Demo.STATIC = tmp_path
+    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", f"http://127.0.0.1:{login_standin.server_address[1]}/")
+    monkeypatch.setattr(app_mod, "start_app", lambda *a, **k: pytest.fail("nothing to start: the login answers"))
+    app = Demo(log=lambda m: None)
+    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+    try:
+        for path in ("/index.html", "/index.html?x=1"):
+            status, body, _ = _call(port, "GET", path)
+            assert status == 200 and b'id="signinFrame"' in body, path  # not signed in: the sign-in, there too
+            status, body, _ = _call(port, "GET", path, headers={"Cookie": "liminal_login_demo=tok"})
+            assert status == 200 and b"the app's page" in body, path  # signed in: the app
+        # another spelling the file system finds the same file by (Windows: another case, a trailing dot) is gated alike;
+        # where it finds none (Linux), nothing is served
+        for path in ("/Index.html", "/INDEX.HTML", "/index.html."):
+            status, body, _ = _call(port, "GET", path)
+            if web.static_target(path.lstrip("/"), [tmp_path]) is not None:
+                assert status == 200 and b'id="signinFrame"' in body, path
+            else:
+                assert status == 404, path
+        # the sign-in by its own name, signed in: the app's page (it reloaded into itself, the login saying signed in)
+        status, body, _ = _call(port, "GET", "/signin.html", headers={"Cookie": "liminal_login_demo=tok"})
+        assert status == 200 and b"the app's page" in body
+        status, body, _ = _call(port, "GET", "/signin.html")
+        assert status == 200 and b'id="signinFrame"' in body
+        assert b"window.LiminalIcons" in _call(port, "GET", "/icons.js")[1]  # every other file as before
+    finally:
+        app.stop()
+    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", "none")  # inheriting no login: the file, whoever asks
+    app = Demo(log=lambda m: None)
+    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+    try:
+        assert b"the app's page" in _call(port, "GET", "/index.html")[1] and b"the app's page" in _call(port, "GET", "/")[1]
+    finally:
+        app.stop()
+
+
 def test_the_login_app_is_started_for_the_app_as_its_superclass_when_none_answers(tmp_path, monkeypatch):
     (tmp_path / "index.html").write_text("<html>the app's page</html>", encoding="utf-8")
     Demo.STATIC = tmp_path

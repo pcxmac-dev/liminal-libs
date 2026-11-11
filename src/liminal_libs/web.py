@@ -103,19 +103,28 @@ def profile_cookie(handler) -> int | None:
     return None
 
 
-def static_file(handler, rel: str, dirs) -> None:
-    """One of a page's files (index.html, a script, a stylesheet, a vendored library) from the first
-    of `dirs` holding it (an app's own folder first, then the library's ui.STATIC: icons.js,
-    liminal.css), never a file outside them."""
+def static_target(rel: str, dirs) -> Path | None:
+    """The file `static_file` serves for `rel`: in the first of `dirs` holding it, as this machine's file system finds
+    it (on Windows another case, a trailing dot or a stream's name finds the same file), never one outside them; None
+    for none (1.46.1)."""
     for folder in dirs:
         if folder is None:
             continue
         root = Path(folder).resolve()
         target = (root / rel).resolve()
-        if root not in target.parents or not target.is_file():
-            continue
-        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype == "application/javascript":
-            ctype += "; charset=utf-8"
-        return send(handler, HTTPStatus.OK, target.read_bytes(), ctype)
-    send(handler, HTTPStatus.NOT_FOUND, b"not found", "text/plain")
+        if root in target.parents and target.is_file():
+            return target
+    return None
+
+
+def static_file(handler, rel: str, dirs) -> None:
+    """One of a page's files (index.html, a script, a stylesheet, a vendored library) from the first
+    of `dirs` holding it (an app's own folder first, then the library's ui.STATIC: icons.js,
+    liminal.css), never a file outside them."""
+    target = static_target(rel, dirs)
+    if target is None:
+        return send(handler, HTTPStatus.NOT_FOUND, b"not found", "text/plain")
+    ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    if ctype.startswith("text/") or ctype == "application/javascript":
+        ctype += "; charset=utf-8"
+    send(handler, HTTPStatus.OK, target.read_bytes(), ctype)
