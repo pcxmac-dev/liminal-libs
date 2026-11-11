@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.42.1 (2026-11-10)
+
+Every field typed into looks alike in `ui/static/liminal.css`: email, url, tel and number fields take the border and the
+background text, password and search fields have (and the light themes' field color). An email field had neither and
+looked missing: the login's first-user form, where a look at the page found it (the user: "Yes, fix them").
+
 ## 1.42.0 (2026-11-10)
 
 Touch screens and the on-screen keyboard on every app's page (the user: "let's do an update. I want to support touch as

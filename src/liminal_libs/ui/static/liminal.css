@@ -69,6 +69,7 @@ body.light[data-theme="paper"] {
   --down: #b03328;
 }
 body.light input[type="text"], body.light input[type="password"], body.light input[type="search"],
+body.light input[type="email"], body.light input[type="url"], body.light input[type="tel"], body.light input[type="number"],
 body.light textarea, body.light select, body.light select option { background: var(--field); }
 
 /* The page and the base controls. */
@@ -89,7 +90,10 @@ button.active, button.toggle.on { color: var(--accent); background: var(--hover)
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 select { border-color: var(--border); background: var(--panel); }
 select option { background: var(--panel); }
-input[type="text"], input[type="password"], input[type="search"] {
+/* every field typed into looks alike (1.42.1: an email field had no fill or border and looked missing, the login's
+   first-user form) */
+input[type="text"], input[type="password"], input[type="search"], input[type="email"], input[type="url"],
+input[type="tel"], input[type="number"] {
   border-color: var(--border); background: var(--bg); cursor: text; }
 button.accent { border-color: var(--accent); color: var(--accent); }
 button.danger { color: var(--down); }

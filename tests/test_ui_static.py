@@ -116,6 +116,22 @@ def test_the_stylesheets_touch_rules():
     assert narrow[0][0] > css.index("@media (max-width: 1100px)")  # after the wider break, so it wins below 700 px
 
 
+def test_every_field_typed_into_looks_alike():
+    """1.42.1: an email field had no border and no background (the base rule makes an input's border transparent), so
+    the login's first-user form seemed to have no Email box; email, url, tel and number fields are drawn as text,
+    password and search fields are, in the dark themes and the light ones."""
+    import re
+
+    css = re.sub(r"/\*.*?\*/", "", read("liminal.css"), flags=re.S)
+    kinds = ("text", "password", "search", "email", "url", "tel", "number")
+    field = re.search(r'\ninput\[type="text"\][^{]*\{([^}]*)\}', css)
+    assert field and "border-color: var(--border)" in field.group(1) and "background: var(--bg)" in field.group(1)
+    assert all(f'input[type="{k}"]' in field.group(0) for k in kinds)
+    light = re.search(r'\nbody\.light input\[type="text"\][^{]*\{([^}]*)\}', css)
+    assert light and "background: var(--field)" in light.group(1)
+    assert all(f'body.light input[type="{k}"]' in light.group(0) for k in kinds)
+
+
 def test_the_uis_preferences_one_file_for_every_app(tmp_path, monkeypatch):
     import json
 
