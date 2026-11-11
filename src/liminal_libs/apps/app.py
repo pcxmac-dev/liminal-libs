@@ -53,7 +53,7 @@ class App:
 
     NAME = ""  # "login", "charts", "integrator", "platform", "plugins"
     TITLE = ""
-    ICON = ""  # the master icon's name in icons.js (the user: charts "symbol", integrator "fetcher", login "user")
+    ICON = ""  # the master icon's name in icons.js (charts "disk", integrator "scroll", platform "chip", login "lambda")
     PORT = 0  # its page's default port on 127.0.0.1 (0: a free one)
     PORT_VAR = ""  # the environment variable overriding PORT (LIMINAL_LOGIN_PORT ...)
     STATIC: Path | None = None  # the app's own page files (index.html, its scripts)
@@ -157,7 +157,7 @@ class App:
                 d = {}
             kind = str(d.get("kind") or type(self.login).__name__)
             sub = "the user's environment variables" if kind == "EnvironmentLogin" else "the login app" if kind == "LoginClient" else kind
-            nodes["login"] = {"id": "login", "role": "login", "title": "Login", "icon": "user", "sub": sub,
+            nodes["login"] = {"id": "login", "role": "login", "title": "Login", "icon": "lambda", "sub": sub,
                               "signedIn": bool(d.get("signedIn"))}
         for p in self._plugins.values():
             nodes[p.name] = self.plugin_node(p)

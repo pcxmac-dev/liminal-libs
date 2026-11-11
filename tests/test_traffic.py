@@ -228,4 +228,4 @@ def test_a_program_is_named_without_its_folder_or_arguments_and_each_end_drawn_a
     assert program_name(None, "ping -n 1 192.0.2.1") == "ping" and program_name(None, b"tracert -d 1.1.1.1") == "tracert"
     assert program_name(None, []) == "" and program_name(None, None) == ""
     assert node_of("process:wsl")["role"] == "outside" and node_of("host:updates.invalid")["icon"] == "globe"
-    assert node_of("app:login")["icon"] == "user" and node_of("page")["role"] == "caller" and node_of("acme")["role"] == "plugin"
+    assert node_of("app:login")["icon"] == "lambda" and node_of("page")["role"] == "caller" and node_of("acme")["role"] == "plugin"

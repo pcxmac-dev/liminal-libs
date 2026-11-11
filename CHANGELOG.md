@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.44.0 (2026-11-10)
+
+Liminal's sign: the `lambda` icon in `ui/static/icons.js` (the user: "the liminal icon is the italic lambda"; "replace
+all user icons (login app) with the lambda sign"; then, of the drafts, "M looks good" (the mathematical italic lambda),
+"in japanese calligraphy", "with a thick brush, should see hair lines at end of stroke", "now have horse hair brush
+strokes"). The mathematical italic lambda's shape written with a simulated horse-hair brush (bristles in a teardrop
+held at 45 degrees, the pressure along each stroke, every bristle running dry at its own rate) and traced into one
+filled outline with its dry-brush streaks cut out (evenodd), about 4 KB, no font needed. It is the login app's icon
+in the connections picture (`apps.traffic.APP_ICONS`, `App.connections`); `user` stays in the set.
+
 ## 1.43.0 (2026-11-10)
 
 The login app on its own knows no other app; the app that inherits it says so (the user: "the log-in app should not

@@ -38,3 +38,15 @@ def test_every_icon_is_well_formed_and_the_plugins_marks_are_there():
         ET.fromstring(f"<svg>{markup}</svg>")  # a tag left open or an attribute unquoted raises
     js = (STATIC / "icons.js").read_text(encoding="utf-8")
     assert "SVG(PATHS[name] || PATHS.plug, cls, size)" in js  # a name it lacks: the plug, not an empty square
+
+
+def test_liminals_sign_is_the_brushed_lambda():
+    """1.44.0 (the user, 2026-11-10: "the liminal icon is the italic lambda"; "replace all user icons (login app) with the
+    lambda sign"; written with a horse-hair brush): one filled outline in the 24-unit box, its dry-brush streaks cut out
+    of it (evenodd), no stroke of its own, no font needed; the user icon stays for whoever means a user."""
+    paths = _paths()
+    lam = paths["lambda"]
+    assert lam.startswith('<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M') and "<text" not in lam
+    nums = [float(v) for v in re.findall(r"-?\d*\.?\d+", lam.split(' d="', 1)[1])]
+    assert nums and min(nums) >= 0 and max(nums) <= 24 and lam.count("Z") >= 2  # in the box; the outline and its streaks
+    assert len(lam) < 6000 and "user" in paths

@@ -41,7 +41,7 @@ CLASSES = {  # an interaction's class, in the order the page's legend lists them
     "process": "a program started (by its name, never its arguments)",
     "network": "a host reached (its name or address and port, never what was sent)",
 }
-APP_ICONS = {"charts": "disk", "integrator": "scroll", "login": "user", "platform": "chip"}
+APP_ICONS = {"charts": "disk", "integrator": "scroll", "login": "lambda", "platform": "chip"}  # the login: Liminal's sign (1.44.0)
 _NOT_OWNERS = ("liminal_libs", "builtins", "__main__", "threading", "concurrent", "asyncio")
 
 
