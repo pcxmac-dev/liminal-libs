@@ -69,6 +69,7 @@ API_KINDS = {  # an API's form -> its words on the page
 }
 HTTPS = re.compile(r"^https://[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$")  # an https address with a host
 ALIVE = frozenset({401, 403, 405, 429})  # a page that answered but refuses automated readers: there, not dead
+ERROR_PAGE = re.compile(r"/(?:404|errors?)(?:[/._-]|$)", re.I)  # where a site sends a reader of a page it has not
 CHECK_AGENT = "Mozilla/5.0 (compatible; Liminal plugin page check)"
 
 
@@ -296,24 +297,34 @@ def urls(apis: Iterable[Api]) -> list[str]:
 
 
 def dead_links(apis: Iterable[Api], get: Callable | None = None, timeout: float = 20.0) -> list[tuple[str, str]]:
-    """The addresses that do not answer as a page (each asked once: a GET, its redirects followed): (address, why). A
-    page that answers but refuses automated readers (ALIVE: 401, 403, 405, 429) is there. `get(url, timeout)` -> status
-    (a test's); else requests, its body never read."""
+    """The addresses that do not answer as a page: (address, why). Each page is asked once (a GET, its redirects
+    followed; the addresses of its parts, #fragments, share its answer). A page that answers but refuses automated
+    readers (ALIVE: 401, 403, 405, 429) is there; one that sends its reader on to an error page (a 200 at .../404 or
+    .../errors/...) is not. `get(url, timeout)` -> status, or (status, the address it ended at) (a test's); else
+    requests, its body never read. A site answering every script alike (403 for any path, 200 for any path) is not
+    told apart by this: its pages are read by a person or a browser."""
     if get is None:
         import requests
 
-        def get(url: str, timeout: float) -> int:
+        def get(url: str, timeout: float):
             with requests.get(url, timeout=timeout, stream=True, allow_redirects=True,
                               headers={"User-Agent": CHECK_AGENT, "Accept": "text/html,*/*"}) as resp:
-                return resp.status_code
+                return resp.status_code, resp.url
 
-    out: list[tuple[str, str]] = []
+    pages: dict[str, list[str]] = {}
     for url in urls(apis):
+        pages.setdefault(url.split("#", 1)[0], []).append(url)
+    out: list[tuple[str, str]] = []
+    for page, asked in pages.items():
         try:
-            status = int(get(url, timeout))
+            got = get(page, timeout)
         except Exception as e:  # noqa: BLE001 - why it could not be read is the finding
-            out.append((url, f"{type(e).__name__}: {e}"[:200]))
+            out += [(u, f"{type(e).__name__}: {e}"[:200]) for u in asked]
             continue
+        status, ended = (got if isinstance(got, tuple) else (got, page))
+        status = int(status)
         if status >= 400 and status not in ALIVE:
-            out.append((url, f"HTTP {status}"))
+            out += [(u, f"HTTP {status}") for u in asked]
+        elif ended and ended != page and ERROR_PAGE.search(ended.split("?", 1)[0]):
+            out += [(u, f"sent on to an error page: {ended}") for u in asked]
     return out

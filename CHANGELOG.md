@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.49.1 (2026-11-11)
+
+What the cloud plugins' builders asked of 1.49.0's helpers:
+- `RestClient`: a 403 (a right missing) no longer drops a token, only a 401 does; `throttled(answer)`, a vendor's own
+  "slow down" that is no 429 (Route 53's 400 Throttling), waited out like one; `request(data=...)`, a body sent as it is
+  (Route 53's XML); `pages(headers=...)` (Linode's X-Filter); the rate limits of reads and of writes kept both (Azure's
+  two headers), `clock_of` to say a reset's epoch as this machine's clock time; a vendor's own `...-retry-after` header honored
+  (Azure Cost Management's).
+- `ddns.Keeper`: `on_pass`, called at the start of each pass (a provider's cache of zones cleared); `table(empty=)`.
+- `sources.apis.dead_links`: each page asked once (the addresses of its parts share its answer: Vultr's one-page
+  reference was asked 110 times); a page that sends its reader on to an error page (a 200 at .../404 or .../errors/)
+  is dead; the docstring says what no status can tell (a site answering every script alike).
+
 ## 1.49.0 (2026-11-11)
 
 Plugin API 2.2: what a plugin attaches to (the user: "each plugin should reflect the the API its attached to, and present

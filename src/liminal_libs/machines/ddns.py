@@ -104,8 +104,9 @@ class Keeper:
 
     def __init__(self, read: Callable[[Host], list[str] | None], write: Callable[[Host, str], str],
                  servers: Sequence[tuple[str, str, str, str]] = (), public: Callable[[], tuple[str | None, str]] | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, on_pass: Callable[[], None] | None = None):
         self._read = read
+        self._on_pass = on_pass  # at the start of each pass (a provider's cache of zones cleared, 1.49.1)
         self._write = write
         self._servers = tuple(servers)
         self._public = public or (lambda: dns.public_address(4, self._servers))
@@ -156,6 +157,8 @@ class Keeper:
             raise RuntimeError("a Dynamic DNS pass is under way")
         try:
             hosts = list(hosts)
+            if self._on_pass is not None:
+                self._on_pass()
             ip = self.address(fresh_s=0.0 if force else FRESH_S)
             for h in hosts:
                 self._one(h, ip, force)
@@ -191,8 +194,9 @@ class Keeper:
         st.address, st.ok = ip, True
         st.result = str(done or ("set" if held else "made")) + ("" if held == [ip] else f" (was {', '.join(held) or 'none'})")
 
-    def table(self, hosts: Iterable[Host], minutes: float, attached: bool = True, when=None) -> dict:
-        """The page's Dynamic DNS table (a platform plugin's status.tables entry) for `hosts`."""
+    def table(self, hosts: Iterable[Host], minutes: float, attached: bool = True, when=None, empty: str | None = None) -> dict:
+        """The page's Dynamic DNS table (a platform plugin's status.tables entry) for `hosts`; `empty`, what it says
+        with none (the account's domains not read yet, say)."""
         when = when or _when
         rows = []
         for h in hosts:
@@ -203,7 +207,7 @@ class Keeper:
         return {"title": "Dynamic DNS", "note": f"{every} · this network's address: {self.public or 'not found yet'}",
                 "columns": [{"title": "Host"}, {"title": "Address"}, {"title": "Checked"}, {"title": "Updated"},
                             {"title": "Result"}],
-                "rows": rows, "empty": "No host is set to be kept at this network's address."}
+                "rows": rows, "empty": empty or "No host is set to be kept at this network's address."}
 
 
 def _when(t: float | None) -> str:

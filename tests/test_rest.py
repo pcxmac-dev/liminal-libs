@@ -136,6 +136,68 @@ def test_dynamic_dns_sets_only_the_hosts_that_differ():
     assert ddns.minutes_of("0.2") == 1.0 and ddns.minutes_of("") == 5.0 and ddns.minutes_of("x") == 5.0
 
 
+def test_the_helpers_asks_of_1_49_1():
+    # a 403 is a right missing: the token is kept; a 401 drops it
+    refused = []
+    t = Transport((403, {}, {"message": "AuthorizationFailed"}), (401, {}, {"message": "expired"}))
+    api = RestClient("https://api.example.org", transport=t, on_refused=lambda: refused.append(1))
+    for _ in range(2):
+        with pytest.raises(RestError):
+            api.get("/x")
+    assert refused == [1]
+    # a vendor's own "slow down" (Route 53's 400 Throttling) waited out like a 429, a raw XML body sent as it is
+    slept: list = []
+    t = Transport((400, {}, b"<ErrorResponse><Error><Code>Throttling</Code></Error></ErrorResponse>"), (200, {}, b"<ok/>"))
+    api = RestClient("https://api.example.org", transport=t, sleep=slept.append, throttled=lambda a: b"Throttling" in a.body)
+    got = api.request("POST", "/zone", data=b"<Change/>", headers={"Content-Type": "application/xml"})
+    assert got.body == b"<ok/>" and t.sent[0][3] == b"<Change/>" and t.sent[0][2]["Content-Type"] == "application/xml"
+    assert len(slept) == 1
+    with pytest.raises(ValueError):
+        api.request("POST", "/zone", data=b"x", json={})
+    # the limits of reads and of writes kept both; a reset's epoch said as a clock time; a vendor's own retry-after
+    t = Transport((200, {"X-Ms-Ratelimit-Remaining-Subscription-Reads": "11999"}, {}),
+                  (200, {"X-Ms-Ratelimit-Remaining-Subscription-Writes": "1199", "RateLimit-Reset": "1800000000"}, {}),
+                  (429, {"x-ms-ratelimit-microsoft.costmanagement-qpu-retry-after": "7"}, {}), (200, {}, {}))
+    slept.clear()
+    api = RestClient("https://api.example.org", transport=t, sleep=slept.append)
+    api.get("/a"), api.post("/b", {}), api.get("/c")
+    assert set(api.seen.limits) >= {"x-ms-ratelimit-remaining-subscription-reads", "x-ms-ratelimit-remaining-subscription-writes"}
+    from liminal_libs.machines.rest import clock_of
+
+    assert api.facts()["ratelimit-reset"] == "1800000000" and slept == [7.0]  # as given: a plugin words it
+    assert clock_of("ratelimit-reset", "1800000000").endswith("(1800000000)") and clock_of("x", "5") == "5"
+    # pages send their filter header with each page
+    t = Transport((200, {}, {"data": [1], "page": 1, "pages": 2}), (200, {}, {"data": [2], "page": 2, "pages": 2}))
+    api = RestClient("https://api.example.org", transport=t)
+    nxt = lambda d, p: ("/l", {**p, "page": d["page"] + 1}) if d["page"] < d["pages"] else None  # noqa: E731
+    assert list(api.pages("/l", {"page": 1}, items="data", next_of=nxt, headers={"X-Filter": "{}"})) == [1, 2]
+    assert all(s[2]["X-Filter"] == "{}" for s in t.sent)
+    # the keeper's start of a pass, its own empty words
+    passes = []
+    keeper = ddns.Keeper(read=lambda h: [], write=lambda h, ip: "made", public=lambda: ("203.0.113.9", "x"),
+                         on_pass=lambda: passes.append(1))
+    keeper.run_pass([])
+    assert passes == [1] and keeper.table([], 5, empty="The domains are not read yet.")["empty"] == "The domains are not read yet."
+
+
+def test_the_link_check_asks_a_page_once_and_knows_an_error_page():
+    from liminal_libs.sources import apis as A
+
+    api = A.Api(name="x", maker="x", about="x", verified="2026-11-11",
+                links=(A.Link("Ref", "https://docs.example.org/api#one", "reference"),
+                       A.Link("Two", "https://docs.example.org/api#two", "guide"),
+                       A.Link("Gone", "https://www.example.org/old", "docs")))
+    asked = []
+
+    def get(url, timeout):
+        asked.append(url)
+        return (200, "https://www.example.org/errors/404") if url.endswith("/old") else 200
+
+    assert A.dead_links((api,), get=get) == [("https://www.example.org/old",
+                                              "sent on to an error page: https://www.example.org/errors/404")]
+    assert asked == ["https://docs.example.org/api", "https://www.example.org/old"]
+
+
 def test_dynamic_dns_without_an_address_or_a_record_says_so():
     keeper = ddns.Keeper(read=lambda h: None, write=lambda h, ip: "set", public=lambda: (None, "no server answered"))
     hosts, _ = ddns.hosts_of("home.example.com", ["example.com"])

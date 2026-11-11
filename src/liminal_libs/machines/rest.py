@@ -133,7 +133,8 @@ class RestClient:
                  transport: Callable | None = None, timeout: float = TIMEOUT_S, secrets: Iterable[str] = (),
                  error: Callable[[Answer], tuple[str, str]] | None = None, retries: int = 2,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep,
-                 wait_most: float = WAIT_MOST_S, on_refused: Callable[[], None] | None = None):
+                 wait_most: float = WAIT_MOST_S, on_refused: Callable[[], None] | None = None,
+                 throttled: Callable[[Answer], bool] | None = None):
         if not base.startswith("https://"):
             raise ValueError(f"an API is asked over HTTPS, not at {base!r}")
         self.base = base.rstrip("/")
@@ -147,7 +148,8 @@ class RestClient:
         self._clock = clock
         self._sleep = sleep
         self._wait_most = wait_most
-        self._on_refused = on_refused
+        self._on_refused = on_refused  # a 401's: the token is no good (a 403 is a right missing, the token kept)
+        self._throttled = throttled  # an answer the vendor means as "slow down" though it is no 429 (1.49.1)
         self._lock = threading.Lock()
         self.seen = Seen()
 
@@ -161,17 +163,23 @@ class RestClient:
         return url
 
     def request(self, method: str, path: str, *, params: Mapping | None = None, json=None, form: Mapping | None = None,
-                headers: Mapping[str, str] | None = None, ok: Iterable[int] = (200, 201, 202, 204)) -> Answer:
+                headers: Mapping[str, str] | None = None, ok: Iterable[int] = (200, 201, 202, 204),
+                data: bytes | None = None) -> Answer:
         """One request; its answer when its status is one of `ok`, else a RestError in words. A 429 is waited out (its
         Retry-After, at most `wait_most`), any method; a 5xx or a broken connection tried again for a read (GET, HEAD)
-        only: a write that may have been done is never sent twice."""
+        only: a write that may have been done is never sent twice. `data`: a body sent as it is (an XML document),
+        its Content-Type in `headers`; one of `json`, `form` and `data` at most."""
         method = method.upper()
         url = self.url(path, params)
         if urlsplit(url).scheme != "https":
             raise RestError(f"not an HTTPS address: {scrub(url, self._secrets)}")
+        if sum(x is not None for x in (json, form, data)) > 1:
+            raise ValueError("a request has one body: json, form or data")
         body: bytes | None = None
         sent = dict(self._headers)
-        if json is not None:
+        if data is not None:
+            body = bytes(data)
+        elif json is not None:
             body = jsonlib.dumps(json, separators=(",", ":")).encode()
             sent["Content-Type"] = "application/json"
         elif form is not None:
@@ -202,9 +210,10 @@ class RestClient:
             words, code = self._words(answer)
             self._note(answer.status, answer.headers, answer.seconds, words)
             wait = _retry_after(answer, self._clock())
-            if answer.status in (401, 403) and self._on_refused:
+            if answer.status == 401 and self._on_refused:
                 self._on_refused()
-            if answer.status in RETRY_CODES and attempt <= self._retries and (answer.status == 429 or reads):
+            slow = answer.status == 429 or bool(self._throttled and _asks(self._throttled, answer))
+            if (answer.status in RETRY_CODES or slow) and attempt <= self._retries and (slow or reads):
                 delay = wait if wait is not None else min(2.0 ** attempt, self._wait_most)
                 if delay <= self._wait_most:
                     self._sleep(max(0.0, delay))
@@ -228,12 +237,14 @@ class RestClient:
         return self.request("DELETE", path, params=params, json=json).data
 
     def pages(self, path: str, params: Mapping | None = None, *, items: str | Callable[[object], list],
-              next_of: Callable[[object, dict], tuple[str, dict] | None], most: int = 50) -> Iterator:
+              next_of: Callable[[object, dict], tuple[str, dict] | None], most: int = 50,
+              headers: Mapping[str, str] | None = None) -> Iterator:
         """Every item of a list across its pages: `items` names the answer's list (or takes it out), `next_of(data,
-        params)` gives the next page's (path, params) or None at the last; at most `most` pages are asked."""
+        params)` gives the next page's (path, params) or None at the last; at most `most` pages are asked;
+        `headers` go with each (a filter header: Linode's X-Filter)."""
         params = dict(params or {})
         for _ in range(max(1, most)):
-            data = self.get(path, params)
+            data = self.request("GET", path, params=params, headers=headers).data
             found = items(data) if callable(items) else (data or {}).get(items) if isinstance(data, Mapping) else None
             yield from (found or [])
             nxt = next_of(data, params)
@@ -249,8 +260,8 @@ class RestClient:
             s.requests += 1
             s.failed += 0 if not error else 1
             s.last_status, s.last_at, s.last_seconds, s.last_error = status, self._clock(), seconds, error
-            if limits:
-                s.limits = limits
+            if limits:  # merged: an API giving its reads' and its writes' limits on different answers keeps both
+                s.limits.update(limits)
 
     def facts(self, labels: Mapping[str, str] | None = None) -> dict[str, str]:
         """What the answers said, in words (a plugin's api_facts): the requests made, the last answer, and the rate
@@ -267,7 +278,7 @@ class RestClient:
             (f" in {s.last_seconds * 1000:.0f} ms" if s.last_status else "") + (f", {when}" if when else "")
         if s.last_error:
             out["Last trouble"] = s.last_error[:200]
-        for header, value in s.limits.items():
+        for header, value in s.limits.items():  # as given (clock_of says a reset's epoch as a clock time)
             if labels is None:
                 out[header] = value
             elif header in labels:
@@ -313,8 +324,27 @@ def _json_of(answer: Answer):
         return None
 
 
+def _asks(throttled: Callable[[Answer], bool], answer: Answer) -> bool:
+    try:
+        return bool(throttled(answer))
+    except Exception:  # noqa: BLE001 - a reader that cannot tell: not taken as a slow down
+        return False
+
+
+def clock_of(header: str, value: str) -> str:
+    """A reset header's epoch time as this machine's clock time (the epoch kept beside it); any other value as given."""
+    if "reset" not in header:
+        return value
+    try:
+        at = float(value)
+    except ValueError:
+        return value
+    return f"{time.strftime('%H:%M:%S', time.localtime(at))} ({value})" if at > 1e9 else value
+
+
 def _retry_after(answer: Answer, now: float) -> float | None:
-    """The seconds the API asked to wait: Retry-After (seconds or an HTTP date), else a reset time in epoch seconds."""
+    """The seconds the API asked to wait: Retry-After (seconds or an HTTP date), else the longest of a vendor's own
+    `...-retry-after` headers (Azure Cost Management's), else a reset time in epoch seconds."""
     value = answer.header("retry-after")
     if value:
         try:
@@ -326,6 +356,15 @@ def _retry_after(answer: Answer, now: float) -> float | None:
                 return max(0.0, parsedate_to_datetime(value).timestamp() - now)
             except (TypeError, ValueError):
                 pass
+    own = []
+    for name, text in answer.headers.items():
+        if name.endswith("-retry-after"):
+            try:
+                own.append(float(text))
+            except ValueError:
+                pass
+    if own:
+        return max(0.0, max(own))
     if answer.status == 429:
         for name in ("ratelimit-reset", "x-ratelimit-reset"):
             reset = answer.header(name)
