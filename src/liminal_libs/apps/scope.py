@@ -75,7 +75,7 @@ class Scope:
 
     def remote_url(self, host: str) -> str:
         """Where the login app of `host` answers, for its users (name@host): the file's [remotes] says so (assigned
-        here), else the domain's own address, https://host (assigned there)."""
+        here), else the domain's own address, https://<the domain> (assigned there)."""
         host = str(host or "").strip().lower().strip(".")
         return remote_url(self.remotes.get(host) or host)
 
@@ -310,7 +310,7 @@ class Scope:
                 if k.startswith("env_"):
                     lines.append(f"{k} = {v}")
         lines += ["", "[remotes]", "; the users of other logins sign in here as name@their.domain: their login app does the work, over",
-                  "; https. Each answers at https://their.domain unless named here: their.domain = https://login.their.domain:8443"]
+                  "; https. Each answers at https://<their domain> unless named here: <their domain> = https://<their login's address>"]
         lines += [f"{k} = {v}" for k, v in self.remotes.items()]
         return "\n".join(lines) + "\n"
 
