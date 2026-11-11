@@ -298,6 +298,10 @@ def test_what_the_audit_found_in_the_client_1_49_3():
     with pytest.raises(RestError, match="another host"):
         list(api.pages("/things", items="things", next_of=nxt))
     assert len(t.sent) == 1
+    # the same host with its port named is the same host (Azure's price list: prices.azure.com:443, 1.49.5)
+    t = Transport((200, {}, {"things": [1], "next": "https://api.example.org:443/v2/things?page=2"}), (200, {}, {"things": [2]}))
+    api = RestClient("https://api.example.org/v2", auth=bearer(TOKEN), transport=t)
+    assert list(api.pages("/things", items="things", next_of=nxt)) == [1, 2]
     # an error's raw words are cut after the secrets are taken out: a secret across the old 200th character never shows
     body = ("x" * 190 + TOKEN).encode()
     t = Transport((400, {"Content-Type": "text/plain"}, body))

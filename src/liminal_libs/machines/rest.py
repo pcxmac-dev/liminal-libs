@@ -262,7 +262,7 @@ class RestClient:
             if not nxt:
                 return
             path, params = nxt
-            if str(path).startswith("https://") and urlsplit(path).netloc.lower() != urlsplit(self.base).netloc.lower():
+            if str(path).startswith("https://") and _host_of(path) != _host_of(self.base):
                 # a next page given whole on another host is never sent the client's token (1.49.3)
                 raise RestError(f"the next page is on another host ({urlsplit(path).netloc}): not followed")
 
@@ -325,6 +325,12 @@ class RestClient:
                 # cut after the secrets are taken out (`return` scrubs, then cuts): a secret across the cut never shows
                 words = answer.body[:4000].decode("utf-8", "replace").strip() or "no words came back"
         return scrub(words, self._secrets)[:400], scrub(code, self._secrets)
+
+
+def _host_of(url: str) -> tuple[str, int]:
+    """An https address's host and port (443 when it names none): prices.azure.com:443 is prices.azure.com (1.49.5)."""
+    parts = urlsplit(url)
+    return (parts.hostname or "").lower().rstrip("."), parts.port or 443
 
 
 def _json_of(answer: Answer):

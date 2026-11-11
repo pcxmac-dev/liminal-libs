@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.49.5 (2026-11-11)
+
+`RestClient.pages`: a next page on the same host with its port named (Azure's price list writes
+`prices.azure.com:443`) is the same host, followed as before; only another host is refused.
+
 ## 1.49.4 (2026-11-11)
 
 What the DigitalOcean plugin's builder asked of the Dynamic DNS keeper: the stop is checked again just before a write
