@@ -3,25 +3,41 @@ Azure DNS, Cloud DNS): hosts kept at this network's public IPv4 address, the way
 
 The plugin says how a host's A record is read and set through its provider's API (`read`, `write`) and which name
 servers tell an asker its own address (`servers`, as dns.public_address takes them: the plugin names them, the library
-names no host). A pass asks this network's address, then each host's A record, and sets the ones that differ (every one
-with `force`, the page's Update DNS now); what each host's record held and what was done is kept for the page.
+names no host). A pass asks this network's address, then each host's A record, and sets the ones that are its own to
+keep and differ (every one of them with `force`, the page's Update DNS now); what each host's record held and what was
+done is kept for the page.
 
-    keeper = Keeper(read=lambda h: [...addresses...], write=lambda h, ip: "set", servers=PUBLIC_IPV4)
+What is the keeper's to change (1.49.2; an audit before any key went in: a host listed in the settings had its live
+record pointed at home within a minute, unasked): a host with no A record (it is made), one holding exactly the
+address the keeper last set or found there as this network's (its own: kept current), and one the user let it take
+over (`take_over`, after the page's confirmation, which says what the record holds and that it will point here). Any
+other record (another address, or several) is left as it is and said so ("holds 198.51.100.7, not this network's
+address"), with a Take over… on the page; several addresses are never cut to one unasked. Just before a write the
+address is asked again, and nothing is written if it changed meanwhile. What the keeper holds as its own and what it
+was let take over is kept in a small JSON file the plugin names (`state`: its folder under the platform's), so a
+restart after the network's address changed still knows its own record.
+
+    keeper = Keeper(read=lambda h: [...addresses...], write=lambda h, ip: "set", servers=PUBLIC_IPV4, state=path)
     hosts, wrong = hosts_of("home.example.com, @.example.net", zones=("example.com", "example.net"))
     keeper.run_pass(hosts)
 """
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from .. import dns
 
-FRESH_S = 600.0  # this network's address asked again after this long
+FRESH_S = 600.0  # this network's address asked again after this long (always again just before a write)
 MINUTES = (1.0, 1440.0, 5.0)  # a check's minutes: the least, the most, unless set
+TAKE_FORM = "ddns-take"  # the page's form taking a host over (take_form), and the Update DNS now one (now_form)
+NOW_FORM = "ddns-now"
 
 
 @dataclass(frozen=True)
@@ -82,7 +98,8 @@ def minutes_of(text: str | None) -> float:
 
 @dataclass
 class HostState:
-    """What a host's A record held when last read, what was done about it, when."""
+    """What a host's A record held when last read, what was done about it, when; `foreign`: it holds what is not the
+    keeper's to change (another address, or several), so it was left as it is until the user takes it over."""
 
     fqdn: str
     address: str | None = None
@@ -90,21 +107,25 @@ class HostState:
     updated_at: float | None = None
     result: str = "not checked yet"
     ok: bool | None = None
+    holds: tuple[str, ...] = ()
+    foreign: bool = False
 
     def describe(self) -> dict:
         return {"host": self.fqdn, "address": self.address, "checkedAt": self.checked_at, "updatedAt": self.updated_at,
-                "result": self.result, "ok": self.ok}
+                "result": self.result, "ok": self.ok, "holds": list(self.holds), "foreign": self.foreign}
 
 
 class Keeper:
     """The hosts' records kept at this network's public IPv4 address (module docstring). `read(host)` -> the addresses
     of its A record ([] when it has none; None when it could not be read, its trouble raised instead is said too);
-    `write(host, address)` -> words of what was done (a record set, or made); `public()` -> (address, whose) stands in
-    for asking `servers` (a test's)."""
+    `write(host, address)` -> words of what was done (the host's A record set to that one address, or made); `public()`
+    -> (address, whose) stands in for asking `servers` (a test's); `state`: the JSON file of what is its own and what it
+    was let take over (None: kept in memory only); `on_pass`: called at the start of each pass."""
 
     def __init__(self, read: Callable[[Host], list[str] | None], write: Callable[[Host, str], str],
                  servers: Sequence[tuple[str, str, str, str]] = (), public: Callable[[], tuple[str | None, str]] | None = None,
-                 clock: Callable[[], float] = time.time, on_pass: Callable[[], None] | None = None):
+                 clock: Callable[[], float] = time.time, on_pass: Callable[[], None] | None = None,
+                 state: Path | str | None = None):
         self._read = read
         self._on_pass = on_pass  # at the start of each pass (a provider's cache of zones cleared, 1.49.1)
         self._write = write
@@ -114,10 +135,73 @@ class Keeper:
         self._lock = threading.Lock()
         self._passing = threading.Lock()
         self._states: dict[str, HostState] = {}
+        self._file = Path(state) if state is not None else None
+        self._own: dict[str, str] = {}  # fqdn -> the address the keeper last set or found there as this network's
+        self._taken: set[str] = set()  # the hosts the user let it take over
+        self._load()
         self.public: str | None = None
         self.public_why = ""
         self.public_at: float | None = None
 
+    # -- what is its own, kept --------------------------------------------------------------------------------------------
+    def _load(self) -> None:
+        if self._file is None or not self._file.is_file():
+            return
+        try:
+            data = json.loads(self._file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return  # an unreadable file: nothing taken as its own (the safe way: a record is left as it is)
+        own = data.get("own") if isinstance(data, dict) else None
+        taken = data.get("taken") if isinstance(data, dict) else None
+        if isinstance(own, dict):
+            self._own = {str(k).lower(): str(v) for k, v in own.items() if isinstance(v, str)}
+        if isinstance(taken, list):
+            self._taken = {str(x).lower() for x in taken}
+
+    def _save(self) -> None:
+        if self._file is None:
+            return
+        with self._lock:
+            data = {"own": dict(sorted(self._own.items())), "taken": sorted(self._taken)}
+        try:
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+            part = self._file.with_name(self._file.name + ".part")
+            part.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            os.replace(part, self._file)
+        except OSError:
+            pass  # kept in memory; said nowhere worse than before
+
+    def own(self, fqdn: str) -> str | None:
+        """The address the keeper last set at `fqdn`, or found there as this network's (None: none of its own)."""
+        with self._lock:
+            return self._own.get(fqdn.lower())
+
+    def taken(self, fqdn: str) -> bool:
+        with self._lock:
+            return fqdn.lower() in self._taken
+
+    def take_over(self, fqdn: str) -> None:
+        """The user let the keeper take `fqdn` over (the page's Take over…, once confirmed): its next pass points the
+        host's A record at this network's address whatever it holds."""
+        with self._lock:
+            self._taken.add(fqdn.lower())
+        self._save()
+
+    def let_go(self, fqdn: str) -> None:
+        """`fqdn` no longer the keeper's: neither taken over nor its own (a host taken out of the settings)."""
+        with self._lock:
+            self._taken.discard(fqdn.lower())
+            self._own.pop(fqdn.lower(), None)
+        self._save()
+
+    def _mark_own(self, fqdn: str, ip: str) -> None:
+        with self._lock:
+            changed = self._own.get(fqdn) != ip
+            self._own[fqdn] = ip
+        if changed:
+            self._save()
+
+    # -- what the page shows ----------------------------------------------------------------------------------------------
     def states(self) -> list[HostState]:
         with self._lock:
             return list(self._states.values())
@@ -151,8 +235,12 @@ class Keeper:
                 self.public_why = str(whose or "no answer")
             return ip
 
-    def run_pass(self, hosts: Iterable[Host], force: bool = False, wait: float = 120.0) -> list[dict]:
-        """A pass now over `hosts` (another under way: waited for at most `wait` s, else a RuntimeError); each host's state."""
+    # -- a pass ------------------------------------------------------------------------------------------------------------
+    def run_pass(self, hosts: Iterable[Host], force: bool = False, wait: float = 120.0,
+                 stop: threading.Event | None = None) -> list[dict]:
+        """A pass now over `hosts` (another under way: waited for at most `wait` s, else a RuntimeError); each host's state.
+        `force` writes every host of its own whether it differs or not (never one that is not its own); `stop` set (the
+        plugin detached) ends the pass before its next write."""
         if not self._passing.acquire(timeout=max(0.0, wait)):
             raise RuntimeError("a Dynamic DNS pass is under way")
         try:
@@ -161,12 +249,14 @@ class Keeper:
                 self._on_pass()
             ip = self.address(fresh_s=0.0 if force else FRESH_S)
             for h in hosts:
-                self._one(h, ip, force)
+                if stop is not None and stop.is_set():
+                    break
+                self._one(h, ip, force, stop)
             return [self._states[h.fqdn].describe() for h in hosts if h.fqdn in self._states]
         finally:
             self._passing.release()
 
-    def _one(self, h: Host, ip: str | None, force: bool) -> None:
+    def _one(self, h: Host, ip: str | None, force: bool, stop: threading.Event | None) -> None:
         now = self._clock()
         with self._lock:
             st = self._states.setdefault(h.fqdn, HostState(h.fqdn))
@@ -181,33 +271,81 @@ class Keeper:
         if held is None:
             st.checked_at, st.ok, st.result = now, False, "its record could not be read"
             return
-        st.address = held[0] if held else None
-        if not force and held == [ip]:
-            st.checked_at, st.ok, st.result = now, True, "current"
+        held = [str(a) for a in held]
+        st.holds, st.address = tuple(held), (held[0] if held else None)
+        taken, own = self.taken(h.fqdn), self.own(h.fqdn)
+        if held == [ip]:
+            self._mark_own(h.fqdn, ip)  # pointing here already: its own to keep from now on
+            if not force:
+                st.checked_at, st.ok, st.result, st.foreign = now, True, "current", False
+                return
+        mine = not held or held == [ip] or (len(held) == 1 and held[0] == own)
+        if not mine and not taken:
+            st.checked_at, st.ok, st.foreign = now, False, True
+            st.result = ((f"holds {held[0]}, not this network's address" if len(held) == 1 else
+                          f"holds {len(held)} addresses ({', '.join(held)})") + ": left as it is (Take over… to point it here)")
+            return
+        if stop is not None and stop.is_set():
+            return
+        again = self.address(fresh_s=0.0)  # asked again just before writing: a stale address is never written back
+        if again != ip:
+            st.checked_at, st.ok = now, False
+            st.result = (f"this network's address changed to {again} during the pass: set on the next one" if again else
+                         f"this network's address could not be asked again: {self.public_why or 'no answer'}")
             return
         try:
             done = self._write(h, ip)
         except Exception as e:  # noqa: BLE001 - said as the host's result; the next pass tries again
             st.checked_at, st.ok, st.result = now, False, f"not updated: {e}"
             return
+        self._mark_own(h.fqdn, ip)
         st.checked_at = st.updated_at = now
-        st.address, st.ok = ip, True
+        st.address, st.ok, st.foreign, st.holds = ip, True, False, (ip,)
         st.result = str(done or ("set" if held else "made")) + ("" if held == [ip] else f" (was {', '.join(held) or 'none'})")
 
-    def table(self, hosts: Iterable[Host], minutes: float, attached: bool = True, when=None, empty: str | None = None) -> dict:
-        """The page's Dynamic DNS table (a platform plugin's status.tables entry) for `hosts`; `empty`, what it says
-        with none (the account's domains not read yet, say)."""
+    # -- the page's pieces -----------------------------------------------------------------------------------------------
+    def table(self, hosts: Iterable[Host], minutes: float, attached: bool = True, when=None, empty: str | None = None,
+              take: bool = False) -> dict:
+        """The page's Dynamic DNS table (a platform plugin's status.tables entry) for `hosts`; `empty`, what it says with
+        none (the account's domains not read yet, say); `take`: a Take over… button on each host left as it is (the
+        plugin offers take_form() and asks take_over on its confirmation)."""
         when = when or _when
         rows = []
         for h in hosts:
             s = self.state(h.fqdn)
-            rows.append([h.fqdn, (s.address if s else None) or "–", when(s.checked_at if s else None),
-                         when(s.updated_at if s else None), s.result if s else "not checked yet"])
+            row = [h.fqdn, (", ".join(s.holds) if s and s.holds else s.address if s else None) or "–",
+                   when(s.checked_at if s else None), when(s.updated_at if s else None), s.result if s else "not checked yet"]
+            if take:
+                row.append({"form": TAKE_FORM, "title": "Take over…", "label": f"Take over {h.fqdn}",
+                            "values": {"host": h.fqdn, "holds": ", ".join(s.holds)}} if s and s.foreign else "")
+            rows.append(row)
         every = f"every {minutes:g} min" + ("" if attached else ", once attached")
-        return {"title": "Dynamic DNS", "note": f"{every} · this network's address: {self.public or 'not found yet'}",
+        return {"title": "Dynamic DNS",
+                "note": f"{every} · this network's address: {self.public or 'not found yet'} · a host holding another "
+                        "address is left as it is until you take it over",
                 "columns": [{"title": "Host"}, {"title": "Address"}, {"title": "Checked"}, {"title": "Updated"},
-                            {"title": "Result"}],
+                            {"title": "Result"}, *([{"title": ""}] if take else [])],
                 "rows": rows, "empty": empty or "No host is set to be kept at this network's address."}
+
+    def take_form(self, hook: str = "ddns_take_over") -> dict:
+        """The page's form taking a host over (its row's Take over… fills it): asked once the user has confirmed, in words
+        naming what the record holds and what follows."""
+        return {"id": TAKE_FORM, "hook": hook, "title": "Take a host over for Dynamic DNS",
+                "fields": [{"name": "host", "label": "Host", "type": "fixed"}, {"name": "holds", "label": "It holds", "type": "fixed"}],
+                "confirm": {"title": "Point {host} at this network?",
+                            "words": ("{host} holds {holds}, which is not this network's address. Taken over, its A record is set "
+                                      "to this network's address on the next pass and kept there; what it holds now is dropped, "
+                                      "so whatever answers at that address (a server, a website) stops answering at {host}."),
+                            "yes": "Take it over", "danger": True}}
+
+    def now_form(self, hook: str = "ddns_update") -> dict:
+        """The page's Update DNS now (a form with nothing to fill: straight to its confirmation)."""
+        return {"id": NOW_FORM, "hook": hook, "title": "Update DNS now", "fields": [],
+                "confirm": {"title": "Update the Dynamic DNS hosts now?",
+                            "words": ("Each host that is Dynamic DNS's own (made by it, already pointing at this network, or taken "
+                                      "over) is set to this network's address now, even where it already holds it. A host holding "
+                                      "another address is left as it is."),
+                            "yes": "Update now"}}
 
 
 def _when(t: float | None) -> str:

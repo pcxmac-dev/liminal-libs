@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.49.2 (2026-11-11)
+
+What an audit of the cloud plugins found before any key went in (session 87405e6a: eight reviewers, a skeptic per
+finding):
+- `machines.ddns.Keeper` changes only what is its own: a host with no A record (made), one already pointing at this
+  network or at the address it set last (kept current, after a restart too: `state`, a JSON file the plugin names), and
+  one the user let it take over (`take_over`, after the page's confirmation). A host holding another address, or several,
+  is left as it is and said so (`foreign`, its `holds`), never cut to one address unasked; the page's Take over…
+  (`table(take=True)`, `take_form()`) and a confirmed Update DNS now (`now_form()`). Just before a write the address is
+  asked again: a stale one is never written back. `run_pass(stop=)` ends before its next write once the plugin detached;
+  `let_go` forgets a host.
+- `machines.rest`: `scrub` takes out a secret without its surrounding spaces and line breaks and each of its lines (a
+  token pasted with its line break, said back in an error's quoting of a header); `bearer` sends a token stripped and
+  refuses one holding a space or a line break.
+
 ## 1.49.1 (2026-11-11)
 
 What the cloud plugins' builders asked of 1.49.0's helpers:

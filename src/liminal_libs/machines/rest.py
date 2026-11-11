@@ -79,7 +79,9 @@ def bearer(token: str | Callable[[], str]) -> Callable[[str, str, dict, bytes], 
     """The auth of an API taking a bearer token (`token`, or a function giving the current one: a token that expires)."""
 
     def auth(method: str, url: str, headers: dict, body: bytes) -> dict:
-        value = token() if callable(token) else token
+        value = str(token() if callable(token) else token).strip()  # a token pasted with its line break: sent without
+        if any(c.isspace() for c in value):
+            raise ValueError("the token holds a space or a line break: enter it again, alone")
         return {**headers, "Authorization": f"Bearer {value}"}
 
     return auth
@@ -111,8 +113,16 @@ class TokenSource:
 
 
 def scrub(text: str, secrets: Iterable[str]) -> str:
-    """`text` with every secret (of four characters or more) taken out."""
-    for s in sorted({s for s in secrets if s and len(s) >= 4}, key=len, reverse=True):
+    """`text` with every secret (of four characters or more) taken out: each as given, without its surrounding spaces
+    and line breaks, and each of its lines (a key pasted with a line break, or a key file's lines, said back in an
+    error's quoting of a header, 1.49.2)."""
+    parts: set[str] = set()
+    for s in secrets:
+        if not s:
+            continue
+        s = str(s)
+        parts |= {s, s.strip(), *(line.strip() for line in s.splitlines())}
+    for s in sorted({p for p in parts if len(p) >= 4}, key=len, reverse=True):
         text = text.replace(s, "•••")
     return text
 

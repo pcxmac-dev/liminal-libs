@@ -110,7 +110,10 @@ def test_a_token_source_keeps_its_token_until_a_minute_before_it_ends():
     assert source() == "t3" and len(fetched) == 3
 
 
-def test_dynamic_dns_sets_only_the_hosts_that_differ():
+def test_dynamic_dns_keeps_its_own_hosts_and_leaves_anothers_until_taken_over(tmp_path):
+    """1.49.2 (an audit before any key went in: a host listed in the settings had its live record pointed at home within a
+    minute, unasked): a host holding another address is left as it is until the user takes it over; one with no record
+    is made; one already pointing here, or at the address the keeper set last, is its own to keep current."""
     records = {"home.example.com": ["198.51.100.7"], "example.net": ["203.0.113.9"], "new.example.com": []}
     written = []
 
@@ -119,21 +122,77 @@ def test_dynamic_dns_sets_only_the_hosts_that_differ():
         records[h.fqdn] = [ip]
         return "set"
 
-    keeper = ddns.Keeper(read=lambda h: records[h.fqdn], write=write, public=lambda: ("203.0.113.9", "a stand-in"))
+    public = ["203.0.113.9"]
+    state = tmp_path / "digitalocean" / "ddns.json"
+    keeper = ddns.Keeper(read=lambda h: records[h.fqdn], write=write, public=lambda: (public[0], "a stand-in"), state=state)
     hosts, wrong = ddns.hosts_of("home.example.com, @.example.net; new.example.com other.org", ["example.com", "example.net"])
     assert [(h.zone, h.name) for h in hosts] == [("example.com", "home"), ("example.net", "@"), ("example.com", "new")]
     assert wrong == ["other.org is in none of the account's domains"]
     out = keeper.run_pass(hosts)
-    assert written == [("example.com", "home", "203.0.113.9"), ("example.com", "new", "203.0.113.9")]
-    assert [o["result"] for o in out] == ["set (was 198.51.100.7)", "current", "set (was none)"]
+    assert written == [("example.com", "new", "203.0.113.9")]  # the live record at home.example.com left as it is
+    assert [o["result"] for o in out] == [
+        "holds 198.51.100.7, not this network's address: left as it is (Take over… to point it here)", "current", "set (was none)"]
+    assert out[0]["foreign"] and out[0]["holds"] == ["198.51.100.7"] and not out[1]["foreign"]
+    table = keeper.table(hosts, 5, take=True)
+    assert table["rows"][0][5] == {"form": "ddns-take", "title": "Take over…", "label": "Take over home.example.com",
+                                   "values": {"host": "home.example.com", "holds": "198.51.100.7"}} and table["rows"][1][5] == ""
+    assert keeper.take_form()["confirm"]["danger"] and keeper.now_form()["fields"] == []
+    keeper.take_over("home.example.com")  # the page's Take over…, confirmed
+    written.clear()
+    assert keeper.run_pass(hosts)[0]["result"] == "set (was 198.51.100.7)" and written == [("example.com", "home", "203.0.113.9")]
     written.clear()
     keeper.run_pass(hosts)
     assert written == []
     keeper.run_pass(hosts, force=True)
-    assert len(written) == 3
-    table = keeper.table(hosts, 5)
-    assert table["title"] == "Dynamic DNS" and table["rows"][0][:2] == ["home.example.com", "203.0.113.9"]
+    assert len(written) == 3  # every host of its own, Update DNS now
+    # the network's address moves: each host still holding the address the keeper set is its own, kept current, after
+    # a restart too (its own kept in the state file)
+    public[0] = "203.0.113.10"
+    written.clear()
+    again = ddns.Keeper(read=lambda h: records[h.fqdn], write=write, public=lambda: (public[0], "a stand-in"), state=state)
+    assert again.own("example.net") == "203.0.113.9" and again.taken("home.example.com")
+    again.run_pass(hosts)
+    assert sorted(written) == [("example.com", "home", "203.0.113.10"), ("example.com", "new", "203.0.113.10"),
+                               ("example.net", "@", "203.0.113.10")]
+    again.let_go("home.example.com")
+    assert not again.taken("home.example.com") and again.own("home.example.com") is None
     assert ddns.minutes_of("0.2") == 1.0 and ddns.minutes_of("") == 5.0 and ddns.minutes_of("x") == 5.0
+
+
+def test_dynamic_dns_never_cuts_several_addresses_writes_a_stale_one_or_runs_on_once_stopped():
+    import threading
+
+    records = {"lb.example.com": ["203.0.113.9", "198.51.100.1"], "home.example.com": []}
+    written = []
+    keeper = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set",
+                         public=lambda: ("203.0.113.9", "x"))
+    hosts, _ = ddns.hosts_of("lb.example.com", ["example.com"])
+    r = keeper.run_pass(hosts)[0]
+    assert written == [] and r["foreign"] and r["result"].startswith("holds 2 addresses (203.0.113.9, 198.51.100.1)")
+    answers = iter(["203.0.113.9", "203.0.113.11"])  # the address changes between the pass's ask and its write
+    stale = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set",
+                        public=lambda: (next(answers), "x"))
+    home, _ = ddns.hosts_of("home.example.com", ["example.com"])
+    assert stale.run_pass(home)[0]["result"] == "this network's address changed to 203.0.113.11 during the pass: set on the next one"
+    assert written == []
+    stop = threading.Event()
+    stop.set()
+    fresh = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set",
+                        public=lambda: ("203.0.113.9", "x"))
+    assert fresh.run_pass(home, stop=stop) == [] and written == []  # detached: nothing written
+
+
+def test_a_secret_pasted_with_its_line_break_is_scrubbed_and_never_sent():
+    from liminal_libs.machines.rest import scrub
+
+    token = "dop_v1_secret-token-0123456789\r\n"
+    said = "InvalidHeader: Invalid return character in header value: 'Bearer dop_v1_secret-token-0123456789\r\n'"
+    assert "secret-token" not in scrub(said, [token])
+    key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n"
+    assert "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" not in scrub("the key MIIEvQIBADANBgkqhkiG9w0BAQEFAASC was refused", [key])
+    with pytest.raises(ValueError, match="space or a line break"):
+        bearer("abc def")("GET", "https://api.example.org/x", {}, b"")
+    assert bearer(" tok \n")("GET", "https://api.example.org/x", {}, b"")["Authorization"] == "Bearer tok"
 
 
 def test_the_helpers_asks_of_1_49_1():
