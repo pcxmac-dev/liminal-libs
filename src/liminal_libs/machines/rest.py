@@ -130,8 +130,12 @@ def scrub(text: str, secrets: Iterable[str]) -> str:
 def _requests_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float):
     import requests
 
-    resp = requests.request(method, url, headers=dict(headers), data=body, timeout=timeout, allow_redirects=False)
-    return resp.status_code, dict(resp.headers), resp.content
+    with requests.Session() as session:
+        # nothing taken from the environment (1.49.6, the audit's note): no ~/.netrc credentials added to a request, no
+        # proxy or CA bundle from its variables; a request goes as the plugin made it, straight to the API's host
+        session.trust_env = False
+        resp = session.request(method, url, headers=dict(headers), data=body, timeout=timeout, allow_redirects=False)
+        return resp.status_code, dict(resp.headers), resp.content
 
 
 class RestClient:

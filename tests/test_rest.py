@@ -309,3 +309,22 @@ def test_what_the_audit_found_in_the_client_1_49_3():
     with pytest.raises(RestError) as e:
         RestClient("https://api.example.org", transport=t, secrets=(TOKEN,)).get("/x")
     assert TOKEN[:12] not in str(e.value) and "•••" in str(e.value)
+
+
+def test_the_https_takes_nothing_from_the_environment(monkeypatch):
+    """1.49.6 (the audit's note): no ~/.netrc credentials, no proxy or CA bundle from the environment's variables."""
+    import requests
+
+    from liminal_libs.machines import rest
+
+    seen = []
+
+    def request(self, method, url, **kw):
+        seen.append(self.trust_env)
+
+        class Resp:
+            status_code, headers, content = 200, {}, b"{}"
+        return Resp()
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    assert rest._requests_transport("GET", "https://api.example.org/x", {}, None, 5) == (200, {}, b"{}") and seen == [False]

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.49.6 (2026-11-11)
+
+`machines.rest`'s HTTPS takes nothing from the environment (the audit's note): no `~/.netrc` credentials added to a
+request, no proxy or CA bundle from its variables. A request goes as the plugin made it, straight to the API's host.
+
 ## 1.49.5 (2026-11-11)
 
 `RestClient.pages`: a next page on the same host with its port named (Azure's price list writes
