@@ -222,7 +222,8 @@ class RestClient:
             wait = _retry_after(answer, self._clock())
             if answer.status == 401 and self._on_refused:
                 self._on_refused()
-            slow = answer.status == 429 or bool(self._throttled and _asks(self._throttled, answer))
+            # a vendor's own "slow down" is never a 5xx: a write that may have been done is not sent again (1.49.3)
+            slow = answer.status == 429 or (answer.status < 500 and bool(self._throttled and _asks(self._throttled, answer)))
             if (answer.status in RETRY_CODES or slow) and attempt <= self._retries and (slow or reads):
                 delay = wait if wait is not None else min(2.0 ** attempt, self._wait_most)
                 if delay <= self._wait_most:
@@ -261,6 +262,9 @@ class RestClient:
             if not nxt:
                 return
             path, params = nxt
+            if str(path).startswith("https://") and urlsplit(path).netloc.lower() != urlsplit(self.base).netloc.lower():
+                # a next page given whole on another host is never sent the client's token (1.49.3)
+                raise RestError(f"the next page is on another host ({urlsplit(path).netloc}): not followed")
 
     # -- what it learned ------------------------------------------------------------------------------------------------
     def _note(self, status: int, headers: Mapping[str, str], seconds: float, error: str) -> None:
@@ -318,7 +322,8 @@ class RestClient:
                         break
                 code = code or str(data.get("id") or data.get("code") or "")
             if not words:
-                words = answer.body[:200].decode("utf-8", "replace").strip() or "no words came back"
+                # cut after the secrets are taken out (`return` scrubs, then cuts): a secret across the cut never shows
+                words = answer.body[:4000].decode("utf-8", "replace").strip() or "no words came back"
         return scrub(words, self._secrets)[:400], scrub(code, self._secrets)
 
 

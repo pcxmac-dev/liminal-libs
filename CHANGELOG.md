@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.49.3 (2026-11-11)
+
+The audit's three small findings in `machines.rest.RestClient`: a vendor's "slow down" reader is never asked of a 5xx (a
+write that may have been done is not sent again); a list's next page given whole on another host is not followed, so
+it is never sent the client's token; an error's raw words are cut after the secrets are taken out, so a secret across
+the cut never shows.
+
 ## 1.49.2 (2026-11-11)
 
 What an audit of the cloud plugins found before any key went in (session 87405e6a: eight reviewers, a skeptic per

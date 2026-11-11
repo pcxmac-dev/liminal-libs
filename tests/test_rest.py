@@ -265,3 +265,25 @@ def test_dynamic_dns_without_an_address_or_a_record_says_so():
     assert keeper2.run_pass(hosts)[0]["ok"] is False  # an IPv6 answer is no IPv4 address
     keeper3 = ddns.Keeper(read=lambda h: None, write=lambda h, ip: "set", public=lambda: ("203.0.113.9", "x"))
     assert keeper3.run_pass(hosts)[0]["result"] == "its record could not be read"
+
+
+def test_what_the_audit_found_in_the_client_1_49_3():
+    # a vendor's "slow down" reader never makes a 5xx on a write send it again (it may have been done)
+    t = Transport((503, {}, {"message": "Throttling maybe"}), (200, {}, {"ok": 1}))
+    api = RestClient("https://api.example.org", transport=t, sleep=lambda s: None, throttled=lambda a: True)
+    with pytest.raises(RestError):
+        api.post("/w", {})
+    assert len(t.sent) == 1
+    # a list's next page given whole on another host is never sent the token
+    t = Transport((200, {}, {"things": [1], "next": "https://evil.example.net/v2/things?page=2"}))
+    api = RestClient("https://api.example.org/v2", auth=bearer(TOKEN), transport=t)
+    nxt = lambda data, params: (data["next"], {}) if data.get("next") else None  # noqa: E731
+    with pytest.raises(RestError, match="another host"):
+        list(api.pages("/things", items="things", next_of=nxt))
+    assert len(t.sent) == 1
+    # an error's raw words are cut after the secrets are taken out: a secret across the old 200th character never shows
+    body = ("x" * 190 + TOKEN).encode()
+    t = Transport((400, {"Content-Type": "text/plain"}, body))
+    with pytest.raises(RestError) as e:
+        RestClient("https://api.example.org", transport=t, secrets=(TOKEN,)).get("/x")
+    assert TOKEN[:12] not in str(e.value) and "•••" in str(e.value)
