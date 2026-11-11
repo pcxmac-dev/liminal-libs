@@ -2,10 +2,12 @@
 windowless, its script given as -EncodedCommand (UTF-16 base64: no quoting to go wrong), wrapped so a failure
 comes back as one line of its own words, objects back as JSON; whether this process is elevated; a script run
 elevated, through Windows' own prompt (UAC), when the user says so (LIMINAL_ELEVATE=prompt). A runner stands
-in for powershell.exe in tests."""
+in for powershell.exe in tests. Windows' prompt needs a desktop to ask on (1.47.0): a platform without one (a boot
+service, run before anyone signs in, on no desktop) is refused at once rather than left waiting (`interactive`)."""
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import shutil
@@ -42,6 +44,31 @@ def is_elevated() -> bool:
         return False
 
 
+class _ObjectFlags(ctypes.Structure):  # USEROBJECTFLAGS
+    _fields_ = [("fInherit", ctypes.c_int), ("fReserved", ctypes.c_int), ("dwFlags", ctypes.c_uint32)]
+
+
+def interactive() -> bool:
+    """Whether this process has a desktop Windows can ask on (its window station visible, WSF_VISIBLE: not a service's,
+    nor that of a task run whether or not anyone is signed in); False off Windows; True where it cannot tell."""
+    if os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetProcessWindowStation.restype = ctypes.c_void_p
+        user32.GetUserObjectInformationW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+                                                     ctypes.POINTER(ctypes.c_uint32)]
+        user32.GetUserObjectInformationW.restype = ctypes.c_int
+        station = user32.GetProcessWindowStation()
+        flags, needed = _ObjectFlags(), ctypes.c_uint32()
+        if not station or not user32.GetUserObjectInformationW(station, 1, ctypes.byref(flags), ctypes.sizeof(flags),  # UOI_FLAGS
+                                                               ctypes.byref(needed)):
+            return True
+        return bool(flags.dwFlags & 0x0001)  # WSF_VISIBLE
+    except (AttributeError, OSError):
+        return True
+
+
 def wrapped(script: str) -> str:
     """The script with the prelude and a catch that prints one ERROR_MARK line and exits 1."""
     return PRELUDE + "try {\n" + script + "\n} catch { [Console]::Out.WriteLine('" + ERROR_MARK + "' + $_.Exception.Message); exit 1 }"
@@ -57,15 +84,23 @@ def decoded(value: str) -> str:
 
 
 class PowerShell:
-    """powershell.exe, windowless. `runner(args, timeout) -> (code, stdout text, stderr text)` stands in for it."""
+    """powershell.exe, windowless. `runner(args, timeout) -> (code, stdout text, stderr text)` stands in for it;
+    `interactive`: a test's word for whether Windows can ask on a desktop here (a runner's: yes unless said)."""
 
-    def __init__(self, runner=None, env=None):
+    def __init__(self, runner=None, env=None, interactive=None):
         self._runner = runner
         self._env = env
+        self._interactive = interactive
 
     @property
     def here(self) -> bool:
         return self._runner is not None or (os.name == "nt" and shutil.which("powershell") is not None)
+
+    def can_ask(self) -> bool:
+        """Whether Windows can ask the user here (UAC) when a script needs an administrator: on a desktop."""
+        if self._interactive is not None:
+            return bool(self._interactive)
+        return self._runner is not None or (self.here and interactive())
 
     def args(self, script: str) -> list[str]:
         return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded(wrapped(script))]
@@ -101,7 +136,12 @@ class PowerShell:
 
     def run_elevated(self, script: str, timeout: float = 600.0) -> str:
         """The script run with an administrator's rights: Windows asks the user once (UAC); its output comes
-        back through a file in the temporary folder. CommandError when the user declines or the script fails."""
+        back through a file in the temporary folder. CommandError when the user declines or the script fails, and at
+        once, denied, where Windows cannot ask (no desktop: a boot service's platform)."""
+        if not self.can_ask():
+            raise CommandError("Windows cannot ask you (UAC) here: this platform runs on no desktop (a boot service, before "
+                               "anyone signs in); make the change from the platform at your logon, or run this one as "
+                               "administrator", denied=True)
         out_file = Path(tempfile.gettempdir()) / f"liminal-elevated-{uuid.uuid4().hex}.txt"
         inner = (PRELUDE + "try {\n& {\n" + script + "\n} *>&1 | Out-File -FilePath " + quote(out_file) + " -Encoding utf8\n"
                  "} catch { ('" + ERROR_MARK + "' + $_.Exception.Message) | Out-File -FilePath " + quote(out_file) + " -Encoding utf8; exit 1 }")

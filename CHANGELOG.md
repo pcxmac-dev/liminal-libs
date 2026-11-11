@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.47.0 (2026-11-11)
+
+Boot services for the platform's admin plugins (the user: "also windows and linux admin, need sections for starting
+the platform, or an app that inherits the platform object as a service, headless"; "on boot"). In `machines.admin`:
+- The apps a boot service may start (`boot_apps`, `BootApp`): the platform (`PLATFORM_APP`,
+  liminal_platform.app.PlatformApp, known by its name: found among the classes of the app a plugin is attached to, else
+  imported by that name when installed), then each app whose App class inherits it: the app a plugin is attached to,
+  and those installed distributions name under the `liminal.apps` entry points (`APP_ENTRY_POINTS`:
+  `lab = "liminal_lab.app:LabApp"`), each once by its NAME, its port by its PORT_VAR, else its PORT. `boot_command`:
+  `python -m <module> serve --no-browser --port N` (pythonw on Windows; never --until-quiet).
+- The startups' own hooks take `at="boot"`: `register(app, "boot", port)` (an app known, a port from 1024 to 65535 no
+  other boot service has; made, not run), `startup(app, "start" | "stop", "boot")` and `unregister(app, "boot",
+  accept_removal)`, refused until accepted a second time (`RemovalRefused`, its accept `accept_removal`). Their
+  refusals are `BootRefused`, an AdminError and a ValueError, so the platform says them as refusals and offers the form
+  again. `register`'s second argument is now `at` (`python` the fourth: every caller gave it by name).
+- `Startup` carries `at`, `account`, `log` and `port`; the status carries `boot` and, for a plugin making boot services
+  (`BOOT_SERVICES`), a table under `tables` (At boot, before anyone signs in: an app a row, the platform first, its
+  boot service, the command, its state, who it runs as, its log, its buttons) and its forms under `forms` (Register…
+  with the port, Start…, Stop…, Remove… asked twice), each confirmed with the exact change; what else wants a port is
+  said beside it, and a clash in a confirmation only when it is the same port. A subclass gives `boot_how`,
+  `boot_details`, `boot_rights`, `boot_stopping`, `boot_startups`, `_boot_register`, `_boot_action` and
+  `_boot_unregister`. The setup reports the boot services and makes none.
+- An admin plugin is valid when the rights can be had as a change asks for them (`may_elevate`: Windows' prompt on a
+  desktop, sudo without a password), not only when the platform has them: a non-elevated platform's admin page offers
+  its changes, each asking. Without either it is not valid, as before.
+- `machines.keep` (new): a command kept running, for a boot task on Windows (Task Scheduler starts a task again only
+  when it could not start it, never when its program ends with an error): `python -m liminal_libs.machines.keep --log
+  PATH -- COMMAND`, started windowless, again 10 s after a failure, the wait doubling to 10 min while it keeps failing
+  and back once a run has lasted 10 min, ended when the command ends well; the command held in a job object that ends
+  it with the keeper (ending the task ends the app); its starts, ends and error output in its log, moved aside past 1 MB.
+- `machines.windows`: `interactive()` (whether this process has a desktop Windows can ask on) and
+  `PowerShell.can_ask()`; `run_elevated` refuses at once, denied, where Windows cannot ask (a boot service's platform,
+  on no desktop) rather than waiting for a prompt no one sees.
+- `interpreter()`: a Python named as it was given (a POSIX path stays one on Windows).
+
 ## 1.46.1 (2026-11-10)
 
 An app's page by its file's own name is the page "/" serves (found by a review of the platform's page asking its login

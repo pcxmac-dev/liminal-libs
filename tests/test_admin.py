@@ -1,13 +1,20 @@
 """The admin base of the platform's plugins (liminal_libs.machines.admin): the framework's apps and how each is
-started, which app a command line runs, and the base's checks, status and setup over a stand-in system."""
+started, which app a command line runs, and the base's checks, status and setup over a stand-in system; the boot
+services (1.47.0): the apps a boot service may start (the platform and the apps inheriting it, named, never
+imported), the startups' hooks `at` boot, the page's section and its forms, all over stand-ins (nothing made)."""
 from __future__ import annotations
 
+import inspect
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from liminal_libs.machines.admin import APPS, Admin, AdminError, Startup, SystemService, app_of, start_command
+from liminal_libs.machines import admin as admin_mod
+from liminal_libs.machines.admin import (ACCEPT_REMOVAL, APPS, PLATFORM_APP, Admin, AdminError, BootApp, BootRefused,
+                                         RemovalRefused, Startup, SystemService, app_of, boot_app_of, boot_apps,
+                                         boot_command, inherits_platform, platform_class, start_command)
 from liminal_libs.machines.plugin import CommandError
 from liminal_libs.sources.conformance import problems
 
@@ -134,8 +141,250 @@ def test_an_admin_not_for_this_machine_asks_nothing_and_changes_nothing():
     a = FakeAdmin(elevated=True)
     a.not_for_here = lambda: "for a native Linux machine"
     a.services = a.startups = a.processes = a.elevated = a.present = lambda: pytest.fail("asked")
-    assert a.status() == {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "processes": [],
+    assert a.status() == {"present": False, "elevated": False, "elevation": "", "services": [], "startups": [], "boot": [], "processes": [],
                           "summary": "not for this machine", "valid": False, "why": "for a native Linux machine", "applies": False}
     said: list = []
     assert a.setup(log=said.append) == [{"step": "privileges", "ok": False, "detail": "for a native Linux machine"}]
     assert said == ["fake-admin: privileges: FAILED: for a native Linux machine"] and a.actions == []
+
+
+# -- the boot services (1.47.0) ----------------------------------------------------------------------------------------
+class PlatformStandIn:
+    """Stands in for liminal_platform.app.PlatformApp: named as it, so nothing of the platform is imported."""
+
+    NAME = "platform"
+    TITLE = "Liminal Platform"
+    PORT = 8775
+    PORT_VAR = "LIMINAL_PLATFORM_PORT"
+    served = None
+
+
+PlatformStandIn.__module__, PlatformStandIn.__qualname__ = "liminal_platform.app", "PlatformApp"
+
+
+class LabApp(PlatformStandIn):
+    """An app inheriting the platform."""
+
+    NAME = "lab"
+    TITLE = "Liminal Lab"
+    PORT = 8790
+    PORT_VAR = "LIMINAL_LAB_PORT"
+
+
+LabApp.__module__, LabApp.__qualname__ = "liminal_lab.app", "LabApp"
+
+
+class Again(PlatformStandIn):  # inherits the platform and names itself as it: left out
+    pass
+
+
+class Unnamed(PlatformStandIn):
+    NAME = "my-lab"  # no service is named by it
+
+
+class Charts:  # an app not inheriting the platform
+    NAME = "charts"
+    PORT = 8765
+
+
+LOGS = Path("/stand-in/platform/logs")
+
+
+class FakeBootAdmin(FakeAdmin):
+    """The stand-in system with boot services kept in memory."""
+
+    BOOT_SERVICES = True
+
+    def __init__(self, elevated=False, may=True, apps=None):
+        super().__init__(elevated=elevated)
+        self.may = may
+        self.apps = apps if apps is not None else boot_apps(PlatformStandIn(), found=[LabApp], env={}, logs=LOGS)
+        self.boots: dict[str, Startup] = {}
+        self.calls: list = []
+
+    def may_elevate(self):
+        return self.may
+
+    def boot_apps(self):
+        return list(self.apps)
+
+    def boot_how(self):
+        return "a stand-in service at boot"
+
+    def boot_rights(self):
+        return "" if self._elevated else "The stand-in asks you first"
+
+    def _made(self, app, port, state):
+        return Startup(app.name, f"Liminal{app.name.capitalize()}Boot", state, " ".join(boot_command(app, port, "python")), "",
+                       "boot", "me", f"/stand-in/{app.name}-boot.log", port)
+
+    def boot_startups(self, apps):
+        names = {a.name for a in apps}
+        return [self.boots.get(a.name) or self._made(a, a.port, "absent") for a in apps] + \
+            [b for app, b in self.boots.items() if app not in names]
+
+    def _boot_register(self, app, port, python=None):
+        self.calls.append(("register", app.name, port))
+        self.boots[app.name] = self._made(app, port, "stopped")
+
+    def _boot_action(self, boot, action):
+        self.calls.append((action, boot.app))
+        self.boots[boot.app] = replace(boot, state="running" if action == "start" else "stopped")
+
+    def _boot_unregister(self, boot):
+        self.calls.append(("remove", boot.app))
+        return self.boots.pop(boot.app, None) is not None
+
+
+def reg_note_of(st, app):
+    return next(f for f in st["forms"] if f["id"] == f"boot-register:{app}")["note"]
+
+
+def test_the_apps_a_boot_service_starts_are_the_platform_and_those_inheriting_it(monkeypatch):
+    assert inherits_platform(PlatformStandIn) and inherits_platform(LabApp) and not inherits_platform(Charts)
+    assert not inherits_platform(PlatformStandIn())  # a class, not an instance
+    found = boot_apps(PlatformStandIn(), found=[Charts, LabApp, Again, Unnamed], env={}, logs=LOGS)
+    assert [(a.name, a.module, a.port, a.platform) for a in found] == [("platform", "liminal_platform", 8775, True),
+                                                                        ("lab", "liminal_lab", 8790, False)]
+    assert found[0].log == str(LOGS / "platform.log") and found[1].log == "" and found[0].title == "Liminal Platform"
+    moved = boot_apps(PlatformStandIn(), found=[], env={"LIMINAL_PLATFORM_PORT": "8780"}, logs=LOGS)
+    assert [(a.name, a.port) for a in moved] == [("platform", 8780)]  # its port variable, as the app reads it
+    # attached to an app inheriting the platform: the platform, then that app, from the app's own classes
+    assert [a.name for a in boot_apps(LabApp(), found=[], env={})] == ["platform", "lab"]
+    assert platform_class(LabApp()) is PlatformStandIn and boot_app_of(Unnamed, {}) is None
+    assert boot_command(found[0], 8780, python=sys.executable)[1:] == ["-m", "liminal_platform", "serve", "--no-browser", "--port", "8780"]
+    assert PLATFORM_APP == "liminal_platform.app.PlatformApp"
+
+    # no platform installed, nothing attached: none (and the platform is only ever imported by its module's name)
+    def missing(name):
+        raise ImportError(name)
+    monkeypatch.setattr(admin_mod.importlib, "import_module", missing)
+    assert platform_class() is None and boot_apps(found=[Charts], env={}) == []
+
+
+def test_a_boot_service_is_registered_started_stopped_and_removed_through_the_startups_hooks():
+    a = FakeBootAdmin()
+    made = a.register("platform", "boot", 8780)
+    assert a.calls == [("register", "platform", 8780)] and made.at == "boot" and made.port == 8780 and made.state == "stopped"
+    assert "-m liminal_platform serve --no-browser --port 8780" in made.command and made.account == "me"
+    said = a.startup("platform", "start", "boot")
+    assert said["ok"] and said["said"] == "LiminalPlatformBoot started" and "http://127.0.0.1:8780/" in said["lines"][0]
+    assert a.boots["platform"].state == "running" and a.startup("platform", "end", "boot")["said"] == "LiminalPlatformBoot stopped"
+    with pytest.raises(RemovalRefused) as refused:  # asked twice: refused until accepted
+        a.unregister("platform", "boot")
+    assert refused.value.accept == ACCEPT_REMOVAL and isinstance(refused.value, ValueError) and "a second time" in str(refused.value)
+    assert "platform" in a.boots
+    gone = a.unregister("platform", "boot", True)
+    assert gone["removed"] and gone["said"].startswith("LiminalPlatformBoot removed") and "platform" not in a.boots
+    # refused before anything is done: the platform says each as a refusal (a ValueError), the form offered again
+    a.register("platform", "boot")  # its own port by default
+    assert a.boots["platform"].port == 8775
+    for bad in (lambda: a.register("lab", "boot", 8775),  # the platform's boot service's port
+                lambda: a.register("lab", "boot", 80), lambda: a.register("lab", "boot", "eighty"),
+                lambda: a.register("lab", "boot", 8790.5), lambda: a.register("lab", "boot", True),
+                lambda: a.register("charts", "boot", 9000),  # not the platform, nor inheriting it
+                lambda: a.startup("lab", "start", "boot"),  # none registered
+                lambda: a.startup("platform", "explode", "boot"), lambda: a.unregister("lab", "boot", True),
+                lambda: a.register("platform", "sometime")):
+        with pytest.raises(BootRefused):
+            bad()
+    assert issubclass(BootRefused, ValueError) and issubclass(BootRefused, CommandError)
+    assert a.register("lab", "boot", "8791").port == 8791  # a number as the page may send it
+    # the logon startups as they were
+    assert a.register("charts", python=sys.executable).at == "logon" and a.startup("charts", "run") is None and a.unregister("charts")
+
+
+def test_the_page_section_offers_each_change_as_a_confirmed_form():
+    a = FakeBootAdmin()
+    st = a.status()
+    assert st["valid"] and st["why"] == ""  # not elevated, but the rights can be asked for
+    assert [(b["app"], b["state"], b["at"]) for b in st["boot"]] == [("platform", "absent", "boot"), ("lab", "absent", "boot")]
+    (table,) = st["tables"]
+    assert table["title"] == "At boot, before anyone signs in" and "a stand-in service at boot" in table["note"]
+    assert "Unlike the startups at your logon" in table["note"] and "a removal twice" in table["note"]
+    assert [c["title"] for c in table["columns"]][:5] == ["App", "Boot service", "State", "Runs as", "Log"]
+    forms = {f["id"]: f for f in st["forms"]}
+    assert set(forms) == {"boot-register:platform", "boot-register:lab"}
+    first = table["rows"][0]
+    assert first[0] == {"text": "Liminal Platform", "sub": "platform · python -m liminal_platform"} and first[2] == "not registered"
+    assert first[1]["sub"].startswith("would run ") and first[5]["form"] == "boot-register:platform" and first[6] == ""
+    assert first[4] == {"text": "platform-boot.log", "sub": f"in /stand-in; its own: {LOGS / 'platform.log'}"}
+    assert reg_note_of(st, "platform") == "A stand-in service at boot."  # no details: the few words, as a sentence
+    reg = forms["boot-register:platform"]
+    assert [f["name"] for f in reg["fields"]] == ["app", "at", "port"] and reg["fields"][2]["value"] == 8775
+    assert "--port {port}" in reg["confirm"]["words"] and "http://127.0.0.1:{port}/" in reg["confirm"]["words"]
+    assert reg["confirm"]["words"].endswith("The stand-in asks you first.")
+    a.register("platform", "boot", 8775)
+    a.startup("platform", "start", "boot")
+    st = a.status()
+    assert st["summary"].endswith("; startups: none; at boot: platform (running); 1 Liminal process(es)")
+    forms = {f["id"]: f for f in st["forms"]}
+    assert set(forms) == {"boot-register:platform", "boot-register:lab", "boot-start:platform", "boot-stop:platform", "boot-remove:platform"}
+    row = st["tables"][0]["rows"][0]
+    assert row[2] == "running" and row[5]["form"] == "boot-stop:platform" and row[6]["form"] == "boot-remove:platform"
+    assert {"form": "boot-register:platform", "title": "Change Liminal Platform's port…"} in st["tables"][0]["actions"]
+    # each form's fields are its hook's arguments, in order; a removal's second confirmation is its accept field
+    for f in forms.values():
+        hook = getattr(a, f["hook"])
+        assert f["hook"] in a.HOOKS and [x["name"] for x in f["fields"]] == list(inspect.signature(hook).parameters)[:len(f["fields"])]
+        assert f["confirm"]["words"] and f["confirm"]["yes"]
+    remove = forms["boot-remove:platform"]
+    assert remove["confirm"]["danger"] and [x["type"] for x in remove["fields"]] == ["fixed", "fixed", "accept"]
+    assert remove["fields"][2]["name"] == ACCEPT_REMOVAL and "for good" in remove["fields"][2]["yes"]
+    assert [x["value"] for x in forms["boot-stop:platform"]["fields"]] == ["platform", "stop", "boot"]
+    # without the rights, and none to ask for: not valid, as before
+    assert FakeBootAdmin(may=False).status()["valid"] is False and FakeBootAdmin(elevated=True, may=False).status()["valid"]
+
+
+def test_what_else_wants_a_port_is_said_beside_it_and_a_clash_only_when_it_is_the_same():
+    from types import SimpleNamespace
+
+    a = FakeBootAdmin()
+    a.app = SimpleNamespace(NAME="platform", served="http://127.0.0.1:8775/")  # the platform serving this page, at 8775
+    a.register("platform", python="python")  # and its task at your logon, at its own port
+    port = next(f for f in a.status()["forms"] if f["id"] == "boot-register:platform")["fields"][2]
+    assert port["note"].endswith("; in use: 8775 (the Liminal Platform serving this page), 8775 (LiminalPlatform, at your logon)")
+    a.register("platform", "boot", 8781)
+    start = next(f for f in a.status()["forms"] if f["id"] == "boot-start:platform")["confirm"]["words"]
+    assert "serving this page" not in start and "at your logon" not in start  # another port: nothing in the way
+    a.register("platform", "boot", 8775)
+    start = next(f for f in a.status()["forms"] if f["id"] == "boot-start:platform")["confirm"]["words"]
+    assert "The Liminal Platform serving this page answers at port 8775 now" in start
+    assert "LiminalPlatform starts it at your logon at the same port" in start
+    with pytest.raises(RemovalRefused, match="Liminal Platform would no longer start at boot"):
+        a.unregister("platform", "boot")
+    assert a.unregister("platform", "boot", True)["said"] == "LiminalPlatformBoot removed: Liminal Platform no longer starts at boot"
+
+
+def test_a_registered_boot_service_of_an_app_not_known_is_shown_and_may_be_removed():
+    a = FakeBootAdmin()
+    a.boots["gone"] = Startup("gone", "LiminalGoneBoot", "stopped", "pythonw -m liminal_gone serve --no-browser --port 8799", "",
+                              "boot", "me", "/stand-in/gone-boot.log", 8799)
+    st = a.status()
+    row = next(r for r in st["tables"][0]["rows"] if r[1]["text"] == "LiminalGoneBoot")
+    assert row[0] == {"text": "gone", "sub": "gone · not installed here"} and row[6]["form"] == "boot-remove:gone"
+    ids = {f["id"] for f in st["forms"]}
+    assert "boot-remove:gone" in ids and "boot-register:gone" not in ids  # never registered again: no app to run
+    with pytest.raises(BootRefused):
+        a.register("lab", "boot", 8799)  # its port is still taken
+    assert a.unregister("gone", "boot", accept_removal=True)["removed"]
+
+
+def test_the_setup_reports_the_boot_services_and_makes_none():
+    a = FakeBootAdmin(elevated=True)
+    done = a.setup(log=lambda m: None, steps=("startup",))
+    assert "nothing starts at boot" in done[0]["detail"] and a.calls == []
+    a.register("platform", "boot", 8775)
+    assert "at boot: platform (LiminalPlatformBoot: stopped)" in a.setup(log=lambda m: None, steps=("startup",))[0]["detail"]
+
+
+def test_a_system_that_makes_no_boot_services_says_why_in_the_section():
+    class NoInit(FakeBootAdmin):
+        def boot_how(self):
+            raise BootRefused("this machine's init is neither systemd nor OpenRC: no boot service is made here")
+
+    st = NoInit().status()
+    assert st["boot"] == [] and st["forms"] == [] and "neither systemd nor OpenRC" in st["tables"][0]["empty"]
+    with pytest.raises(BootRefused, match="neither systemd"):
+        NoInit().register("platform", "boot", 8775)
+    assert "tables" not in FakeAdmin().status() and FakeAdmin().status()["boot"] == []  # a plugin making none: no section

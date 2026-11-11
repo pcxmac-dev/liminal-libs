@@ -75,6 +75,23 @@ def test_an_elevated_script_goes_through_start_process_and_a_file(monkeypatch, t
     assert list(tmp_path.iterdir()) == []  # the output file removed
 
 
+def test_without_a_desktop_windows_is_not_asked_and_nothing_waits():
+    """A platform on no desktop (a boot service, before anyone signs in; 1.47.0): Windows' prompt cannot show, so an
+    elevated script is refused at once, denied, and powershell.exe is never started for it."""
+    calls: list = []
+    headless = PowerShell(runner=lambda args, timeout: calls.append(args) or (0, "exit 0\n", ""), interactive=False)
+    assert headless.can_ask() is False and PowerShell(runner=lambda a, t: (0, "", "")).can_ask() is True
+    with pytest.raises(CommandError) as e:
+        headless.run_elevated("Register-ScheduledTask")
+    assert e.value.denied and "cannot ask you (UAC)" in str(e.value) and calls == []
+    with pytest.raises(CommandError):  # an administrator's step asked to prompt, on no desktop: refused the same way
+        PowerShell(runner=lambda args, timeout: (1, ERROR_MARK + "Access is denied.", ""), env={"LIMINAL_ELEVATE": "prompt"},
+                   interactive=False).run_admin("Fail-Denied")
+    assert windows.interactive() in (True, False)
+    if sys.platform != "win32":
+        assert windows.interactive() is False
+
+
 def test_linux_commands_run_as_root_here_or_in_wsl(monkeypatch):
     got: list = []
 
