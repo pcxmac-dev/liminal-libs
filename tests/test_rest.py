@@ -180,6 +180,23 @@ def test_dynamic_dns_never_cuts_several_addresses_writes_a_stale_one_or_runs_on_
     fresh = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set",
                         public=lambda: ("203.0.113.9", "x"))
     assert fresh.run_pass(home, stop=stop) == [] and written == []  # detached: nothing written
+    late = threading.Event()  # detached while the address is asked again just before the write (1.49.4)
+    asked = iter(["203.0.113.9", "203.0.113.9"])
+
+    def public():
+        ip = next(asked)
+        if late.is_set() is False and not hasattr(public, "once"):
+            public.once = True
+        else:
+            late.set()
+        return ip, "x"
+
+    slow = ddns.Keeper(read=lambda h: records[h.fqdn], write=lambda h, ip: written.append(h.fqdn) or "set", public=public)
+    slow.run_pass(home, stop=late)
+    assert written == [] and late.is_set()
+    assert slow.known() == [] and keeper.known() == []  # nothing its own yet: none written, none taken
+    keeper.take_over("lb.example.com")
+    assert keeper.known() == ["lb.example.com"]
 
 
 def test_a_secret_pasted_with_its_line_break_is_scrubbed_and_never_sent():

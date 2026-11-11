@@ -187,6 +187,12 @@ class Keeper:
             self._taken.add(fqdn.lower())
         self._save()
 
+    def known(self) -> list[str]:
+        """Every host the keeper holds as its own or was let take over (1.49.4): a plugin lets go of those no longer in
+        its settings, a change made while it was not running too."""
+        with self._lock:
+            return sorted(set(self._own) | self._taken)
+
     def let_go(self, fqdn: str) -> None:
         """`fqdn` no longer the keeper's: neither taken over nor its own (a host taken out of the settings)."""
         with self._lock:
@@ -292,6 +298,8 @@ class Keeper:
             st.checked_at, st.ok = now, False
             st.result = (f"this network's address changed to {again} during the pass: set on the next one" if again else
                          f"this network's address could not be asked again: {self.public_why or 'no answer'}")
+            return
+        if stop is not None and stop.is_set():  # detached while the address was asked again: nothing written (1.49.4)
             return
         try:
             done = self._write(h, ip)

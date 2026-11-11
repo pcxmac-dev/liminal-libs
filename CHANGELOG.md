@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.49.4 (2026-11-11)
+
+What the DigitalOcean plugin's builder asked of the Dynamic DNS keeper: the stop is checked again just before a write
+(after the address is asked again), and `known()` lists every host it holds as its own or was let take over, so a
+plugin lets go of hosts no longer in its settings, a change made while it was not running too.
+
 ## 1.49.3 (2026-11-11)
 
 The audit's three small findings in `machines.rest.RestClient`: a vendor's "slow down" reader is never asked of a 5xx (a
