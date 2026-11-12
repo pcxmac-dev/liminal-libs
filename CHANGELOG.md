@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.50.0 (2026-11-11)
+
+The API cards fold (the user: "on the APIs organize each API description so that they can expand and contract so they
+take up less space, kind of like the firewall"). `LiminalApis.html(apis, facts, {fold: true})` draws each API as one
+line: a round (+) as the firewall's groups have, its maker, name, form and version, and how much of it is used here
+("11 of 17 parts, 17 of 27 calls used here"). Opened, the line shows what the card showed (the maker's pages, what the
+API is about, its facts), and its parts and its calls are two more such lines inside it. Every line is closed at first,
+but a plugin's only API, which is open; what was opened or closed is kept across a redraw and in this browser
+(`liminal:apis:folds`). They are `<details>`, so a keyboard opens them as a mouse or a finger does. Without the option
+the cards are as they were (the charts app's Plugins view asks for none); `LiminalApis.folded` is one API's line.
+
 ## 1.49.9 (2026-11-11)
 
 A take-over's consent is bound to the addresses it was given for (Azure's builder: a take-over whose own write
