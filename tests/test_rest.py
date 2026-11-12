@@ -145,8 +145,17 @@ def test_dynamic_dns_keeps_its_own_hosts_and_leaves_anothers_until_taken_over(tm
             keeper.take_over("home.example.com", accept=wrong)
     assert keeper.take_form()["fields"][2]["name"] == "accept_take_over"
     keeper.take_over("home.example.com", accept=True)  # the page's Take over…, confirmed twice
+    assert keeper.taken("home.example.com")
     written.clear()
     assert keeper.run_pass(hosts)[0]["result"] == "set (was 198.51.100.7)" and written == [("example.com", "home", "203.0.113.9")]
+    # single-use (1.49.8): the take-over used up once its write landed; set by hand to another address later (a removal no
+    # settle saw, then put back), the host is asked about again, never overwritten on the old consent
+    assert not keeper.taken("home.example.com") and keeper.own("home.example.com") == "203.0.113.9"
+    records["home.example.com"] = ["198.51.100.8"]
+    written.clear()
+    assert keeper.run_pass(hosts)[0]["foreign"] and written == []
+    records["home.example.com"] = ["203.0.113.9"]  # back as it was: its own again
+    keeper.run_pass(hosts)
     written.clear()
     keeper.run_pass(hosts)
     assert written == []
@@ -157,7 +166,8 @@ def test_dynamic_dns_keeps_its_own_hosts_and_leaves_anothers_until_taken_over(tm
     public[0] = "203.0.113.10"
     written.clear()
     again = ddns.Keeper(read=lambda h: records[h.fqdn], write=write, public=lambda: (public[0], "a stand-in"), state=state)
-    assert again.own("example.net") == "203.0.113.9" and again.taken("home.example.com")
+    assert again.own("example.net") == "203.0.113.9" and again.own("home.example.com") == "203.0.113.9"
+    assert not again.taken("home.example.com")  # the take-over used up by its write: its own now (1.49.8)
     again.run_pass(hosts)
     assert sorted(written) == [("example.com", "home", "203.0.113.10"), ("example.com", "new", "203.0.113.10"),
                                ("example.net", "@", "203.0.113.10")]

@@ -1,13 +1,21 @@
 # Changelog
 
+## 1.49.8 (2026-11-11)
+
+A take-over is single-use (the third round of checks): used up once its write lands, the host then the keeper's own
+by its own rule. A host taken out of the setting where no settle saw it (the plugin disabled, the platform stopped, its
+domains unread, its key unset) and put back later holding another address is asked about again, never overwritten on
+the old consent. settle's docstring says what it covers.
+
 ## 1.49.7 (2026-11-11)
 
 What the re-verification of the audit's fixes found in the Dynamic DNS keeper:
 - Take over… is asked twice: `Keeper.take_over(fqdn, accept, holds)` refuses (`TakeOverRefused`, its `accept` the argument
   `accept_take_over`) unless accepted exactly true, saying what is dropped; `take_form()` carries that second
   confirmation. A take-over sets the record at once and drops every address it held, so it is never made on one yes.
-- `Keeper.settle(hosts)` lets go of every host it holds that is not among the plugin's whole setting (called once the
-  account's domains are read): a host taken out of the setting, while the plugin ran or not, comes back as not its own.
+- `Keeper.settle(hosts)` lets go of every host it holds that is not among the plugin's whole setting (called by the
+  serving platform's plugin once the account's domains are read): a host taken out of the setting where a settle sees it
+  comes back as not its own (a removal no settle saw: 1.49.8).
 
 ## 1.49.6 (2026-11-11)
 

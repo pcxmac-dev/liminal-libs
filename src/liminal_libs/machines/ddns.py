@@ -203,9 +203,11 @@ class Keeper:
         self._save()
 
     def settle(self, hosts: Iterable[Host | str]) -> list[str]:
-        """Every host the keeper holds that is not among `hosts` let go (1.49.7): a plugin calls it with its whole setting
-        once the account's domains are read (never a partial or unread list), so a host taken out of the setting, while
-        the plugin ran or not, is no longer taken over nor its own when it comes back. Returns the hosts let go."""
+        """Every host the keeper holds that is not among `hosts` let go (1.49.7): the serving platform's plugin calls it
+        with its whole setting once the account's domains are read (never a partial or unread list, never from a command
+        line of its own). It lets go of what it sees taken out; a removal no settle saw is covered by the take-over being
+        single-use (1.49.8: used up once its write lands), so a host back in the setting holding another address is asked
+        about again. Returns the hosts let go."""
         wanted = {(h.fqdn if isinstance(h, Host) else str(h)).strip().rstrip('.').lower() for h in hosts}
         gone = [f for f in self.known() if f not in wanted]
         for f in gone:
@@ -224,6 +226,16 @@ class Keeper:
             self._taken.discard(fqdn.lower())
             self._own.pop(fqdn.lower(), None)
         self._save()
+
+    def _used(self, fqdn: str) -> None:
+        """A take-over used up (1.49.8): once the record points here it is the keeper's own, kept current by its own rule; a
+        consent never outlives its write, so a host taken out of the setting where no settle saw it and put back later,
+        holding another address, is asked about again."""
+        with self._lock:
+            had = fqdn.lower() in self._taken
+            self._taken.discard(fqdn.lower())
+        if had:
+            self._save()
 
     def _mark_own(self, fqdn: str, ip: str) -> None:
         with self._lock:
@@ -307,6 +319,7 @@ class Keeper:
         taken, own = self.taken(h.fqdn), self.own(h.fqdn)
         if held == [ip]:
             self._mark_own(h.fqdn, ip)  # pointing here already: its own to keep from now on
+            self._used(h.fqdn)  # a take-over is single-use: nothing left to take (1.49.8)
             if not force:
                 st.checked_at, st.ok, st.result, st.foreign = now, True, "current", False
                 return
@@ -333,6 +346,7 @@ class Keeper:
             st.checked_at, st.ok, st.result = now, False, f"not updated: {e}"
             return
         self._mark_own(h.fqdn, ip)
+        self._used(h.fqdn)  # the take-over used up once its write landed (1.49.8)
         st.checked_at = st.updated_at = now
         st.address, st.ok, st.foreign, st.holds = ip, True, False, (ip,)
         st.result = str(done or ("set" if held else "made")) + ("" if held == [ip] else f" (was {', '.join(held) or 'none'})")
