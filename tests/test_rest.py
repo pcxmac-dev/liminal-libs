@@ -137,7 +137,14 @@ def test_dynamic_dns_keeps_its_own_hosts_and_leaves_anothers_until_taken_over(tm
     assert table["rows"][0][5] == {"form": "ddns-take", "title": "Take over…", "label": "Take over home.example.com",
                                    "values": {"host": "home.example.com", "holds": "198.51.100.7"}} and table["rows"][1][5] == ""
     assert keeper.take_form()["confirm"]["danger"] and keeper.now_form()["fields"] == []
-    keeper.take_over("home.example.com")  # the page's Take over…, confirmed
+    with pytest.raises(ddns.TakeOverRefused) as refused:  # asked once: refused, naming its second confirmation (1.49.7)
+        keeper.take_over("home.example.com", holds="198.51.100.7")
+    assert refused.value.accept == "accept_take_over" and "198.51.100.7" in str(refused.value)
+    for wrong in ("true", 1, "yes"):
+        with pytest.raises(ddns.TakeOverRefused):
+            keeper.take_over("home.example.com", accept=wrong)
+    assert keeper.take_form()["fields"][2]["name"] == "accept_take_over"
+    keeper.take_over("home.example.com", accept=True)  # the page's Take over…, confirmed twice
     written.clear()
     assert keeper.run_pass(hosts)[0]["result"] == "set (was 198.51.100.7)" and written == [("example.com", "home", "203.0.113.9")]
     written.clear()
@@ -196,8 +203,12 @@ def test_dynamic_dns_never_cuts_several_addresses_writes_a_stale_one_or_runs_on_
     assert written == [] and late.is_set()
     assert said[0]["result"] == "not updated: the plugin was detached: nothing written"
     assert slow.known() == [] and keeper.known() == []  # nothing its own yet: none written, none taken
-    keeper.take_over("lb.example.com")
+    keeper.take_over("lb.example.com", accept=True)
     assert keeper.known() == ["lb.example.com"]
+    # taken out of the setting (while running or not), let go: back in it later, it is left as it is until taken again
+    assert keeper.settle([]) == ["lb.example.com"] and keeper.known() == [] and not keeper.taken("lb.example.com")
+    again = keeper.run_pass(hosts)[0]
+    assert again["foreign"] and written == []
 
 
 def test_a_secret_pasted_with_its_line_break_is_scrubbed_and_never_sent():

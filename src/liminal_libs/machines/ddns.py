@@ -40,6 +40,17 @@ TAKE_FORM = "ddns-take"  # the page's form taking a host over (take_form), and t
 NOW_FORM = "ddns-now"
 
 
+ACCEPT = "accept_take_over"  # the take-over's second, explicit confirmation (1.49.7)
+
+
+class TakeOverRefused(ValueError):
+    """A take-over not made until the user accepts what it drops (1.49.7: the re-verified audit, asked once it cut a live
+    record at once): `accept` names the argument that, exactly true, makes it; the platform's page asks it as a second,
+    explicit confirmation."""
+
+    accept = ACCEPT
+
+
 @dataclass(frozen=True)
 class Host:
     """A host kept at this network's address: its full name, the provider's zone it is in, its name in that zone ("@"
@@ -180,12 +191,26 @@ class Keeper:
         with self._lock:
             return fqdn.lower() in self._taken
 
-    def take_over(self, fqdn: str) -> None:
-        """The user let the keeper take `fqdn` over (the page's Take over…, once confirmed): its next pass points the
-        host's A record at this network's address whatever it holds."""
+    def take_over(self, fqdn: str, accept=False, holds: str = "") -> None:
+        """The user let the keeper take `fqdn` over (the page's Take over…, confirmed twice: 1.49.7): its next pass points
+        the host's A record at this network's address whatever it holds. Without `accept` exactly true, a
+        TakeOverRefused saying what is dropped (`holds`, what the confirmation showed): the page's second confirmation."""
+        if accept is not True:
+            raise TakeOverRefused(f"{fqdn} holds {holds or 'another address'}: taken over, it is pointed at this network's address "
+                                  "and what it holds is dropped, so whatever answers there stops answering at this name")
         with self._lock:
             self._taken.add(fqdn.lower())
         self._save()
+
+    def settle(self, hosts: Iterable[Host | str]) -> list[str]:
+        """Every host the keeper holds that is not among `hosts` let go (1.49.7): a plugin calls it with its whole setting
+        once the account's domains are read (never a partial or unread list), so a host taken out of the setting, while
+        the plugin ran or not, is no longer taken over nor its own when it comes back. Returns the hosts let go."""
+        wanted = {(h.fqdn if isinstance(h, Host) else str(h)).strip().rstrip('.').lower() for h in hosts}
+        gone = [f for f in self.known() if f not in wanted]
+        for f in gone:
+            self.let_go(f)
+        return gone
 
     def known(self) -> list[str]:
         """Every host the keeper holds as its own or was let take over (1.49.4): a plugin lets go of those no longer in
@@ -340,7 +365,11 @@ class Keeper:
         """The page's form taking a host over (its row's Take over… fills it): asked once the user has confirmed, in words
         naming what the record holds and what follows."""
         return {"id": TAKE_FORM, "hook": hook, "title": "Take a host over for Dynamic DNS",
-                "fields": [{"name": "host", "label": "Host", "type": "fixed"}, {"name": "holds", "label": "It holds", "type": "fixed"}],
+                "fields": [{"name": "host", "label": "Host", "type": "fixed"}, {"name": "holds", "label": "It holds", "type": "fixed"},
+                           {"name": ACCEPT, "type": "accept", "title": "Drop what it holds?", "yes": "Drop it and take over",
+                            "words": ("{host} holds {holds}. Taking it over sets its A record to this network's address at once and "
+                                      "drops every address it holds now: a server or a website answering there stops answering "
+                                      "at {host}.")}],
                 "confirm": {"title": "Point {host} at this network?",
                             "words": ("{host} holds {holds}, which is not this network's address. Taken over, its A record is set "
                                       "to this network's address on the next pass and kept there; what it holds now is dropped, "

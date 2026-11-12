@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.49.7 (2026-11-11)
+
+What the re-verification of the audit's fixes found in the Dynamic DNS keeper:
+- Take over… is asked twice: `Keeper.take_over(fqdn, accept, holds)` refuses (`TakeOverRefused`, its `accept` the argument
+  `accept_take_over`) unless accepted exactly true, saying what is dropped; `take_form()` carries that second
+  confirmation. A take-over sets the record at once and drops every address it held, so it is never made on one yes.
+- `Keeper.settle(hosts)` lets go of every host it holds that is not among the plugin's whole setting (called once the
+  account's domains are read): a host taken out of the setting, while the plugin ran or not, comes back as not its own.
+
 ## 1.49.6 (2026-11-11)
 
 `machines.rest`'s HTTPS takes nothing from the environment (the audit's note): no `~/.netrc` credentials added to a
