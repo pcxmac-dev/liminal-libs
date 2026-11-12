@@ -144,7 +144,7 @@ def test_dynamic_dns_keeps_its_own_hosts_and_leaves_anothers_until_taken_over(tm
         with pytest.raises(ddns.TakeOverRefused):
             keeper.take_over("home.example.com", accept=wrong)
     assert keeper.take_form()["fields"][2]["name"] == "accept_take_over"
-    keeper.take_over("home.example.com", accept=True)  # the page's Take over…, confirmed twice
+    keeper.take_over("home.example.com", accept=True, holds="198.51.100.7")  # the page's Take over…, confirmed twice
     assert keeper.taken("home.example.com")
     written.clear()
     assert keeper.run_pass(hosts)[0]["result"] == "set (was 198.51.100.7)" and written == [("example.com", "home", "203.0.113.9")]
@@ -213,7 +213,7 @@ def test_dynamic_dns_never_cuts_several_addresses_writes_a_stale_one_or_runs_on_
     assert written == [] and late.is_set()
     assert said[0]["result"] == "not updated: the plugin was detached: nothing written"
     assert slow.known() == [] and keeper.known() == []  # nothing its own yet: none written, none taken
-    keeper.take_over("lb.example.com", accept=True)
+    keeper.take_over("lb.example.com", accept=True, holds="203.0.113.9, 198.51.100.1")
     assert keeper.known() == ["lb.example.com"]
     # taken out of the setting (while running or not), let go: back in it later, it is left as it is until taken again
     assert keeper.settle([]) == ["lb.example.com"] and keeper.known() == [] and not keeper.taken("lb.example.com")
@@ -349,3 +349,40 @@ def test_the_https_takes_nothing_from_the_environment(monkeypatch):
 
     monkeypatch.setattr(requests.Session, "request", request)
     assert rest._requests_transport("GET", "https://api.example.org/x", {}, None, 5) == (200, {}, b"{}") and seen == [False]
+
+
+def test_a_take_overs_consent_holds_only_while_the_record_holds_what_it_dropped(tmp_path):
+    """1.49.9 (Azure's builder: a take-over whose own write failed kept its consent, and a later pass wrote over whatever
+    the record held by then): the consent is for the addresses the confirmation showed; a record holding anything else
+    at a later pass voids it, and the host is asked about again."""
+    records = {"home.example.com": ["198.51.100.7"]}
+    fail = [True]
+    written = []
+
+    def write(h, ip):
+        if fail[0]:
+            raise RuntimeError("HTTP 412")
+        written.append(ip)
+        records[h.fqdn] = [ip]
+        return "set"
+
+    keeper = ddns.Keeper(read=lambda h: records[h.fqdn], write=write, public=lambda: ("203.0.113.9", "x"),
+                         state=tmp_path / "ddns.json")
+    hosts, _ = ddns.hosts_of("home.example.com", ["example.com"])
+    with pytest.raises(ValueError, match="names no address"):
+        keeper.take_over("home.example.com", accept=True)  # a consent names what it drops
+    keeper.take_over("home.example.com", accept=True, holds="198.51.100.7")
+    assert keeper.run_pass(hosts)[0]["result"].startswith("not updated: HTTP 412")
+    assert keeper.taken("home.example.com")  # the write failed: the consent stands, the record unchanged
+    records["home.example.com"] = ["198.51.100.99"]  # changed meanwhile, by hand or another tool
+    fail[0] = False
+    r = keeper.run_pass(hosts)[0]
+    assert written == [] and r["foreign"] and "changed since the take-over was confirmed" in r["result"]
+    assert not keeper.taken("home.example.com")
+    keeper.take_over("home.example.com", accept=True, holds="198.51.100.99")  # taken over again, for what it holds now
+    assert keeper.run_pass(hosts)[0]["result"] == "set (was 198.51.100.99)" and written == ["203.0.113.9"]
+    import json
+
+    saved = json.loads((tmp_path / "ddns.json").read_text(encoding="utf-8"))
+    assert saved["taken"] == {} and saved["own"] == {"home.example.com": "203.0.113.9"}
+    assert ddns.addresses_in("198.51.100.7; 2001:db8::1, junk") == frozenset({"198.51.100.7", "2001:db8::1"})

@@ -97,6 +97,19 @@ def hosts_of(text: str, zones: Iterable[str]) -> tuple[list[Host], list[str]]:
     return found, wrong
 
 
+def addresses_in(text) -> frozenset[str]:
+    """The addresses a take-over's `holds` names ("198.51.100.7, 198.51.100.8"; a list too): what its consent drops."""
+    parts = text if isinstance(text, (list, tuple, set, frozenset)) else str(text or "").replace(";", ",").replace(" ", ",").split(",")
+    out = set()
+    for p in parts:
+        p = str(p).strip()
+        try:
+            out.add(str(ipaddress.ip_address(p)))
+        except ValueError:
+            continue
+    return frozenset(out)
+
+
 def minutes_of(text: str | None) -> float:
     """The minutes between checks as set (MINUTES: 1 to 1440, 5 unless set or when it is no number)."""
     least, most, default = MINUTES
@@ -148,7 +161,9 @@ class Keeper:
         self._states: dict[str, HostState] = {}
         self._file = Path(state) if state is not None else None
         self._own: dict[str, str] = {}  # fqdn -> the address the keeper last set or found there as this network's
-        self._taken: set[str] = set()  # the hosts the user let it take over
+        # the hosts the user let it take over, each with the addresses it was let drop (1.49.9: the consent holds only
+        # while the record holds exactly those)
+        self._taken: dict[str, frozenset[str]] = {}
         self._load()
         self.public: str | None = None
         self.public_why = ""
@@ -166,14 +181,15 @@ class Keeper:
         taken = data.get("taken") if isinstance(data, dict) else None
         if isinstance(own, dict):
             self._own = {str(k).lower(): str(v) for k, v in own.items() if isinstance(v, str)}
-        if isinstance(taken, list):
-            self._taken = {str(x).lower() for x in taken}
+        if isinstance(taken, dict):  # a list (before 1.49.9) names no addresses: no consent carried over
+            self._taken = {str(k).lower(): frozenset(str(a) for a in v) for k, v in taken.items()
+                           if isinstance(v, list) and v}
 
     def _save(self) -> None:
         if self._file is None:
             return
         with self._lock:
-            data = {"own": dict(sorted(self._own.items())), "taken": sorted(self._taken)}
+            data = {"own": dict(sorted(self._own.items())), "taken": {k: sorted(v) for k, v in sorted(self._taken.items())}}
         try:
             self._file.parent.mkdir(parents=True, exist_ok=True)
             part = self._file.with_name(self._file.name + ".part")
@@ -198,8 +214,11 @@ class Keeper:
         if accept is not True:
             raise TakeOverRefused(f"{fqdn} holds {holds or 'another address'}: taken over, it is pointed at this network's address "
                                   "and what it holds is dropped, so whatever answers there stops answering at this name")
+        dropped = addresses_in(holds)
+        if not dropped:  # a consent names what it lets go (1.49.9): without it, nothing to bind it to
+            raise ValueError(f"{fqdn}: the take-over names no address it drops (holds): ask it again from the page")
         with self._lock:
-            self._taken.add(fqdn.lower())
+            self._taken[fqdn.lower()] = dropped
         self._save()
 
     def settle(self, hosts: Iterable[Host | str]) -> list[str]:
@@ -218,22 +237,25 @@ class Keeper:
         """Every host the keeper holds as its own or was let take over (1.49.4): a plugin lets go of those no longer in
         its settings, a change made while it was not running too."""
         with self._lock:
-            return sorted(set(self._own) | self._taken)
+            return sorted(set(self._own) | set(self._taken))
 
     def let_go(self, fqdn: str) -> None:
         """`fqdn` no longer the keeper's: neither taken over nor its own (a host taken out of the settings)."""
         with self._lock:
-            self._taken.discard(fqdn.lower())
+            self._taken.pop(fqdn.lower(), None)
             self._own.pop(fqdn.lower(), None)
         self._save()
+
+    def _consent(self, fqdn: str) -> frozenset[str]:
+        with self._lock:
+            return self._taken.get(fqdn.lower(), frozenset())
 
     def _used(self, fqdn: str) -> None:
         """A take-over used up (1.49.8): once the record points here it is the keeper's own, kept current by its own rule; a
         consent never outlives its write, so a host taken out of the setting where no settle saw it and put back later,
         holding another address, is asked about again."""
         with self._lock:
-            had = fqdn.lower() in self._taken
-            self._taken.discard(fqdn.lower())
+            had = self._taken.pop(fqdn.lower(), None) is not None
         if had:
             self._save()
 
@@ -317,6 +339,13 @@ class Keeper:
         held = [str(a) for a in held]
         st.holds, st.address = tuple(held), (held[0] if held else None)
         taken, own = self.taken(h.fqdn), self.own(h.fqdn)
+        if taken and frozenset(held) != self._consent(h.fqdn) and held != [ip]:
+            # the record changed since the take-over was confirmed (1.49.9): the consent was for what it held then
+            self._used(h.fqdn)
+            st.checked_at, st.ok, st.foreign = now, False, True
+            st.result = (f"its record changed since the take-over was confirmed (it holds {', '.join(held) or 'nothing'} now): "
+                         "left as it is (Take over… again)")
+            return
         if held == [ip]:
             self._mark_own(h.fqdn, ip)  # pointing here already: its own to keep from now on
             self._used(h.fqdn)  # a take-over is single-use: nothing left to take (1.49.8)

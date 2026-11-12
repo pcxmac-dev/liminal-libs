@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.49.9 (2026-11-11)
+
+A take-over's consent is bound to the addresses it was given for (Azure's builder: a take-over whose own write
+failed kept its consent, and a later pass wrote over whatever the record held by then). `take_over` keeps the addresses
+`holds` names (`addresses_in`; refused when it names none), and a pass writes a taken host only while its record holds
+exactly those (or already this network's); anything else voids the consent and the host is asked about again. The
+state file keeps each take-over's addresses; a list from before carries no consent over.
+
 ## 1.49.8 (2026-11-11)
 
 A take-over is single-use (the third round of checks): used up once its write lands, the host then the keeper's own
