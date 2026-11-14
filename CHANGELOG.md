@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.51.0 (2026-11-14)
+
+A machine plugin says which section of the platform's list it is drawn under (the user: "classify the cloud plugins under the 'cloud plugins' section which should be on the far left"): `MachinePlugin.SECTION`, "machine"
+by default (this machine's own software and hardware) or "cloud" (a cloud provider's account). liminal-platform 0.25.0
+draws the Cloud plugins section from it, and the six cloud plugins set it.
+
 ## 1.50.0 (2026-11-11)
 
 The API cards fold (the user: "on the APIs organize each API description so that they can expand and contract so they

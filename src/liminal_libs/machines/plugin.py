@@ -44,6 +44,11 @@ class MachinePlugin(PlatformPlugin):
     HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
     STEPS: tuple = ()  # the setup's steps, in order: what the platform's page offers one at a time
     ICON = "chip"  # its icon in the platform's tray (icons.js) when it is active
+    # The section of the platform's list it is drawn under (1.51.0; the user, 2026-11-14: "classify the cloud plugins under
+    # the 'cloud plugins' section"):
+    #   "machine": this machine's own software and hardware (the default);
+    #   "cloud": a cloud provider's account (DigitalOcean, Linode, Vultr, EC2, Azure, Google Cloud).
+    SECTION = "machine"
 
     def present(self) -> bool:
         """Whether the software or hardware is there."""
