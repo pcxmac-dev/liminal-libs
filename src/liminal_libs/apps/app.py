@@ -12,6 +12,7 @@ front (liminal_charts.gui.front) and the integrator's page do the same by hand t
 this frame at 0.3.0, when a super app composes the trays of the apps it is bound to."""
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import os
@@ -26,17 +27,14 @@ from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
-import urllib.error
-import urllib.request
-
-from .binding import START_SECONDS, Binding, forward, start_app, wait_for
-from .login import PAIRS_PATH, inherited_by, pairs_wanted
+from .login import PAIRS_PATH, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
 from .tray import Tray, TrayItem
 
 TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
-SIGNIN = "signin.html"  # an app's sign-in while it inherits a login app (ui/static, 1.46.0)
-LOGIN_PREFIX = "/login"  # where an app serves the login app it inherits
+SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
+LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
+LOGIN_CLASS = "liminal_login.app:LoginApp"  # the login class an app inherits (liminal-login's), made here when first asked
 
 
 def _is_login(path: str) -> bool:
@@ -57,6 +55,19 @@ class Refused(Exception):
         self.status, self.reason = status, reason
 
 
+class PortTaken(OSError):
+    """An app's port held by another program: the app is not started there, and never on another port instead (the
+    user, 2026-11-14: "i only want ports for liminal-login ; liminal-platform ; liminal-charts ; liminal-integrator";
+    "never provide ports for anything else"). Until 1.52.0 a free one was taken in its place."""
+
+    def __init__(self, app: "App", port: int, cause: BaseException | None = None):
+        who = app.TITLE or app.NAME or "the app"
+        why = f" ({cause})" if cause is not None else ""
+        super().__init__(f"{who}: port {port} is taken{why}: something else answers there (is {who} running already?); "
+                         "nothing was started on another port")
+        self.port = port
+
+
 class App:
     """The frame of one app. A subclass sets the class attributes and overrides `api` (its routes),
     `items` (its tray's plugins) and, when its page depends on the request, `page`."""
@@ -75,10 +86,18 @@ class App:
     TRACE_LOGIN = False
     WATCH_OUTSIDE = False
     READ_HOOKS: tuple[str, ...] = ()  # hooks asked by name that only read (noted as reads, not asks)
-    # the login app this app inherits (1.46.0; the user, 2026-11-10: "make sure that the platform inherits the login app
-    # so we can login to platform"): where it answers, LOGIN_URL_VAR in the environment else LOGIN_URL ("none" or "off":
-    # none); started for this app as its superclass when nothing answers there (apps.login.inherited_by), its page and
-    # API under /login/, its tray at /api/trays, and this app's page its sign-in until the browser is signed in there
+    # the login this app inherits (1.46.0; the user, 2026-11-10: "make sure that the platform inherits the login app so we
+    # can login to platform"; 2026-11-14: "the platform and integrator inherit the login function, they are separate login
+    # instances, class vs object"; "login doesn't point to anything except the app that inherited it"): since 1.52.0 an
+    # object of the login class (LOGIN_CLASS) made for this app, here, in its process: its page and API under /login/ at
+    # this app's own port, its tray at /api/trays, its users its own (the superclass's folder), the pairs its plugins ask
+    # for asked of this app itself; this app's page its sign-in until the browser is signed in there. LOGIN_VAR "none" or
+    # "off" in the environment: none. No login of its own at a port of its own, and nothing started for it.
+    LOGIN = False
+    LOGIN_VAR = ""
+    LOGIN_CLASS: object = LOGIN_CLASS  # a class, or "module:Class"; made with log= and superclass= (this app)
+    # 1.46-1.51's declaration (a login app of its own at an address of its own, started for this app): a class that still
+    # names one inherits the login all the same, its address unused, LOGIN_URL_VAR's "none" or "off" honoured
     LOGIN_URL_VAR = ""
     LOGIN_URL = ""
 
@@ -93,73 +112,60 @@ class App:
         self.traffic = Traffic()  # what is said, between whom (apps.traffic)
         self.traffic.me = self.NAME
         self.traffic.own(self, self.NAME)
-        self._login_lock = threading.Lock()  # one start of its login app, however many pages ask at once
+        self._login_lock = threading.Lock()  # one login object made, however many pages ask at once
+        self._login_object = None  # the login it inherits, once made (login_object)
+        self._login_missing = False  # the login class could not be had: said once, not tried again
 
-    # -- the login app it inherits (1.46.0) ------------------------------------------------------------------------
-    def login_url(self) -> str | None:
-        """Where the login app this app inherits answers; None when it inherits none."""
-        if not (self.LOGIN_URL_VAR or self.LOGIN_URL):
-            return None
-        raw = (os.environ.get(self.LOGIN_URL_VAR) or "").strip() if self.LOGIN_URL_VAR else ""
-        if raw.lower() in ("none", "off"):
-            return None
-        return (raw or self.LOGIN_URL).rstrip("/") or None
+    # -- the login it inherits: an object here (1.46.0; 1.52.0) -------------------------------------------------------
+    def inherits_login(self) -> bool:
+        """Whether this app inherits the login: LOGIN (or a LOGIN_URL, 1.46-1.51's declaration), unless LOGIN_VAR (or
+        LOGIN_URL_VAR) says "none" or "off" in the environment."""
+        if not (self.LOGIN or self.LOGIN_URL):
+            return False
+        for var in (self.LOGIN_VAR, self.LOGIN_URL_VAR):
+            if var and (os.environ.get(var) or "").strip().lower() in ("none", "off"):
+                return False
+        return True
 
-    def bound_login(self) -> Binding | None:
-        """Its login app, answering: at its address, or started for this app as its superclass and waited for. None:
-        it inherits none, or none could be started."""
-        url = self.login_url()
-        if url is None:
+    def login_object(self):
+        """The login this app inherits: one object of the login class, made for this app here when first asked. None
+        when it inherits none, or the class cannot be had or made (liminal-login not installed: said once in the log, the
+        app's page then served as without a login)."""
+        if not self.inherits_login():
             return None
-        bound = Binding("login", url, "liminal_login")
-        if bound.reachable():
-            return bound
         with self._login_lock:
-            if bound.reachable():
-                return bound
-            if not self.start_login(bound.port):
-                return None
-            if wait_for(bound.port, START_SECONDS):
-                self.log(f"{self.NAME}: its login app answers at {url}/")
-                return bound
-        self.log(f"{self.NAME}: the login app started for it never answered at port {bound.port}")
-        return None
+            if self._login_object is None and not self._login_missing:
+                try:
+                    self._login_object = self.make_login()
+                except (ImportError, AttributeError, TypeError, ValueError, OSError) as e:
+                    self._login_missing = True
+                    self.log(f"{self.NAME}: the login it inherits could not be made ({type(e).__name__}: {e}): no sign-in")
+            return self._login_object
 
-    def start_login(self, port: int) -> bool:
-        """The login app started for this app, which it inherits: told so (its name, its title, this app's address, so
-        it asks this app for the pairs its plugins ask for) and given the login's file this app finds."""
-        from .scope import Scope
-
-        env = inherited_by(self.NAME, self.TITLE or self.NAME.capitalize(), (self.served or self.url()).rstrip("/"))
-        try:
-            scope = Scope.find()
-        except (OSError, ValueError):
-            scope = None
-        if scope is not None and scope.path is not None:
-            env["LIMINAL_LOGIN_CFG"] = str(scope.path)
-        return start_app("liminal_login", port, env, self.log)
+    def make_login(self):
+        """The object of the login class (LOGIN_CLASS) for this app: its superclass is this app itself, the one thing it
+        points to (its name and title, the pairs its plugins ask for); nothing is started and no port is opened for it."""
+        cls = self.LOGIN_CLASS
+        if isinstance(cls, str):
+            module, _, name = cls.partition(":")
+            cls = getattr(importlib.import_module(module), name)
+        return cls(log=self.log, superclass=self)
 
     def signed_in(self, handler) -> bool | None:
-        """Whether the browser of `handler` is signed in to its login app (asked with that browser's login cookies);
-        None when it inherits none or none answers."""
-        bound = self.bound_login()
-        if bound is None:
+        """Whether the browser of `handler` is signed in to the login this app inherits (its session asked of the login
+        object, by that browser's cookie); None when it inherits none, or none could be made."""
+        login = self.login_object()
+        if login is None:
             return None
-        cookies = "; ".join(c.strip() for c in (handler.headers.get("Cookie") or "").split(";")
-                            if c.strip().startswith("liminal_login"))
-        headers = {"Accept": "application/json", **({"Cookie": cookies} if cookies else {})}
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(urllib.request.Request(bound.url + "/api/status", headers=headers), timeout=5) as resp:
-                return bool(json.loads(resp.read()).get("signedIn"))
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return login.session(handler) is not None
+        except Exception:  # noqa: BLE001 - a login that cannot say: as if there were none
             return None
 
     def trays(self) -> list[dict]:
-        """The trays of the apps this one binds (its login app's), for the foot of its rail."""
-        bound = self.bound_login()
-        tray = bound.tray() if bound is not None else None
-        return [tray] if tray else []
+        """The trays of what this app holds besides its own, for the foot of its rail: the login it inherits."""
+        login = self.login_object()
+        return [login.tray().as_dict()] if login is not None else []
 
     def login_for(self, name: str):
         """The login `name` (a plugin, or the app itself by its own name) is lent: the app's; noting what it reads and
@@ -294,10 +300,10 @@ class App:
         return tuple(d for d in (self.STATIC, UI_STATIC) if d is not None)
 
     def page(self, handler) -> str:
-        """The file "/" serves: INDEX; for an app that inherits a login app, its sign-in (the library's signin.html, the
-        login app's page held in it) until the browser is signed in there (1.46.0). Without a login app answering, the
-        app's page as before."""
-        if self.login_url() is not None and self.signed_in(handler) is False:
+        """The file "/" serves: INDEX; for an app that inherits the login, its sign-in (the library's signin.html, the
+        login's page held in it) until the browser is signed in there (1.46.0). Without a login object, the app's page
+        as before."""
+        if self.inherits_login() and self.signed_in(handler) is False:
             return SIGNIN
         return self.INDEX
 
@@ -334,16 +340,15 @@ class App:
 
     # -- the server ------------------------------------------------------------------------------
     def start(self, port: int | None = None, open_browser: bool = False) -> str:
-        """Serve in a thread of its own on `port` (the app's by default), or a free one when it is
-        taken; returns the URL (`served`)."""
+        """Serve in a thread of its own on `port` (the app's by default; 0, any free one, is a test's); returns the URL
+        (`served`). A port another program holds is refused (PortTaken), never traded for another (1.52.0)."""
         port = self.port() if port is None else port
         if port and web.listening(port):  # a bind alone cannot tell on Windows (web.listening)
-            self.log(f"{self.NAME}: port {port} is taken (another server answers there): a free one instead")
-            port = 0
+            raise PortTaken(self, port)
         try:
             httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(self))
-        except OSError:
-            httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self))
+        except OSError as e:
+            raise PortTaken(self, port, e) from None
         self._httpd = httpd
         self.served = f"http://127.0.0.1:{httpd.server_address[1]}/"
         if self.WATCH_OUTSIDE:  # the programs and hosts it and its plugins reach, from now on
@@ -356,7 +361,7 @@ class App:
         return self.served
 
     def stop(self) -> None:
-        """End the server (the page stops answering)."""
+        """End the server (the page stops answering), and the login object it held (its sessions closed)."""
         self.traffic.unwatch()
         httpd, self._httpd = self._httpd, None
         if httpd is not None:
@@ -365,12 +370,18 @@ class App:
         if self._thread is not None:
             self._thread.join(5)
             self._thread = None
+        with self._login_lock:
+            login, self._login_object = self._login_object, None
+        if login is not None and callable(getattr(login, "close", None)):
+            try:
+                login.close()
+            except Exception as e:  # noqa: BLE001 - the app ends all the same
+                self.log(f"{self.NAME}: its login did not close cleanly: {type(e).__name__}: {e}")
 
     def serve(self, port: int | None = None, open_browser: bool = False, stop: threading.Event | None = None,
               until_quiet: float | None = None) -> str:
         """`start`, then wait until `stop` is set, Ctrl+C, or (`until_quiet`, seconds) no request has
-        come for that long (an app started by another app's front for itself ends again on its own);
-        the server ends; returns the URL served."""
+        come for that long; the server ends; returns the URL served."""
         url = self.start(port, open_browser)
         stop = stop or threading.Event()
         self.touch()
@@ -420,11 +431,11 @@ def make_handler(app: App):
             if not web.local_only(self):
                 return
             parts = urlsplit(self.path)
-            if _is_login(parts.path) and app.login_url() is not None:  # the login app it inherits (1.46.0)
+            if _is_login(parts.path) and app.inherits_login():  # the login it inherits, an object here (1.52.0)
                 if web.from_this_app(self):
                     self._login("GET")
                 return
-            if parts.path == "/api/trays" and app.login_url() is not None:
+            if parts.path == "/api/trays" and app.inherits_login():
                 if web.from_this_app(self):
                     web.send_json(self, {"trays": app.trays()})
                 return
@@ -443,26 +454,26 @@ def make_handler(app: App):
             web.static_file(self, rel, dirs)
 
         def _login(self, method: str) -> None:
-            """The request passed on to the login app this app inherits, as /<the rest>; its answer and its cookies
-            back, their path kept (its session at /, so this app's page sends it and the app can ask who is in)."""
-            bound = app.bound_login()
-            if bound is None:
+            """The request answered by the login object this app holds, as /<the rest>, here (serve_object): its
+            answer and its cookies (at /, so this app's page sends them and the app can ask who is in)."""
+            login = app.login_object()
+            if login is None:
                 raw = self.headers.get("Content-Length") or "0"
                 if raw.isdecimal() and 0 < int(raw) <= web.MAX_BODY:
                     self.rfile.read(int(raw))
-                return web.send_json(self, {"error": f"the login app of {app.NAME} is not running (none answers, none could "
-                                                     "be started)"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return web.send_json(self, {"error": f"{app.NAME} inherits the login, but it could not be made here "
+                                                     "(see its log)"}, HTTPStatus.SERVICE_UNAVAILABLE)
             path = self.path[len(LOGIN_PREFIX):]
             if not path or path.startswith("?"):
                 path = "/" + path
-            forward(self, method, bound.url, path, unavailable="the login app does not answer; ask again shortly")
+            serve_object(self, login, method, path)
 
         def _write(self, method: str) -> None:
             app.touch()
             if not web.local_only(self) or not web.from_this_app(self):
                 return
-            if _is_login(urlsplit(self.path).path) and app.login_url() is not None:
-                return self._login(method)  # the login app checks its own write header and reads its own body
+            if _is_login(urlsplit(self.path).path) and app.inherits_login():
+                return self._login(method)  # the login object checks its own write header and reads its own body
             if self.headers.get(web.WRITE_HEADER) != "1":
                 return web.send(self, HTTPStatus.FORBIDDEN, b"missing request header", "text/plain")
             parts = urlsplit(self.path)
@@ -515,3 +526,25 @@ def make_handler(app: App):
                                        (time.perf_counter() - began) * 1000, int(status) < 400)
 
     return Handler
+
+
+def serve_object(handler, obj: App, method: str, path: str) -> None:
+    """A request answered by another app's object held in this process (the login an app inherits: App.login_object), as
+    if it had come to that object at `path` (the rest after its prefix): its files, its routes and its checks (this
+    machine only, this page's own origin only, the write header and a JSON object of at most MAX_BODY on a write), its
+    answer and its cookies back on the same connection. Nothing is forwarded, no other port is used and nothing is
+    started (1.52.0; the user, 2026-11-14: "linking vs including the objects, is so that parts of the code can be
+    executed remotely": an object included is answered here, an app linked is reached at its own address)."""
+    cls = obj.__dict__.get("_inner_handler")
+    if cls is None:
+        cls = obj.__dict__["_inner_handler"] = make_handler(obj)
+    inner = cls.__new__(cls)  # the request as it came (its connection, its headers), not read again
+    inner.__dict__.update(handler.__dict__)
+    inner.path = path
+    try:
+        if method == "GET":
+            inner.do_GET()
+        else:
+            inner._write(method)
+    finally:
+        handler.close_connection = getattr(inner, "close_connection", getattr(handler, "close_connection", True))

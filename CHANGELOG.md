@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.52.0 (2026-11-14)
+
+Four ports, nothing started in the background, the login an object of the app that inherits it (the user: "i only want
+ports for liminal-login ; liminal-platform ; liminal-charts ; liminal-integrator"; "never provide ports for anything
+else"; "don't start any of the applications in the background"; "the platform and integrator inherit the login function,
+they are separate login instances, class vs object"; "login doesn't point to anything except the app that inherited it";
+"linking vs including the objects, is so that parts of the code can be executed remotely, and connected through the icon
+bridge").
+
+- The login an app inherits is included, not linked: `App.LOGIN = True` (and `LOGIN_VAR`, "none"/"off" turning it off)
+  makes one object of the login class for that app when first asked (`login_object()`, `make_login()`; `LOGIN_CLASS`,
+  liminal-login's `LoginApp` by default, made with `superclass=` the app itself: the one thing it points to). Its page
+  and API answer under /login/ at the app's own port (`serve_object(handler, obj, method, path)`: the request answered
+  by an object held in this process, its checks and cookies its own), its tray at /api/trays, the sign-in until the
+  browser is signed in (`signed_in` asks the object). `App.stop()` closes it. A class that still says `LOGIN_URL`
+  (1.46-1.51) inherits the login all the same, its address unused.
+- Gone: `bound_login`, `start_login`, `login_url` and `binding.start_app` (nothing in the library starts an app any
+  more; an app linked is reached at its address, one that does not answer is not running). `Binding`, `forward`,
+  `tray_of`, `wait_for` stay for links.
+- `App.start` refuses a port another program holds (`PortTaken`, an OSError naming the port and the app) instead of
+  taking a free one; 0 (any free one) is still a test's.
+- The firewall's list of the framework's ports (`machines.firewall.APP_PORTS`) is the four apps' alone: the integrator's
+  login at 8796 is gone.
+
 ## 1.51.0 (2026-11-14)
 
 A machine plugin says which section of the platform's list it is drawn under (the user: "classify the cloud plugins under the 'cloud plugins' section which should be on the far left"): `MachinePlugin.SECTION`, "machine"

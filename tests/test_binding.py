@@ -5,14 +5,13 @@ starts: servers run in threads on port 0."""
 from __future__ import annotations
 
 import json
-import subprocess
 import threading
 import time
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from liminal_libs import web
-from liminal_libs.apps import App, Binding, TrayItem, forward, start_app, tray_of, wait_for
+from liminal_libs.apps import App, Binding, TrayItem, forward, tray_of, wait_for
 from liminal_libs.apps import binding as binding_mod
 
 
@@ -126,7 +125,7 @@ class DemoApp(App):
         return (TrayItem("things", "key", "Things", app="demo"),)
 
 
-def test_a_bound_apps_tray_is_read_and_an_absent_app_is_started_and_waited_for(tmp_path, monkeypatch):
+def test_a_linked_apps_tray_is_read_and_an_absent_app_is_never_started(tmp_path, monkeypatch):
     DemoApp.STATIC = tmp_path
     app = DemoApp(log=lambda m: None)
     url = app.start(0).rstrip("/")
@@ -140,18 +139,9 @@ def test_a_bound_apps_tray_is_read_and_an_absent_app_is_started_and_waited_for(t
     finally:
         app.stop()
     assert tray_of(url) is None and not Binding("demo", url).reachable() and wait_for(port, 0.3, 0.05) is False
-    # starting: the module's serve, detached, with the environment given; an unknown module is not started
-    popen: list = []
-    monkeypatch.setattr(binding_mod.subprocess, "Popen", lambda args, **kw: popen.append((args, kw)))
-    lines: list[str] = []
-    assert start_app("liminal_libs", 8795, {"LIMINAL_LOGIN_DIR": "x"}, lines.append) is True
-    args, kw = popen[0]
-    assert args[1:] == ["-m", "liminal_libs", "serve", "--no-browser", "--port", "8795", "--until-quiet"]
-    assert kw["env"]["LIMINAL_LOGIN_DIR"] == "x" and kw["close_fds"] is True and kw["stdin"] is subprocess.DEVNULL
-    assert start_app("liminal_libs", 8795, until_quiet=False) is True
-    assert popen[1][0][-2:] == ["--port", "8795"]  # not until quiet: kept up
-    assert start_app("no_such_module_here", 8795, log=lines.append) is False and len(popen) == 2
-    assert any("not installed" in m for m in lines)
+    # an app that does not answer is not running, and nothing here starts it (1.52.0; the user, 2026-11-14: "don't
+    # start any of the applications in the background"): start_app is gone
+    assert not hasattr(binding_mod, "start_app")
 
 
 def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path):

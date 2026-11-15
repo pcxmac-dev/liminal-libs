@@ -30,8 +30,9 @@ APP_PORTS = (  # the framework's own pages: (the app, the variable moving it, it
     ("platform", "LIMINAL_PLATFORM_PORT", 8775),
     ("integrator", "LIMINAL_FETCHER_PORT", 8785),
     ("login", "LIMINAL_LOGIN_PORT", 8795),
-    ("the integrator's login", "", 8796),
-)
+)  # these four and no other (the user, 2026-11-14: "i only want ports for liminal-login ; liminal-platform ;
+# liminal-charts ; liminal-integrator"; 1.52.0: the integrator's login at 8796 gone, a login inherited is an object in
+# its app, at that app's port)
 
 
 class FirewallError(CommandError):

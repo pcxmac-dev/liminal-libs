@@ -86,9 +86,10 @@ own plan information with its capability scan.
   (LIMINAL_FETCHER_PORT; the charts app's `serve_integrator`, reading the data itself) and holds the
   fetcher host over the pipe while a page is in touch (started if none answers, let go when quiet);
   the fetcher host has no HTTP of its own. The charts app's front at 8765 serves the chart page and
-  proxies its pages' data requests to the integrator's port, starting the integrator's server for
-  itself (`liminal-integrator serve --no-browser --until-quiet`) when nothing answers there. The
-  integrator's service keeps its page there from your logon; `--daemon` holds the fetcher for good so
+  proxies its pages' data requests to the integrator's port; an integrator that does not answer is
+  not running, and nothing starts it from there (1.52.0; the user, 2026-11-14: "don't start any of the
+  applications in the background"; "i only want ports for liminal-login ; liminal-platform ;
+  liminal-charts ; liminal-integrator"). The integrator's service keeps its page there from your logon; `--daemon` holds the fetcher for good so
   it collects on its own. Several integrators can run at once (`--name`), each on its own database
   and port; a key's machine-wide ledger is shared by key, whichever integrator spends it.
 - An AI evaluation runs in the caller's process over HTTPS and is recorded in the main file's
@@ -108,6 +109,14 @@ one of its icons is picked; the integrator may run as a daemon on another port a
 `liminal.css`) and the clients of the apps (`LoginClient`); what is particular to one app stays in
 that app's repository. The binding of trays and the proxies over the hosts' pipe come with 0.3.0;
 today the charts front proxies the integrator's data API by hand.
+
+Linked or included (1.52.0; the user, 2026-11-14: "the idea is for an app like charts to be able to 'link' to an app
+like platform or an app like integrator or both"; "linking vs including the objects, is so that parts of the code can be
+executed remotely, and connected through the icon bridge (far right side)"; "the platform and integrator inherit the
+login function, they are separate login instances, class vs object"): an app links another at its address, on this
+machine or another, its tray on the far right, its pages passed on (`apps.binding`), never starting it; an app includes
+an object, the login it inherits (`App.login_object`), answered at its own port. Only the four apps have ports: charts
+8765, platform 8775, integrator 8785, login 8795 (the login on its own, which points to nothing).
 
 ## Authorization and IPC (liminal-libs 1.10.0)
 

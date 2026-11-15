@@ -1,27 +1,24 @@
-"""The apps bound together (the user, 2026-11-04: "objects that I can bind together, like the login
+"""The apps linked together (the user, 2026-11-04: "objects that I can bind together, like the login
 app and the integrator app ... I can still link to an existing integrator and get its functions tied
-into the chart app ... seamlessly like it is local"; "the library basically facilitates the
-interprocess communication, the way the apps can bind to each other"): what a super app does with
-another app's URL. Reach it (`Binding.reachable`), start it when nothing answers (`start_app`: the
-app's module run as `serve --no-browser --port N --until-quiet`, detached and windowless, so it ends
-again once no page has been in touch for a while), read its tray (`tray_of`), and pass its pages'
-requests on (`forward`: the super app's front proxies `/<name>/...` to the bound app's `/...`, the
-answers and the cookies back, a cookie's path narrowed to the prefix). The charts app's front did
-this for the integrator by hand since 2026-11-03 (gui/front.py); from liminal-libs 1.9.0 it does it
-through here, for the integrator and the login app alike."""
+into the chart app ... seamlessly like it is local"; 2026-11-14: "the idea is for an app like charts to be
+able to 'link' to an app like platform or an app like integrator or both"; "linking vs including the
+objects, is so that parts of the code can be executed remotely, and connected through the icon bridge"):
+what a super app does with another app's URL, on this machine or another. Reach it (`Binding.reachable`),
+read its tray for the icons on the far right (`tray_of`), and pass its pages' requests on (`forward`:
+the super app's front proxies `/<name>/...` to the linked app's `/...`, the answers and the cookies back,
+a cookie's path narrowed to the prefix). A linked app is never started from here: one that does not
+answer is said to be not running (1.52.0; the user, 2026-11-14: "don't start any of the applications in
+the background"; until then `start_app` ran its module detached). The login an app inherits is not
+linked but included, an object in that app (apps.app.App.login_object)."""
 from __future__ import annotations
 
 import http.client
 import json
-import os
-import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from http import HTTPStatus
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from .. import web
@@ -33,7 +30,7 @@ from .login import SESSION_HEADER
 # saying neither)
 FORWARDED = ("Cookie", "Content-Type", "Accept", "Last-Event-ID", web.WRITE_HEADER, web.PROFILE_HEADER, SESSION_HEADER)
 PASSED_BACK = ("Content-Type", "Cache-Control", "X-Content-Type-Options")
-START_SECONDS = 30.0  # how long a front waits for an app it started to answer
+START_SECONDS = 30.0  # how long wait_for waits for an app to answer, at the most
 
 
 @dataclass(frozen=True)
@@ -71,25 +68,6 @@ def tray_of(url: str, timeout: float = 5.0) -> dict | None:
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
     return tray if isinstance(tray, dict) and "items" in tray else None
-
-
-def start_app(module: str, port: int, env: dict | None = None, log=print, until_quiet: bool = True) -> bool:
-    """Start an app's server for a front (`python -m <module> serve --no-browser --port PORT
-    [--until-quiet]`): no window, outliving this process, with `env` added to its environment; it
-    ends again once no page has been in touch for a while. False: the module is not installed."""
-    try:
-        __import__(module)
-    except ImportError:
-        log(f"{module} is not installed: nothing to start at port {port}")
-        return False
-    exe = Path(sys.executable)
-    pythonw = exe.with_name("pythonw.exe") if os.name == "nt" and exe.with_name("pythonw.exe").exists() else exe
-    flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NEW_GROUP | NO_WINDOW
-    args = [str(pythonw), "-m", module, "serve", "--no-browser", "--port", str(port)] + (["--until-quiet"] if until_quiet else [])
-    subprocess.Popen(args, creationflags=flags, close_fds=True, env={**os.environ, **(env or {})},
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    log(f"{module} started at port {port}")
-    return True
 
 
 def wait_for(port: int, seconds: float = START_SECONDS, step: float = 0.25) -> bool:

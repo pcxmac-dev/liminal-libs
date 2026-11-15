@@ -1,64 +1,59 @@
-"""An app that inherits a login app (liminal_libs.apps.App, 1.46.0; the user, 2026-11-10: "make sure that the platform
-inherits the login app so we can login to platform"): its page is the sign-in until the browser is signed in there, the
-login app's page and API under /login/ (its cookies back), its tray at /api/trays, and the login app started for it as
-its superclass when nothing answers. A stand-in plays the login app; no process starts."""
+"""An app that inherits the login (liminal_libs.apps.App; 1.46.0, an object since 1.52.0; the user, 2026-11-10: "make sure
+that the platform inherits the login app so we can login to platform"; 2026-11-14: "the platform and integrator inherit
+the login function, they are separate login instances, class vs object"; "login doesn't point to anything except the
+app that inherited it"): one object of the login class made for the app, in its process, its superclass the app itself;
+its page and API under /login/ at the app's own port (its cookies back), its tray at /api/trays, the app's page the
+sign-in until the browser is signed in there. A stand-in plays the login class; no process starts, no other port opens."""
 from __future__ import annotations
 
 import json
 import socket
-import threading
 from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from liminal_libs import web
-from liminal_libs.apps import App, Scope
+from liminal_libs.apps import App, PortTaken
 from liminal_libs.apps import app as app_mod
+from liminal_libs.apps import binding as binding_mod
 
 
-class StandInLogin(BaseHTTPRequestHandler):
-    """The login app as far as an inheriting app needs it: its status (signed in by its cookie), its tray, its page, a
-    sign-in that sets its cookie."""
+class StandInLogin(App):
+    """The login class as far as an app that inherits it needs it: made with that app as its superclass, a session by
+    its cookie, its page, a sign-in that sets its cookie, the pairs asked of the app that inherited it."""
 
-    def log_message(self, *a):
-        pass
+    NAME, ICON = "login", "lambda"
+    made: list = []
+    closed: list = []
 
-    def _json(self, status, data, cookie=None):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
-        self.end_headers()
-        self.wfile.write(body)
+    def __init__(self, log=print, superclass=None):
+        super().__init__(log)
+        self.superclass = superclass
+        self.TITLE = f"Login: {superclass.TITLE}"
+        StandInLogin.made.append(self)
 
-    def do_GET(self):
-        cookie = self.headers.get("Cookie") or ""
-        if self.path.startswith("/api/status"):
-            return self._json(200, {"signedIn": "liminal_login_demo=tok" in cookie, "path": self.path, "cookie": cookie,
-                                    "origin": self.headers.get("Origin")})
-        if self.path == "/api/tray":
-            return self._json(200, {"app": "login", "icon": "lambda", "title": "Login: Demo",
-                                    "items": [{"id": "login", "icon": "lambda", "title": "Login: Demo", "kind": "app", "app": "login"}]})
-        body = b"<html>the login page</html>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def session(self, handler):
+        return "a session" if "liminal_login_demo=tok" in (handler.headers.get("Cookie") or "") else None
 
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        got = json.loads(self.rfile.read(n) or b"{}")
-        self._json(200, {"got": got, "write": self.headers.get(web.WRITE_HEADER)}, "liminal_login_demo=tok; Path=/; HttpOnly")
+    def api(self, handler, method, path, query, body):
+        if method == "GET" and path == "/api/status":
+            return 200, {"signedIn": self.session(handler) is not None, "path": path, "query": query,
+                         "origin": handler.headers.get("Origin")}
+        if method == "GET" and path == "/api/pairs/known":
+            return 200, {"pairs": self.superclass.login_pairs()}  # asked of the app that inherited it, nothing else
+        if method == "POST" and path == "/api/sign-in/secret":
+            return 200, {"got": body, "write": handler.headers.get(web.WRITE_HEADER)}, \
+                [("Set-Cookie", "liminal_login_demo=tok; Path=/; HttpOnly")]
+        return super().api(handler, method, path, query, body)
+
+    def close(self):
+        StandInLogin.closed.append(self)
 
 
 class Demo(App):
     NAME, TITLE, ICON = "demo", "Liminal Demo", "chip"
-    LOGIN_URL_VAR = "LIMINAL_DEMO_LOGIN_URL"
-    LOGIN_URL = "http://127.0.0.1:1"
+    LOGIN, LOGIN_VAR = True, "LIMINAL_DEMO_LOGIN"
+    LOGIN_CLASS = StandInLogin
 
 
 def _call(port, method, path, body=None, headers=None):
@@ -69,52 +64,72 @@ def _call(port, method, path, body=None, headers=None):
 
 
 @pytest.fixture
-def login_standin():
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), StandInLogin)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield srv
-    srv.shutdown()
-    srv.server_close()
+def pages(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "index.html").write_text("<html><title>Demo</title>the app's page</html>", encoding="utf-8")
+    (tmp_path / "login").mkdir()
+    (tmp_path / "login" / "index.html").write_text("<html>the login page</html>", encoding="utf-8")
+    Demo.STATIC, StandInLogin.STATIC = tmp_path / "app", tmp_path / "login"
+    StandInLogin.made, StandInLogin.closed = [], []
+    return tmp_path
 
 
-def test_an_app_that_inherits_a_login_opens_on_its_sign_in_until_the_browser_is_signed_in(tmp_path, monkeypatch, login_standin):
-    (tmp_path / "index.html").write_text("<html><title>Demo</title>the app's page</html>", encoding="utf-8")
-    Demo.STATIC = tmp_path
-    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", f"http://127.0.0.1:{login_standin.server_address[1]}/")
-    monkeypatch.setattr(app_mod, "start_app", lambda *a, **k: pytest.fail("nothing to start: the login answers"))
+def _port(app) -> int:
+    return int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+
+
+def test_an_app_holds_the_login_it_inherits_as_an_object_at_its_own_port(pages, monkeypatch):
+    monkeypatch.delenv("LIMINAL_DEMO_LOGIN", raising=False)
     app = Demo(log=lambda m: None)
-    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+    port = _port(app)
     try:
         status, body, _ = _call(port, "GET", "/")
         assert status == 200 and b'id="signinFrame"' in body and b"signin.js" in body  # not signed in: the sign-in
         assert _call(port, "GET", "/signin.js")[0] == 200
         status, body, _ = _call(port, "GET", "/", headers={"Cookie": "liminal_login_demo=tok; other=1"})
         assert status == 200 and b"the app's page" in body  # signed in there: the app
-        # the login app under /login/: its page, its API, its writes, its cookie back at its own path
+        # the login object under /login/, at this app's own port: its page, its API, its writes, its cookie back
         assert _call(port, "GET", "/login/")[1] == b"<html>the login page</html>"
         st = json.loads(_call(port, "GET", "/login/api/status?x=1", headers={"Cookie": "liminal_login_demo=tok"})[1])
-        assert st["path"] == "/api/status?x=1" and st["signedIn"] is True and st["origin"] is None  # where it came from: checked here
+        assert st == {"signedIn": True, "path": "/api/status", "query": {"x": "1"}, "origin": None}
         status, body, r = _call(port, "POST", "/login/api/sign-in/secret", {"name": "secret"},
                                 {"Content-Type": "application/json", web.WRITE_HEADER: "1"})
         assert status == 200 and json.loads(body) == {"got": {"name": "secret"}, "write": "1"}
         assert r.getheader("Set-Cookie") == "liminal_login_demo=tok; Path=/; HttpOnly"
-        assert _call(port, "GET", "/login/api/status", headers={"Origin": "http://evil.example"})[0] == 403  # another site's
-        assert json.loads(_call(port, "GET", "/api/trays")[1])["trays"][0]["icon"] == "lambda"
+        # its own checks, here: a write without the header, another site's page
+        assert _call(port, "POST", "/login/api/sign-in/secret", {"name": "x"}, {"Content-Type": "application/json"})[0] == 403
+        assert _call(port, "GET", "/login/api/status", headers={"Origin": "http://evil.example"})[0] == 403
+        tray = json.loads(_call(port, "GET", "/api/trays")[1])["trays"][0]
+        assert tray["icon"] == "lambda" and tray["title"] == "Login: Liminal Demo"
+        # one object, made for this app, its superclass the app itself: the pairs its plugins ask for asked of it
+        app.login_pairs = lambda: [{"name": "demo-api-key"}]
+        assert json.loads(_call(port, "GET", "/login/api/pairs/known")[1]) == {"pairs": [{"name": "demo-api-key"}]}
+        assert len(StandInLogin.made) == 1 and StandInLogin.made[0].superclass is app and app.login_object() is StandInLogin.made[0]
     finally:
         app.stop()
+    assert StandInLogin.closed == StandInLogin.made  # the app's end closes the login it held
+    assert not hasattr(binding_mod, "start_app") and not hasattr(app_mod, "start_app")  # nothing here starts an app
 
 
-def test_the_page_by_its_files_own_name_is_the_sign_in_too(tmp_path, monkeypatch, login_standin):
+def test_two_apps_that_inherit_the_login_hold_two_logins(pages):
+    """Separate instances: each app its own object, its own superclass."""
+
+    class Other(Demo):
+        NAME, TITLE = "other", "Liminal Other"
+
+    a, b = Demo(log=lambda m: None), Other(log=lambda m: None)
+    assert a.login_object() is not b.login_object()
+    assert [m.superclass for m in StandInLogin.made] == [a, b] and a.login_object() is a.login_object()
+
+
+def test_the_page_by_its_files_own_name_is_the_sign_in_too(pages, monkeypatch):
     """1.46.1 (a review of the platform's page asking its login every minute whether you are still signed in, 2026-11-10):
     the app's page by its file's own name (/index.html) was served whatever the sign-in said, so a page opened there
     while signed out, told so, reloaded into itself every minute and never showed the sign-in. It is the sign-in there
     too until the browser is signed in; an app that inherits no login serves the file as before."""
-    (tmp_path / "index.html").write_text("<html><title>Demo</title>the app's page</html>", encoding="utf-8")
-    Demo.STATIC = tmp_path
-    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", f"http://127.0.0.1:{login_standin.server_address[1]}/")
-    monkeypatch.setattr(app_mod, "start_app", lambda *a, **k: pytest.fail("nothing to start: the login answers"))
+    monkeypatch.delenv("LIMINAL_DEMO_LOGIN", raising=False)
     app = Demo(log=lambda m: None)
-    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+    port = _port(app)
     try:
         for path in ("/index.html", "/index.html?x=1"):
             status, body, _ = _call(port, "GET", path)
@@ -125,7 +140,7 @@ def test_the_page_by_its_files_own_name_is_the_sign_in_too(tmp_path, monkeypatch
         # where it finds none (Linux), nothing is served
         for path in ("/Index.html", "/INDEX.HTML", "/index.html."):
             status, body, _ = _call(port, "GET", path)
-            if web.static_target(path.lstrip("/"), [tmp_path]) is not None:
+            if web.static_target(path.lstrip("/"), [Demo.STATIC]) is not None:
                 assert status == 200 and b'id="signinFrame"' in body, path
             else:
                 assert status == 404, path
@@ -137,38 +152,63 @@ def test_the_page_by_its_files_own_name_is_the_sign_in_too(tmp_path, monkeypatch
         assert b"window.LiminalIcons" in _call(port, "GET", "/icons.js")[1]  # every other file as before
     finally:
         app.stop()
-    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", "none")  # inheriting no login: the file, whoever asks
+    monkeypatch.setenv("LIMINAL_DEMO_LOGIN", "none")  # inheriting no login: the file, whoever asks
     app = Demo(log=lambda m: None)
-    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+    port = _port(app)
     try:
         assert b"the app's page" in _call(port, "GET", "/index.html")[1] and b"the app's page" in _call(port, "GET", "/")[1]
+        assert _call(port, "GET", "/login/api/status")[0] == 404 and app.login_object() is None
     finally:
         app.stop()
 
 
-def test_the_login_app_is_started_for_the_app_as_its_superclass_when_none_answers(tmp_path, monkeypatch):
-    (tmp_path / "index.html").write_text("<html>the app's page</html>", encoding="utf-8")
-    Demo.STATIC = tmp_path
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        free = s.getsockname()[1]
-    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", f"http://127.0.0.1:{free}")
-    started: list = []
-    monkeypatch.setattr(app_mod, "start_app", lambda module, port, env=None, log=print: started.append((module, port, env)) or True)
-    monkeypatch.setattr(app_mod, "wait_for", lambda port, seconds=0: False)  # it never answers: the app opens as before
-    monkeypatch.setattr(Scope, "find", classmethod(lambda cls, start=None, env=None: None))  # no login file here
-    app = Demo(log=lambda m: None)
-    port = int(app.start(0).rstrip("/").rsplit(":", 1)[1])
+def test_a_login_class_that_cannot_be_had_leaves_the_page_as_it_was(pages, monkeypatch):
+    monkeypatch.delenv("LIMINAL_DEMO_LOGIN", raising=False)
+
+    class Missing(Demo):
+        LOGIN_CLASS = "no_such_login_module_here:LoginApp"
+
+    said: list[str] = []
+    app = Missing(log=said.append)
+    port = _port(app)
     try:
         status, body, _ = _call(port, "GET", "/")
-        assert status == 200 and body == b"<html>the app's page</html>"
-        module, at, env = started[0]
-        assert (module, at) == ("liminal_login", free)
-        assert env["LIMINAL_LOGIN_FOR"] == "demo" and env["LIMINAL_LOGIN_FOR_TITLE"] == "Liminal Demo"
-        assert env["LIMINAL_LOGIN_FOR_URL"] == f"http://127.0.0.1:{port}"  # where the login asks it for its plugins' pairs
+        assert status == 200 and b"the app's page" in body  # no login object: the app's page as before
         assert _call(port, "GET", "/login/api/status")[0] == 503
+        assert _call(port, "GET", "/login/api/status")[0] == 503
+        assert sum("could not be made" in m for m in said) == 1  # said once, not tried again
     finally:
         app.stop()
-    monkeypatch.setenv("LIMINAL_DEMO_LOGIN_URL", "none")  # none: no sign-in, no /login/
-    assert Demo(log=lambda m: None).login_url() is None
-    assert App(log=lambda m: None).login_url() is None  # an app that names no login inherits none
+
+
+def test_the_declaration_of_1_46_still_inherits_the_login_its_address_unused(pages, monkeypatch):
+    """A class that still names a login app of its own (LOGIN_URL, LOGIN_URL_VAR: liminal-platform until it moves) holds
+    the login as an object all the same; nothing answers or starts at that address."""
+
+    class Old(App):
+        NAME, TITLE = "old", "Liminal Old"
+        LOGIN_URL_VAR, LOGIN_URL = "LIMINAL_OLD_LOGIN_URL", "http://127.0.0.1:1"
+        LOGIN_CLASS = StandInLogin
+
+    monkeypatch.delenv("LIMINAL_OLD_LOGIN_URL", raising=False)
+    old = Old(log=lambda m: None)
+    assert old.inherits_login() and old.login_object().superclass is old
+    monkeypatch.setenv("LIMINAL_OLD_LOGIN_URL", "off")
+    assert not Old(log=lambda m: None).inherits_login()
+    assert not App(log=lambda m: None).inherits_login() and App(log=lambda m: None).login_object() is None
+
+
+def test_a_taken_port_is_refused_never_traded_for_another(pages, monkeypatch):
+    """1.52.0 (the user, 2026-11-14: "i only want ports for liminal-login ; liminal-platform ; liminal-charts ;
+    liminal-integrator"; "never provide ports for anything else"): an app whose port another program holds is not
+    started, and not started on a free port instead."""
+    monkeypatch.setenv("LIMINAL_DEMO_LOGIN", "none")
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        taken = holder.getsockname()[1]
+        app = Demo(log=lambda m: None)
+        with pytest.raises(PortTaken) as e:
+            app.start(taken)
+        assert e.value.port == taken and f"port {taken} is taken" in str(e.value) and "Liminal Demo" in str(e.value)
+        assert app.served is None and app._httpd is None
