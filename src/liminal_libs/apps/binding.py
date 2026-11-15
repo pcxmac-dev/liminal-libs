@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -33,25 +34,44 @@ PASSED_BACK = ("Content-Type", "Cache-Control", "X-Content-Type-Options")
 START_SECONDS = 30.0  # how long wait_for waits for an app to answer, at the most
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+REACH_SECONDS = 2.0  # how long a linked app on another machine is given to answer
+CONNECT_SECONDS = 10.0  # how long a request passed on waits for the connection (not for the answer)
+
+
 @dataclass(frozen=True)
 class Binding:
-    """A bound app: its name (the prefix the super app serves it under: `/login/...`), its URL, and
-    the module to start when nothing answers there ("" for one never started here)."""
+    """A linked app: its name (the prefix the super app serves it under: `/platform/...`) and its URL, on
+    this machine or another. `module` is kept for the callers of 1.9-1.51; nothing is started from it."""
 
     name: str
     url: str
     module: str = ""
 
     @property
+    def host(self) -> str:
+        return urlsplit(self.url).hostname or "127.0.0.1"
+
+    @property
     def port(self) -> int:
-        return urlsplit(self.url).port or 80
+        parts = urlsplit(self.url)
+        return parts.port or (443 if parts.scheme == "https" else 80)
 
     @property
     def prefix(self) -> str:
         return f"/{self.name}"
 
-    def reachable(self) -> bool:
-        return web.listening(self.port)
+    def reachable(self, timeout: float = REACH_SECONDS) -> bool:
+        """Whether something answers at its address: this machine's port (web.listening), or another
+        machine's, reached over the network (1.53.0: a link may be remote, the user, 2026-11-14: "so that
+        parts of the code can be executed remotely"; until then only this machine's port was asked)."""
+        if self.host in LOOPBACK:
+            return web.listening(self.port)
+        try:
+            with socket.create_connection((self.host, self.port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def tray(self) -> dict | None:
         return tray_of(self.url)
@@ -82,13 +102,16 @@ def wait_for(port: int, seconds: float = START_SECONDS, step: float = 0.25) -> b
 
 
 def forward(handler, method: str, url: str, path: str, *, cookie_path: str | None = None,
-            drop_cookies: tuple[str, ...] = (),
+            drop_cookies: tuple[str, ...] = (), keep_cookies: tuple[str, ...] = (),
             unavailable: str = "the app does not answer; ask again shortly") -> None:
     """The request passed on to the bound app at `url` as `path` (its body read here, within
     MAX_BODY), its answer passed back as it comes (an event stream chunk by chunk), its cookies too
     (their path narrowed to `cookie_path` when given: the prefix the super app serves the bound app
     under). `drop_cookies`: the names (by prefix) of the browser's cookies that are not this app's
-    business and stay here (the login app's session, kept from the integrator)."""
+    business and stay here (the login app's session, kept from the integrator). `keep_cookies`
+    (1.53.0): when given, only the cookies whose names begin so travel (a linked app's own: nothing
+    else of the browser's reaches an app that may be on another machine). An https address is reached
+    over TLS, its certificate checked."""
     raw_length = handler.headers.get("Content-Length") or "0"
     length = int(raw_length) if raw_length.isdecimal() else -1
     if length < 0:
@@ -98,16 +121,23 @@ def forward(handler, method: str, url: str, path: str, *, cookie_path: str | Non
     body = handler.rfile.read(length) if length else None
     target = urlsplit(url)
     headers = {name: value for name in FORWARDED if (value := handler.headers.get(name)) is not None}
-    if drop_cookies and headers.get("Cookie"):
-        kept = [c.strip() for c in headers["Cookie"].split(";")
-                if c.strip() and not c.strip().partition("=")[0].startswith(drop_cookies)]
+    if (drop_cookies or keep_cookies) and headers.get("Cookie"):
+        kept = []
+        for c in (c.strip() for c in headers["Cookie"].split(";")):
+            name = c.partition("=")[0]
+            if not c or (drop_cookies and name.startswith(drop_cookies)) or (keep_cookies and not name.startswith(keep_cookies)):
+                continue
+            kept.append(c)
         if kept:
             headers["Cookie"] = "; ".join(kept)
         else:
             del headers["Cookie"]
     headers["Host"] = target.netloc
-    conn = http.client.HTTPConnection(target.hostname, target.port, timeout=None)
+    connection = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
+    conn = connection(target.hostname, target.port, timeout=CONNECT_SECONDS)
     try:
+        conn.connect()  # within CONNECT_SECONDS (another machine that never answers is not waited on for good)
+        conn.sock.settimeout(None)  # then as long as the answer takes: an event stream stays open
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
     except OSError:

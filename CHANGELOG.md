@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.53.0 (2026-11-15)
+
+A linked app is reached at its own address (the user, 2026-11-14: "linking vs including the objects, is so that parts
+of the code can be executed remotely, and connected through the icon bridge"): `Binding.reachable()` asks this
+machine's port for a loopback address as before, and another machine's over the network (a TCP connection, at most
+`REACH_SECONDS`); `Binding.host`, and the port of an address without one is its scheme's (443, 80). Nothing is started
+from a link (`module` kept for the callers of 1.9-1.51, unused). `forward(keep_cookies=)`: only the cookies a
+linked app owns travel to it (nothing else of the browser's reaches an app that may be on another machine); an https
+address is reached over TLS, its certificate checked; the connection is waited for `CONNECT_SECONDS` at the most
+(another machine that never answers no longer holds a request for good), the answer as long as it takes.
+liminal-charts links the platform with them.
+
 ## 1.52.0 (2026-11-14)
 
 Four ports, nothing started in the background, the login an object of the app that inherits it (the user: "i only want

@@ -163,3 +163,63 @@ def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path)
     while not done and time.monotonic() < end:
         time.sleep(0.05)
     assert done == [app.served] and not web.listening(port) and any("no page has been in touch" in m for m in lines)
+
+
+def test_a_link_is_reached_at_its_own_address_on_another_machine_too(monkeypatch):
+    """1.53.0 (the user, 2026-11-14: "linking vs including the objects, is so that parts of the code can be executed
+    remotely"): a loopback link asks this machine's port; another machine's address is asked over the network, briefly;
+    nothing is started either way."""
+    import socket as socket_mod
+
+    asked: list = []
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def connect(address, timeout=None):
+        asked.append((address, timeout))
+        if address[0] == "down.example":
+            raise OSError("no route to host")
+        return Answer()
+    monkeypatch.setattr(socket_mod, "create_connection", connect)
+    assert Binding("platform", "http://box.example:8775").reachable() is True
+    assert Binding("platform", "http://down.example:8775").reachable(timeout=0.5) is False
+    assert asked == [(("box.example", 8775), binding_mod.REACH_SECONDS), (("down.example", 8775), 0.5)]
+    seen: list = []
+    monkeypatch.setattr(binding_mod.web, "listening", lambda port: seen.append(port) or False)
+    assert Binding("platform", "http://127.0.0.1:8775").reachable() is False and seen == [8775] and len(asked) == 2
+    assert Binding("x", "https://box.example").port == 443 and Binding("x", "http://box.example").port == 80
+    assert Binding("x", "http://box.example:9").host == "box.example" and Binding("x", "http://[::1]:8775").host == "::1"
+
+
+def test_a_link_passes_on_only_the_linked_apps_own_cookies_when_told():
+    """1.53.0 (keep_cookies): what reaches a linked app, which may be on another machine, is its own cookies and nothing
+    else of the browser's (the front's own login and profile stay here); drop_cookies still drops by name."""
+
+    class Keeping(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            forward(self, "GET", url, self.path[len("/demo"):], cookie_path="/demo", keep_cookies=("liminal_login_demo",),
+                    drop_cookies=("liminal_login_demo_old",))
+
+    up = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{up.server_address[1]}"
+    front = ThreadingHTTPServer(("127.0.0.1", 0), Keeping)
+    threading.Thread(target=front.serve_forever, daemon=True).start()
+    try:
+        cookie = "liminal_login_charts=c; mc_profile=3; liminal_login=own; liminal_login_demo=d; liminal_login_demo_old=x"
+        j = json.loads(_get(front.server_address[1], "/demo/api/echo", {"Cookie": cookie})[1])
+        assert j["cookie"] == "liminal_login_demo=d"  # its own alone
+        assert json.loads(_get(front.server_address[1], "/demo/api/echo", {"Cookie": "mc_profile=3"})[1])["cookie"] is None
+    finally:
+        front.shutdown()
+        front.server_close()
+        up.shutdown()
+        up.server_close()
