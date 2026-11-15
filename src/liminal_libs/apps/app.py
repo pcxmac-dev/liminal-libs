@@ -137,7 +137,7 @@ class App:
             if self._login_object is None and not self._login_missing:
                 try:
                     self._login_object = self.make_login()
-                except (ImportError, AttributeError, TypeError, ValueError, OSError) as e:
+                except Exception as e:  # noqa: BLE001 - not installed, a store that cannot open: the page as without one
                     self._login_missing = True
                     self.log(f"{self.NAME}: the login it inherits could not be made ({type(e).__name__}: {e}): no sign-in")
             return self._login_object
