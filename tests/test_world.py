@@ -1400,3 +1400,67 @@ def test_a_file_whose_check_takes_too_long_is_said_to_go_in_place_still(tmp_path
         view.install(URL)
     assert placed.wait(3) and wait_for(lambda: downloading() == [])
     assert (tmp_path / "geoip" / "dbip-city-lite-2026-11.mmdb").exists()
+
+
+@needs_reader
+def test_geoip_files_on_another_systems_drive_are_that_systems(tmp_path, monkeypatch):
+    """1.58.0, for the suite run a second time inside WSL: each system's platform keeps its own GeoIP files. A data
+    folder on another system's drive (mounts.foreign) holds that system's: the tab maps none of its files (mapped, one
+    would keep that system's own update from replacing it), says why, offers no install, and an install asked anyway,
+    its licence accepted, is refused in words before anything is fetched. Its own folder again: placed, and the
+    install offered as ever."""
+    from liminal_libs import mounts
+
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    (theirs / "dbip-city-lite-2026-10.mmdb").write_bytes(mmdb(PLACES, built=OCTOBER))  # last month's: Update... if read
+    monkeypatch.setattr(mounts, "foreign", lambda path, table=None: str(path).startswith(str(theirs)))
+    fetched: list = []
+    fw = Walled(capture_factory=Feed, geo_folder=theirs, clock=Clock(), wall=Clock(NOW),
+                fetch=lambda url, timeout: fetched.append(url))
+    traffic_of(fw.world_view().book)
+    page = fw.world()
+    view = fw.world_view()
+    assert view.geoip() is None and view._geoip is None and view.elsewhere().startswith("Reading the GeoIP files: ")
+    assert "forms" not in page and "actions" not in page  # no install offered, nor an update
+    assert [o for o in page["globe"]["origins"] if o["lat"] is not None] == []  # nothing placed
+    note = page["globe"]["note"]
+    assert "No place is known here. Reading the GeoIP files: " in note
+    assert "is on another system's drive, and that is done from that system, not from here." in note
+    with pytest.raises(ValueError, match=r"^Installing a GeoIP file: .* is on another system's drive"):
+        fw.world_geoip(True)  # asked anyway, the licence accepted
+    assert fetched == [] and view.describe()["geoip"] is None and downloading() == []
+    monkeypatch.setattr(mounts, "foreign", lambda path, table=None: False)  # the folder this machine's own after all
+    page = fw.world()
+    assert [o["city"] for o in page["globe"]["origins"] if o["lat"] is not None]  # placed
+    assert [a["title"] for a in page["actions"]] == ["Update the GeoIP file…"]  # October's file, in November
+    fw.detach()
+
+
+@needs_reader
+def test_the_data_folder_itself_on_another_systems_drive_is_that_systems(monkeypatch):
+    """(1.58.0's review) A firewall's view is made with no folder of its own (Firewall.make_world_view): it judges the
+    data folder's geoip/ (geo.data_folder(), here the fixture's), the case the guard is for. Its files are not read, no
+    install is offered, an install asked anyway is refused before anything is fetched; and a plugin that names no
+    download is never told the tab offers one."""
+    from liminal_libs import mounts
+
+    theirs = geo.data_folder()
+    theirs.mkdir(parents=True)
+    (theirs / "dbip-city-lite-2026-10.mmdb").write_bytes(mmdb(PLACES, built=OCTOBER))
+    there = os.path.realpath(theirs)
+    monkeypatch.setattr(mounts, "foreign", lambda path, table=None: str(path).startswith(there))
+    fetched: list = []
+    fw = Walled(capture_factory=Feed, clock=Clock(), wall=Clock(NOW), fetch=lambda url, timeout: fetched.append(url))
+    traffic_of(fw.world_view().book)
+    page = fw.world()
+    assert fw.world_view().folder == theirs and fw.world_view().geoip() is None
+    assert "forms" not in page and "actions" not in page
+    note = page["globe"]["note"]
+    assert "No place is known here. Reading the GeoIP files: " in note and "the tab offers its install." in note
+    with pytest.raises(ValueError, match=r"^Installing a GeoIP file: .* is on another system's drive"):
+        fw.world_geoip(True)
+    assert fetched == []
+    bare = fw.world_view().page(can_install=False)["globe"]["note"]  # a plugin that names no download
+    assert "This plugin offers no GeoIP file to download." in bare and "offers its install" not in bare
+    fw.detach()

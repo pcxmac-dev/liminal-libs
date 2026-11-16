@@ -19,7 +19,10 @@ counts them as "local network".
 
 The files are kept in the data folder's geoip/ (`data_folder`), one current copy. `install_mmdb` unpacks a download
 there beside the old one (the bytes it reads, the bytes it unpacks and the time it takes all bounded), checks that it
-reads as a GeoIP file, puts it in place in one step and removes the older copies. `GeoIP.find` opens the newest."""
+reads as a GeoIP file, puts it in place in one step and removes the older copies. `GeoIP.find` opens the newest.
+
+A folder on another system's drive (`foreign`: WSL's /mnt/c, a share, a network drive) holds that system's files: each
+system's platform installs its own, so none there is read or installed from here."""
 from __future__ import annotations
 
 import importlib
@@ -29,6 +32,7 @@ import math
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import weakref
@@ -104,6 +108,66 @@ class Place:
 def data_folder() -> Path:
     """The GeoIP files' folder: geoip/ in the data folder (layout.data_dir())."""
     return layout.data_dir() / FOLDER
+
+
+def _mounts():
+    """liminal_libs.mounts (1.56.0: whose files a path's are), or None with a library from before it."""
+    try:
+        return importlib.import_module(f"{__package__}.mounts")
+    except ImportError:
+        return None
+
+
+_EXTENDED = ("\\\\?\\", "\\\\.\\")  # Windows' extended-length and device spellings of a path: \\?\C:\..., \\.\C:\...
+
+
+def _plain(path: str, windows: bool | None = None) -> str:
+    r"""A Windows path's extended-length or device spelling as its plain one, judged as itself: \\?\C:\x as C:\x, and
+    \\?\UNC\server\share as \\server\share (mounts takes any path that starts \\ for a share's, a local folder so spelled
+    too). Any other path, and any path off Windows, as it is. Nothing is read: the spelling alone. `windows`: whether
+    this is Windows (this machine's word when not given)."""
+    if not (sys.platform == "win32" if windows is None else windows):
+        return path
+    for prefix in _EXTENDED:
+        if path[:len(prefix)] == prefix:
+            rest = path[len(prefix):]
+            if rest[:4].upper() == "UNC\\":
+                return "\\\\" + rest[4:]
+            if len(rest) >= 2 and rest[1] == ":" and rest[0].isalpha():
+                return rest
+    return path
+
+
+def _judged(path) -> str:
+    """`path` as mounts.foreign is asked it: links followed (on Windows mounts judges a path by its spelling alone, so a
+    link from this machine's disk into a share would pass for this machine's own; on Linux it follows them itself), and
+    on Windows in its plain spelling (_plain)."""
+    text = _plain(str(path))
+    try:
+        text = os.path.realpath(text)
+    except (OSError, ValueError):
+        pass
+    return _plain(text)
+
+
+def foreign(path, what: str) -> str:
+    """Why `what` is not done from here with the GeoIP files at `path` (a file, or their folder), in words; "" when it
+    is. A path on another system's drive seen through a mount (WSL's /mnt/c, a share, a network drive: mounts.foreign,
+    asked of the path as it really is, its links followed: _judged) holds that system's files. Each system's platform
+    installs its own (1.58.0, for the suite run a second time inside WSL: its platform keeps its state, its GeoIP files
+    among them, on Ubuntu's own disk), and a file mapped from here would keep that system's own update from replacing
+    it, so its files are neither read nor installed from here: they count as none installed. "" on a library without
+    mounts, and when the check cannot say (as before)."""
+    m = _mounts()
+    if m is None:
+        return ""
+    try:
+        m.owner_only(_judged(path), what)
+    except m.NotHere as e:
+        return str(e)
+    except Exception:  # noqa: BLE001 - a check that cannot say: the path taken as this system's own, as before
+        return ""
+    return ""
 
 
 def available() -> tuple[bool, str]:
@@ -232,13 +296,16 @@ def _leads_to_a_record(reader, version: int, called: str) -> None:
 
 class GeoIP:
     """A GeoIP file open for lookups, memory-mapped: MaxMind DB format, DB-IP's Lite City or any file of
-    GeoIP2-City's shape. GeoError when it cannot be opened. close() lets the file go; a GeoIP is a context manager
-    too. An install into its folder lets it go as well, and then it opens the folder's newest file at its next
-    lookup."""
+    GeoIP2-City's shape. GeoError when it cannot be opened, and for a file on another system's drive (`foreign`: that
+    system's, never mapped from here). close() lets the file go; a GeoIP is a context manager too. An install into its
+    folder lets it go as well, and then it opens the folder's newest file at its next lookup."""
 
     def __init__(self, path, cache: int = CACHE):
         self.path = Path(path)
         self._max = max(1, int(cache))
+        elsewhere = foreign(self.path, "Reading a GeoIP file")
+        if elsewhere:
+            raise GeoError(elsewhere)
         with _PLACING:  # never while an install puts its file in place: it lets go only the GeoIPs it knows
             self._reader, self.mode, self.built, self.type, self.ip_version = _opened(self.path)
             self._cache: OrderedDict = OrderedDict()  # the answers kept, by address (without an IPv6 zone)
@@ -284,8 +351,9 @@ class GeoIP:
 
     def _reopen(self) -> bool:
         """With the lock held, for a GeoIP an install let go: the folder's newest file that opens, opened in its
-        place (the same file when the install's rename failed). Not while an install puts its file in place, and
-        tried again every REOPEN_S while none opens. False when it stays closed; a GeoIP closed by close() always
+        place (the same file when the install's rename failed). A copy on another system's drive (`foreign`: a link
+        there from this folder) is passed over, as GeoIP() refuses it. Not while an install puts its file in place,
+        and tried again every REOPEN_S while none opens. False when it stays closed; a GeoIP closed by close() always
         does."""
         if not self._moved or _clock() < self._retry:
             return False
@@ -293,6 +361,8 @@ class GeoIP:
             return False
         try:
             for path in _copies(self.path.parent):
+                if foreign(path, "Reading a GeoIP file"):
+                    continue
                 try:
                     self._reader, self.mode, self.built, self.type, self.ip_version = _opened(path)
                 except GeoError:
@@ -347,10 +417,10 @@ class GeoIP:
     @classmethod
     def find(cls, folder=None, cache: int = CACHE) -> GeoIP | None:
         """The newest GeoIP file in `folder`, open: the last written *.mmdb there that opens (a broken one is passed
-        over). The data folder's geoip/ when no folder is given. None when there is none, or maxminddb is not
-        here."""
+        over). The data folder's geoip/ when no folder is given. None when there is none, when maxminddb is not here,
+        and when the folder is on another system's drive (`foreign`: its files are that system's, not even listed)."""
         folder = Path(folder) if folder is not None else data_folder()
-        if not available()[0]:
+        if not available()[0] or foreign(folder, "Reading the GeoIP files"):
             return None
         with _PLACING:  # the copies as they are between installs, never halfway through one
             for path in _copies(folder):
@@ -482,11 +552,17 @@ def install_mmdb(source, folder, name: str, limit: int = MAX_UNPACKED, timeout: 
 
     Just before the rename, every GeoIP of this process reading a file in `folder` is let go: on Windows the
     pure-Python reader's mapped file cannot be replaced or deleted. Each opens the folder's newest file at its next
-    lookup (the old one again when the rename failed), and GeoIP.find opens it too."""
+    lookup (the old one again when the rename failed), and GeoIP.find opens it too.
+
+    A folder on another system's drive (`foreign`) is that system's: GeoError before anything is read or written there,
+    the folder not even made."""
+    folder = Path(folder)
+    elsewhere = foreign(folder, "Installing a GeoIP file")
+    if elsewhere:
+        raise GeoError(elsewhere)
     _maxminddb()  # nothing is written without the reader that checks it
     stem = _stem(name)
     _readable(source)
-    folder = Path(folder)
     target = folder / f"{stem}.mmdb"
     deadline = math.inf if timeout is None else _clock() + float(timeout)
     temp: Path | None = None

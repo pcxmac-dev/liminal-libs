@@ -778,3 +778,128 @@ def test_a_records_strings_are_cut_to_fixed_lengths():
     many = {f"l{n}": "" for n in range(geo.LANGUAGES)}
     assert geo._place({"country": {"names": {**many, "zz": "Far"}}}) is None  # past the languages looked through
     assert geo._place({"country": {"names": {"de": "Deutschland"}}}).country_name == "Deutschland"
+
+
+@needs_reader
+def test_a_folder_on_another_systems_drive_is_that_systems(tmp_path, monkeypatch):
+    """1.58.0, for the suite run a second time inside WSL: each system's platform keeps its own state, its GeoIP files
+    among them. A folder on another system's drive (mounts.foreign: WSL's /mnt/c, a share, a network drive) holds that
+    system's files. None is read from here (mapped, it would keep that system's own update from replacing it), nor
+    installed there, the folder not even made; the words are mounts.owner_only's. This machine's own folders are read
+    and installed as ever, and with a library from before mounts (1.56.0) every folder is this machine's, as before."""
+    from liminal_libs import mounts
+
+    theirs, mine = tmp_path / "theirs", tmp_path / "mine"
+    theirs.mkdir()
+    (theirs / "dbip-city-lite-2026-11.mmdb").write_bytes(mmdb(PLACES))
+    asked: list[str] = []
+
+    def stand_in(path, table=None):  # mounts.foreign as a mount table would answer: theirs is the other system's
+        asked.append(str(path))
+        return str(path).startswith(str(theirs))
+    monkeypatch.setattr(mounts, "foreign", stand_in)
+    assert GeoIP.find(theirs) is None and asked == [str(theirs)]  # the folder judged, never listed
+    with pytest.raises(GeoError, match=r"^Reading a GeoIP file: .*dbip-city-lite-2026-11\.mmdb is on another system's "
+                                       r"drive, and that is done from that system, not from here$"):
+        GeoIP(theirs / "dbip-city-lite-2026-11.mmdb")
+    with pytest.raises(GeoError, match=r"^Installing a GeoIP file: .*new is on another system's drive"):
+        install_mmdb(gzip.compress(mmdb(PLACES)), theirs / "new", "dbip-city-lite-2026-12")
+    assert not (theirs / "new").exists() and [p.name for p in theirs.iterdir()] == ["dbip-city-lite-2026-11.mmdb"]
+    assert geo.foreign(theirs, "Reading").startswith("Reading: ") and geo.foreign(mine, "Reading") == ""
+    installed = install_mmdb(gzip.compress(mmdb(PLACES)), mine, "dbip-city-lite-2026-12")  # this machine's own
+    with GeoIP.find(mine) as g:
+        assert g.path == installed and g.lookup("81.2.69.142") == LONDON
+    monkeypatch.setattr(mounts, "foreign", lambda path, table=None: 1 / 0)
+    assert geo.foreign(theirs, "Reading") == ""  # a check that cannot say: as before
+    monkeypatch.setattr(mounts, "foreign", stand_in)
+    monkeypatch.setitem(sys.modules, "liminal_libs.mounts", None)  # a library from before mounts
+    assert geo._mounts() is None and geo.foreign(theirs, "Reading") == ""
+    with GeoIP.find(theirs) as g:
+        assert g.lookup("81.2.69.142") == LONDON
+
+
+def _link(target, link) -> bool:
+    """A link from `link` to the folder `target`: a symbolic one, or on Windows a junction (which needs no right)."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform == "win32":
+        import _winapi
+
+        try:
+            _winapi.CreateJunction(str(target), str(link))
+            return True
+        except OSError:
+            return False
+    return False
+
+
+@needs_reader
+def test_a_reader_let_go_by_an_install_never_reopens_another_systems_file(tmp_path, monkeypatch):
+    """(1.58.0's review) The reopening of a reader an install let go (GeoIP._reopen) mapped the folder's newest copy
+    unjudged: a newer file there that was another system's (a link into its drive) was read once an install into the
+    folder failed to rename. Each copy is judged now, as GeoIP() judges one, and the reader stays on this machine's."""
+    from liminal_libs import mounts
+
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    own, other = mine / "a.mmdb", mine / "b.mmdb"
+    own.write_bytes(mmdb(PLACES, built=OCTOBER))
+    other.write_bytes(mmdb(PLACES + [MOUNTAIN_VIEW], built=NOVEMBER))  # only the other system's places 8.8.8.8
+    past = time.time() - 100
+    os.utime(own, (past, past))  # the other system's is the newest
+    judged: list[str] = []
+
+    def stand_in(path, table=None):  # b.mmdb: another system's file, a link to its drive
+        judged.append(os.path.basename(str(path)))
+        return os.path.basename(str(path)) == "b.mmdb"
+    monkeypatch.setattr(mounts, "foreign", stand_in)
+    held = GeoIP.find(mine)
+    assert held.path == own and held.lookup("8.8.8.8") is None  # passed over
+    replace = os.replace
+
+    def held_open(src, dst):  # the rename refused, as a target another program holds is on Windows
+        raise PermissionError(13, "the target is held open by another program", str(dst))
+    monkeypatch.setattr(os, "replace", held_open)
+    with pytest.raises(GeoError, match="a.mmdb was not installed"):
+        install_mmdb(gzip.compress(mmdb(PLACES, built=NOVEMBER)), mine, "a")
+    monkeypatch.setattr(os, "replace", replace)
+    assert held.describe()["open"] is False  # let go for the rename
+    judged.clear()
+    assert held.lookup("8.8.8.8") is None and held.path == own  # reopened this machine's file, never the other one
+    assert judged[:1] == ["b.mmdb"] and held.describe()["open"] is True
+    held.close()
+
+
+def test_a_link_into_another_systems_drive_is_judged_where_it_leads(tmp_path, monkeypatch):
+    """(1.58.0's review) On Windows mounts judges a path by its spelling: a link from this machine's disk into a share,
+    or into WSL's disk, passed for this machine's own. The guard asks of the path as it really is, its links followed."""
+    from liminal_libs import mounts
+
+    theirs, mine = tmp_path / "theirs", tmp_path / "mine"
+    theirs.mkdir()
+    mine.mkdir()
+    there = os.path.realpath(theirs)
+    monkeypatch.setattr(mounts, "foreign", lambda path, table=None: str(path).startswith(there))
+    link = mine / "geoip"
+    if not _link(theirs, link):
+        pytest.skip("no link can be made here")
+    assert geo.foreign(link, "Reading the GeoIP files").startswith("Reading the GeoIP files: ")
+    assert geo.foreign(link / "dbip-city-lite-2026-11.mmdb", "Reading").startswith("Reading: ")
+    assert geo.foreign(mine, "Reading") == "" and GeoIP.find(link) is None
+
+
+def test_an_extended_length_spelling_is_judged_as_its_plain_one():
+    """(1.58.0's review) mounts takes any path that starts with \\\\ for a share's, so a local folder spelled
+    \\\\?\\C:\\... was taken for another system's: its GeoIP files would stop opening and installs be refused. On
+    Windows the spelling is made plain before it is judged; elsewhere, and for any other spelling, it stays as it is."""
+    plain = lambda path: geo._plain(path, windows=True)  # noqa: E731
+    assert plain("\\\\?\\C:\\Liminal\\store\\data\\geoip") == "C:\\Liminal\\store\\data\\geoip"
+    assert plain("\\\\.\\D:\\geoip") == "D:\\geoip"
+    assert plain("\\\\?\\UNC\\server\\share\\geoip") == "\\\\server\\share\\geoip"  # a share stays a share
+    assert plain("\\\\?\\unc\\server\\share") == "\\\\server\\share"
+    for same in ("\\\\server\\share\\geoip", "C:\\geoip", "\\\\?\\Volume{0a1b2c}\\geoip", "\\\\?\\", ""):
+        assert plain(same) == same
+    assert geo._plain("\\\\?\\C:\\geoip", windows=False) == "\\\\?\\C:\\geoip"  # off Windows: as it is

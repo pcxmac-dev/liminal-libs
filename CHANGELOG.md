@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.58.0 (2026-11-16)
+
+GeoIP files on another system's drive are that system's. For the suite run a second time inside WSL, each system's
+platform keeps its own state on its own disk, its GeoIP files among them: inside WSL, `layout.data_dir()` is Ubuntu's
+own, so the Linux platform installs a copy of its own there. This guards the day a data folder does sit on another
+system's drive, through 1.56.0's `mounts`.
+
+- **`geo.foreign(path, what)`.** Why `what` is not done from here with the GeoIP files at `path`, a file or their folder,
+  in `mounts.owner_only`'s words; "" when they are this machine's. The path is another system's when `mounts.foreign`
+  says so: WSL's /mnt/c, a share, a network drive. On a library without `mounts`, and when the check cannot say, ""
+  (as before).
+  - It asks about the path as it really is, its links followed. On Windows `mounts` judges a path by its spelling, so a
+    link from this machine's disk into a share would have passed for this machine's own.
+  - On Windows, an extended-length spelling (`\\?\C:\...`, `\\?\UNC\server\share`) is judged as its plain one: `mounts`
+    takes any path that starts with `\\` for a share's.
+- **Never read from here.** `GeoIP.find` passes over such a folder without listing it, and `GeoIP(path)` refuses a file
+  there (`GeoError`). A reader an install let go never reopens such a copy either (`GeoIP._reopen`). A file mapped from
+  here would keep that system's own update from replacing it, so the files there count as none installed.
+- **Never installed there.** `install_mmdb` refuses before anything is read or written, and the folder is not even made.
+- **The World Wide Web tab** (`WorldView.elsewhere`).
+  - It looks nothing up and offers no install. The globe's note says why, and says an install is offered with a data
+    folder on this machine's disk only when the plugin names a download.
+  - An install asked anyway, its licence accepted, is refused in words before anything is fetched.
+
+Reviewed before landing: three lenses (correctness, the agreed rule, whether the tests can fail), each finding put to a
+skeptic. The ten that held (six distinct, all minor) are put right here, and the Windows firewall's API card in its
+0.6.1. Two lie in `mounts` itself: its Windows branch judges a path by its spelling, and takes any `\\` for a share's.
+This release follows links and plain spellings itself, and leaves `mounts` to its owner.
+
+Tests: `tests/test_geo.py` and `tests/test_world.py`, with `mounts.foreign` stood in for and with a library without
+`mounts`; the data folder a firewall's view judges; a reader reopened after a failed install; a link into another
+system's drive (a symbolic link, or a junction on Windows).
+
 ## 1.57.0 (2026-11-16)
 
 The link: a SQLite file on another system's drive is opened by that system alone (the user: "keep the databases

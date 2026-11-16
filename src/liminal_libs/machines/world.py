@@ -15,7 +15,8 @@ minutes; and tables of the busiest ports and places.
   (MAX_SAMPLES at most), and the globe draws MAX_DRAWN places at most, the rest summed as "more".
 - Data stays on this machine. Places come from the GeoIP file in the data folder (geo.GeoIP), mapped only while the tab
   is watched or asked: once watching stops, the file is let go, and opened again at the next ask. No peer's address is
-  sent anywhere, and none is looked up by name.
+  sent anywhere, and none is looked up by name. A data folder on another system's drive (WSL's /mnt/c, a share:
+  geo.foreign) holds that system's files: none is read or installed from here, and the page says so.
 - Home is the place the user set (LIMINAL_HOME_PLACE, "lat,lon[,label]", read through the plugin's login). Else it is
   where the GeoIP file puts this network's public address, asked once of the name servers the plugin names
   (dns.public_address: they are asked for the name that answers with the asker's own address, nothing about any peer).
@@ -939,9 +940,17 @@ class WorldView:
         self.stop()
 
     # -- the GeoIP file -------------------------------------------------------------------------------------------------
+    def elsewhere(self) -> str:
+        """Why this view's GeoIP files are another system's, in words ("" when they are this one's): the folder is on
+        another system's drive seen through a mount (geo.foreign: WSL's /mnt/c, a share, a network drive). They count as
+        none installed: never read from here, and no install offered or made."""
+        return geo.foreign(self.folder, "Reading the GeoIP files")
+
     def geoip(self) -> geo.GeoIP | None:
         """The GeoIP file open for lookups: the folder's newest (looked for again every GEO_LOOK_S while none opens);
-        None without one, or without maxminddb, and once closed."""
+        None without one, or without maxminddb, once closed, and for a folder on another system's drive (elsewhere)."""
+        if self.elsewhere():
+            return None
         with self._lock:
             if self._geoip is not None or self.closed:
                 return self._geoip
@@ -981,7 +990,8 @@ class WorldView:
 
         `log`: each step said to it, and the bytes so far with their percent, at most every PROGRESS_S (the platform's job
         panel). What was installed, in words, for the page. ValueError for an address that is no https one, maxminddb
-        missing, a download under way or a view closed; geo.GeoError when nothing was installed (the current file stays as
+        missing, a download under way, a view closed, or a folder on another system's drive (geo.foreign: that system's
+        platform installs its own; nothing is fetched); geo.GeoError when nothing was installed (the current file stays as
         it was)."""
         say = _sayer(log)
         template = str(template or "").strip()
@@ -991,6 +1001,9 @@ class WorldView:
         if any(urlsplit(month_url(template, y, m)).scheme.lower() != "https" or not _host(month_url(template, y, m))
                for y, m in wanted):
             raise ValueError("a GeoIP file is downloaded over https only")
+        elsewhere = geo.foreign(self.folder, "Installing a GeoIP file")
+        if elsewhere:
+            raise ValueError(elsewhere)
         if not self._installing.acquire(blocking=False):
             raise ValueError("a GeoIP file is being downloaded already: wait for it to finish")
         try:
@@ -1333,9 +1346,14 @@ class WorldView:
         if geoip is not None and isinstance(attribution, Mapping) and (attribution.get("text") or attribution.get("url")):
             mark = {"text": str(attribution.get("text") or ""), "url": str(attribution.get("url") or "")}
         globe_notes = [home_note] if home_note else []
+        elsewhere = self.elsewhere()
         if not readable:
             globe_notes.append(f"Places cannot be read here: {unreadable}. Install maxminddb in the platform's Python "
                                f"({os.path.realpath(sys.executable)} -m pip install maxminddb).")
+        elif elsewhere:
+            globe_notes.append(f"No place is known here. {elsewhere}. Each system's platform installs a GeoIP file of its "
+                               "own" + (": with this platform's data folder on this machine's own disk, the tab offers its "
+                                        "install." if can_install else ". This plugin offers no GeoIP file to download."))
         elif geoip is None:
             globe_notes.append("No GeoIP file is installed, so no place is known and the globe draws none yet."
                                + (" Install the GeoIP file… downloads one once you accept its licence." if can_install
@@ -1363,8 +1381,9 @@ class WorldView:
 
     def _offer(self, geoip, readable: bool, can_install: bool, now: float) -> str | None:
         """Whether the page offers the GeoIP file's download: "install" when none is open, "update" when the one open was
-        built before this month; None when the plugin names no download or the file cannot be read here anyway."""
-        if not can_install or not readable or self._installing.locked():
+        built before this month; None when the plugin names no download, the file cannot be read here anyway, or the
+        folder is on another system's drive (elsewhere: that system's platform installs its own)."""
+        if not can_install or not readable or self._installing.locked() or self.elsewhere():
             return None
         if geoip is None:
             return "install"
