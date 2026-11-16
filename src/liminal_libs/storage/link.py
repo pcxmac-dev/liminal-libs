@@ -138,6 +138,9 @@ def _params(parameters):
 
 
 # -- the helper's side -------------------------------------------------------------------------------------------------
+_helper = threading.local()  # `here` in a thread that holds a helper's connection (the guard lets its opens through)
+
+
 class _Worker(threading.Thread):
     """One connection on the files' own system, worked in a thread of its own: its requests in the order they came."""
 
@@ -153,6 +156,7 @@ class _Worker(threading.Thread):
         self.error: BaseException | None = None
 
     def run(self) -> None:
+        _helper.here = True  # this thread is the files' own side: what it opens, it opens as their owner
         try:
             self.conn = self._open()
         except BaseException as e:  # noqa: BLE001 - told to the one who asked
@@ -937,8 +941,8 @@ atexit.register(_close_links)
 
 # -- nothing opens another system's file directly ---------------------------------------------------------------------
 def _refuse_direct(event: str, args) -> None:
-    if event != "sqlite3.connect" or not args:
-        return
+    if event != "sqlite3.connect" or not args or getattr(_helper, "here", False):
+        return  # (a helper inside this process, the tests' loopback, is the files' own side: it opens them)
     target = args[0]
     if isinstance(target, bytes):
         target = os.fsdecode(target)

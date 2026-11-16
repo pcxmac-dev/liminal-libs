@@ -139,17 +139,20 @@ def test_linux_runtime_builds_the_confirmed_change_commands():
         rt.unload()
 
 
-def test_linux_runtime_is_native_linux_only():
+def test_linux_runtime_is_for_linux_and_not_for_windows():
+    """On Windows it does not apply. On Linux it does, inside a WSL distribution too since 1.57.0 (the user,
+    2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some capability
+    this should reflect in the plugin": machines.linux.why_not_native no longer refuses a WSL kernel)."""
     runner, _ = linux_runner()
     on_windows = LinuxRuntime(Shell("local", runner=runner), system="win32", release="10", env={})
     applies, why = on_windows.applies()
-    assert not applies and "native Linux machine" in why and "Windows" in why
+    assert not applies and "this one runs Windows" in why
     status = on_windows.status()
     assert status == {"present": False, "system": "linux", "applies": False, "version": "", "why": why,
                       "summary": "not for this machine"}
     in_wsl = LinuxRuntime(Shell("local", runner=runner), system="linux",
                           release="6.6-microsoft-standard-WSL2", env={"WSL_DISTRO_NAME": "Liminal-Ubuntu"})
-    assert not in_wsl.applies()[0] and "WSL" in in_wsl.applies()[1]
+    assert in_wsl.applies() == (True, "")  # Linux like any other: what WSL lacks is said by what it reads
 
 
 def test_linux_runtime_says_when_bpftool_is_missing():
