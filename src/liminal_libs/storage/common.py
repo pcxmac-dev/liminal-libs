@@ -71,12 +71,28 @@ def add_column(conn: sqlite3.Connection, table: str, column: str, kind: str) -> 
             raise
 
 
+def utc_now() -> datetime:
+    """The time, as what is stored is stamped with it: this system's clock; in a process that reaches its files
+    through the link, the clock of the system that owns them (link.Link.owner_now: the two systems' clocks
+    differ, WSL's by seconds at times, and a copy that asks what was written since it began would miss a row
+    stamped by a clock that runs behind)."""
+    from . import link
+
+    owner = link.owner_link()
+    if owner is not None and not owner.dead:
+        try:
+            return datetime.fromtimestamp(owner.owner_now(), timezone.utc)
+        except sqlite3.Error:
+            pass  # the link ended meanwhile: its files cannot be written any more either
+    return datetime.now(timezone.utc)
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return utc_now().isoformat(timespec="seconds")
 
 
 def _now_precise() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return utc_now().isoformat(timespec="microseconds")
 
 
 def _date_ms(d: date) -> int:

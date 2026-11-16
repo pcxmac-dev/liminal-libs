@@ -1,6 +1,7 @@
 """The log every program of Liminal writes: logs/liminal.log beside the database, rotated."""
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,10 @@ class Logger:
     """Print and append to a log file next to the database, rotated at LOG_MAX_BYTES."""
 
     def __init__(self, path: Path | None):
+        if path and _another_systems(path):
+            # beside a database on another system's drive (the suite inside WSL on Windows' data): a file of this
+            # system's own, logs/liminal-linux.log, so two systems never append to one file
+            path = path.with_name(f"{path.stem}-{_system()}{path.suffix}")
         self.path = path
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,6 +40,16 @@ class Logger:
             self.path.replace(self.path.with_name(f"{self.path.name}.1"))
         except OSError:
             pass  # another process rotated it, or it is not there yet: write on
+
+
+def _another_systems(path: Path) -> bool:
+    from . import mounts
+
+    return mounts.foreign(path)
+
+
+def _system() -> str:
+    return "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
 
 
 def log_to(db_path: Path | str) -> Logger:

@@ -63,6 +63,7 @@ COMMAND_VAR = "LIMINAL_LINK_COMMAND"  # the helper's command on the files' own s
 FORCE_VAR = "LIMINAL_LINK"  # "loopback": every file goes through a link inside this process (a suite run over it)
 LOG_VAR = "LIMINAL_LINK_LOG"  # a file for the helper's own words (its standard error); none by default
 _DEFAULT = object()  # isolation_level left as sqlite3 has it
+_here = time.time  # this system's clock, as the link's own side reads it (a test sets the two systems' apart)
 
 
 class LinkError(RuntimeError):
@@ -534,7 +535,7 @@ class Link:
                     break
                 rid, ok, result, state = msg
                 if state and state[0]:
-                    self.skew, self.heard = float(state[0]) - time.time(), time.monotonic()
+                    self.skew, self.heard = float(state[0]) - _here(), time.monotonic()
                 with self._lock:
                     wait = self._waiting.pop(rid, None)
                 if wait is not None:
@@ -570,7 +571,7 @@ class Link:
         """The time by the clock of the system that owns the files (what is stamped into them is stamped by it)."""
         if time.monotonic() - self.heard > 30.0:
             self.call("clock")
-        return time.time() + self.skew
+        return _here() + self.skew
 
     def close(self) -> None:
         """The pipe closed: the helper ends, and everything it held open with it."""
@@ -898,6 +899,24 @@ def link_for(path) -> Link | None:
                                   owner_path=mounts.owner_path, name="Windows")
             _links[key] = link
         return link
+
+
+MAX_SKEW_S = 1.0  # past this difference between the two systems' clocks, a linked process fetches nothing
+
+
+def clock_off(path) -> str:
+    """Why nothing should be fetched into the database at `path` from here just now, in words: this system's clock
+    is more than MAX_SKEW_S off the clock of the system that owns the file (what a run decides by this clock, a
+    day's end, a session's open, would not agree with what the other system reads). "" when the file is this
+    system's own, or the clocks agree."""
+    link = link_for(path)
+    if link is None:
+        return ""
+    link.call("clock")
+    if abs(link.skew) <= MAX_SKEW_S:
+        return ""
+    return (f"this system's clock is {abs(link.skew):.1f} s {'behind' if link.skew > 0 else 'ahead of'} the clock of "
+            f"{link.name}, which holds the data: nothing is fetched from here until they agree to within {MAX_SKEW_S:g} s")
 
 
 def owner_link() -> Link | None:

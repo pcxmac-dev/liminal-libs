@@ -248,7 +248,7 @@ def test_a_link_that_is_gone_is_said_and_never_made_again(linked):
 def test_the_owners_clock_and_the_users_saved_settings_come_over_the_link(linked):
     link, _ = linked
     assert abs(link.owner_now() - time.time()) < 2 and abs(link.skew) < 2  # the same machine here: the same clock
-    link.skew = 12.0  # WSL's clock ten seconds off Windows': what is stamped follows the files' own system
+    link.skew = 12.0  # WSL's clock twelve seconds off Windows': what is stamped follows the files' own system
     assert 11 < link.owner_now() - time.time() < 13
     assert link.saved(["MASSIVE_API_KEY", "UNSET"]) == {"MASSIVE_API_KEY": "value of MASSIVE_API_KEY"}
     quiet = Link.loopback([], saved=None)

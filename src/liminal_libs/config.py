@@ -336,10 +336,12 @@ class UserEnvironment:
 
     def saved(self) -> dict[str, str]:
         """The API keys and plan names among the user's saved environment variables ({} where there
-        are none to read: another OS without a stand-in, or the key unreadable)."""
+        are none to read: another OS without a stand-in, or the key unreadable). On another OS whose
+        database is on Windows' drive (the suite inside WSL), they are Windows' own, asked of the
+        helper there (linked): told to this process, kept nowhere on this system."""
         registry = self._winreg()
         if registry is None:
-            return {}
+            return self.linked()
         try:
             out = {}
             with registry.OpenKey(registry.HKEY_CURRENT_USER, "Environment") as key:
@@ -354,12 +356,32 @@ class UserEnvironment:
         except OSError:
             return {}
 
+    def linked(self) -> dict[str, str]:
+        """The saved variables of the system that holds this process's database, when that is another system
+        reached through the link (storage/link.py; LIMINAL_DB names a file on its drive): asked of the helper
+        there by name. {} when the database is this system's own, or the helper cannot be had (the database
+        then cannot be opened either, and says why)."""
+        import sqlite3
+
+        from . import mounts
+        from .storage import link
+
+        main = (os.environ.get("LIMINAL_DB") or "").strip()
+        if not main or not (mounts.foreign(main) or link.forced()):
+            return {}
+        try:
+            owner = link.link_for(main)
+            return {k: str(v) for k, v in owner.saved(self.names).items() if v} if owner is not None else {}
+        except (link.LinkError, OSError, sqlite3.Error):
+            return {}
+
     def save(self, name: str, value: str | None) -> None:
         """Save one of the user's environment variables (None: remove it) where tools/set-key.ps1
         saves them, and in this process's environment."""
         registry = self._winreg()
         if registry is None:
-            raise ConfigError("saving a setting needs Windows' user environment variables: set it in .env")
+            raise ConfigError("saving a setting needs Windows' user environment variables: set it in .env (a suite "
+                              "inside WSL reads the ones saved on Windows: save it there)")
         with registry.OpenKey(registry.HKEY_CURRENT_USER, "Environment", 0, registry.KEY_SET_VALUE) as key:
             if value is None:
                 try:
