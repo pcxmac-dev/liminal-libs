@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.61.2 (2026-11-16)
+
+A request is in the picture before it is answered. Found in Ubuntu: the platform's test of who talks to whom failed
+once with a `KeyError` for the request it had just made.
+
+- The frame noted a request (`traffic.record`) after its answer was written. Whoever asked `/api/traffic` on the
+  heels of that answer (a page's next request, a test's next line) could be answered first, by another thread, and
+  not find it. `_answer` works the answer out, notes the request, then writes the answer. The time noted is the
+  app's own work; the writing of the answer is no longer in it.
+- An `api()` that returns something else than `(status, data)` or `(status, data, headers)` is the app's fault like
+  any other: logged and answered 500. Before, the connection was dropped without an answer.
+- The test slows the note, so that the order decides and not the timing: with the answer written first the request
+  is missing every run, with the note first never.
+
 ## 1.61.1 (2026-11-16)
 
 A refused write is answered, not lost with its connection. Found while the suites were run on a busy machine: one

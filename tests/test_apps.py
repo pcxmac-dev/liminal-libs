@@ -33,6 +33,8 @@ class DemoApp(App):
             raise Refused(418, "no")
         if path == "/api/boom":
             raise RuntimeError("a secret the page must not see")
+        if path == "/api/odd":
+            return 200  # not (status, data): the app's fault, like a route that raises
         return super().api(handler, method, path, query, body)
 
 
@@ -168,6 +170,9 @@ def test_an_app_serves_its_page_the_librarys_files_its_tray_and_its_routes(demo)
     assert status == 418 and json.loads(body) == {"error": "no"}
     status, body, _ = _get(port, "/api/boom")
     assert status == 500 and b"secret" not in body and any("GET /api/boom failed: RuntimeError" in m for m in lines)
+    status, body, _ = _get(port, "/api/odd")  # an answer that is not (status, data): said the same way (1.61.2)
+    assert status == 500 and json.loads(body) == {"error": "demo could not answer; see its log"}
+    assert any("GET /api/odd failed: TypeError" in m for m in lines)
 
 
 def test_an_app_takes_its_port_from_its_variable_and_stops_when_told(tmp_path, monkeypatch):

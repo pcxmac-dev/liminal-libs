@@ -516,23 +516,22 @@ def make_handler(app: App):
 
         def _answer(self, method: str, parts, body: dict | None) -> None:
             query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
-            began, status = time.perf_counter(), HTTPStatus.INTERNAL_SERVER_ERROR
+            began, headers = time.perf_counter(), None
             try:
-                try:
-                    out = app.api(self, method, parts.path, query, body)
-                except Refused as e:
-                    status = e.status
-                    return web.send_json(self, {"error": e.reason}, e.status)
-                except Exception as e:  # noqa: BLE001 - the app's fault, logged there; the page gets no detail
-                    app.log(f"{app.NAME}: {method} {parts.path} failed: {type(e).__name__}: {e}")
-                    return web.send_json(self, {"error": f"{app.NAME} could not answer; see its log"},
-                                         HTTPStatus.INTERNAL_SERVER_ERROR)
-                status, data, *rest = out
-                web.send_json(self, data, status, rest[0] if rest else None)
-            finally:  # every request noted (its path, never its query or body) but the picture's own
-                if parts.path != TRAFFIC_PATH:
-                    app.traffic.record(_caller(self), app.NAME, app.classify(method, parts.path), f"{method} {parts.path}",
-                                       (time.perf_counter() - began) * 1000, int(status) < 400)
+                status, data, *rest = app.api(self, method, parts.path, query, body)
+                headers = rest[0] if rest else None
+            except Refused as e:
+                status, data = e.status, {"error": e.reason}
+            except Exception as e:  # noqa: BLE001 - the app's fault, logged there; the page gets no detail
+                app.log(f"{app.NAME}: {method} {parts.path} failed: {type(e).__name__}: {e}")
+                status, data = HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{app.NAME} could not answer; see its log"}
+            # every request noted (its path, never its query or body) but the picture's own, and noted before it is
+            # answered (1.61.2): whoever asks the picture on the heels of this answer finds the request in it. Noted
+            # after, as it was, the next request could be answered first, by another thread
+            if parts.path != TRAFFIC_PATH:
+                app.traffic.record(_caller(self), app.NAME, app.classify(method, parts.path), f"{method} {parts.path}",
+                                   (time.perf_counter() - began) * 1000, int(status) < 400)
+            web.send_json(self, data, status, headers)
 
     return Handler
 

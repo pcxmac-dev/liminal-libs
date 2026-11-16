@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from http.client import HTTPConnection
 
 import pytest
@@ -150,6 +151,41 @@ def test_an_app_notes_its_pages_requests_and_its_plugins_attached_asked_and_deta
     assert nodes["acme"]["attached"] is True and nodes["page"]["role"] == "caller" and nodes["client"]["role"] == "caller"
     assert snap["app"] == "demo" and snap["classes"] == CLASSES and len(snap["recent"]) <= 50
     assert app.detach("acme") and app.traffic.recent()[0]["what"] == "detached"
+
+
+def test_a_request_is_in_the_picture_before_it_is_answered(tmp_path, monkeypatch):
+    """The picture is asked on the heels of an answer (a page's next request, a test's next line), and the request just
+    answered is in it: the frame notes a request before it writes its answer. Noted after, as it was until 1.61.2, the
+    next request could be answered first, by another thread (seen 2026-11-16 in Ubuntu: the platform's test of the
+    picture, a KeyError for the request it had just made). The note is slowed here, so that the order decides and not
+    the timing: an answer written first would be read, and the picture asked, well before the note."""
+    TracingApp.STATIC = tmp_path
+    app = TracingApp(log=lambda m: None, login=Pairs({}))
+    record = app.traffic.record
+
+    def slow(*args, **kwargs):
+        time.sleep(0.3)
+        return record(*args, **kwargs)
+    app.start(0)
+    monkeypatch.setattr(app.traffic, "record", slow)
+    try:
+        port = int(app.served.rstrip("/").rsplit(":", 1)[1])
+
+        def get(path):
+            conn = HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", path)
+            r = conn.getresponse()
+            return r.status, json.loads(r.read())
+
+        def links():
+            return {(k["from"], k["to"], k["kind"]): k for k in get("/api/traffic")[1]["links"]}
+        assert get("/api/plugins")[0] == 200
+        assert links()[("client", "demo", "read")]["what"] == "GET /api/plugins"
+        assert get("/api/nothing")[0] == 404  # a refusal is noted before it is answered, too
+        seen = links()[("client", "demo", "read")]
+        assert (seen["count"], seen["failed"], seen["what"]) == (2, 1, "GET /api/nothing")
+    finally:
+        app.stop()
 
 
 class Prober:
