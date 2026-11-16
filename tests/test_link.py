@@ -143,6 +143,124 @@ def test_errors_come_back_as_sqlite3s_own(linked):
     conn.close()
 
 
+def test_a_value_of_a_class_built_on_a_number_or_text_crosses_as_what_it_holds(linked):
+    """Found running the charts suite over the link: a price read out of a table (a numpy.float64, which is a float
+    to sqlite3) went onto the pipe as numpy's own class, the helper read nothing but plain data, and the link ended
+    for the whole process."""
+    np = pytest.importorskip("numpy")
+    import enum
+
+    class Side(enum.IntEnum):
+        BUY = 1
+
+    class Ticker(str):
+        def __str__(self):  # what a class says of itself is not what sqlite3 binds: the text it holds is
+            return "not this"
+
+    class Raw(bytes):
+        pass
+
+    link, data = linked
+    conn = link.open(data / "kinds.db")
+    conn.execute("CREATE TABLE v (a, b, c, d, e, f)")
+    given = (np.float64(10.25), Side.BUY, Ticker("AAPL"), Raw(b"\x00raw"), np.str_("text"), memoryview(b"view"))
+    conn.execute("INSERT INTO v VALUES (?, ?, ?, ?, ?, ?)", given)
+    conn.executemany("INSERT INTO v (a, b) VALUES (:a, :b)", [{"a": np.float64(1.5), "b": True}])
+    stored = conn.execute("SELECT * FROM v ORDER BY rowid").fetchall()
+    assert stored == [(10.25, 1, "AAPL", b"\x00raw", "text", b"view"), (1.5, 1, None, None, None, None)]
+    assert [type(x) for x in stored[0]] == [float, int, str, bytes, str, bytes]
+    own = sqlite3.connect(":memory:")  # ... which is what sqlite3 itself stores of the same values
+    own.execute("CREATE TABLE v (a, b, c, d, e, f)")
+    own.execute("INSERT INTO v VALUES (?, ?, ?, ?, ?, ?)", given)
+    assert own.execute("SELECT * FROM v").fetchall() == stored[:1]
+    own.close()
+    # a numpy integer is no int: sqlite3 would store its eight raw bytes; here it is refused, in sqlite3's words
+    with pytest.raises(sqlite3.ProgrammingError, match="type 'int64' is not supported"):
+        conn.execute("INSERT INTO v (a) VALUES (?)", (np.int64(7),))
+    with pytest.raises(sqlite3.ProgrammingError, match="not supported"):
+        conn.executemany("INSERT INTO v (a) VALUES (?)", [(1,), (np.arange(3),)])
+    assert conn.execute("SELECT COUNT(*) FROM v").fetchone() == (2,)  # and the link is there as before
+    conn.close()
+
+
+def test_what_is_not_plain_is_refused_before_it_is_sent_and_the_link_stays(linked):
+    link, data = linked
+    conn = link.open(data / "stays.db")
+    for bad in (object(), time.time, sqlite3.OperationalError("x"), datetime(2026, 11, 15), [(1, {"k": Link})]):
+        with pytest.raises(LinkError, match="plain data only, not a "):
+            link.call("clock", bad)  # by the one who gave it: nothing of it reached the helper
+    assert conn.execute("SELECT 1").fetchone() == (1,) and link.dead is None and not link._waiting
+    assert abs(link.call("clock")[0] - time.time()) < 5
+    for fine in (bytearray(b"ab"), {1, 2}, frozenset(("a",))):  # what is written without naming a class is read
+        assert lk._loads(lk._dumps(fine)) == fine
+    conn.close()
+
+
+def test_a_closed_connection_has_left_its_file_closed(linked, monkeypatch):
+    """Found running the charts suite over the link: close() came back before the helper had closed the file, so
+    what the caller did next (the file's size read, a copy made of it) found a file still open, its last writes
+    still in its log."""
+    link, data = linked
+    shut = lk._Worker._shut
+
+    def slowly(self) -> None:
+        time.sleep(0.3)  # the helper busy closing: writing the log back into the file
+        shut(self)
+
+    monkeypatch.setattr(lk._Worker, "_shut", slowly)
+    conn = link.open(data / "closing.db")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (n, pad)")
+    conn.executemany("INSERT INTO t VALUES (?, ?)", [(n, "x" * 500) for n in range(2000)])
+    conn.commit()
+    wal = data / "closing.db-wal"
+    assert wal.exists() and wal.stat().st_size > 500_000 and (data / "closing.db").stat().st_size < 100_000
+    conn.close()
+    assert not wal.exists() and (data / "closing.db").stat().st_size > 1_000_000  # written back, the log gone
+    assert link.server._workers == {}  # and the helper holds nothing of it
+
+
+def test_the_statements_sqlite_runs_are_told_as_sqlite3_tells_them(linked):
+    link, data = linked
+    over, own = link.open(data / "traced.db"), sqlite3.connect(str(data / "traced-own.db"))
+    told: dict[str, list] = {"over": [], "own": []}
+    for name, conn in (("over", over), ("own", own)):
+        conn.execute("CREATE TABLE t (n INTEGER PRIMARY KEY, name TEXT)")
+        conn.commit()
+        conn.set_trace_callback(told[name].append)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO t VALUES (?, ?)", (1, "one"))
+        conn.executemany("INSERT INTO t VALUES (?, ?)", [(2, "two"), (3, "three")])
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM t WHERE n > ?", (1,)).fetchone() == (2,)
+        conn.set_trace_callback(None)
+        conn.execute("SELECT 1").fetchone()  # no longer told
+    assert told["over"] == told["own"] and told["own"][0] == "BEGIN IMMEDIATE" and "COMMIT" in told["own"]
+    assert len(told["over"]) == 6 and not any("SELECT 1" in q for q in told["over"])
+    over.close()
+    own.close()
+
+
+def test_the_helper_is_started_without_a_window(monkeypatch):
+    """On Windows a console child of a process without a console gets a terminal window of its own (the user,
+    2026-11-01: "i have 30 cmd prompts open"): the helper is started as every other process of this software is."""
+    import os
+
+    started: list[dict] = []
+
+    def popen(args, **kw):
+        started.append({"args": args, **kw})
+        raise OSError("no such program")
+
+    monkeypatch.setattr(lk.subprocess, "Popen", popen)
+    monkeypatch.delenv(lk.LOG_VAR, raising=False)
+    with pytest.raises(LinkError, match="could not be started"):
+        Link.start("pythonw.exe -m liminal_libs.storage.link", cwd=None)
+    assert started[0]["args"] == ["pythonw.exe", "-m", "liminal_libs.storage.link"]
+    assert started[0].get("creationflags", 0) == (0x08000000 if os.name == "nt" else 0)
+    assert started[0]["stdin"] == lk.subprocess.PIPE and started[0]["stdout"] == lk.subprocess.PIPE
+
+
 def test_the_helper_opens_nothing_outside_its_folders(linked, tmp_path):
     link, data = linked
     outside = tmp_path / "elsewhere.db"
@@ -179,6 +297,9 @@ def test_nothing_but_plain_data_is_rebuilt_from_the_pipe():
             lk._loads(pickle.dumps(bad, protocol=5))
     plain = (1, 2.5, "text", b"bytes", None, True, [1, (2, 3)], {"k": [b"v"]})
     assert lk._loads(lk._dumps(plain)) == plain
+    for bad in (datetime(2026, 11, 15), time.time, [LinkError], (1, {"k": object()})):  # nor is it put there
+        with pytest.raises(LinkError, match="plain data only"):
+            lk._dumps(bad)
 
 
 def test_one_connections_long_query_does_not_hold_up_another(linked):

@@ -54,6 +54,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from .. import mounts
+from ..proc import no_window
+from . import common
 
 VERSION = 1  # the protocol's: both ends must speak the same
 MAX_FRAME = 1 << 30  # a frame larger than this is not one of ours
@@ -78,19 +80,39 @@ class _Plain(pickle.Unpickler):
         raise pickle.UnpicklingError(f"the link carries plain data only, not {module}.{name}")
 
 
+_PLAIN_TYPES = frozenset((int, float, str, bytes, bool, type(None), tuple, list, dict, set, frozenset, bytearray))
+
+
+class _PlainOut(pickle.Pickler):
+    """Plain data only is put on the pipe: the other end reads nothing else, and a frame it cannot read ends the
+    link. So what is not plain is refused here, by the one who gave it, before a byte of it is sent. (Plain: what
+    pickle writes without naming a class, the types above; whatever this writes, _Plain reads.)"""
+
+    def reducer_override(self, obj):
+        kind = type(obj)
+        if kind in _PLAIN_TYPES:
+            return NotImplemented
+        raise LinkError(f"the link carries plain data only, not a {kind.__module__}.{kind.__qualname__}")
+
+
 def _dumps(obj) -> bytes:
-    return pickle.dumps(obj, protocol=5)
+    data = io.BytesIO()
+    _PlainOut(data, protocol=5).dump(obj)
+    return data.getvalue()
 
 
 def _loads(data: bytes):
     return _Plain(io.BytesIO(data)).load()
 
 
-def _write(stream, obj) -> None:
-    data = _dumps(obj)
+def _send(stream, data: bytes) -> None:
     stream.write(struct.pack(">I", len(data)))
     stream.write(data)
     stream.flush()
+
+
+def _write(stream, obj) -> None:
+    _send(stream, _dumps(obj))
 
 
 def _read(stream):
@@ -120,16 +142,27 @@ def _exactly(stream, n: int) -> bytes | None:
 
 
 def _plain(value):
-    """A parameter as it crosses: what sqlite3 binds as it is, a date or a time as sqlite3's own adapters wrote them."""
-    if value is None or isinstance(value, (int, float, str, bytes)):
-        return int(value) if isinstance(value, bool) else value
-    if isinstance(value, (bytearray, memoryview)):
-        return bytes(value)
+    """A parameter as it crosses: the number, text or bytes sqlite3 would bind, as plain data. A value of a class
+    built on one of those (a numpy.float64 read out of a table, an IntEnum, a text subclass) crosses as the number or
+    text it holds, which is what sqlite3 binds of it; a date or a time as sqlite3's own adapters wrote them. Anything
+    else is refused here as sqlite3 refuses it (and a numpy integer too, which sqlite3 would store as eight raw
+    bytes: nothing here means that)."""
+    kind = type(value)
+    if value is None or kind is int or kind is float or kind is str or kind is bytes:
+        return value
+    if isinstance(value, int):  # bool among them
+        return int.__int__(value)
+    if isinstance(value, float):
+        return float.__float__(value)
+    if isinstance(value, str):
+        return str.__str__(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(memoryview(value))
     if isinstance(value, datetime):
         return value.isoformat(" ")
     if isinstance(value, date):
         return value.isoformat()
-    raise sqlite3.ProgrammingError(f"Error binding parameter: type '{type(value).__name__}' is not supported")
+    raise sqlite3.ProgrammingError(f"Error binding parameter: type '{kind.__name__}' is not supported")
 
 
 def _params(parameters):
@@ -153,6 +186,7 @@ class _Worker(threading.Thread):
         self.cursors: dict[int, sqlite3.Cursor] = {}
         self._ids = itertools.count(1)
         self.attach_checked = False  # the statement being run is an ATTACH whose file this worker has checked
+        self.traced: list | None = None  # the statements SQLite ran since the last answer, while they are asked for
         self.opened = threading.Event()
         self.error: BaseException | None = None
 
@@ -170,24 +204,29 @@ class _Worker(threading.Thread):
             if job is None:
                 break
             rid, op, args = job
+            if op == "close":  # the file is closed, its log written back into it, before the one who asked hears so:
+                self._shut()  # what it does next (a copy of the file, its size read) finds the file as it left it
+                self.server.reply(rid, True, None, self._state())
+                return
             try:
                 result = self._do(op, args)
             except BaseException as e:  # noqa: BLE001 - every failure goes back to the one who asked
                 self.server.reply(rid, False, _error(e), self._state())
                 continue
             self.server.reply(rid, True, result, self._state())
-            if op == "close":
-                break
         self._shut()
 
     def _open(self) -> sqlite3.Connection:
         kw = dict(self.kw)
-        read_only = kw.pop("read_only", False)
+        read_only, must_exist = kw.pop("read_only", False), kw.pop("must_exist", False)
         args: dict = {"timeout": float(kw.pop("timeout", 5.0)), "check_same_thread": False}
         if "isolation_level" in kw:
             args["isolation_level"] = kw.pop("isolation_level")
-        if read_only:
-            conn = sqlite3.connect(Path(self.path).resolve().as_uri() + "?mode=ro", uri=True, **args)
+        if must_exist and not read_only and not Path(self.path).is_file():
+            raise mounts.NotHere(f"{self.path}: there is no such database, and one is made by the system that holds "
+                                 "the files (the suite started there), not for another through the link")
+        if read_only or must_exist:  # (mode=rw: opened for reading and writing, never made)
+            conn = sqlite3.connect(f"{Path(self.path).resolve().as_uri()}?mode={'ro' if read_only else 'rw'}", uri=True, **args)
         else:
             conn = sqlite3.connect(self.path, **args)
         conn.set_authorizer(self._authorize)
@@ -217,11 +256,18 @@ class _Worker(threading.Thread):
         return True
 
     def _state(self) -> tuple:
-        conn = self.conn
+        """What goes back with every answer: this system's clock, whether a transaction is open, the changes made so
+        far, and the statements SQLite ran since the last answer while they are asked for (set_trace_callback)."""
+        conn, traced = self.conn, ()
+        if self.traced:
+            traced = tuple(self.traced)
+            self.traced.clear()  # (the same list: SQLite's callback goes on adding to it)
         try:
-            return (time.time(), bool(conn.in_transaction), int(conn.total_changes)) if conn is not None else (time.time(), None, None)
+            if conn is not None:
+                return (time.time(), bool(conn.in_transaction), int(conn.total_changes), traced)
         except sqlite3.Error:
-            return (time.time(), None, None)
+            pass
+        return (time.time(), None, None, traced)
 
     def _do(self, op: str, args: tuple):
         conn = self.conn
@@ -279,7 +325,9 @@ class _Worker(threading.Thread):
                 deadline = time.monotonic() + float(seconds)
                 conn.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 20_000)
             return None
-        if op == "close":
+        if op == "trace":  # the statements SQLite runs from now on go back with each answer (or no more of them)
+            self.traced = [] if args[0] else None
+            conn.set_trace_callback(self.traced.append if args[0] else None)
             return None
         raise LinkError(f"the helper does not know {op!r}")
 
@@ -290,9 +338,10 @@ class _Worker(threading.Thread):
             except sqlite3.Error:
                 pass
         self.cursors.clear()
-        if self.conn is not None:
+        conn, self.conn = self.conn, None
+        if conn is not None:
             try:
-                self.conn.close()  # what was not committed is not kept, as when a process ends
+                conn.close()  # what was not committed is not kept, as when a process ends
             except sqlite3.Error:
                 pass
         self.server.forget(self.cid)
@@ -489,7 +538,8 @@ class Link:
         log = os.environ.get(LOG_VAR)
         err = open(log, "ab") if log else subprocess.DEVNULL
         try:
-            proc = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, cwd=cwd)
+            proc = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+                                    cwd=cwd, **no_window())
         except OSError as e:
             raise LinkError(f"the helper could not be started ({command}): {e}") from None
         finally:
@@ -504,14 +554,15 @@ class Link:
     # -- asking -------------------------------------------------------------------------------------------------------
     def call(self, op: str, *args, cid: int = 0):
         """One request and its answer: (result, state). An error there is raised here as what it was."""
-        if self.dead:
-            raise sqlite3.OperationalError(self._gone())
         rid, wait = next(self._ids), _Wait()
-        with self._lock:
+        data = _dumps((rid, op, cid, args))  # what is not plain data is refused here, before anything is sent
+        with self._lock:  # (the same lock an ending link empties the waiting under: nobody waits on a link that ended)
+            if self.dead:
+                raise sqlite3.OperationalError(self._gone())
             self._waiting[rid] = wait
         try:
             with self._write_lock:
-                _write(self._out, (rid, op, cid, args))
+                _send(self._out, data)
         except (OSError, ValueError) as e:
             self._end(f"its pipe closed ({e})")
             raise sqlite3.OperationalError(self._gone()) from None
@@ -565,7 +616,7 @@ class Link:
     def saved(self, names) -> dict:
         """The user's saved settings on the files' own system, by name (the keys among them): told to this process,
         kept nowhere here."""
-        return dict(self.call("saved", tuple(names))[0])
+        return dict(self.call("saved", tuple(str.__str__(n) if isinstance(n, str) else str(n) for n in names))[0])
 
     def owner_now(self) -> float:
         """The time by the clock of the system that owns the files (what is stamped into them is stamped by it)."""
@@ -740,6 +791,7 @@ class Connection:
         self.in_transaction = False
         self.total_changes = 0
         self._closed = False
+        self._trace: Callable[[str], None] | None = None
 
     def _call(self, op: str, *args):
         if self._closed:
@@ -747,6 +799,9 @@ class Connection:
         result, state = self._link.call(op, *args, cid=self._cid)
         if state and state[1] is not None:
             self.in_transaction, self.total_changes = state[1], state[2]
+        if state and len(state) > 3 and state[3] and self._trace is not None:
+            for sql in state[3]:
+                self._trace(sql)
         return result
 
     def _bound(self, sql: str, parameters):
@@ -810,6 +865,13 @@ class Connection:
             self._call("limit", None)
             return
         raise LinkError("a progress handler cannot run on the files' own system: use storage.link.time_limit")
+
+    def set_trace_callback(self, callback: Callable[[str], None] | None) -> None:
+        """The statements SQLite runs on this connection, told to `callback` as sqlite3 tells them (None: no more).
+        They are SQLite's own on the files' own system, come back with the answer to what ran them: a statement is
+        told once its answer is here, not while it runs."""
+        self._trace = callback
+        self._call("trace", callback is not None)
 
     def create_function(self, *a, **k):
         raise LinkError("a function of this process cannot run on the files' own system")
@@ -942,8 +1004,11 @@ def connect(database, timeout: float = 5.0, isolation_level=_DEFAULT, check_same
     args = {"timeout": timeout}
     if isolation_level is not _DEFAULT:
         args["isolation_level"] = isolation_level
-    if read_only:
-        args["read_only"] = True
+    foreign = mounts.foreign(path)  # (a suite run over the link inside one process has its own files: not these)
+    if read_only or (foreign and common.read_only()):
+        args["read_only"] = True  # a process that reads only (LIMINAL_READONLY) cannot write another system's file
+    elif foreign:
+        args["must_exist"] = True  # nor is a file made there from here: a database is made by the system that holds it
     return link.open(path, **args)
 
 
