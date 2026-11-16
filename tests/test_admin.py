@@ -141,7 +141,7 @@ def test_on_a_target_not_liminals_the_admin_asks_nothing_and_changes_nothing():
 
 
 def test_an_admin_not_for_this_machine_asks_nothing_and_changes_nothing():
-    """Not for this machine at all (Linux administration on Windows or in WSL; 1.27.0): applies False, nothing asked."""
+    """Not for this machine at all (Linux administration on Windows or macOS; 1.27.0): applies False, nothing asked."""
     a = FakeAdmin(elevated=True)
     a.not_for_here = lambda: "for a native Linux machine"
     a.services = a.startups = a.processes = a.elevated = a.present = lambda: pytest.fail("asked")

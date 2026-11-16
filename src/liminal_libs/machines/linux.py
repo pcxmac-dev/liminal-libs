@@ -1,9 +1,12 @@
 """Linux for the machine plugins (the firewall and admin plugins of the platform): commands on a Linux
 machine, this one (with sudo when the platform is not root: never a password asked, `sudo -n`) or a WSL
-distribution on this Windows PC (as root through `wsl -u root`, no password either). The Linux plugins work only
-on the native Linux machine the platform runs on (`why_not_native`; the user, 2026-11-08: "the scope of linux
-administration is only on native linux O/S", "it's not for administrating WSL instances", "Yes, firewall too"):
-they give their shell `local`. Without a target named, `local` on Linux, and on Windows Liminal's own distribution
+distribution on this Windows PC (as root through `wsl -u root`, no password either). The Linux plugins work on the
+Linux the platform itself runs on, and only there (`why_not_native`): a machine of its own, or a WSL distribution
+the platform runs inside (the user, 2026-11-15: "wsl and firewall linux should always work under linux, if wsl
+prevents or misses some capability this should reflect in the plugin": `wsl`, `wsl_table`). A platform on Windows
+does not administer a WSL distribution from outside (the user, 2026-11-08: "it's not for administrating WSL
+instances"; until 1.57.0 that was read as refusing any WSL kernel, the platform's own included).
+They give their shell `local`. Without a target named, `local` on Linux, and on Windows Liminal's own distribution
 when one is installed (Liminal-Ubuntu, then Liminal-Fedora, Liminal-Gentoo), never the user's own. A runner stands
 in for the commands in tests."""
 from __future__ import annotations
@@ -30,22 +33,79 @@ def _on_windows() -> bool:
 
 
 def why_not_native(what: str, system: str | None = None, release: str | None = None, env=None) -> str:
-    """Why the machine the platform runs on is not a native Linux one, in words naming `what` (Linux administration,
-    the Linux firewall): "" when it is, the only machine the Linux plugins work on. Windows and macOS are not Linux; a
-    WSL distribution is not native (its kernel's release names Microsoft or WSL, or WSL's variables are set), whether
-    the platform runs beside it or inside it. `system`, `release` and `env` stand in for sys.platform, the kernel's
-    release and the environment in tests."""
+    """Why the machine the platform runs on is not one the Linux plugins work on, in words naming `what` (Linux
+    administration, the Linux firewall): "" on Linux, any Linux: a machine of its own, or a WSL distribution the
+    platform runs inside (1.57.0; what WSL lacks or changes is said by the plugin: wsl_table). Windows and macOS are
+    not Linux: a platform there does not reach into a WSL distribution from outside. `system`, `release` and `env`
+    stand in for sys.platform, the kernel's release and the environment in tests (the last two are no longer read).
+    The name is from when a WSL kernel was refused too."""
     system = sys.platform if system is None else system
     if not system.startswith("linux"):
         name = {"win32": "Windows", "cygwin": "Windows", "darwin": "macOS"}.get(system, system)
-        return (f"{what} is for a native Linux machine, and this one runs {name}"
+        return (f"{what} is for the Linux the platform runs on, and this one runs {name}"
                 + ("; Liminal's WSL distributions are the WSL plugins'" if name == "Windows" else ""))
+    return ""
+
+
+def wsl(release: str | None = None, env=None) -> str:
+    """The WSL distribution this Linux is, by name ("Ubuntu"; "WSL" when it does not say), or "" on a machine of its
+    own: told by the kernel's release (it names Microsoft or WSL) or by WSL's variables. `release` and `env` stand in
+    for the kernel's release and the environment in tests."""
+    if release is None and not sys.platform.startswith("linux"):
+        return ""
     env = os.environ if env is None else env
     release = (platform.release() if release is None else release).lower()
     if "microsoft" in release or "wsl" in release or env.get("WSL_DISTRO_NAME") or env.get("WSL_INTEROP"):
-        where = f"WSL's {env['WSL_DISTRO_NAME']}" if env.get("WSL_DISTRO_NAME") else "a WSL distribution"
-        return f"{what} is for a native Linux machine, not a WSL instance, and this is {where} on Windows"
+        return str(env.get("WSL_DISTRO_NAME") or "WSL")
     return ""
+
+
+def wsl_generation(release: str | None = None) -> int:
+    """WSL 1 or WSL 2, by the kernel's release (WSL 2's is Microsoft's own Linux kernel, `...-microsoft-standard-WSL2`;
+    WSL 1 has no Linux kernel and says `...-Microsoft`); 0 when the release does not tell (taken as WSL 2: every
+    distribution installed today is)."""
+    text = platform.release() if release is None else release
+    if "wsl2" in text.lower() or "microsoft-standard" in text.lower():
+        return 2
+    return 1 if text.endswith("-Microsoft") else 0
+
+
+def systemd_runs() -> bool:
+    """Whether systemd is this Linux's init (a WSL distribution runs it only when /etc/wsl.conf says so)."""
+    return os.path.isdir("/run/systemd/system")
+
+
+def wsl_table(kind: str, release: str | None = None, env=None, systemd: bool | None = None) -> dict | None:
+    """What running inside WSL changes or lacks, as a table for a Linux plugin's page (the user, 2026-11-15: "if wsl
+    prevents or misses some capability this should reflect in the plugin"): for `kind` "admin" or "firewall". None
+    on a machine of its own. `systemd`: whether systemd runs (a test's)."""
+    name = wsl(release, env)
+    if not name:
+        return None
+    generation = wsl_generation(release)
+    rows = [["This Linux", f"WSL {generation or 2}: {name}", "a WSL distribution on Windows: its kernel and its network are WSL's"]]
+    if kind == "admin":
+        runs = systemd_runs() if systemd is None else systemd
+        rows.append(["Init", "systemd" if runs else "not systemd",
+                     "services and startups are read and changed as on any Linux" if runs else
+                     "systemd is off in this distribution: `[boot]` `systemd=true` in /etc/wsl.conf turns it on (then "
+                     "`wsl --shutdown` from Windows); until then units cannot be made or started here"])
+        rows.append(["Running", "while Windows keeps it started",
+                     "Windows starts a WSL distribution when something asks for it and stops it once nothing uses it: "
+                     "what runs here stops with it"])
+        rows.append(["At boot", "when the distribution starts",
+                     "a service enabled at boot here starts when this distribution starts, not when the PC does: "
+                     "starting the distribution at Windows' logon or boot is Windows' to do"])
+    else:
+        rows.append(["Packet filter", "the kernel's own" if generation != 1 else "none",
+                     "nftables and iptables work here once their tools are installed" if generation != 1 else
+                     "WSL 1 has no packet filter of its own: no firewall can run in this distribution, and Windows' "
+                     "firewall is the one that filters"])
+        rows.append(["Network", "WSL's own, behind Windows",
+                     "it filters what reaches this distribution; what comes from outside the PC passes Windows' firewall "
+                     "first, and Windows reaches this distribution's ports at its own localhost"])
+    return {"title": "Under WSL", "note": "What running inside a WSL distribution changes for this plugin.",
+            "columns": [{"title": "What"}, {"title": "Here"}, {"title": "What it means"}], "rows": rows}
 
 
 def wsl_distributions() -> list[str]:

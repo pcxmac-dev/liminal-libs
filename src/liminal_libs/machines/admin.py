@@ -493,6 +493,11 @@ class Admin(MachinePlugin):
             raise BootRefused(f"{name or 'that app'} has no boot service registered here")
         return found
 
+    def machine_tables(self) -> list[dict]:
+        """Tables of the plugin's own after the base's, about the machine it runs on (the Linux plugin inside a WSL
+        distribution: what WSL changes, linux.wsl_table). None by default."""
+        return []
+
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
         """What the plugin reads, valid whenever it can read it (the rights are a fact: each change asks for them, or says
@@ -501,7 +506,7 @@ class Admin(MachinePlugin):
         drawn from `services`, `startups` and `processes` with buttons asking at once, are no longer sent)."""
         empty = {"frameworkServices": [], "logonStartups": [], "bootServices": [], "frameworkProcesses": []}
         here = self.not_for_here()
-        if here:  # not for this machine at all (a Linux plugin on Windows or in WSL): asked nothing, no setup offered
+        if here:  # not for this machine at all (a Linux plugin on Windows or macOS): asked nothing, no setup offered
             words, described = self.elsewhere()  # what it does on a machine it is for, said here
             return self.not_here_status(f"{here}. {words}" if words else here, elevated=False, elevation="", **empty,
                                         tables=described, forms=[])
@@ -533,7 +538,8 @@ class Admin(MachinePlugin):
         return {"present": True, "elevated": elevated, "elevation": how, "summary": summary, "valid": not why, "why": why,
                 "frameworkServices": [s.describe() for s in services], "logonStartups": [s.describe() for s in startups],
                 "bootServices": [b.describe() for b in boots], "frameworkProcesses": processes,
-                "tables": [t for t, _ in sections] + [self.processes_table(processes)], "forms": [f for _, fs in sections for f in fs]}
+                "tables": [t for t, _ in sections] + [self.processes_table(processes)] + list(self.machine_tables()),
+                "forms": [f for _, fs in sections for f in fs]}
 
     def _boot_status(self, logon: list[Startup]) -> tuple[list[Startup], tuple[dict, list[dict]] | None]:
         """The boot services and the page's section for them (None: this plugin makes none)."""

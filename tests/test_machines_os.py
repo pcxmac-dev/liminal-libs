@@ -161,22 +161,39 @@ def test_on_windows_a_linux_target_is_liminals_own_distribution_and_never_the_us
     assert Shell(None).target == "local" and Shell(None).scoped
 
 
-def test_the_linux_plugins_are_for_a_native_linux_machine_only():
-    """The user, 2026-11-08: "the scope of linux administration is only on native linux O/S"; "it's not for
-    administrating WSL instances"; "Yes, firewall too": why_not_native says why a machine is not one (Windows, macOS, a
-    WSL distribution by its kernel's release or WSL's variables), "" on a native Linux machine; a plugin not for this
-    machine says applies False and is asked nothing (1.27.0)."""
+def test_the_linux_plugins_work_on_any_linux_and_say_what_wsl_changes():
+    """The user, 2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some
+    capability this should reflect in the plugin" (1.57.0; a WSL kernel was refused outright until then, which read
+    "it's not for administrating WSL instances" of 2026-11-08 too widely: that ruled out a platform on Windows
+    reaching into a WSL distribution, and still does). why_not_native says why a machine is not Linux (Windows,
+    macOS), "" on Linux of any kind; wsl() names the distribution the platform runs inside; wsl_table says what WSL
+    changes; a plugin not for this machine says applies False and is asked nothing (1.27.0)."""
     from liminal_libs.machines import MachinePlugin
 
     assert linux.why_not_native("The Linux firewall", "win32", "10", {}) == (
-        "The Linux firewall is for a native Linux machine, and this one runs Windows; Liminal's WSL distributions are the WSL plugins'")
+        "The Linux firewall is for the Linux the platform runs on, and this one runs Windows; Liminal's WSL distributions are the WSL plugins'")
     assert linux.why_not_native("Linux administration", "darwin", "24.1.0", {}) == (
-        "Linux administration is for a native Linux machine, and this one runs macOS")
-    wsl2 = linux.why_not_native("Linux administration", "linux", "6.18.54.1-microsoft-standard-WSL2", {"WSL_DISTRO_NAME": "Liminal-Ubuntu"})
-    assert wsl2 == "Linux administration is for a native Linux machine, not a WSL instance, and this is WSL's Liminal-Ubuntu on Windows"
-    assert linux.why_not_native("X", "linux", "4.4.0-19041-Microsoft", {}).endswith("this is a WSL distribution on Windows")  # WSL 1
-    assert linux.why_not_native("X", "linux", "6.8.0-48-generic", {"WSL_INTEROP": "/run/WSL/1_interop"})  # WSL's variables
-    assert linux.why_not_native("X", "linux", "6.8.0-48-generic", {}) == ""  # a native Linux machine
+        "Linux administration is for the Linux the platform runs on, and this one runs macOS")
+    two, one = "6.18.54.1-microsoft-standard-WSL2", "4.4.0-19041-Microsoft"
+    for release, env in ((two, {"WSL_DISTRO_NAME": "Ubuntu"}), (one, {}), ("6.8.0-48-generic", {"WSL_INTEROP": "/run/WSL/1_interop"}),
+                         ("6.8.0-48-generic", {})):
+        assert linux.why_not_native("Linux administration", "linux", release, env) == ""  # Linux, WSL's or its own
+    assert linux.wsl(two, {"WSL_DISTRO_NAME": "Ubuntu"}) == "Ubuntu" and linux.wsl(one, {}) == "WSL"
+    assert linux.wsl("6.8.0-48-generic", {"WSL_INTEROP": "/run/WSL/1_interop"}) == "WSL" and linux.wsl("6.8.0-48-generic", {}) == ""
+    assert (linux.wsl_generation(two), linux.wsl_generation(one), linux.wsl_generation("6.8.0-48-generic")) == (2, 1, 0)
+    assert linux.wsl_table("admin", "6.8.0-48-generic", {}) is None and linux.wsl_table("firewall", "6.8.0-48-generic", {}) is None
+    admin = linux.wsl_table("admin", two, {"WSL_DISTRO_NAME": "Ubuntu"}, systemd=True)
+    assert admin["title"] == "Under WSL" and [r[0] for r in admin["rows"]] == ["This Linux", "Init", "Running", "At boot"]
+    assert admin["rows"][0][1] == "WSL 2: Ubuntu" and admin["rows"][1][1] == "systemd" and "as on any Linux" in admin["rows"][1][2]
+    off = linux.wsl_table("admin", two, {"WSL_DISTRO_NAME": "Ubuntu"}, systemd=False)["rows"][1]
+    assert off[1] == "not systemd" and "systemd=true" in off[2] and "/etc/wsl.conf" in off[2]
+    fw = linux.wsl_table("firewall", two, {"WSL_DISTRO_NAME": "Ubuntu"})
+    assert [r[0] for r in fw["rows"]] == ["This Linux", "Packet filter", "Network"] and "once their tools are installed" in fw["rows"][1][2]
+    assert "Windows' firewall first" in fw["rows"][2][2]
+    old = linux.wsl_table("firewall", one, {})["rows"]
+    assert old[0][1] == "WSL 1: WSL" and old[1][1] == "none" and "no firewall can run" in old[1][2]
+    if not sys.platform.startswith("linux"):
+        assert linux.wsl() == "" and linux.wsl_table("admin") is None  # asked on Windows: not WSL, whatever its variables
     if sys.platform == "win32":
         assert "and this one runs Windows" in linux.why_not_native("X")
 
