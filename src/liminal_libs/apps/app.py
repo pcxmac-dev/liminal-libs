@@ -409,13 +409,14 @@ class App:
 
 
 def attach_registry(app: App, only: str | None = None) -> list[str]:
-    """Every plugin the registry loaded (the providers, the publishers, the assistants; `only`: one
-    system, "integrator" or "platform") attached to `app` unless another app holds it already;
-    returns the names attached. The registry is imported when called (it loads the plugins)."""
-    from ..sources.registry import assistants, machines, providers, publishers
+    """Every plugin the registry loaded (the providers, the publishers, the assistants, the machines, the
+    databases; `only`: one system, "integrator" or "platform") attached to `app` unless another app holds it
+    already; returns the names attached. The registry is imported when called (it loads the plugins)."""
+    from ..sources.registry import assistants, databases, machines, providers, publishers
 
     out = []
-    for p in [*providers().values(), *publishers().values(), *assistants().values(), *machines().values()]:
+    for p in [*providers().values(), *publishers().values(), *assistants().values(), *machines().values(),
+              *databases().values()]:
         if only is not None and p.SYSTEM != only:
             continue
         if p.app is not None and p.app is not app:

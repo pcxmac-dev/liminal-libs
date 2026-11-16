@@ -531,3 +531,115 @@ def test_a_frame_is_the_same_from_either_kind_of_connection(linked):
         pd.testing.assert_frame_equal(a, b)
     own.close()
     over.close()
+
+
+# -- the shares set on an instance (1.61.0; storage/instances.py: SharePolicy) ------------------------------------------
+def _kv(path) -> None:
+    with sqlite3.connect(str(path)) as raw:
+        raw.execute("CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)")
+        raw.execute("INSERT INTO kv VALUES ('a', '1')")
+    raw.close()
+
+
+def test_the_helper_opens_a_file_as_the_suites_share_says(tmp_path):
+    from liminal_libs.storage.instances import Instance, Kept, Share, SharePolicy
+
+    data, other, private = tmp_path / "data", tmp_path / "other", tmp_path / "private"
+    for folder in (data, other, private):
+        folder.mkdir()
+    for path in (data / "liminal.db", other / "away.db", private / "p.db"):
+        _kv(path)
+    kept = Kept(instances={
+        "away": Instance("away", where=str(other / "away.db"),
+                         shared=(Share("linux::Ubuntu", "read"), Share("linux::Fedora", "write"))),
+        "private": Instance("private", where=str(private / "p.db"))},
+        builtin={"data": (Share("linux::Ubuntu", "write"), Share("linux::Fedora", "read"))})
+    policy = SharePolicy(kept.text, data)
+
+    def link_as(who: str) -> Link:
+        return Link.loopback([data], access=policy.access, more_roots=policy.roots, who=who)
+
+    ubuntu = link_as("linux::Ubuntu")
+    try:
+        assert ubuntu.info["who"] == "linux::Ubuntu" and ubuntu.info["shares"] is True
+        conn = ubuntu.open(data / "liminal.db")
+        conn.execute("INSERT INTO kv VALUES ('b', '2')")  # its share of the data folder is for writing
+        conn.commit()
+        # an instance elsewhere, shared with it for reading: attached so, on a connection that writes its own file
+        conn.execute("ATTACH DATABASE ? AS away", (str(other / "away.db"),))
+        assert conn.execute("SELECT value FROM away.kv").fetchone() == ("1",)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("INSERT INTO away.kv VALUES ('x', 'y')")
+        conn.rollback()
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):  # named in the statement it would be opened
+            conn.execute(f"ATTACH DATABASE '{(other / 'away.db').as_posix()}' AS named")  # for writing: not let
+        conn.execute("INSERT INTO kv VALUES ('c', '3')")  # ... which it still does
+        conn.commit()
+        conn.close()
+        away = ubuntu.open(other / "away.db")  # opened on its own: for reading, whatever was asked
+        assert away.execute("SELECT COUNT(*) FROM kv").fetchone() == (1,)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            away.execute("INSERT INTO kv VALUES ('x', 'y')")
+        away.close()
+        # one shared with nobody is not opened for another system at all: its folder is none of the helper's
+        with pytest.raises(mounts.NotHere, match="not in the folders this helper opens"):
+            ubuntu.open(private / "p.db")
+    finally:
+        ubuntu.close()
+
+    fedora = link_as("linux::Fedora")
+    try:
+        reads = fedora.open(data / "liminal.db")
+        assert reads.execute("SELECT COUNT(*) FROM kv").fetchone() == (3,)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reads.execute("INSERT INTO kv VALUES ('d', '4')")
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):  # nor through a file named in the statement
+            reads.execute(f"ATTACH DATABASE '{(other / 'away.db').as_posix()}' AS away")
+        reads.close()
+        writes = fedora.open(other / "away.db")
+        writes.execute("INSERT INTO kv VALUES ('b', '2')")
+        writes.commit()
+        writes.close()
+    finally:
+        fedora.close()
+
+    for who, why in (("linux::Arch", "is not shared with linux::Arch"), ("", "does not say who it is")):
+        nobody = link_as(who)
+        try:
+            for path in (data / "liminal.db", other / "away.db"):
+                with pytest.raises(mounts.NotHere, match=why):
+                    nobody.open(path)
+        finally:
+            nobody.close()
+    with sqlite3.connect(str(other / "away.db")) as raw:  # what was written is what the shares let through
+        assert raw.execute("SELECT key FROM kv ORDER BY key").fetchall() == [("a",), ("b",)]
+    raw.close()
+
+
+def test_with_no_share_set_and_with_no_policy_the_helper_opens_what_it_did_before(linked, tmp_path):
+    from liminal_libs.storage.instances import SharePolicy
+
+    link, data = linked
+    assert link.info["shares"] is False and link.info["who"] == lk._who() and "::" in link.info["who"]
+    conn = link.open(data / "liminal.db")
+    conn.execute("CREATE TABLE kv (key TEXT)")
+    conn.commit()
+    conn.close()
+    # a policy with nothing set on it: whoever asks reads and writes, whatever it says of itself
+    policy = SharePolicy(lambda: "", data)
+    for who in ("linux::Ubuntu", ""):
+        plain = Link.loopback([data], access=policy.access, more_roots=policy.roots, who=who)
+        try:
+            conn = plain.open(data / "liminal.db")
+            conn.execute("INSERT INTO kv VALUES (?)", (who,))
+            conn.commit()
+            conn.execute("ATTACH DATABASE ? AS second", (str(data / "second.db"),))  # made, as a plain ATTACH makes one
+            conn.execute("CREATE TABLE second.t (x)")
+            conn.commit()
+            conn.execute("DETACH DATABASE second")
+            conn.close()
+            (data / "second.db").unlink()
+            with pytest.raises(mounts.NotHere, match="not in the folders this helper opens"):
+                plain.open(tmp_path / "elsewhere.db")
+        finally:
+            plain.close()

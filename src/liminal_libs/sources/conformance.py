@@ -32,6 +32,7 @@ FEED_HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries
 PUBLISHER_HOOKS = ("moments", "calendar", "read", "scan", "settings")
 ASSISTANT_HOOKS = ("build", "scan", "settings")
 MACHINE_HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
+DATABASE_HOOKS = ("builtin", "open", "probe", "make", "own_port", "scan", "settings")
 
 
 def problems(p: object) -> list[str]:
@@ -56,7 +57,8 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: SYSTEM {p.SYSTEM!r} is none of {sorted(SYSTEMS)}")
     expected = _kind_of(p)
     if expected is None:
-        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin nor a MachinePlugin")
+        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin, a MachinePlugin nor a "
+                   "DatabasePlugin")
     elif p.KIND != expected:
         out.append(f"{tag}: KIND {p.KIND!r} for a {expected} plugin")
     refused = p.refusal()
@@ -75,7 +77,7 @@ def problems(p: object) -> list[str]:
     if p.fetcher is not None and not isinstance(p.fetcher, Fetcher):
         out.append(f"{tag}: fetcher is not a sources.fetching.Fetcher")
     hooks = (FEED_HOOKS if expected == "feed" else PUBLISHER_HOOKS if expected == "publisher"
-             else MACHINE_HOOKS if expected == "machine" else ASSISTANT_HOOKS)
+             else MACHINE_HOOKS if expected == "machine" else DATABASE_HOOKS if expected == "database" else ASSISTANT_HOOKS)
     for hook in hooks:
         if p.gives(hook) and not callable(getattr(p, hook, None)):
             out.append(f"{tag}: gives {hook} but it is not callable")
@@ -94,6 +96,8 @@ def problems(p: object) -> list[str]:
         out += _publisher(tag, p)
     elif expected == "assistant":
         out += _assistant(tag, p)
+    elif expected == "database":
+        out += _database(tag, p)
     return out
 
 
@@ -129,8 +133,10 @@ def _kind_of(p: Plugin) -> str | None:
         return "publisher"
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import
     from ..machines.plugin import MachinePlugin
+    from ..storage.databases import DatabasePlugin
 
-    return "assistant" if isinstance(p, AssistantPlugin) else "machine" if isinstance(p, MachinePlugin) else None
+    return ("assistant" if isinstance(p, AssistantPlugin) else "machine" if isinstance(p, MachinePlugin)
+            else "database" if isinstance(p, DatabasePlugin) else None)
 
 
 def _variables(tag: str, p: Plugin) -> list[str]:
@@ -378,8 +384,52 @@ def _assistant(tag: str, p) -> list[str]:
     return out
 
 
+def _database(tag: str, p) -> list[str]:
+    """A database plugin (2.3; storage/databases.py): written for 2.3, one of the engines, reached by methods that
+    are, holding what an instance can hold, its variable declared, and able to open and to test what it holds."""
+    from ..storage import databases as d
+    from .registry import api_version
+
+    out: list[str] = []
+    try:
+        if api_version(p.api) < (2, 3):
+            out.append(f"{tag}: a database plugin is written for plugin API 2.3, not {p.api}")
+    except ValueError:
+        pass  # said already: not a contract version
+    if p.ENGINE not in d.ENGINES:
+        out.append(f"{tag}: ENGINE {p.ENGINE!r} is none of {sorted(d.ENGINES)}")
+    for attr in ("METHODS", "HOLDS"):
+        values = getattr(p, attr)
+        known = d.METHODS if attr == "METHODS" else d.HOLDS
+        if not isinstance(values, tuple) or not values or not all(isinstance(v, str) for v in values):
+            out.append(f"{tag}: {attr} must be a non-empty tuple of str")
+        elif not set(values) <= set(known) or len(set(values)) != len(values):
+            out.append(f"{tag}: {attr} {values!r}: each once, of {sorted(known)}")
+    methods = p.METHODS if isinstance(p.METHODS, tuple) else ()
+    for attr in ("SERVER", "SHARES", "MAKES", "CONNECTS"):
+        if not isinstance(getattr(p, attr), bool):
+            out.append(f"{tag}: {attr} is not a bool")
+    if isinstance(p.SERVER, bool) and methods and all(m in d.METHODS for m in methods):
+        if any(d.METHODS[m].address != p.SERVER for m in methods):
+            out.append(f"{tag}: SERVER {p.SERVER} with methods {methods!r}: a server's are addresses (socket, tcp), "
+                       "a file's are not (file, helper)")
+    for attr in ("DRIVER", "DRIVER_HINT", "SHARED", "ICON"):
+        if not isinstance(getattr(p, attr), str):
+            out.append(f"{tag}: {attr} is not a str")
+    if p.SHARES is False and not (isinstance(p.SHARED, str) and p.SHARED.strip()):
+        out.append(f"{tag}: it keeps no shares (SHARES False) and does not say who reaches its instances (SHARED)")
+    if p.instances_variable not in p.options:
+        out.append(f"{tag}: its instances are kept under {p.instances_variable}, which is not among its options")
+    for hook in ("open", "probe"):
+        if not p.gives(hook):
+            out.append(f"{tag}: a database plugin must give {hook}()")
+    if p.MAKES is True and not p.gives("make"):
+        out.append(f"{tag}: it offers New database (MAKES) and gives no make()")
+    return out
+
+
 def plugins_of(module: ModuleType) -> list[Plugin]:
-    """A module's plugins as the registry reads them (PLUGIN(S), PUBLISHER(S), ASSISTANT(S))."""
+    """A module's plugins as the registry reads them (PLUGIN(S), PUBLISHER(S), ASSISTANT(S), MACHINE(S), DATABASE(S))."""
     from .registry import _plugins_in
 
     return _plugins_in(module, module.__name__)

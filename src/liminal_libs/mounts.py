@@ -80,6 +80,24 @@ def owner_path(path, text: str | None = None) -> str | None:
     return best[0].rstrip("\\") + "\\" + rest.replace("/", "\\")
 
 
+def here_path(owner: str, text: str | None = None) -> str | None:
+    r"""A file as Windows names it, as this system sees it through a mount of its drive: C:\Users\x\liminal.db is
+    /mnt/c/Users/x/liminal.db where WSL mounts C: there (owner_path the other way round). None when no mount here
+    shows that drive (another disk of Windows' that is not mounted, a share's path). `text`: /proc/self/mounts'
+    content (a test's)."""
+    drive, rest = ntpath.splitdrive(str(owner))
+    if len(drive) != 2 or drive[1] != ":":
+        return None
+    best: str | None = None
+    for source, point, kind in _rows(text):
+        if kind in ("9p", "drvfs") and _DRIVE.match(source) and source[0].lower() == drive[0].lower():
+            if best is None or len(point) <= len(best):  # the drive's own mount point, not one under it
+                best = point
+    if best is None:
+        return None
+    return best.rstrip("/") + "/" + rest.replace("\\", "/").lstrip("/")
+
+
 def fstype(path, mounts: list[tuple[str, str]] | None = None) -> str | None:
     """The filesystem type of the mount that holds `path`: the longest mount point it lies under. None where the
     system has no such table. `mounts`: a table to read instead of this system's (a test's: the path is then taken as

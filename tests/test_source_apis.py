@@ -103,7 +103,7 @@ class Machine(MachinePlugin):
 
 
 def test_the_conformance_rule_a_plugin_written_for_2_2_says_what_it_attaches_to():
-    assert PLUGIN_API == "2.2" and api_refusal("2.2") is None and api_refusal("2.1") is None
+    assert PLUGIN_API == "2.3" and api_refusal("2.2") is None and api_refusal("2.1") is None
     assert problems(Machine()) == []
     bare = Machine().with_(apis=())
     assert any("declares no API it attaches to" in p for p in problems(bare))

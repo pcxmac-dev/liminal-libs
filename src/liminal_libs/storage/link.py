@@ -27,6 +27,10 @@ process that started it.
   into a shared file is stamped by the clock of the system that owns it.
 - On a system that links (Linux), an audit hook refuses any direct sqlite3.connect on another system's drive,
   whoever tries (a plugin's own code included).
+- The helper keeps to the shares the user set on the SQLite plugin's instances (1.61.0; storage/instances.py:
+  SharePolicy). The process that started it says who it is with its hello (its suite's name on a database:
+  linux::Ubuntu), and a file is opened for it as its share says: for reading alone, for reading and writing, or not at
+  all (an attached file too). With no share set on an instance it is opened as before.
 
 For the tests the same protocol runs inside one process (Link.loopback: two pipes and the helper in a thread), and
 LIMINAL_LINK=loopback sends every file through it, so a whole suite can be run over the link.
@@ -230,6 +234,8 @@ class _Worker(threading.Thread):
                                  "the files (the suite started there), not for another through the link")
         if read_only or must_exist:  # (mode=rw: opened for reading and writing, never made)
             conn = sqlite3.connect(f"{Path(self.path).resolve().as_uri()}?mode={'ro' if read_only else 'rw'}", uri=True, **args)
+        elif self.server.access is not None:  # (as plain, by its address: a file it attaches may be shared for
+            conn = sqlite3.connect(Path(self.path).resolve().as_uri(), uri=True, **args)  # reading alone, named so too)
         else:
             conn = sqlite3.connect(self.path, **args)
         conn.set_authorizer(self._authorize)
@@ -247,7 +253,7 @@ class _Worker(threading.Thread):
             return sqlite3.SQLITE_OK
         if self.mode:  # a file named in the statement would be opened for writing, and made: only the parameter's way
             return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK if self.server.inside(str(arg1)) else sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK if self.server.inside(str(arg1)) and self.server.writes(str(arg1)) else sqlite3.SQLITE_DENY
 
     def _attach(self, sql: str, params):
         """The parameters of an ATTACH of the one file given as its parameter (`ATTACH DATABASE ? AS name`, as the
@@ -264,12 +270,13 @@ class _Worker(threading.Thread):
             return params
         if not self.server.inside(p):
             raise mounts.NotHere(f"{p}: not in the folders this helper opens, so not attached")
-        if not self.mode:
+        mode = "ro" if self.server.allowed(p) == "read" else self.mode  # (one shared for reading alone is attached so)
+        if not mode:
             return params
         if not Path(p).is_file():
             raise mounts.NotHere(f"{p}: there is no such database, and one is made by the system that holds the files "
                                  "(the suite started there), not for another through the link")
-        return (f"{Path(p).resolve().as_uri()}?mode={self.mode}",)
+        return (f"{Path(p).resolve().as_uri()}?mode={mode}",)
 
     def _state(self) -> tuple:
         """What goes back with every answer: this system's clock, whether a transaction is open, the changes made so
@@ -382,10 +389,16 @@ class Server:
     """The helper: the connections it holds for the process that started it, inside the folders it was started for."""
 
     def __init__(self, roots, saved: Callable[[tuple], dict] | None = None, log: Callable[[str], None] | None = None,
-                 anywhere: bool = False):
+                 anywhere: bool = False, access: Callable[[str, str], tuple[str, str]] | None = None,
+                 more_roots: Callable[[], list] | None = None):
         self.roots = [Path(r).resolve() for r in roots]
         self.anywhere = anywhere  # a suite run over the link inside one process: its files are wherever the tests put them
         self.saved = saved  # the user's saved settings on this system, by name (config.UserEnvironment), when it may tell them
+        # What the suite at the other end may do with a file (1.61.0; storage/instances.py: SharePolicy.access):
+        # (path, who) -> ("write" | "read" | "", why). None: no policy (a test's link): everything inside is opened.
+        self.access = access
+        self.more_roots = more_roots  # the folders of the instances shared with another suite, as they are now
+        self.who = ""  # who is at the other end, as it said with its hello (its suite's name on a database)
         self.log = log or (lambda m: None)
         self._workers: dict[int, _Worker] = {}
         self._ids = itertools.count(1)
@@ -402,7 +415,29 @@ class Server:
             p = Path(path).resolve()
         except (OSError, ValueError):
             return False
-        return any(p == root or root in p.parents for root in self.roots)
+        roots = self.roots
+        if self.more_roots is not None:
+            try:
+                roots = [*roots, *(Path(r).resolve() for r in self.more_roots())]
+            except Exception:  # noqa: BLE001 - shares that cannot be read add no folder
+                pass
+        return any(p == root or root in p.parents for root in roots)
+
+    def allowed(self, path: str) -> str:
+        """What the suite at the other end may do with a file: "write", or "read" (opened for reading alone). NotHere
+        when it may not attach to it at all. Without a policy: write, as before 1.61.0."""
+        if self.access is None:
+            return "write"
+        mode, why = self.access(path, self.who)
+        if mode not in ("write", "read"):
+            raise mounts.NotHere(f"{path}: {why or 'not shared with ' + (self.who or 'whoever asks')}")
+        return mode
+
+    def writes(self, path: str) -> bool:
+        try:
+            return self.allowed(path) == "write"
+        except mounts.NotHere:
+            return False
 
     # -- the pipe -----------------------------------------------------------------------------------------------------
     def reply(self, rid: int, ok: bool, result, state) -> None:
@@ -460,14 +495,19 @@ class Server:
                                 f"{version}: bring the older of the two up to date")
             from .. import __version__
 
+            self.who = args[1] if len(args) > 1 and isinstance(args[1], str) else ""  # (one from before 1.61.0 says nothing)
             return {"version": VERSION, "library": __version__, "pid": os.getpid(), "sqlite": sqlite3.sqlite_version,
-                    "system": sys.platform, "roots": [str(r) for r in self.roots]}
+                    "system": sys.platform, "roots": [str(r) for r in self.roots], "who": self.who,
+                    "shares": self.access is not None}
         if op == "open":
             path, kw = args
             if not self.inside(path):
                 raise mounts.NotHere(f"{path}: not in the folders this helper opens ({', '.join(str(r) for r in self.roots)})")
+            kw = dict(kw)
+            if self.allowed(path) == "read":
+                kw["read_only"] = True  # its share is for reading: the file is opened so, whatever was asked
             cid = next(self._ids)
-            worker = _Worker(self, cid, path, dict(kw))
+            worker = _Worker(self, cid, path, kw)
             with self._lock:
                 self._workers[cid] = worker
             worker.start()
@@ -510,8 +550,9 @@ class Link:
     this started one."""
 
     def __init__(self, inp, out, *, owner_path: Callable[[str], str | None] | None = None, proc=None,
-                 name: str = "the files' own system"):
+                 name: str = "the files' own system", who: str | None = None):
         self._in, self._out, self.proc, self.name = inp, out, proc, name
+        self.who = _who() if who is None else who  # this suite's name on a database: what a share names (1.61.0)
         self.owner_path = owner_path or (lambda p: str(p))
         self._ids = itertools.count(1)
         self._waiting: dict[int, _Wait] = {}
@@ -522,15 +563,16 @@ class Link:
         self.heard = 0.0
         self._reader = threading.Thread(target=self._listen, name="link-replies", daemon=True)
         self._reader.start()
-        self.info: dict = self.call("hello", VERSION)[0]
+        self.info: dict = self.call("hello", VERSION, self.who)[0]
 
     # -- making one ---------------------------------------------------------------------------------------------------
     @classmethod
-    def loopback(cls, roots=(), saved=None, anywhere: bool = False) -> "Link":
+    def loopback(cls, roots=(), saved=None, anywhere: bool = False, access=None, more_roots=None,
+                 who: str | None = None) -> "Link":
         """A link to a helper inside this process (a thread, two pipes): the whole protocol, no other process."""
         to_helper_r, to_helper_w = os.pipe()
         to_client_r, to_client_w = os.pipe()
-        server = Server(roots, saved=saved, anywhere=anywhere)
+        server = Server(roots, saved=saved, anywhere=anywhere, access=access, more_roots=more_roots)
         helper_in, helper_out = os.fdopen(to_helper_r, "rb"), os.fdopen(to_client_w, "wb")
 
         def run() -> None:
@@ -544,7 +586,7 @@ class Link:
                         pass
 
         threading.Thread(target=run, name="link-helper", daemon=True).start()
-        link = cls(os.fdopen(to_client_r, "rb"), os.fdopen(to_helper_w, "wb"), name="a helper in this process")
+        link = cls(os.fdopen(to_client_r, "rb"), os.fdopen(to_helper_w, "wb"), name="a helper in this process", who=who)
         link.server = server
         return link
 
@@ -663,6 +705,17 @@ class Link:
                 self.proc.wait(timeout=10)
             except (subprocess.TimeoutExpired, OSError):
                 self.proc.kill()
+
+
+def _who() -> str:
+    """This suite's name on a database (claims.instance(): linux::Ubuntu), said to the helper with the hello: what a
+    share on an instance names. "" when it cannot be said."""
+    try:
+        from .. import claims
+
+        return claims.instance()
+    except Exception:  # noqa: BLE001 - a link is made without it: an instance with shares set then refuses
+        return ""
 
 
 def _last_words(err, most: int = 400) -> str:
@@ -1128,7 +1181,10 @@ def main(argv=None) -> int:
     def saved(names: tuple) -> dict:
         return config.UserEnvironment(names=names).saved()
 
-    Server(roots, saved=saved).serve(inp, out)
+    from . import instances  # (the plain half of the database plugins: nothing of the plugin contract is loaded here)
+
+    policy = instances.saved_policy(roots[-1] if named else roots[0])  # the shares set on the SQLite plugin's instances
+    Server(roots, saved=saved, access=policy.access, more_roots=policy.roots).serve(inp, out)
     return 0
 
 

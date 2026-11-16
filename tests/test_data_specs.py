@@ -457,14 +457,15 @@ def test_the_conformance_check_reads_the_data_declarations():
 
 
 def test_a_plugin_written_for_2_0_or_2_1_loads_under_2_2(monkeypatch):
-    assert PLUGIN_API == "2.2" and api_refusal("2.0") is None and api_refusal("2.1") is None and api_refusal("2") is None
+    assert PLUGIN_API == "2.3" and api_refusal("2.0") is None and api_refusal("2.1") is None and api_refusal("2") is None
     assert api_refusal("2.2") is None
-    assert "needs a newer app" in api_refusal("2.3") and "needs a release for 2.x" in api_refusal("1.12")
+    assert api_refusal("2.3") is None  # (2.3: the database plugins)
+    assert "needs a newer app" in api_refusal("2.4") and "needs a release for 2.x" in api_refusal("1.12")
     assert api_refusal("1.12", record=True) is None and "record" in api_refusal("2.1", record=True)
     monkeypatch.setattr(layout, "plugins_dir", lambda: None)
 
     class Later(SipFeed):
-        name, api = "later", "2.3"
+        name, api = "later", "2.4"
     plugins_ = (AcmeFeed(), SipFeed().with_(name="sip"), Later())
     eps = [SimpleNamespace(name=p.name, value=f"fake_{p.name}:PLUGIN", load=(lambda p=p: p)) for p in plugins_]
     monkeypatch.setattr(registry, "_entry_points", lambda: eps)
@@ -472,7 +473,7 @@ def test_a_plugin_written_for_2_0_or_2_1_loads_under_2_2(monkeypatch):
         found = registry.reload()
         assert list(found) == ["acme", "sip"] and found["acme"].api == "2.0" and found["sip"].api == "2.1"
         assert type(found["sip"].data_for("stock")) is SipStock and type(found["acme"].data_for("stock")) is StockSymbolData
-        assert dict(registry.errors()) == {"later (fake_later:PLUGIN)": "later: written for plugin API 2.3, newer than this app's 2.2: "
+        assert dict(registry.errors()) == {"later (fake_later:PLUGIN)": "later: written for plugin API 2.4, newer than this app's 2.3: "
                                                                         "it needs a newer app"}
     finally:
         registry._providers = None

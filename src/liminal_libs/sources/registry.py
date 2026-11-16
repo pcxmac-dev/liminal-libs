@@ -2,8 +2,9 @@
 `Provider` here), holding everything the app needs to know about it.
 
 A plugin is a module that defines `PLUGIN` (a FeedPlugin subclass, or an instance of one: a Provider
-record; `PLUGINS` for several), a publisher's `PUBLISHER` (sources/publisher.py) or an assistant's
-`ASSISTANT` (assistants/plugin.py). Every one is a package of its own (plugin-integrator-<name>,
+record; `PLUGINS` for several), a publisher's `PUBLISHER` (sources/publisher.py), an assistant's
+`ASSISTANT` (assistants/plugin.py), a machine's `MACHINE` (machines/plugin.py) or a database engine's
+`DATABASE` (storage/databases.py). Every one is a package of its own (plugin-integrator-<name>,
 2026-11-01), registering under the entry point group `liminal.providers` (pointing at the module, or
 at the plugin itself); the plugin directory's checkouts are loaded from there (plugin_checkouts),
 and a module dropped in `sources/plugins/` is still found on the next start, as the built-ins were.
@@ -126,7 +127,12 @@ ENTRY_POINTS = "liminal.providers"
 #   the API's parts (Area: covered by the plugin or not) and calls (Call: used by it or not), its limits and costs and
 #   the day they were verified; Plugin.api_facts(), what it learned of them while it ran. A plugin written for 2.2
 #   declares at least one, each with a documentation link (conformance); a 2.0 or 2.1 plugin loads unchanged.
-PLUGIN_API = "2.2"
+# 2.3 (2026-11-16): the database plugins (storage/databases.py; the user, 2026-11-15: "for the integrator i need plugins
+#   for each type of database"): a DatabasePlugin for each engine (`DATABASE` in its module; the integrator's own, found
+#   as databases()), holding its instances (Instance: what it holds, where it is, the method it is reached by, its
+#   shares, its port, its role): its own, today's databases, and the ones the user adds, kept through its login. Every
+#   plugin written for 2.0 to 2.2 loads unchanged.
+PLUGIN_API = "2.3"
 RECORD_API = "1.12"  # the record form's contract: what a Provider or a Publisher may declare
 
 
@@ -327,6 +333,7 @@ _providers: dict[str, FeedPlugin] | None = None
 _publishers: dict[str, PublisherPlugin] = {}
 _assistants: dict[str, "AssistantPlugin"] = {}  # the AI assistants (2.0; assistants/plugin.py)
 _machines: dict[str, "MachinePlugin"] = {}  # the machine plugins (2.1; machines/plugin.py)
+_databases: dict[str, "DatabasePlugin"] = {}  # the database plugins (2.3; storage/databases.py)
 _errors: list[tuple[str, str]] = []
 SELECTION_VAR = "LIMINAL_PLUGINS_LOADED"  # the plugins a process loads: names, `none`, or unset for all
 
@@ -363,7 +370,7 @@ class Selection:
 
 _selection = Selection()  # the one applied when the plugins were found
 
-NAMES = ("PLUGIN", "PUBLISHER", "ASSISTANT", "MACHINE")  # what a module calls its plugin (the plural: several)
+NAMES = ("PLUGIN", "PUBLISHER", "ASSISTANT", "MACHINE", "DATABASE")  # what a module calls its plugin (the plural: several)
 
 
 def _is_plugin_class(x) -> bool:
@@ -382,7 +389,7 @@ def _plugins_in(module, origin: str) -> list[Plugin]:
     if not found or not all(isinstance(p, Plugin) or _is_plugin_class(p) for p in found):
         raise TypeError("defines no PLUGIN (a FeedPlugin: a class, an instance, or a sources.registry.Provider record) "
                         "nor PUBLISHER (a PublisherPlugin, or a sources.publisher.Publisher record) nor ASSISTANT "
-                        "(an AssistantPlugin) nor MACHINE (a MachinePlugin)")
+                        "(an AssistantPlugin) nor MACHINE (a MachinePlugin) nor DATABASE (a DatabasePlugin)")
     return [(p() if _is_plugin_class(p) else p).with_(origin=origin) for p in found]
 
 
@@ -486,19 +493,29 @@ def discover_all() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlugin], l
 def _kind(p: Plugin) -> str:
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import: the assistants import the client
     from ..machines.plugin import MachinePlugin
+    from ..storage.databases import DatabasePlugin
 
     return ("publisher" if isinstance(p, PublisherPlugin) else "assistant" if isinstance(p, AssistantPlugin)
-            else "machine" if isinstance(p, MachinePlugin) else "provider")
+            else "machine" if isinstance(p, MachinePlugin) else "database" if isinstance(p, DatabasePlugin) else "provider")
 
 
 def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlugin], dict[str, "AssistantPlugin"],
                                    dict[str, "MachinePlugin"], list[tuple[str, str]]]:
     """The providers, the publishers, the assistants and the machines (each by name, in their order), and
     the plugins left out: one that fails to load, one written for a contract this app does not offer
-    (api_refusal), a second of one name."""
+    (api_refusal), a second of one name. (The database plugins are found with them: `_discover`, databases().)"""
+    found, pubs, assts, machs, _, errors_ = _discover()
+    return found, pubs, assts, machs, errors_
+
+
+def _discover() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlugin], dict[str, "AssistantPlugin"],
+                         dict[str, "MachinePlugin"], dict[str, "DatabasePlugin"], list[tuple[str, str]]]:
+    """Every kind of plugin found (the providers, the publishers, the assistants, the machines and the databases, each
+    by name, in their order), and the plugins left out."""
     from . import plugins
     from ..assistants.plugin import AssistantPlugin
     from ..machines.plugin import MachinePlugin
+    from ..storage.databases import DatabasePlugin
 
     found: list[Plugin] = []
     errors: list[tuple[str, str]] = []
@@ -516,6 +533,8 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
     pubs: dict[str, PublisherPlugin] = {}
     assts: dict[str, AssistantPlugin] = {}
     machs: dict[str, MachinePlugin] = {}
+    dbs: dict[str, DatabasePlugin] = {}
+    engines: dict[str, str] = {}  # a database engine -> its plugin (one plugin an engine: its own instances are the app's)
     keys: dict[str, str] = {}  # a feed's key -> its publisher (keys name the state kept)
     sets: dict[str, str] = {}  # a dataset's name -> its publisher (names its state and versions)
     lives: dict[str, str] = {}  # a live feed's name -> its provider (names its bars, status and kills)
@@ -524,9 +543,9 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
     # (whatever its order); all listed in their order after
     for p in sorted(found, key=lambda p: (p.origin != "built in", p.order, p.name)):
         mine = (pubs if isinstance(p, PublisherPlugin) else assts if isinstance(p, AssistantPlugin)
-                else machs if isinstance(p, MachinePlugin) else out)
-        if p.name in out or p.name in pubs or p.name in assts or p.name in machs:
-            first = (out.get(p.name) or pubs.get(p.name) or assts.get(p.name) or machs[p.name]).origin
+                else machs if isinstance(p, MachinePlugin) else dbs if isinstance(p, DatabasePlugin) else out)
+        if p.name in out or p.name in pubs or p.name in assts or p.name in machs or p.name in dbs:
+            first = (out.get(p.name) or pubs.get(p.name) or assts.get(p.name) or machs.get(p.name) or dbs[p.name]).origin
             errors.append((p.origin, f"a second {_kind(p)} named {p.name!r}: the first kept ({first})"))
             continue
         why = p.refusal()
@@ -551,6 +570,12 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
             files.update({d.provider: p.name for d in p.declared})
         elif isinstance(p, (AssistantPlugin, MachinePlugin)):
             pass  # an assistant or a machine has no feeds, datasets or live feeds to clash
+        elif isinstance(p, DatabasePlugin):
+            if p.ENGINE in engines:  # two would both hold the data folder's files as their own
+                errors.append((p.origin, f"database {p.name!r}: {engines[p.ENGINE]!r} is the plugin for "
+                                         f"{p.ENGINE or 'that engine'} already"))
+                continue
+            engines[p.ENGINE] = p.name
         elif not isinstance(p, FeedPlugin):
             # a kind this registry does not file (a bare IntegratorPlugin, a kind a newer library adds): left out and
             # said so (1.53.1). Read as a provider it had no `live`, and that error ended discovery for every plugin
@@ -567,13 +592,13 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
             lives.update({x.name: p.name for x in p.live})
         mine[p.name] = p
     global _selection
-    _selection = _apply_selection(Selection.parse(os.environ.get(SELECTION_VAR)), out, pubs, assts, machs)
+    _selection = _apply_selection(Selection.parse(os.environ.get(SELECTION_VAR)), out, pubs, assts, machs, dbs)
     from ..freshness import DELAYS  # when loaded, not on import: the freshness rules import the calendars
 
     for p in out.values():
         DELAYS.declare(p)  # its own publication delays and market hours (2.0)
     in_order = lambda d: dict(sorted(d.items(), key=lambda kv: (kv[1].order, kv[0])))  # noqa: E731
-    return in_order(out), in_order(pubs), in_order(assts), in_order(machs), errors
+    return in_order(out), in_order(pubs), in_order(assts), in_order(machs), in_order(dbs), errors
 
 
 _databases_refused = databases_refused  # its name before 2.0 (sources/plugin.py: Plugin.refusal)
@@ -594,17 +619,19 @@ def _owner(p: Plugin, feeds: Mapping[str, FeedPlugin], pubs: Mapping[str, Publis
     return p.name
 
 
-def _apply_selection(chosen: Selection, feeds: dict, pubs: dict, assts: dict, machs: dict | None = None) -> Selection:
-    """The selection applied to what was found: the plugins not named taken out of the four (each
+def _apply_selection(chosen: Selection, feeds: dict, pubs: dict, assts: dict, machs: dict | None = None,
+                     dbs: dict | None = None) -> Selection:
+    """The selection applied to what was found: the plugins not named taken out of the five (each
     with its parts), the names answering to no plugin noted. What applied."""
     machs = {} if machs is None else machs
+    dbs = {} if dbs is None else dbs
     if chosen.everything:
         return chosen
-    found = {**feeds, **pubs, **assts, **machs}
+    found = {**feeds, **pubs, **assts, **machs, **dbs}
     owners = {n: _owner(p, feeds, pubs) for n, p in found.items()}
     wanted = {owners[n] for n in chosen.names if n in owners}
     left_out: list[str] = []
-    for d in (feeds, pubs, assts, machs):
+    for d in (feeds, pubs, assts, machs, dbs):
         for n in list(d):
             if owners[n] not in wanted:
                 d.pop(n)
@@ -646,6 +673,9 @@ def plugins_loaded() -> list[str]:
     for n in assistants():
         if n not in out:
             out.append(n)
+    for n in databases():
+        if n not in out:
+            out.append(n)
     return out
 
 
@@ -654,13 +684,15 @@ def providers() -> dict[str, FeedPlugin]:
     global _providers
     with _lock:
         if _providers is None:
-            _providers, found, found_assistants, found_machines, found_errors = discover_everything()
+            _providers, found, found_assistants, found_machines, found_databases, found_errors = _discover()
             _publishers.clear()
             _publishers.update(found)
             _assistants.clear()
             _assistants.update(found_assistants)
             _machines.clear()
             _machines.update(found_machines)
+            _databases.clear()
+            _databases.update(found_databases)
             _errors[:] = found_errors
         return _providers
 
@@ -695,6 +727,18 @@ def machine(name: str) -> "MachinePlugin | None":
     return machines().get(name)
 
 
+def databases() -> dict[str, "DatabasePlugin"]:
+    """The database plugins by name, in their order (found with the providers; 2.3: an engine each, holding its
+    instances, the integrator's)."""
+    with _lock:
+        providers()
+        return dict(_databases)
+
+
+def database(name: str) -> "DatabasePlugin | None":
+    return databases().get(name)
+
+
 def publisher_of(name: str) -> str:
     """The plugin a publisher is in: the one it is part of (Publisher.part_of), a publisher
     (Federal's agencies) or a feed plugin (API 1.3: Massive's headlines, in Massive); or its own
@@ -722,6 +766,8 @@ def plugin_keys(name: str) -> list[KeyVar]:
         return list(assistants()[name].keys)
     if name in machines():
         return list(machines()[name].keys)
+    if name in databases():
+        return list(databases()[name].keys)
     pubs = publishers()
     if name in pubs:
         found = [k for n in (name, *publisher_parts(name)) for k in pubs[n].keys]
@@ -747,7 +793,7 @@ def leave_out(name: str, why: str) -> None:
     left out as one that fails to load is: it and the feeds part of it go from providers(), its
     publishers (itself, when it is one) from publishers(), and the cause into errors()."""
     with _lock:
-        p = providers().get(name) or _publishers.get(name) or _assistants.get(name)
+        p = providers().get(name) or _publishers.get(name) or _assistants.get(name) or _databases.get(name)
         if p is None:
             return
         for feed in plugin_feeds(name):
@@ -755,6 +801,7 @@ def leave_out(name: str, why: str) -> None:
         for pub in [n for n, q in _publishers.items() if name in (n, q.part_of, q.account)]:
             _publishers.pop(pub)
         _assistants.pop(name, None)
+        _databases.pop(name, None)
         _errors.append((p.origin, f"{name}: {why}"))
 
 
@@ -886,12 +933,13 @@ def errors() -> list[tuple[str, str]]:
 
 def variables() -> tuple[str, ...]:
     """Every variable a plugin reads (a provider's keys, plans and options; a publisher's keys; an
-    assistant's key, account, plan and caps), for Settings.env and the saved user variables
-    (config.saved_names)."""
+    assistant's key, account, plan and caps; a database plugin's instances), for Settings.env and the saved
+    user variables (config.saved_names)."""
     return tuple(dict.fromkeys([*(n for p in providers().values() for n in (*p.key_names, *p.plan_vars, *p.options)),
                                 *(n for p in publishers().values() for k in p.keys for n in k.names),
                                 *(n for p in assistants().values() for n in (*p.key_names, *p.plan_vars, *p.options)),
-                                *(n for p in machines().values() for n in (*p.key_names, *p.plan_vars, *p.options))]))
+                                *(n for p in machines().values() for n in (*p.key_names, *p.plan_vars, *p.options)),
+                                *(n for p in databases().values() for n in (*p.key_names, *p.plan_vars, *p.options))]))
 
 
 def key_row(k: KeyVar, settings: "Settings | None" = None) -> dict:
@@ -984,3 +1032,13 @@ def assistant_menu(settings: "Settings | None" = None) -> list[dict]:
                              "maxOutputTokens": own.caps.max_output_tokens} if own else None)
         out.append(row)
     return out
+
+
+def database_menu() -> list[dict]:
+    """The database plugins (2.3) for `plugins --json` and the Plugins view: each with its engine, the methods its
+    instances are reached by, what they can hold and its variables; its instances are its page's to list (they are
+    read through its login: DatabasePlugin.status)."""
+    return [{"name": p.name, "title": p.title, "about": p.about, "origin": p.origin, "version": p.version, "api": p.api,
+             "engine": p.ENGINE, "engineTitle": p.engine_title, "server": p.SERVER, "driver": p.DRIVER,
+             "methods": list(p.METHODS), "holds": list(p.HOLDS), "variable": p.instances_variable,
+             "keys": [key_row(k) for k in p.keys]} for p in databases().values()]

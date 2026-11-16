@@ -109,3 +109,17 @@ def test_on_this_windows_machine_its_own_disk_is_its_own_however_it_is_spelled(t
     assert not mounts.foreign(plain) and not mounts.foreign("\\\\?\\" + plain) and not mounts.foreign(plain.replace("\\", "/"))
     mounts.owner_only("\\\\?\\" + plain, "a backup")  # this machine's own files so spelled: not refused
     assert mounts.foreign(r"\\wsl.localhost\Ubuntu\home") and mounts.foreign(r"\\?\UNC\wsl.localhost\Ubuntu\home")
+
+
+def test_a_windows_path_is_named_here_where_its_drive_is_mounted():
+    """What is kept on Windows names a file as Windows does; the suite inside WSL finds it where that drive is mounted
+    (1.61.0: a database instance's path, storage/databases.py), or says it has no name for it."""
+    assert mounts.here_path(r"C:\Users\ciara\source\liminal\store\data\liminal.db", WSL2) == (
+        "/mnt/c/Users/ciara/source/liminal/store/data/liminal.db")
+    assert mounts.here_path("c:\\", WSL2) == "/mnt/c/" and mounts.here_path(r"C:\x", WSL2) == "/mnt/c/x"
+    assert mounts.owner_path(mounts.here_path(r"C:\data\x.db", WSL2), WSL2) == r"C:\data\x.db"  # there and back
+    for nowhere in (r"D:\data\x.db", r"\\server\share\x.db", "/srv/x.db", "x.db", ""):
+        assert mounts.here_path(nowhere, WSL2) is None  # a drive not mounted here, a share, no Windows path at all
+    two = WSL2 + "D:\\134 /mnt/d 9p rw 0 0\nC:\\134 /mnt/c/again 9p rw 0 0\n"
+    assert mounts.here_path(r"D:\x.db", two) == "/mnt/d/x.db" and mounts.here_path(r"C:\x.db", two) == "/mnt/c/x.db"
+    assert mounts.here_path(r"C:\x.db", "") is None  # no table at all (Windows itself, macOS)

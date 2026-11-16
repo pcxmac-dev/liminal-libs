@@ -74,6 +74,14 @@ methods overriding the contract's defaults (`build`, `view`, `scan`, `settings`,
 has a `Fetcher`, keeps its own databases in the data folder (`layout.Database`), and refreshes its
 own plan information with its capability scan.
 
+A database engine is a plugin too (plugin API 2.3, liminal-libs 1.61.0: `liminal_libs/storage/databases.py`,
+`DatabasePlugin`, an `IntegratorPlugin`; `plugin-integrator-sqlite`, `-duckdb`, `-mongodb`, then
+`-postgres` and `-mariadb`). It holds instances: its own, which are today's databases opened as today,
+and the ones you add on the integrator's Databases view, each with what it holds, where it is, the
+method it is reached by (`file`, `helper`, `socket`, `tcp`), its port, who else may attach and on a
+server the role used there. What you add is kept through the plugin's login (one value under
+`<ENGINE>_INSTANCES`, a sign-in as two more pairs), never in a file.
+
 ## How the programs talk at run time
 
 - Everything shares the databases in `store/data/`; one process at a time owns a writer, through the
@@ -94,6 +102,10 @@ own plan information with its capability scan.
   and port; a key's machine-wide ledger is shared by key, whichever integrator spends it.
 - An AI evaluation runs in the caller's process over HTTPS and is recorded in the main file's
   `evaluations` table; nothing is sent from an offline copy.
+- A suite on another system (the one inside WSL) reaches the SQLite files through a helper it starts
+  on the system that holds them (`liminal_libs.storage.link`: a private pipe, no port). It says who it
+  is, and the helper opens each file as the share set on its instance says: reading and writing,
+  reading alone, or not at all; with no share set, as before (1.61.0).
 
 ## The apps and their trays (liminal-libs 1.7.0)
 

@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.61.0 (2026-11-16)
+
+Database plugins: a plugin for each engine, each holding its instances (plugin API 2.3; the user, 2026-11-15: "for
+the integrator i need plugins for each type of database and in each plugin can setup either new databases or
+connections to existing databases using many different types of IP or IPC methods. each instance in the plugin has
+it's own configuration how it's shared, ports, permissions etc"). The contract, and what keeps to it; the engines'
+plugins are packages of their own (SQLite's, DuckDB's and MongoDB's first, then PostgreSQL's and MariaDB's).
+
+- **`storage/databases.py`, `DatabasePlugin`**: the integrator's fifth kind of plugin (`DATABASE` in its module;
+  `registry.databases()`, `database(name)`, `database_menu()`; attached by the integrator's frame with its other
+  plugins; one plugin an engine). It names its engine, the methods its instances are reached by and what they can
+  hold, and answers its hooks: `builtin` (its own instances), `open` (a connection to one), `probe` (one opened for
+  reading and asked what it is), `make` (a new database made) and `own_port` (the port of one of its own changed).
+- **An instance** (`storage/instances.py`, `Instance`) is a database the plugin made or a connection to one that
+  exists, with its own configuration: what it holds, where it is, the method it is reached by (`file`, `helper`,
+  `socket`, `tcp`), its port, who else may attach and how far (`Share`: a suite by its name on a database, reading
+  only or writing too), and on a server the role used there, its grants and whether it signs in.
+- **With nothing set, nothing changes.** A plugin's own instances are today's databases, opened as today. What the
+  user adds is kept through the plugin's login as one value under the plugin's variable (`SQLITE_INSTANCES`), never in
+  a file of this software's. A sign-in is two more pairs through the login (`<PLUGIN>_<INSTANCE>_USER`,
+  `_PASSWORD`): never in the value kept, never in what a page is given.
+- **What an app asks of a plugin** is the same for every engine: `instances`, `state` (how each is, nothing opened,
+  nothing started; another machine is never asked by a status, and whether a port of this machine listens is
+  remembered three seconds, since a port that does not takes the whole wait to say so), `test`, `new_database` (a file in the data folder's
+  `instances/`, or at a whole path, never over a file that is there; on a server a database with a role of its own, the
+  administrator asked once and not kept), `connect_to` (kept only when it answers; its sign-in given with it, and
+  forgotten again when it does not answer), `share`, `set_port` (a port is the instance's own: changed only to one
+  that answers), `forget` (what it holds stays), `set_credentials`, `status` (all of it, for a page). The port an
+  instance has when none is given is the plugin's to say (`default_port`: the engine's usual one, or the one its own
+  server is kept on).
+- **Off this machine only when asked twice**: an address that is not this machine's is refused with the argument that
+  accepts it (`Refusal.accept`: `accept_remote`, a page's second confirmation), and is then kept only with TLS and a
+  sign-in.
+- **A change is the owning system's alone** (`mounts.owner_only`). The suite inside WSL reads what Windows keeps
+  (asked of it through the link) and changes nothing of it; a path kept on Windows is named where its drive is
+  mounted (`mounts.here_path`), or said to be elsewhere.
+- **The link's helper keeps to the shares** (`storage/link.py`, `instances.SharePolicy`). The process at the other end
+  says who it is with its hello (its suite's name on a database: `linux::Ubuntu`). A file is then opened as the share
+  on its instance says: for reading and writing, for reading alone whatever was asked (an attached file too), or not
+  at all; an instance the user added and shared, outside the data folder, becomes one of the folders the helper
+  opens, and one shared with nobody stays closed to it. With no share set on an instance it is opened as before, so
+  nothing changes until one is set. A library from before this one does not say who it is: let in where no share is
+  set, refused where one is.
+- **Conformance**: a database plugin is written for 2.3, names one of the engines, methods of one family (a server's
+  are addresses, a file's are not), what it holds, its variable among its `options`, and gives `open` and `probe`
+  (`make` when it offers New database). A plugin written for 2.0 to 2.2 loads unchanged.
+
+The helper loads the plain half alone (`storage/instances.py`): it starts in 0.42 s as before, where the plugin
+contract with it would have made it 0.52 s.
+
 ## 1.60.0 (2026-11-16)
 
 What building the eBPF plugin found in the library's eBPF layer (plugin-platform-ebpf 0.1.0; the user, 2026-11-14:
