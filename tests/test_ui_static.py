@@ -18,6 +18,15 @@ def test_the_charts_and_the_menu_are_there_for_every_app():
         assert f"{role}: " in charts.split("const SLOTS = {", 1)[1].split("};", 1)[0]
 
 
+def test_charts_a_page_no_longer_draws_can_be_let_go():
+    """1.54.0: a plugin's own tab redraws its charts every few seconds, and charts whose keys change (busy ports come and
+    go) would otherwise stay in the specs map for as long as the page lives: `forget(prefix)` lets them go."""
+    charts = read("charts.js")
+    assert "window.LiminalCharts = { cards, draw, update, forget," in charts
+    body = charts.split("function forget(prefix) {", 1)[1].split("\n  }", 1)[0]
+    assert "specs.delete(" in body and "startsWith(prefix)" in body
+
+
 def test_the_slots_the_switch_and_the_menu_in_the_stylesheet():
     css = read("liminal.css")
     dark = css.split(":root { --series-1:", 1)[1].split("}", 1)[0]

@@ -1,0 +1,113 @@
+// Liminal eBPF watch: network events, low-rate. TCP connect, accept and close from the one stable socket
+// state-change tracepoint: a line per connection change, never per packet. UDP sends from kprobes (there is no
+// stable UDP tracepoint): the probes run per datagram, but a line is printed once per socket and peer a minute,
+// never per datagram. One JSON object per line, printed for bpftrace -f json to wrap.
+//
+// inet_sock_set_state gives both ports in host order, the family and the two states. The addresses are kept in
+// two places: saddr/daddr (4 bytes) for an AF_INET socket, and saddr_v6/daddr_v6 (16 bytes) for an AF_INET6 one,
+// so each family prints its own fields. An IPv4 peer on a dual-stack socket comes out as ::ffff:a.b.c.d; for an
+// AF_INET6 socket the 4-byte fields hold 0 or 127.0.0.6, never its address. TCP states: ESTABLISHED 1, SYN_SENT 2,
+// SYN_RECV 3, FIN_WAIT1 4, CLOSE 7, LAST_ACK 9. Active open: SYN_SENT -> ESTABLISHED. Passive open (we accepted):
+// SYN_RECV -> ESTABLISHED. Teardown: any -> CLOSE. The line carries the two states ("old", "new") and the reader
+// names the change (connect, accept, close). Only TCP (protocol 6) here.
+//
+// Who: a handshake's or a teardown's last change mostly runs in softirq, where pid and comm are whatever task was
+// interrupted. The owner is learned where the kernel runs in the owner's own call (SYN_SENT in connect(),
+// FIN_WAIT1 and LAST_ACK in close()), and used when that socket later connects or closes. Otherwise the line says
+// "approx":1. An accepted socket's line always does, since nothing of it has run in its owner yet.
+//
+// The scripts keep no BEGIN or END of their own: the watch joins them into one program and adds the one END, which
+// clears these maps so bpftrace prints nothing of them as it exits.
+
+tracepoint:sock:inet_sock_set_state
+/args->protocol == 6/
+{
+    $sk = args->skaddr;
+    if (args->newstate == 2 || args->newstate == 4 || args->newstate == 9) {
+        @net_pid[$sk] = pid;
+        @net_comm[$sk] = comm;
+    }
+    if (args->newstate == 7 || (args->newstate == 1 && (args->oldstate == 2 || args->oldstate == 3))) {
+        $pid = pid;
+        $comm = comm;
+        $approx = 1;
+        if (@net_pid[$sk] != 0) {
+            $pid = @net_pid[$sk];
+            $comm = @net_comm[$sk];
+            $approx = 0;
+        }
+        if (args->family == 10) {
+            printf("{\"evt\":\"net\",\"act\":\"tcp\",\"old\":%d,\"new\":%d,\"pid\":%d,\"comm\":\"%s\",\"approx\":%d,\"proto\":\"tcp\",\"saddr\":\"%s\",\"sport\":%d,\"daddr\":\"%s\",\"dport\":%d}\n",
+                   args->oldstate, args->newstate, $pid, $comm, $approx,
+                   ntop(10, args->saddr_v6), args->sport, ntop(10, args->daddr_v6), args->dport);
+        } else {
+            printf("{\"evt\":\"net\",\"act\":\"tcp\",\"old\":%d,\"new\":%d,\"pid\":%d,\"comm\":\"%s\",\"approx\":%d,\"proto\":\"tcp\",\"saddr\":\"%s\",\"sport\":%d,\"daddr\":\"%s\",\"dport\":%d}\n",
+                   args->oldstate, args->newstate, $pid, $comm, $approx,
+                   ntop(2, args->saddr), args->sport, ntop(2, args->daddr), args->dport);
+        }
+        if (args->newstate == 7) {
+            delete(@net_pid[$sk]);
+            delete(@net_comm[$sk]);
+        }
+    }
+}
+
+// UDP: a datagram leaving. The sock carries the peer for a connected socket; an unconnected sendto() leaves it
+// zero here, which is fine (the peer is unknown at this hook). skc_dport is in network order, so it is byte-swapped.
+// A socket and peer is said the first time it sends in a minute (the seen map is cleared every 60 s), at most 50
+// lines a second (near enough, as in file.bt). The rest are counted and said once a second, as one line:
+// {"evt":"net","act":"skipped","proto":"udp","count":N}. udp_v6_sendmsg hands an IPv4 peer of an AF_INET6 socket
+// on to udp_sendmsg, so udp_sendmsg speaks only for AF_INET sockets (the v6 probe has already said that one). The
+// seen key is the socket, the peer's address (its last four bytes for IPv6) and its port, all as uint64.
+
+kprobe:udp_sendmsg
+{
+    $sk = (struct sock *)arg0;
+    if ($sk->__sk_common.skc_family == 2) {
+        $daddr = $sk->__sk_common.skc_daddr;
+        $dport = $sk->__sk_common.skc_dport;
+        if (@net_udp_seen[arg0, (uint64)$daddr, (uint64)$dport] == 0) {
+            if (@net_udp_lines < 50) {
+                @net_udp_seen[arg0, (uint64)$daddr, (uint64)$dport] = 1;
+                @net_udp_lines = @net_udp_lines + 1;
+                printf("{\"evt\":\"net\",\"act\":\"udp_send\",\"pid\":%d,\"comm\":\"%s\",\"proto\":\"udp\",\"saddr\":\"%s\",\"sport\":%d,\"daddr\":\"%s\",\"dport\":%d}\n",
+                       pid, comm, ntop(2, $sk->__sk_common.skc_rcv_saddr), $sk->__sk_common.skc_num,
+                       ntop(2, $daddr), bswap($dport));
+            } else {
+                @net_udp_skipped = @net_udp_skipped + 1;
+            }
+        }
+    }
+}
+
+kprobe:udp_v6_sendmsg
+{
+    $sk = (struct sock *)arg0;
+    $dport = $sk->__sk_common.skc_dport;
+    $dlow = $sk->__sk_common.skc_v6_daddr.in6_u.u6_addr32[3];
+    if (@net_udp_seen[arg0, (uint64)$dlow, (uint64)$dport] == 0) {
+        if (@net_udp_lines < 50) {
+            @net_udp_seen[arg0, (uint64)$dlow, (uint64)$dport] = 1;
+            @net_udp_lines = @net_udp_lines + 1;
+            printf("{\"evt\":\"net\",\"act\":\"udp_send\",\"pid\":%d,\"comm\":\"%s\",\"proto\":\"udp\",\"saddr\":\"%s\",\"sport\":%d,\"daddr\":\"%s\",\"dport\":%d}\n",
+                   pid, comm, ntop(10, $sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8), $sk->__sk_common.skc_num,
+                   ntop(10, $sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8), bswap($dport));
+        } else {
+            @net_udp_skipped = @net_udp_skipped + 1;
+        }
+    }
+}
+
+interval:s:1
+{
+    if (@net_udp_skipped != 0) {
+        printf("{\"evt\":\"net\",\"act\":\"skipped\",\"proto\":\"udp\",\"count\":%d}\n", @net_udp_skipped);
+    }
+    @net_udp_lines = 0;
+    @net_udp_skipped = 0;
+}
+
+interval:s:60
+{
+    clear(@net_udp_seen);
+}

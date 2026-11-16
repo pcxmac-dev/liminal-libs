@@ -45,10 +45,20 @@ class MachinePlugin(PlatformPlugin):
     STEPS: tuple = ()  # the setup's steps, in order: what the platform's page offers one at a time
     ICON = "chip"  # its icon in the platform's tray (icons.js) when it is active
     # The section of the platform's list it is drawn under (1.51.0; the user, 2026-11-14: "classify the cloud plugins under
-    # the 'cloud plugins' section"):
+    # the 'cloud plugins' section"; 2026-11-15: "platform needs a virtualization plugins section"; "then OS plugins"):
     #   "machine": this machine's own software and hardware (the default);
-    #   "cloud": a cloud provider's account (DigitalOcean, Linode, Vultr, EC2, Azure, Google Cloud).
+    #   "virtualization": a hypervisor's or a container engine's (Hyper-V, libvirt, LXD, Docker, Kubernetes, ...);
+    #   "os": an operating system's (WSL's distributions, the firewalls, the admin plugins);
+    #   "cloud": a cloud provider's account or a cloud service (DigitalOcean, Linode, Vultr, EC2, Azure, Google Cloud,
+    #   Namecheap).
+    # liminal-platform 0.26.0 draws the four, in that order; a platform before it knows "machine" and "cloud" only.
     SECTION = "machine"
+    # Its own tabs on its page, after Main and API (apps/tabs.py; the user, 2026-11-14: "so for the firewall's both are
+    # going to get a 'world wide web view'"; "there needs to be a way to 'filter' (another tab)"):
+    #   each a Tab(id, title, hook, every): the hook, listed in HOOKS like any it answers, is a read the platform's page
+    #   asks every `every` seconds while the tab is shown, and the page draws what it answers;
+    #   none by default.
+    TABS: tuple = ()
 
     def present(self) -> bool:
         """Whether the software or hardware is there."""

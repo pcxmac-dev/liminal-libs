@@ -1,0 +1,22 @@
+// Liminal eBPF watch: process events, low-rate. Exec and exit from the stable scheduler tracepoints, with the
+// parent pid (trapdoor builds a process's parents and children from these). One JSON object per event.
+//
+// sched_process_exec: args->filename is the program's path. The parent is the task's real_parent thread-group id.
+// sched_process_exit: fires for every thread that ends. Only the thread-group leader's end (pid == tid) is said,
+// as the process's exit; a thread ending inside a running program is not that program's exit. comm and pid are
+// the builtins, the parent the same way as for exec.
+//
+// The scripts keep no BEGIN or END of their own: the watch joins them into one program and adds the one END.
+
+tracepoint:sched:sched_process_exec
+{
+    printf("{\"evt\":\"process\",\"act\":\"exec\",\"pid\":%d,\"ppid\":%d,\"comm\":\"%s\",\"path\":\"%s\"}\n",
+           pid, curtask->real_parent->tgid, comm, str(args->filename));
+}
+
+tracepoint:sched:sched_process_exit
+/pid == tid/
+{
+    printf("{\"evt\":\"process\",\"act\":\"exit\",\"pid\":%d,\"ppid\":%d,\"comm\":\"%s\"}\n",
+           pid, curtask->real_parent->tgid, comm);
+}

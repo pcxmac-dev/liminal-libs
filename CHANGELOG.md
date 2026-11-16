@@ -1,5 +1,100 @@
 # Changelog
 
+## 1.54.0 (2026-11-15)
+
+The pieces that the firewalls' World Wide Web and Filter tabs, the eBPF API plugin and trapdoor are built on. The user,
+2026-11-14:
+- "so for the firewall's both are going to get a 'world wide web view' that shows the globe and the routes incoming all
+  traffic, as well as monitoring port traffic stats";
+- "there needs to be a way to 'filter' (another tab) that allows you to monitor send and receive traffic, especially
+  traffic that is out of the ordinary";
+- "the filter allows (uses ebpf) tracking one off connections";
+- "classifying traffic as potential advert/monitoring sites that track users, etc";
+- "we need an ebpf api plugin, that shows the difference between windows and linux capabilities as well as basic
+  functionality";
+- "trapdoor will monitor all processes".
+
+Nothing here runs until a plugin asks: every watch stops itself after its viewing timeout. The tests start no capture,
+session or process. The design is the shared notes' firewall-world-filter-DESIGN.md.
+
+### Tabs and the globe
+
+- **A plugin's own tabs (`apps/tabs.py`).** `Tab(id, title, hook, every)`, and `MachinePlugin.TABS`, none by default.
+  liminal-platform 0.27.0 shows them after Main and API, and asks the hook, a read, every `every` seconds while the tab
+  is shown.
+- **The globe (`ui/static/liminal-globe.js`).** It uses world-atlas 2.0.2's countries in `ui/static/vendor/world/`: ISC,
+  with Natural Earth's public-domain data. `LiminalGlobe.draw(el, spec)` returns `{update, destroy}`.
+  - It is the charts app's orthographic globe, with great-circle arcs from each origin to this machine: allowed,
+    unanswered (dashed) and outbound.
+  - It draws a legend, a parallel table, and the DB-IP attribution link when given.
+  - It updates in place, takes the theme's colours, and stays still under reduced motion.
+  - Origins with no usable place are counted and tabled, never dropped.
+- **Letting charts go (`charts.js`).** `LiminalCharts.forget(prefix)` lets go of charts a page no longer draws.
+
+### Places and packets
+
+- **GeoIP (`geo.py`).** `GeoIP` reads a local .mmdb (DB-IP Lite City, the user's choice) through maxminddb,
+  memory-mapped.
+  - Its answer cache is bounded in entries and in size, with each place's text cut short.
+  - Local and private addresses are never looked up, including IPv4-compatible and NAT64 forms.
+  - `install_mmdb` unpacks a download atomically, within byte, member and time bounds. It checks the file is a sound
+    GeoIP file and keeps one copy.
+  - maxminddb is the `geo` extra, and part of `dev`.
+- **Capture (`capture.py`).** UDP and IPv6 as well as TCP/IPv4.
+  - Each packet carries its wire length, its direction (this machine's addresses are read again every 30 s) and its TCP
+    flags.
+  - It keeps the payloads names need: a DNS message up to 512 bytes, and a TLS ClientHello up to 2,560 bytes, joined
+    across segments.
+  - The DLL folder is added once per process.
+  - On Linux, a read waits on the capture's socket, so a stop is seen within its timeout.
+- **Traffic (`traffic.py`).**
+  - `TrafficBook` is bounded per port and per remote group: bytes, packets, new connections and unanswered inbound
+    attempts.
+  - `Watcher` is one thread that stops after its viewing timeout.
+- **Names (`names.py`).** `NameBook` ties DNS answers and the TLS server name to the address they name. An answer is
+  believed only after its own question was seen, and a server name only on the way out.
+
+### Classification and the baseline
+
+- **Classification (`classify.py`).** It reads the free lists the user chose: EasyList and EasyPrivacy with their
+  sections, hosts and domain lists such as hagezi's, and AdGuard's companies.
+  - The labels: ads, tracking, analytics, telemetry, cryptomining, email, cname-tracker, social, cdn and hosting.
+  - Lists are read in linear time and bounded memory, and a name's length is measured before and after IDNA mapping.
+- **The baseline (`baseline.py`).** `Baseline` is one small SQLite file per plugin.
+  - After 30 minutes of learning it flags what is "unusual for this machine while Liminal was watching": a new peer,
+    port, program, country or network; a one-off; a spike.
+  - It never says "malicious".
+
+### eBPF
+
+- **`Runtime`.**
+  - `LinuxRuntime` uses bpftool through sudo -n, on native Linux only, never Windows or WSL. It reads, and builds the
+    load, attach, detach and unload commands a plugin confirms first. Liminal's pins go under /sys/fs/bpf/liminal_.
+  - `WindowsRuntime` is read-only: eBPF for Windows' services and programs, and why it cannot run here. Every build is
+    test-signed pre-release, and Secure Boot and memory integrity refuse it.
+- **`CAPABILITIES`.** The Linux-against-Windows comparison.
+- **`Watch` and `make_watch`.**
+  - `BpftraceWatch` on Linux runs the scripts in `ebpf/scripts/`: net, process and file. They are low-rate, and the file
+    watch can be narrowed to one process tree. The process stops with the watch.
+  - A stop during a start waits for it, so a source that was opened is always closed.
+
+### Windows
+
+- **`EtwConsumer` (`machines/etw.py`).** A real-time ETW session through advapi32 and tdh, covering Kernel-Process,
+  -File, -Network and -Registry.
+  - It runs unelevated through Performance Log Users.
+  - Its queue is bounded, and the session is stopped on every path and at exit.
+  - Sessions are named after the process that owns them, with its start time. `reclaim_stale_sessions()`, or the next
+    start, stops one that a killed platform left behind.
+- **`NpcapEtwWatch` (`ebpf/windows_watch.py`).** The user's choice for Windows until eBPF for Windows is signed. Npcap
+  covers the network (UDP and payloads included), joined with ETW for the program, as per-flow events.
+
+### Housekeeping
+
+- `MachinePlugin.SECTION` now names "virtualization" and "os" too, after liminal-platform 0.26.0.
+- Package data includes `ui/static/vendor/world/*` and `ebpf/scripts/*.bt`. `.gitattributes` keeps the map files byte
+  for byte.
+
 ## 1.53.1 (2026-11-15)
 
 What running every suite on Linux found (the user: "check for bugs in the linux environment"), the suite being cloned

@@ -17,6 +17,8 @@
 //   el.innerHTML = LiminalCharts.cards(spec, {id})   spec: {span: recent|day, t: [epoch s], charts: [{key, title,
 //   LiminalCharts.draw(el)                            unit: share|bytes|bytes/s, max, of, lines: [{key, name, values}]}]}
 //   LiminalCharts.update(el, spec, {id})              new samples for the same charts, drawn in place (false: not the same)
+//   LiminalCharts.forget(prefix)                      the charts whose id starts with prefix let go (a page no longer
+//                                                     drawing them: their keys may change from answer to answer)
 (() => {
   'use strict';
 
@@ -400,5 +402,19 @@
     return true;
   }
 
-  window.LiminalCharts = { cards, draw, update, format, slot, bytes, rate, share, niceTop };
+  // Every chart given to cards() is kept (its samples: its plot drawn again at another width, its tooltip, its keys) until
+  // it is let go here: a page whose charts' keys change from answer to answer (the platform's tabs: a port, a peer) would
+  // otherwise keep each one it ever drew for as long as it lives. Every chart whose id (`${id}:${key}`) starts with
+  // `prefix` is let go; a table opened stays so (the user's own, and few). An empty prefix lets go of nothing. The number
+  // let go is returned. One let go while still drawn keeps its last picture until its next cards() or update().
+  function forget(prefix) {
+    if (typeof prefix !== 'string' || !prefix) return 0;
+    let n = 0;
+    for (const key of [...specs.keys()]) {
+      if (key.startsWith(prefix)) { specs.delete(key); n++; }
+    }
+    return n;
+  }
+
+  window.LiminalCharts = { cards, draw, update, forget, format, slot, bytes, rate, share, niceTop };
 })();

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liminal-libs"
-version = "1.53.1"  # the library's own release (CHANGELOG.md)
+version = "1.54.0"  # the library's own release (CHANGELOG.md)
 description = "The Liminal library: the stores, the plugin contract, the collector and the scheme every Liminal program builds on (the chart app, the integrator, the plugins)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,13 +23,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "cryptography>=42"]  # cryptography: the DKIM tests (dkim.py imports it when used)
+# cryptography: the DKIM tests (dkim.py imports it when used); maxminddb: the GeoIP tests (geo.py imports it when used)
+dev = ["pytest>=8", "cryptography>=42", "maxminddb>=3.2"]
+geo = ["maxminddb>=3.2"]  # geo.py: places for the firewalls' World Wide Web tab, read from a local .mmdb file
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-liminal_libs = ["ui/static/*"]  # the icons and the theme every app serves beside its page
+# the icons and the theme every app serves beside its page; vendor/world: the globe's land and borders (liminal-globe.js);
+# ebpf/scripts: the bpftrace programs the Linux watch runs
+liminal_libs = ["ui/static/*", "ui/static/vendor/world/*", "ebpf/scripts/*.bt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,6 @@
+world-atlas 2.0.2 (ISC), countries-110m.json and countries-50m.json: https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/
+Data: Natural Earth (public domain), https://www.naturalearthdata.com/
+Copied on 2026-11-14 from liminal-charts' gui/static/vendor/world, byte for byte (the charts app keeps its own copy), for
+ui/static/liminal-globe.js. LICENSE is world-atlas's, copied with them.
+countries-110m.json: 107,761 bytes, sha256 2516c915867c7baf18ddec727aec46c315541a07cfb3d79a6559b05d5e94eee8
+countries-50m.json: 756,420 bytes, sha256 04342cdc1e3016bcd7db1630de95684d67b79fe3c8c460321e87aef469502394

@@ -1,0 +1,63 @@
+// Liminal eBPF watch: file opens, low-rate. openat only (the common open path), from the stable syscall-enter
+// tracepoint, with the path and the open flags (trapdoor uses these for a program's files and folders). One JSON
+// object per line, and never one line per open machine-wide:
+//   - $1 is the target process id, which the watch passes on bpftrace's command line (spec["pid"], else 0). With
+//     a target, only that process and the children it forks while watched are seen; with 0, every process is.
+//   - A program's path is said the first time the program opens it in a minute, once for each way it is opened
+//     (the access mode and O_CREAT: flags & 67), not on every open. The seen map is cleared every 60 s.
+//   - At most 50 such lines a second (near enough: two CPUs on the count at once can let a few more by). The
+//     rest are counted and said once a second, as one line: {"evt":"file","act":"skipped","count":N}.
+// No read or write probes: those fire per operation and would flood. A path with a quote or a backslash makes a
+// line that does not parse, or one with keys a file line does not have; the reader drops such a line rather than
+// trust it.
+//
+// The target's children: sched_process_fork runs in the parent, so pid is the parent's process id and
+// args->child_pid is the new task's id. A new thread's id lands in the map too, which is harmless, and every id
+// leaves the map when that task ends. The map's keys are cast to one type (uint64), since pid, tid and child_pid
+// differ in width.
+//
+// The scripts keep no BEGIN or END of their own: the watch joins them into one program and adds the one END, which
+// clears these maps so bpftrace prints nothing of them as it exits.
+
+tracepoint:sched:sched_process_fork
+/$1 != 0 && (pid == $1 || @file_tree[(uint64)pid])/
+{
+    @file_tree[(uint64)args->child_pid] = 1;
+}
+
+tracepoint:sched:sched_process_exit
+/@file_tree[(uint64)tid]/
+{
+    delete(@file_tree[(uint64)tid]);
+}
+
+tracepoint:syscalls:sys_enter_openat
+/$1 == 0 || pid == $1 || @file_tree[(uint64)pid]/
+{
+    $path = str(args->filename);
+    $how = args->flags & 67;
+    if (@file_seen[comm, $path, $how] == 0) {
+        if (@file_lines < 50) {
+            @file_seen[comm, $path, $how] = 1;
+            @file_lines = @file_lines + 1;
+            printf("{\"evt\":\"file\",\"act\":\"open\",\"pid\":%d,\"comm\":\"%s\",\"path\":\"%s\",\"flags\":%d}\n",
+                   pid, comm, $path, args->flags);
+        } else {
+            @file_skipped = @file_skipped + 1;
+        }
+    }
+}
+
+interval:s:1
+{
+    if (@file_skipped != 0) {
+        printf("{\"evt\":\"file\",\"act\":\"skipped\",\"count\":%d}\n", @file_skipped);
+    }
+    @file_lines = 0;
+    @file_skipped = 0;
+}
+
+interval:s:60
+{
+    clear(@file_seen);
+}
