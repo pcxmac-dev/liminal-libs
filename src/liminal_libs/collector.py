@@ -1139,7 +1139,7 @@ class RunQueue:
     def plan(self, rows: list[dict], backfilling: Callable[[dict], bool], settle: bool) -> None:
         """The symbols this run means to fetch, in its order; with `settle`, the part's other waiting
         rows have nothing left to fetch (up to date)."""
-        self._do("queue_reset", self.plugin, self.part, "bars")
+        self._do("queue_reset", self.plugin, self.part, "bars", mine_alone=True)  # one run a feed: these are its own
         items = [{"key": w["ticker"], "title": w["ticker"], "priority": i,
                   "detail": f"{w['asset']}: {'history to fill' if backfilling(w) else 'new data'}"} for i, w in enumerate(rows)]
         self._do("queue_put", self.plugin, self.part, "bars", items)

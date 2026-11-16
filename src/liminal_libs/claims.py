@@ -23,7 +23,9 @@ Every time is the database's own clock, read in SQL, never this process's: the t
 jumped ten seconds, back and forth, while the suite's tests ran there).
 
 Keys in use: `feed:<name>` (one run per feed), `symbol:<asset>:<ticker>` (shared inside an instance), `history`,
-`post`, `publications`, `live:<feed>`.
+`post`, `publications`, `live:<feed>`, `plugin:<name>` (a plugin's own fetching: one pass at a time) and
+`process:<instance>:<pid>` (present(): a process at work that holds nothing else says it is alive, so another
+installation can tell what it left running from what it is still working on: gone()).
 
 Two levels. `Claims` is one connection's claims, with who it is and its clock given (the tests' two instances on one
 file). The module's own `take`, `release`, `holds`, `held`, `exclusive` are this process's on a database by its path:
@@ -49,7 +51,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from . import mounts, proc
-from .storage.common import BUSY_TIMEOUT_S, write_transaction
+from .storage.common import BUSY_TIMEOUT_S, read_only, write_transaction
 from .storage.schema import CLAIMS as SCHEMA  # the main file's tables are the schema's to say
 
 BEAT_S = 20.0  # a holder says it is alive this often
@@ -59,6 +61,9 @@ INSTANCE_VAR = "LIMINAL_INSTANCE"  # this installation's name among those on one
 NOW = "(julianday('now') - 2440587.5) * 86400.0"  # unix seconds by the database's own clock
 FEED = "feed:"
 SYMBOL = "symbol:"
+PLUGIN = "plugin:"
+PROCESS = "process:"
+READS_ONLY = "nobody: this process reads only (LIMINAL_READONLY) and takes nothing"
 
 
 def os_name(system: str | None = None) -> str:
@@ -396,7 +401,10 @@ def _using(db_path, make: bool, log: Callable[[str], None] | None = None) -> Ite
 
 def take(db_path, key: str, *, shared: bool = False, what: str = "", log: Callable[[str], None] | None = None) -> Claim | None:
     """This process's claim on `key` in the database at `db_path` (Claims.take), kept alive by its heartbeat until it
-    is released or the process ends. None while another holds it."""
+    is released or the process ends. None while another holds it, and always in a process that reads only
+    (LIMINAL_READONLY: nothing of it reaches a file, a claim no more than a bar)."""
+    if read_only():
+        return None
     with _using(db_path, True, log) as claims:
         return claims.take(key, shared=shared, what=what)
 
@@ -442,6 +450,55 @@ def held(db_path, prefix: str = "", elsewhere: bool = False) -> list[Held]:
         return []
     finally:
         reader.close()
+
+
+def present(db_path, what: str = "", log: Callable[[str], None] | None = None) -> Claim | None:
+    """This process says it is at work on a database: a claim that is its own alone (process:<instance>:<pid>),
+    kept alive like any other. Another installation cannot look a process up; it can see this (gone())."""
+    return take(db_path, f"{PROCESS}{instance()}:{os.getpid()}", what=what, log=log)
+
+
+def gone(conn: sqlite3.Connection, owners, *, me: str | None = None, own_files: bool = True,
+         alive: Callable[[int], bool] | None = None, now: float | None = None) -> set:
+    """Which of these owners of rows, (instance, pid) as a row names the process working on it, are gone: what
+    they left running may be taken back; what the others are working on is theirs.
+    - no process named: gone;
+    - this installation's: the process is looked up. This process itself counts as gone: it asks at the start of
+      new work, about what an earlier pass of its own left;
+    - unnamed (taken before rows named their installation): this installation's when the files are this
+      system's own (`own_files`); on another system's drive only that system can tell: never gone;
+    - another installation's: gone unless that process holds a claim heard from within STALE_S (every process
+      that fetches holds one: its feed's, its plugin's, or present()'s).
+    `conn`: any connection to the main file (the store's own, inside its transaction)."""
+    me = me or instance()
+    alive = alive or proc.pid_alive
+    out: set = set()
+    fresh: set | None = None
+    for owner in set(owners):
+        inst, pid = owner
+        if pid is None:
+            out.add(owner)
+        elif inst == me or (inst is None and own_files):
+            if int(pid) == os.getpid() or not alive(int(pid)):
+                out.add(owner)
+        elif inst is not None:
+            if fresh is None:
+                fresh = _heard_from(conn, now)
+            if (inst, int(pid)) not in fresh:
+                out.add(owner)
+    return out
+
+
+def _heard_from(conn: sqlite3.Connection, now: float | None = None) -> set:
+    """The (instance, pid) of every process holding a claim heard from within STALE_S, by the database's clock."""
+    try:
+        if now is None:
+            rows = conn.execute(f"SELECT DISTINCT instance, pid FROM claims WHERE {NOW} - beat_at < ?", (STALE_S,))
+        else:
+            rows = conn.execute("SELECT DISTINCT instance, pid FROM claims WHERE ? - beat_at < ?", (now, STALE_S))
+        return {(i, int(p)) for i, p in rows}
+    except sqlite3.Error:  # a file from before claims: nobody holds any
+        return set()
 
 
 def _give_back() -> None:
@@ -495,7 +552,8 @@ def exclusive(db_path, key: str, lock: Path | None = None, *, what: str = "",
         return
     claim = take(db_path, key, what=what, log=log)
     if claim is None:
-        who = next((h.words() for h in held(db_path, key) if h.key == key and not h.own), "another process")
+        who = READS_ONLY if read_only() else \
+            next((h.words() for h in held(db_path, key) if h.key == key and not h.own), "another process")
         raise Taken(key, who)
     locked = False
     try:

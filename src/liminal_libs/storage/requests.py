@@ -16,7 +16,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from .common import _now
+from .common import _now, own_files, write_transaction
 
 OPEN = ("waiting", "assessing", "collecting")
 KINDS = ("bars", "live")  # what a request can ask about a symbol today (the contract's verbs bring the rest)
@@ -61,7 +61,9 @@ class RequestStore:
             raise ValueError(f"not a symbol: {symbol!r}")
         wanted = tuple(dict.fromkeys(str(k) for k in kinds if k)) or ("bars",)
         at = _iso(now) or _now()
-        with self.conn:
+        # the write lock from the start (1.56.0): two asks at once each found no open request for the
+        # symbol and each made one
+        with write_transaction(self.conn):
             open_row = self.conn.execute(
                 f"SELECT {', '.join(_COLS)} FROM fetch_requests WHERE symbol=? AND {_IS_OPEN} ORDER BY id LIMIT 1",
                 (symbol,)).fetchone()
@@ -82,13 +84,16 @@ class RequestStore:
 
     def request_next(self, now: datetime | None = None) -> dict | None:
         """The next request to work on, taken by this process (assessing): the newest ask, else the
-        oldest standing work. None when nothing waits."""
+        oldest standing work. None when nothing waits. The row names this process and its
+        installation (claims.instance): of two fetchers on a database, one takes it."""
+        from ..claims import instance
+
         at = _iso(now) or _now()
         with self.conn:
             r = self.conn.execute(
-                "UPDATE fetch_requests SET state='assessing', started_at=?, pid=? WHERE id = (SELECT id FROM fetch_requests "
+                "UPDATE fetch_requests SET state='assessing', started_at=?, pid=?, instance=? WHERE id = (SELECT id FROM fetch_requests "
                 f"WHERE state='waiting' ORDER BY {_ORDER} LIMIT 1) RETURNING " + ", ".join(_COLS),
-                (at, os.getpid())).fetchone()
+                (at, os.getpid(), instance())).fetchone()
         return _row(r) if r else None
 
     def request_update(self, request_id: int, state: str | None = None, plan=None, detail: str | None = None,
@@ -125,10 +130,20 @@ class RequestStore:
 
     def request_reset(self) -> int:
         """Requests left assessing or collecting by a fetcher that ended before them (its process
-        gone): waiting again, for the fetcher starting now."""
-        with self.conn:
-            return self.conn.execute("UPDATE fetch_requests SET state='waiting', pid=NULL, started_at=NULL, "
-                                     "detail='the fetcher ended before it' WHERE state IN ('assessing', 'collecting')").rowcount
+        gone): waiting again, for the fetcher starting now. One a fetcher is still working on is
+        left to it (1.56.0: until then a fetcher starting took back every other's): a process of
+        this installation is looked up, one of another installation is at work while it holds a
+        claim heard from lately (claims.gone)."""
+        from .. import claims
+
+        with write_transaction(self.conn):
+            rows = self.conn.execute("SELECT id, instance, pid FROM fetch_requests "
+                                     "WHERE state IN ('assessing', 'collecting')").fetchall()
+            left = claims.gone(self.conn, {(r[1], r[2]) for r in rows}, own_files=own_files(self.path))
+            ids = [(r[0],) for r in rows if (r[1], r[2]) in left]
+            self.conn.executemany("UPDATE fetch_requests SET state='waiting', pid=NULL, instance=NULL, started_at=NULL, "
+                                  "detail='the fetcher ended before it' WHERE id=?", ids)
+        return len(ids)
 
     def requests_open(self) -> list[dict]:
         """The open requests (collecting, assessing, waiting), in the order they are taken."""

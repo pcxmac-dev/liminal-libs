@@ -10,10 +10,11 @@ stops its worker alone: the others go on (each in a thread of its own: their wai
 from __future__ import annotations
 
 import threading
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import collector, killswitch
+from . import claims, collector, killswitch
 from .collector import StopRun
 from .sources.fetching import FetchContext, Fetcher, Job
 from .sources.registry import plugin_fetchers
@@ -47,10 +48,24 @@ class Runner:
     def plugin(self, plugin: str, parts: list[tuple[str, Fetcher]], store,
                clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), limit: int | None = None) -> dict:
         """One worker's pass: its parts' plans on the queue, then its jobs until none is due, it is
-        stopped, or `limit` jobs are done. Returns {"done", "failed", "held", "stopped"}."""
+        stopped, or `limit` jobs are done. Returns {"done", "failed", "held", "stopped"}. One pass
+        per plugin at a time on a database, whichever process and system asks (claims:
+        `plugin:<name>`; 1.56.0): a second is stopped, saying who is at it."""
+        path = getattr(store, "path", None)
+        with ExitStack() as held:
+            if path is not None and str(path) != ":memory:":
+                try:
+                    held.enter_context(claims.exclusive(path, f"{claims.PLUGIN}{plugin}", what=f"{plugin}'s own fetching"))
+                except claims.Taken as e:
+                    return {"done": 0, "failed": 0, "held": 0, "stopped": f"its fetching is going on already: {e.holder}"}
+            return self._pass(plugin, parts, store, clock, limit)
+
+    def _pass(self, plugin: str, parts: list[tuple[str, Fetcher]], store, clock: Callable[[], datetime],
+              limit: int | None) -> dict:
+        """plugin()'s pass itself, the plugin's claim held."""
         settings, log = self.settings, self.log
         out = {"done": 0, "failed": 0, "held": 0, "stopped": None}
-        store.queue_reset(plugin)  # left running by a pass that ended before them
+        store.queue_reset(plugin)  # left running by a pass that ended before them (a live run's rows are left to it)
         fetchers = {part: f for part, f in parts}
         sent = [0]
 

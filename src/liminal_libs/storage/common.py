@@ -50,6 +50,15 @@ def write_transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         yield conn
 
 
+def own_files(path) -> bool:
+    """Whether a store's files are this system's own: not another system's seen through a mount
+    (mounts.foreign), where a process id in a row names a process this system cannot look up. A
+    store in memory is this process's."""
+    from .. import mounts
+
+    return str(path) == ":memory:" or not mounts.foreign(path)
+
+
 def add_column(conn: sqlite3.Connection, table: str, column: str, kind: str) -> None:
     """ALTER TABLE ADD COLUMN unless the column is there (inside the caller's write transaction:
     two processes opening an old file at once both found it missing, and the second failed)."""

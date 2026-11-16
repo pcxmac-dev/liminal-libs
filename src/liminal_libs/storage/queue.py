@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timezone
 from typing import Iterable
 
-from .common import _now
+from .common import _now, own_files, write_transaction
 
 STATES = ("running", "waiting", "held", "failed", "done")
 _COLS = ("plugin", "part", "kind", "key", "title", "state", "priority", "detail", "not_before", "queued_at",
@@ -57,15 +57,19 @@ class QueueStore:
 
     def queue_start(self, plugin: str, part: str, kind: str, key: str, title: str | None = None,
                     detail: str | None = None, now: datetime | None = None) -> None:
-        """A resource being fetched now, by this process (put on the queue if it was not)."""
+        """A resource being fetched now, by this process of this installation (put on the queue if
+        it was not)."""
+        from ..claims import instance
+
         at = _iso(now) or _now()
         with self.conn:
             self.conn.execute(
-                "INSERT INTO fetch_queue (plugin, part, kind, key, title, state, detail, queued_at, started_at, attempts, pid) "
-                "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, 1, ?) ON CONFLICT (plugin, part, kind, key) DO UPDATE SET "
+                "INSERT INTO fetch_queue (plugin, part, kind, key, title, state, detail, queued_at, started_at, attempts, pid, "
+                "instance) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, 1, ?, ?) ON CONFLICT (plugin, part, kind, key) DO UPDATE SET "
                 "state='running', started_at=excluded.started_at, finished_at=NULL, error=NULL, pid=excluded.pid, "
-                "attempts=attempts + 1, title=COALESCE(?, title), detail=COALESCE(excluded.detail, detail)",
-                (plugin, part, kind, str(key), title or str(key), detail, at, at, os.getpid(), title))
+                "instance=excluded.instance, attempts=attempts + 1, title=COALESCE(?, title), "
+                "detail=COALESCE(excluded.detail, detail)",
+                (plugin, part, kind, str(key), title or str(key), detail, at, at, os.getpid(), instance(), title))
 
     def queue_end(self, plugin: str, part: str, kind: str, key: str, state: str = "done", detail: str | None = None,
                   error: str | None = None, requests: int = 0, rows: int = 0, bytes_: int = 0,
@@ -89,26 +93,41 @@ class QueueStore:
     def queue_claim(self, plugin: str, now: datetime | None = None) -> dict | None:
         """The plugin's next waiting resource (or held one whose time has come), taken by this
         process: running. None when it has none due."""
+        from ..claims import instance
+
         at = _iso(now) or _now()
         with self.conn:
             row = self.conn.execute(
-                "UPDATE fetch_queue SET state='running', started_at=?, finished_at=NULL, error=NULL, pid=?, "
+                "UPDATE fetch_queue SET state='running', started_at=?, finished_at=NULL, error=NULL, pid=?, instance=?, "
                 "attempts=attempts + 1 WHERE rowid = (SELECT rowid FROM fetch_queue WHERE plugin=? AND "
                 "(state='waiting' OR state='held') AND (not_before IS NULL OR not_before <= ?) "
                 "ORDER BY priority, queued_at, key LIMIT 1) RETURNING " + ", ".join(_COLS),
-                (at, os.getpid(), plugin, at)).fetchone()
+                (at, os.getpid(), instance(), plugin, at)).fetchone()
         return dict(zip(_COLS, row)) if row else None
 
-    def queue_reset(self, plugin: str, part: str | None = None, kind: str | None = None) -> int:
-        """Rows left running by a run that ended before them (its process gone): waiting again."""
-        sql, args = "UPDATE fetch_queue SET state='waiting', pid=NULL, detail='its run ended before it' WHERE " \
-                    "plugin=? AND state='running'", [plugin]
+    def queue_reset(self, plugin: str, part: str | None = None, kind: str | None = None, mine_alone: bool = False) -> int:
+        """Rows left running by a run that ended before them (its process gone): waiting again. One
+        another process is still fetching is left to it (1.56.0: until then a pass starting took
+        back what every other was fetching): a process of this installation is looked up, one of
+        another installation is at work while it holds a claim heard from lately (claims.gone).
+        `mine_alone`: the caller holds the claim that makes these rows its own (a feed's run, the
+        feed's bars): every one of them was left behind."""
+        from .. import claims
+
+        where, args = "plugin=? AND state='running'", [plugin]
         if part is not None:
-            sql, args = sql + " AND part=?", [*args, part]
+            where, args = where + " AND part=?", [*args, part]
         if kind is not None:
-            sql, args = sql + " AND kind=?", [*args, kind]
-        with self.conn:
-            return self.conn.execute(sql, args).rowcount
+            where, args = where + " AND kind=?", [*args, kind]
+        back = "UPDATE fetch_queue SET state='waiting', pid=NULL, instance=NULL, detail='its run ended before it' WHERE "
+        with write_transaction(self.conn):
+            if mine_alone:
+                return self.conn.execute(back + where, args).rowcount
+            rows = self.conn.execute(f"SELECT rowid, instance, pid FROM fetch_queue WHERE {where}", args).fetchall()
+            left = claims.gone(self.conn, {(r[1], r[2]) for r in rows}, own_files=own_files(self.path))
+            ids = [(r[0],) for r in rows if (r[1], r[2]) in left]
+            self.conn.executemany(back + "rowid=?", ids)
+        return len(ids)
 
     def queue_settle(self, plugin: str, part: str, kind: str, keep: Iterable[str], detail: str = "up to date",
                      now: datetime | None = None) -> int:
