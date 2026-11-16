@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.58.1 (2026-11-16)
+
+On Windows a path is judged as it really is (`mounts.foreign`, `mounts.foreign_on_windows`). Found by the review of
+1.58.0's GeoIP guard, in the check that claims, the link and the stores stand on:
+
+- **A link into a share is the share's.** Windows judged a path by its spelling, so a junction or a link from this
+  machine's disk into `\\server\share`, or into WSL's `\\wsl.localhost`, passed for this machine's own. Its links are
+  followed first now, as Linux's judgement always did.
+- **A local path spelled the long way is local.** Every path beginning `\\` counted as a share's, a local folder
+  written `\\?\C:\...` or `\\.\C:\...` too, so work on this machine's own files so spelled was refused
+  (`owner_only`), and such a database was not opened. `mounts.plain_windows` reads those spellings as the plain paths
+  they are; `\\?\UNC\server\share` is still a share, and a volume named by itself is asked of Windows.
+
 ## 1.58.0 (2026-11-16)
 
 GeoIP files on another system's drive are that system's. For the suite run a second time inside WSL, each system's

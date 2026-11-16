@@ -9,6 +9,7 @@ opens such a file on its own system) and claims.py (a lock file there cannot be 
 """
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 import sys
@@ -108,15 +109,54 @@ def foreign(path, mounts: list[tuple[str, str]] | None = None) -> bool:
 def _foreign(path: str) -> bool:
     """foreign() for this system, remembered by path: a data folder does not change disks under a running process."""
     if sys.platform == "win32":
-        if path.startswith("\\\\") or path.startswith("//"):
-            return True
-        drive = os.path.splitdrive(os.path.abspath(path))[0]
-        if not drive:
-            return False
-        try:
-            import ctypes
-
-            return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == DRIVE_REMOTE
-        except (OSError, AttributeError):
-            return False
+        return foreign_on_windows(path)
     return fstype(path) in FOREIGN
+
+
+_EXTENDED = ("\\\\?\\", "\\\\.\\")  # the extended-length and the device spelling of a Windows path
+
+
+def plain_windows(path: str) -> str:
+    r"""A Windows path's extended-length or device spelling as the plain path it is: \\?\C:\x as C:\x, and
+    \\?\UNC\server\share as \\server\share. Any other path as it is. Nothing is read: the spelling alone."""
+    for prefix in _EXTENDED:
+        if path.startswith(prefix):
+            rest = path[len(prefix):]
+            if rest[:4].upper() == "UNC\\":
+                return "\\\\" + rest[4:]
+            if len(rest) >= 2 and rest[1] == ":" and rest[0].isalpha():
+                return rest
+    return path
+
+
+def _remote_drive(root: str) -> bool:
+    """Whether a drive (its root: `Z:\\`, or a volume's own name) is a network drive, by Windows' word."""
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.GetDriveTypeW(root) == DRIVE_REMOTE
+    except (OSError, AttributeError):
+        return False
+
+
+def foreign_on_windows(path: str, real=None, remote=None) -> bool:
+    r"""foreign() on Windows: a share's path or a network drive, judged of the path as it really is (1.58.1).
+    Its links are followed first: a junction or a link from this machine's disk into \\server\share, or into WSL's
+    \\wsl.localhost, is that share's, as Linux's own judgement follows links. And a local path in its extended-length
+    or device spelling (\\?\C:\x, \\.\C:\x) is the local path it is: every path that began \\ used to count as a
+    share's, so work on this machine's own files so spelled was refused. `real`, `remote`: a test's stand-ins for
+    os.path.realpath and for whether a drive is a network drive."""
+    text = plain_windows(path.replace("/", "\\"))
+    try:
+        text = plain_windows((real or os.path.realpath)(text))
+    except (OSError, ValueError):
+        pass  # it cannot be followed (a name that is no path): judged by its spelling
+    remote = remote or _remote_drive
+    if text.startswith("\\\\?\\Volume{") and "}" in text:  # a volume by its own name: a disk here unless Windows says not
+        return remote(text[:text.index("}") + 1] + "\\")
+    if text.startswith("\\\\"):
+        return True
+    drive = ntpath.splitdrive(text)[0]
+    if not drive and real is None:
+        drive = ntpath.splitdrive(os.path.abspath(text))[0]
+    return bool(drive) and remote(drive + "\\")

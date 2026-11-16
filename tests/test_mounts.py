@@ -67,3 +67,45 @@ def test_this_systems_own_disk_is_its_own(tmp_path):
 def test_inside_wsl_the_real_windows_drive_is_foreign():
     assert mounts.foreign("/mnt/c/Windows") and mounts.fstype("/mnt/c/Windows") in mounts.FOREIGN
     assert not mounts.foreign(os.path.expanduser("~"))
+
+
+def test_on_windows_a_path_is_judged_as_it_really_is():
+    """1.58.1, found by a review of the GeoIP guard: Windows judged a path by its spelling. A junction from this
+    machine's disk into a share passed for this machine's own (Linux's judgement follows links), and a local folder in
+    its extended-length or device spelling counted as a share, so work on this machine's own files was refused."""
+    here = lambda text: text  # noqa: E731 - nothing is a link
+    local = lambda root: False  # noqa: E731 - no network drive
+    judge = lambda path, real=here, remote=local: mounts.foreign_on_windows(path, real=real, remote=remote)  # noqa: E731
+    assert not judge(r"C:\Users\x\source\liminal\store\data\liminal.db") and not judge("C:/data/liminal.db")
+    assert judge(r"\\server\share\liminal\liminal.db") and judge("//server/share/liminal.db")
+    assert judge(r"\\wsl.localhost\Ubuntu\home\sysop\liminal\store\data\liminal.db")
+    # a local path spelled the long way, or as a device's, is the local path it is
+    assert not judge(r"\\?\C:\Users\x\data\liminal.db") and not judge(r"\\.\C:\Users\x\data\liminal.db")
+    assert judge(r"\\?\UNC\server\share\liminal.db")  # ... and a share so spelled is still a share
+    assert mounts.plain_windows(r"\\?\C:\x") == r"C:\x" and mounts.plain_windows(r"\\?\UNC\s\sh\x") == r"\\s\sh\x"
+    assert mounts.plain_windows(r"C:\x") == r"C:\x" and mounts.plain_windows(r"\\server\share") == r"\\server\share"
+    # a link from this machine's disk into a share is the share's
+    junction = lambda text: text.replace(r"C:\data", r"\\nas\share\liminal")  # noqa: E731
+    assert judge(r"C:\data\liminal.db", real=junction) and not judge(r"C:\other\liminal.db", real=junction)
+    into_wsl = lambda text: r"\\?\UNC\wsl.localhost\Ubuntu\home\sysop\x" if text.startswith("D:") else text  # noqa: E731
+    assert judge(r"D:\link\x", real=into_wsl)
+    # a network drive by Windows' word, and by where its letter really leads
+    assert judge(r"Z:\liminal\liminal.db", remote=lambda root: root == "Z:\\") and not judge(r"C:\x", remote=lambda root: root == "Z:\\")
+    assert judge(r"Z:\liminal.db", real=lambda text: text.replace("Z:", r"\\server\share"))
+    # a volume by its own name is a disk here unless Windows says it is not
+    volume = r"\\?\Volume{4c1b02c1-d990-11dc-99ae-806e6f6e6963}\data\liminal.db"
+    assert not judge(volume) and judge(volume, remote=lambda root: root.startswith("\\\\?\\Volume{"))
+
+    def unreadable(text):
+        raise OSError("no such name")
+
+    assert not judge(r"C:\data\liminal.db", real=unreadable) and judge(r"\\server\share\x", real=unreadable)  # by its spelling
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own answer")
+def test_on_this_windows_machine_its_own_disk_is_its_own_however_it_is_spelled(tmp_path):
+    mounts._foreign.cache_clear()
+    plain = str(tmp_path / "liminal.db")
+    assert not mounts.foreign(plain) and not mounts.foreign("\\\\?\\" + plain) and not mounts.foreign(plain.replace("\\", "/"))
+    mounts.owner_only("\\\\?\\" + plain, "a backup")  # this machine's own files so spelled: not refused
+    assert mounts.foreign(r"\\wsl.localhost\Ubuntu\home") and mounts.foreign(r"\\?\UNC\wsl.localhost\Ubuntu\home")
