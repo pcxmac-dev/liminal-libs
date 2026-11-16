@@ -5,6 +5,7 @@ on port 0."""
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +55,36 @@ def _send(port, method, path, body=None, headers=None):
     return r.status, r.read(), r
 
 
+def _answered_after_its_body(port, path, headers, wait=0.3):
+    """A write sent in two parts, the second held back `wait` seconds: whether nothing at all came back before the
+    whole of it was sent, and the status that came then. A server that refuses a write reads its body first: answered
+    and closed with the body unread, a connection is reset on Windows and the answer lost. Many large writes sent in
+    the hope that one is lost say so most runs; this says so every run, on every system."""
+    body = json.dumps({"pad": "x" * 4000}).encode()
+    lines = {"Host": f"127.0.0.1:{port}", "Content-Type": "application/json", "Content-Length": str(len(body)),
+             **headers}
+    head = f"POST {path} HTTP/1.1\r\n" + "".join(f"{name}: {value}\r\n" for name, value in lines.items()) + "\r\n"
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(head.encode() + body[:100])
+        s.settimeout(wait)
+        try:
+            s.recv(1)
+            return False, 0  # an answer, or its end, with most of the body still to come
+        except TimeoutError:
+            pass  # nothing yet: the server is reading
+        except OSError:
+            return False, 0  # reset: answered and closed with the body unread
+        s.settimeout(5)
+        s.sendall(body[100:])
+        answer = b""
+        while b"\r\n" not in answer:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            answer += chunk
+    return True, int(answer.split()[1]) if answer else 0
+
+
 @pytest.fixture
 def demo(tmp_path):
     (tmp_path / "index.html").write_text("<html><title>Demo</title><nav id=\"rail\"></nav></html>", encoding="utf-8")
@@ -63,6 +94,43 @@ def demo(tmp_path):
     app.start(0)
     yield app, _port(app.served), lines
     app.stop()
+
+
+def test_a_refused_write_is_answered_and_never_lost_with_its_connection(demo):
+    """A write the frame refuses (another site's page, another host's name, no write header, no such route) has a body
+    it does not use. Answered and closed with that body unread, or still arriving, the connection is reset on Windows
+    and the client reads no answer at all, where a 403 was sent (seen 2026-11-16 as two tests failing on a busy
+    machine: ConnectionAbortedError in place of the 403). The body is read and dropped first (web.drain), at most
+    MAX_BODY of it."""
+    app, port, _ = demo
+    body = json.dumps({"pad": "x" * 600_000}).encode()  # still arriving when a server that does not read it would close
+    write = {"Content-Type": "application/json", web.WRITE_HEADER: "1"}
+    refused = (({**write, "Sec-Fetch-Site": "cross-site"}, "/api/echo", 403, b"forbidden: not from this app's pages"),
+               ({**write, "Origin": "http://evil.example"}, "/api/echo", 403, b"forbidden: not from this app's pages"),
+               ({**write, "Host": "evil.example"}, "/api/echo", 403, b"forbidden"),
+               ({"Content-Type": "application/json"}, "/api/echo", 403, b"missing request header"),
+               (write, "/elsewhere", 404, b"not found"))
+    # sent in two parts, a refused write is not answered before all of it is there (no race in this: it fails every
+    # run where a body is left unread) ...
+    for headers, path, status, _ in refused:
+        assert _answered_after_its_body(port, path, headers) == (True, status), (headers, path)
+    # ... and so no answer is lost, however many and however large (left unread, some are: most still arrive)
+    for _ in range(12):
+        for headers, path, status, said in refused:
+            got = _send(port, "POST", path, body, headers)
+            assert (got[0], got[1]) == (status, said), (headers, path)
+    # and the app still answers what it takes: a write of its own page's, with the same body
+    status, answer, _ = _send(port, "POST", "/api/echo", body, write)
+    assert status == 201 and len(json.loads(answer)["got"]["pad"]) == 600_000
+    # one larger than it will read is refused unread (its size is the reason): nothing of it is taken in
+    huge = {"Content-Length": str(web.MAX_BODY + 1), **write}
+    conn = HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.putrequest("POST", "/api/echo")
+    for name, value in huge.items():
+        conn.putheader(name, value)
+    conn.endheaders()
+    assert conn.getresponse().status == 413
+    conn.close()
 
 
 def test_an_app_serves_its_page_the_librarys_files_its_tray_and_its_routes(demo):

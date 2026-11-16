@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.61.1 (2026-11-16)
+
+A refused write is answered, not lost with its connection. Found while the suites were run on a busy machine: one
+test of the platform's and one of the login's read a `ConnectionAbortedError` where a 403 had been sent.
+
+- **`web.drain(handler)`**, and `web.refuse(handler, status, body)`: a request's body is read and dropped before an
+  answer that does not use it. The frame answered a write it refuses (another site's page, another host's name, no
+  write header, no such route) without reading its body. Closed with that body unread, or still arriving, a
+  connection is reset on Windows, and the client reads no answer at all. `local_only`, `from_this_app` and the
+  frame's own refusals read it first, at most `MAX_BODY` of it; a body larger than that is still refused unread.
+- Every app of the frame has it: the platform and the login whole, the charts' data API and its front (the
+  integrator's page is the data API) for what the two guards refuse. Their own refusal of a write without the app's
+  header is the charts' to read first, in its commit beside this one. What a page of an app's own sends was never
+  refused, so nothing a page does changes.
+- The one place in the frame that already dropped a body by hand (a login that could not be made here) calls
+  `web.drain`.
+- The test sends a refused write in two parts and sees nothing come back before all of it is there: without the
+  body-drop it fails every run, on any system. Sixty large refused writes follow, none of whose answers is lost
+  (left unread, some are and most still arrive: that alone passes more often than not).
+
 ## 1.61.0 (2026-11-16)
 
 Database plugins: a plugin for each engine, each holding its instances (plugin API 2.3; the user, 2026-11-15: "for

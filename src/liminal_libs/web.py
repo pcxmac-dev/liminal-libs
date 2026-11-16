@@ -59,11 +59,30 @@ def send_json(handler, data, status: int = 200, headers=None) -> None:
     send(handler, status, json.dumps(data, allow_nan=False).encode(), "application/json", headers)
 
 
+def drain(handler) -> None:
+    """A request's body read and dropped, before an answer that does not use it (a refusal). Answered and closed with
+    its body unread, or still arriving, a connection is reset on Windows, and the client reads no answer at all where
+    a 403 was sent (1.61.1: seen as a ConnectionAbortedError in place of the refusal, on a busy machine). At most
+    MAX_BODY is read: a larger body is not taken in. Called before anything else has read the body, and once."""
+    raw = handler.headers.get("Content-Length") or ""
+    if raw.isdecimal() and 0 < int(raw) <= MAX_BODY:
+        try:
+            handler.rfile.read(int(raw))
+        except (OSError, ValueError):
+            pass  # the client went away, or sent less than it said: the answer is sent all the same
+
+
+def refuse(handler, status: int, body: bytes, ctype: str = "text/plain") -> None:
+    """A refusal of a request whose body is not used: the body dropped (drain), then the answer."""
+    drain(handler)
+    send(handler, status, body, ctype)
+
+
 def local_only(handler) -> bool:
     """Only requests addressed to this machine are answered (blocks DNS rebinding from web pages)."""
     host = (handler.headers.get("Host") or "").split(":")[0]
     if host not in LOCAL_HOSTS:
-        send(handler, HTTPStatus.FORBIDDEN, b"forbidden", "text/plain")
+        refuse(handler, HTTPStatus.FORBIDDEN, b"forbidden")
         return False
     return True
 
@@ -80,7 +99,7 @@ def from_this_app(handler) -> bool:
     if (site is None or site in ("same-origin", "none")) \
             and (origin is None or origin == f"http://{handler.headers.get('Host')}"):
         return True
-    send(handler, HTTPStatus.FORBIDDEN, b"forbidden: not from this app's pages", "text/plain")
+    refuse(handler, HTTPStatus.FORBIDDEN, b"forbidden: not from this app's pages")
     return False
 
 

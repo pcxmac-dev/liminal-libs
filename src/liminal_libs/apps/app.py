@@ -469,9 +469,7 @@ def make_handler(app: App):
             answer and its cookies (at /, so this app's page sends them and the app can ask who is in)."""
             login = app.login_object()
             if login is None:
-                raw = self.headers.get("Content-Length") or "0"
-                if raw.isdecimal() and 0 < int(raw) <= web.MAX_BODY:
-                    self.rfile.read(int(raw))
+                web.drain(self)
                 return web.send_json(self, {"error": f"{app.NAME} inherits the login, but it could not be made here "
                                                      "(see its log)"}, HTTPStatus.SERVICE_UNAVAILABLE)
             path = self.path[len(LOGIN_PREFIX):]
@@ -485,11 +483,11 @@ def make_handler(app: App):
                 return
             if _is_login(urlsplit(self.path).path) and app.inherits_login():
                 return self._login(method)  # the login object checks its own write header and reads its own body
-            if self.headers.get(web.WRITE_HEADER) != "1":
-                return web.send(self, HTTPStatus.FORBIDDEN, b"missing request header", "text/plain")
+            if self.headers.get(web.WRITE_HEADER) != "1":  # (refused with its body read and dropped: web.refuse)
+                return web.refuse(self, HTTPStatus.FORBIDDEN, b"missing request header")
             parts = urlsplit(self.path)
             if not parts.path.startswith("/api/"):
-                return web.send(self, HTTPStatus.NOT_FOUND, b"not found", "text/plain")
+                return web.refuse(self, HTTPStatus.NOT_FOUND, b"not found")
             raw = self.headers.get("Content-Length") or "0"
             length = int(raw) if raw.isdecimal() else -1
             if length < 0:
