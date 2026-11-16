@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .common import write_transaction
+from .link import frame
 from .feeds import BAR_COLUMNS, _log_changes, _stored_ms
 
 RULES = ("malformed", "spike", "inconsistent", "rebuilt", "out_of_line")
@@ -96,7 +97,7 @@ class PrunedStore:
         frames = []
         for feed in [self._feed(source)] if source else self._open_feeds():
             if feed is not None:
-                f = pd.read_sql_query(sql, feed.conn, params=args)
+                f = frame(sql, feed.conn, params=args)
                 if len(f):
                     f.insert(0, "source", feed.name)
                     frames.append(f)
@@ -166,8 +167,8 @@ class PrunedStore:
             return pd.DataFrame(columns=[*cols, "derivation"])
         args = (ticker.upper(), timespan, int(lo_ms), int(hi_ms))
         where = "WHERE ticker=? AND timespan=? AND multiplier=1 AND ts >= ? AND ts < ?"
-        own = pd.read_sql_query(f"SELECT {', '.join(cols)}, NULL AS derivation FROM bars {where}", conn, params=args)
-        built = pd.read_sql_query(f"SELECT {', '.join(cols)}, derivation FROM built_bars {where}", conn, params=args)
+        own = frame(f"SELECT {', '.join(cols)}, NULL AS derivation FROM bars {where}", conn, params=args)
+        built = frame(f"SELECT {', '.join(cols)}, derivation FROM built_bars {where}", conn, params=args)
         frames = [f for f in (own, built) if len(f)]
         if not frames:
             return own
@@ -189,7 +190,7 @@ class PrunedStore:
                 return pd.DataFrame(columns=cols)
             sql += " AND (" + " OR ".join(["(timespan=? AND multiplier=?)"] * len(wanted)) + ")"
             args += [v for frame in wanted for v in frame]
-        df = pd.read_sql_query(sql + " AND ts >= ? AND ts < ?", conn, params=(*args, int(lo_ms), int(hi_ms)))
+        df = frame(sql + " AND ts >= ? AND ts < ?", conn, params=(*args, int(lo_ms), int(hi_ms)))
         return df.reset_index(drop=True)
 
     def prune_replaced(self, source: str, ticker: str, before: pd.DataFrame, after: pd.DataFrame, why: str) -> int:

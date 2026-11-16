@@ -342,7 +342,9 @@ class Scans:
         if not path.exists():
             return {}
         try:
-            con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+            from .storage.link import connect
+
+            con = connect(path, read_only=True, timeout=5)
             try:
                 rows = con.execute("SELECT key, value FROM kv WHERE key LIKE 'capabilities:%'").fetchall()
             finally:

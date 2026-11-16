@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 from .common import _ET, BUSY_TIMEOUT_S, _feed_name, _now, seal
+from .link import connect
 
 
 # A research dataset provider's file (datasets/<provider>.db, see datasets.py): series of dated
@@ -101,8 +102,8 @@ class DatasetStore:
             if conn is None:
                 if path is not None:
                     path.parent.mkdir(parents=True, exist_ok=True)
-                conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=self._check_same_thread,
-                                       timeout=BUSY_TIMEOUT_S)
+                conn = connect(str(path) if path else ":memory:", check_same_thread=self._check_same_thread,
+                               timeout=BUSY_TIMEOUT_S)
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA journal_size_limit=67108864")  # cut back to 64 MB once checkpointed
                 with conn:

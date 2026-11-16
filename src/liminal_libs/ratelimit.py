@@ -190,7 +190,9 @@ class MachineLedger:
         turn, so neither loses the other's change, reads included); the tables made first."""
         path = self.path or machine_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(path, timeout=60, isolation_level=None)) as conn:
+        from .storage.link import connect
+
+        with closing(connect(path, timeout=60, isolation_level=None)) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.execute("CREATE TABLE IF NOT EXISTS windows (name TEXT PRIMARY KEY, times TEXT NOT NULL)")

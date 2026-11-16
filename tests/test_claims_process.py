@@ -182,6 +182,7 @@ def test_exclusive_takes_the_claim_and_the_lock_file_that_kept_the_key_before(tm
 
 def test_on_another_systems_drive_no_lock_file_is_written_and_one_without_a_claim_is_held(tmp_path, monkeypatch):
     path, lock = tmp_path / "liminal.db", tmp_path / "liminal-fetch-massive.lock"
+    monkeypatch.setenv("LIMINAL_LINK", "loopback")  # its databases through a link, as from there
     monkeypatch.setattr(c.mounts, "foreign", lambda p, mounts=None: True)  # Windows' drive, seen from Linux
     with c.exclusive(path, "feed:massive", lock) as hold:
         # the claim alone: a lock file written here would name a process the files' own system cannot look up

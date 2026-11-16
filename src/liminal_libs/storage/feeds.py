@@ -27,6 +27,7 @@ import pandas as pd
 
 from . import history
 from .common import BUSY_TIMEOUT_S, _date_ms, _distinct, _feed_name, _now, add_column, seal, write_transaction
+from .link import connect, frame
 
 
 # A feed's own files, in the `feeds` folder beside the main file: <feed>.db holds its bars (the
@@ -394,8 +395,8 @@ class _Feed:
         self.ticks_allowed = ticks
         self.path = folder / f"{name}.db" if folder else None
         self.ticks_path = folder / f"{name}-ticks.db" if folder else None
-        self.conn = sqlite3.connect(str(self.path) if self.path else ":memory:", check_same_thread=check_same_thread,
-                                    timeout=BUSY_TIMEOUT_S)
+        self.conn = connect(str(self.path) if self.path else ":memory:", check_same_thread=check_same_thread,
+                            timeout=BUSY_TIMEOUT_S)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute(f"PRAGMA journal_size_limit={WAL_LIMIT}")
         # Upgrades of an older file are looked for without a lock, then made under the write lock
@@ -624,7 +625,7 @@ class FeedStore:
         frames = []
         for feed in [self._feed(source)] if source else self._open_feeds():
             if feed is not None and feed.has_ticks():
-                frames.append(pd.read_sql_query(sql + " ORDER BY ts_ns, seq", feed.conn, params=params))
+                frames.append(frame(sql + " ORDER BY ts_ns, seq", feed.conn, params=params))
                 frames[-1].insert(0, "source", feed.name)
         cols = ["source", "time", "price", "size", "exchange", "exchange_name", "conditions", "seq"]
         if not frames:
@@ -777,14 +778,14 @@ class FeedStore:
             return None
         cols = ["ts", *BAR_COLUMNS]
         args = (ticker.upper(), timespan, int(lo_ms), int(hi_ms))
-        cur, built = (pd.read_sql_query(f"SELECT {', '.join(cols)}, stored_at FROM {table} WHERE ticker=? AND "
+        cur, built = (frame(f"SELECT {', '.join(cols)}, stored_at FROM {table} WHERE ticker=? AND "
                                         "timespan=? AND multiplier=1 AND ts >= ? AND ts < ?", feed.conn, params=args)
                       for table in ("bars", "built_bars"))
         cur["until"], cur["prio"] = float("inf"), 0  # the feed's own first where both were in effect
         built["until"], built["prio"] = float("inf"), 1
         has_revisions = feed.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bar_revisions'").fetchone()
-        rev = pd.read_sql_query(f"SELECT {', '.join(cols)}, stored_at, replaced_at AS until, derivation FROM bar_revisions "
+        rev = frame(f"SELECT {', '.join(cols)}, stored_at, replaced_at AS until, derivation FROM bar_revisions "
                                 "WHERE ticker=? AND timespan=? AND multiplier=1 AND ts >= ? AND ts < ?",
                                 feed.conn, params=args) if has_revisions else cur.iloc[0:0].assign(derivation=None)
         rev["prio"] = rev.pop("derivation").notna().astype(int)  # a replaced built version ranks as built
@@ -839,7 +840,7 @@ class FeedStore:
         """`sql` (FROM {table}) over a bar table: from SQLite outside the archived months, from their
         DuckDB files in them, in `order`."""
         not_in, extra = history.outside(months)
-        f = pd.read_sql_query(sql.format(table=table) + not_in + f" ORDER BY {', '.join(order)}", conn,
+        f = frame(sql.format(table=table) + not_in + f" ORDER BY {', '.join(order)}", conn,
                               params=(*params, *extra))
         if not months:
             return f
@@ -860,7 +861,7 @@ class FeedStore:
         if conn is None or not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bar_revisions'").fetchone():
             return pd.DataFrame(columns=["ts", *BAR_COLUMNS, "stored_at", "replaced_at"])
-        return pd.read_sql_query(
+        return frame(
             f"SELECT ts, {', '.join(BAR_COLUMNS)}, stored_at, replaced_at FROM bar_revisions WHERE ticker=? "
             "AND timespan=? AND multiplier=1 ORDER BY ts, replaced_at", conn, params=(ticker.upper(), timespan))
 
@@ -917,7 +918,7 @@ class FeedStore:
         frames = []
         for feed in [self._feed(source)] if source else self._open_feeds():
             if feed is not None:
-                gone = pd.read_sql_query("SELECT DISTINCT ticker, ts, derivation IS NOT NULL AS built FROM pruned p" + where
+                gone = frame("SELECT DISTINCT ticker, ts, derivation IS NOT NULL AS built FROM pruned p" + where
                                          + " AND excludes=1 AND released_at IS NULL AND " + _STILL_STORED, feed.conn,
                                          params=params) if filtered else None
                 months = self._archived(feed.name, feed.conn, timespan, lo, hi)
@@ -1250,7 +1251,7 @@ class FeedStore:
         conn = self._ticks(source)
         if conn is None:
             return pd.DataFrame(columns=["ts_ns", "price", "size", "exchange", "conditions", "tape"])
-        return pd.read_sql_query(
+        return frame(
             "SELECT ts_ns, price, size, exchange, conditions, tape FROM ticks.trades WHERE ticker=? "
             "AND ts_ns >= ? AND ts_ns < ? ORDER BY ts_ns, seq", conn, params=(ticker.upper(), start_ns, end_ns))
 
@@ -1346,7 +1347,7 @@ class FeedStore:
         if hi_ms is not None:
             sql += " AND ts < ?"
             args.append(hi_ms)
-        return pd.read_sql_query(sql + " ORDER BY ts", conn, params=args)
+        return frame(sql + " ORDER BY ts", conn, params=args)
 
     def series_moves(self, source: str, tickers: Iterable[str]) -> dict[str, dict]:
         """Latest daily change of stored series from their own day bars: {ticker: {day (UTC date

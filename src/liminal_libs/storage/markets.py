@@ -8,6 +8,8 @@ from typing import Iterable, TYPE_CHECKING
 
 import pandas as pd
 
+from .link import frame
+
 if TYPE_CHECKING:
     from ..models import Exchange
 
@@ -33,7 +35,7 @@ class MarketsStore:
         if source:
             sql += " WHERE source=?"
             params.append(source)
-        return pd.read_sql_query(sql + " ORDER BY source, id", self.conn, params=params)
+        return frame(sql + " ORDER BY source, id", self.conn, params=params)
 
     # -- trade condition rules ------------------------------------------------
 

@@ -137,7 +137,9 @@ class GovDB:
     def __init__(self, path: Path | None, main: Path | None = None):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False, timeout=30)
+        from .storage.link import connect
+
+        self.conn = connect(str(path) if path else ":memory:", check_same_thread=False, timeout=30)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         seal(self.conn)  # read-only (LIMINAL_READONLY): no write from here on
@@ -154,7 +156,9 @@ class GovDB:
         from . import stores
 
         try:
-            c = sqlite3.connect(f"file:{Path(self.main).as_posix()}?mode=ro", uri=True, timeout=5)
+            from .storage.link import connect
+
+            c = connect(self.main, read_only=True, timeout=5)
             try:
                 rows = stores.effects(c)
             finally:

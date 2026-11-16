@@ -36,21 +36,47 @@ def owner_only(path, what: str) -> None:
         raise NotHere(f"{what}: {path} is on another system's drive, and that is done from that system, not from here")
 
 
-def table(text: str | None = None) -> list[tuple[str, str]]:
-    """The mounts as this process sees them: (mount point, filesystem type), in the order the system lists them (a
-    later one at the same point is the one in force). `text`: /proc/self/mounts' content (a test's); without it the
-    file is read, and where there is none (Windows, macOS) the table is empty."""
+def _rows(text: str | None = None) -> list[tuple[str, str, str]]:
+    """The mounts as this process sees them: (what is mounted, mount point, filesystem type), in the system's order."""
     if text is None:
         try:
             text = Path(MOUNTS).read_text(encoding="utf-8", errors="replace")
         except OSError:
             return []
+    plain = lambda s: _ESCAPED.sub(lambda m: chr(int(m.group(1), 8)), s)  # noqa: E731
     rows = []
     for line in text.splitlines():
         parts = line.split()
         if len(parts) >= 3:
-            rows.append((_ESCAPED.sub(lambda m: chr(int(m.group(1), 8)), parts[1]), parts[2]))
+            rows.append((plain(parts[0]), plain(parts[1]), parts[2]))
     return rows
+
+
+def table(text: str | None = None) -> list[tuple[str, str]]:
+    """The mounts as this process sees them: (mount point, filesystem type), in the order the system lists them (a
+    later one at the same point is the one in force). `text`: /proc/self/mounts' content (a test's); without it the
+    file is read, and where there is none (Windows, macOS) the table is empty."""
+    return [(point, kind) for _, point, kind in _rows(text)]
+
+
+_DRIVE = re.compile(r"^[A-Za-z]:\\?$")  # what a WSL mount of a Windows drive says it shows: C:\
+
+
+def owner_path(path, text: str | None = None) -> str | None:
+    r"""A file on a Windows drive seen from WSL, as Windows names it: /mnt/c/Users/x/liminal.db is
+    C:\Users\x\liminal.db (the mount says which drive it shows). None for a path that is on no such mount: this
+    system's own disk, a share, WSL's own folders. `text`: /proc/self/mounts' content (a test's: the path is then
+    taken as written)."""
+    p = os.path.realpath(str(path)) if text is None else str(path)
+    best: tuple[str, str] | None = None
+    for source, point, kind in _rows(text):
+        if kind in ("9p", "drvfs") and (p == point or p.startswith(point.rstrip("/") + "/")):
+            if best is None or len(point) >= len(best[1]):
+                best = (source, point)
+    if best is None or not _DRIVE.match(best[0]):
+        return None
+    rest = p[len(best[1]):].lstrip("/")
+    return best[0].rstrip("\\") + "\\" + rest.replace("/", "\\")
 
 
 def fstype(path, mounts: list[tuple[str, str]] | None = None) -> str | None:

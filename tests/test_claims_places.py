@@ -36,6 +36,7 @@ def _other(path, pid: int = 77, **kw) -> Claims:
 
 
 def _foreign(monkeypatch) -> None:
+    monkeypatch.setenv("LIMINAL_LINK", "loopback")  # its databases through a link, as from there
     monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: True)
 
 
@@ -113,6 +114,7 @@ def test_the_live_recorder_is_one_on_a_database_on_every_system(db, tmp_path):
 
 def test_on_another_systems_drive_the_recorder_writes_no_lock_file_beside_the_database(db, monkeypatch):
     real = mounts.foreign
+    monkeypatch.setenv("LIMINAL_LINK", "loopback")  # its databases through a link, as from there
     monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: "machine" not in str(p) or real(p))
     locks = live.take_locks(db)  # the database is Windows', the machine's lock this system's own
     assert locks == [live.machine_lock()] and not live.lock_path(db).exists() and locks.hold.still()

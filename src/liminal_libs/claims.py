@@ -178,7 +178,9 @@ class Claims:
     @classmethod
     def open(cls, db_path: Path | str, **kw) -> "Claims":
         """Claims on the main file at `db_path`, over a connection of their own (any thread may use it under the lock)."""
-        conn = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_S, check_same_thread=False)
+        from .storage.link import connect
+
+        conn = connect(str(db_path), timeout=BUSY_TIMEOUT_S, check_same_thread=False)
         try:
             return cls(conn, **kw)
         except BaseException:

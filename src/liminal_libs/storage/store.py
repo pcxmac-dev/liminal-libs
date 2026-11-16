@@ -12,6 +12,7 @@ from .admin import AdminStore
 from .appstate import AppStateStore
 from .audits import AuditStore
 from .common import BUSY_TIMEOUT_S, add_column, seal, write_transaction
+from .link import connect
 from .datasets import DatasetStore
 from .directory import DirectoryStore
 from .feeds import FeedStore, OldLayout, _Feed, old_layout, tick_access
@@ -41,7 +42,7 @@ class Store(ProvenanceStore, AdminStore, FeedStore, PrunedStore, DatasetStore, D
         self.history_dir = self.feeds_dir.parent / HISTORY if self.feeds_dir else None  # closed months (history.py)
         self._dataset_conns: dict[str, sqlite3.Connection] = {}
         self._check_same_thread = check_same_thread
-        self.conn = sqlite3.connect(str(path), check_same_thread=check_same_thread, timeout=BUSY_TIMEOUT_S)
+        self.conn = connect(str(path), check_same_thread=check_same_thread, timeout=BUSY_TIMEOUT_S)
         old = old_layout(self.conn, None if memory else self.path)
         if old:
             self.conn.close()
