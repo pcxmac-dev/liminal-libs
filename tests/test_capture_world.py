@@ -363,6 +363,99 @@ class Lib:
 
 ADAPTERS = [(r"\Device\NPF_{4A1B}", [LAN, "link", LINK6, LAN6]), (r"\Device\NPF_Loopback", ["127.0.0.1", "::1"]),
             ("bluetooth0", [])]
+NPCAP_ADMIN_ONLY = capture.npcap_admin_only  # the real one: read only through a stand-in registry below
+
+
+@pytest.fixture(autouse=True)
+def _npcap_for_everyone(monkeypatch):
+    """Npcap as most are installed (not for administrators only): this machine's registry is never what a test reads."""
+    monkeypatch.setattr(capture, "npcap_admin_only", lambda: False)
+
+
+class Registry:
+    """winreg as a stand-in: the keys opened (and with what access), each value read from `values` ({(key, name): value});
+    a missing one as winreg says it (FileNotFoundError, an OSError). Nothing of the real registry is read or written."""
+
+    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY, KEY_WRITE, KEY_SET_VALUE = 0x80000002, 0x20019, 0x0100, 0x20006, 0x0002
+
+    def __init__(self, values):
+        self.values, self.opened = dict(values), []
+
+    def OpenKey(self, root, path, reserved=0, access=0x20019):  # noqa: N802 - winreg's own name
+        self.opened.append((root, path, access))
+        if not any(k == path for k, _ in self.values):
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        registry = self
+
+        class Key:
+            def __enter__(self):
+                return path
+
+            def __exit__(self, *exc):
+                return False
+
+            @staticmethod
+            def query(name):
+                if (path, name) not in registry.values:
+                    raise FileNotFoundError(2, "The system cannot find the file specified")
+                return registry.values[(path, name)], 4
+        self._key = Key
+        return Key()
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        return self._key.query(name)
+
+
+def test_npcaps_admin_only_option_is_read_from_the_registry_and_only_read(monkeypatch):
+    """(fw-windows review F1) Npcap installed for administrators only is known by its AdminOnly option, read from
+    HKLM\\SYSTEM\\CurrentControlSet\\Services\\npcap\\Parameters with read access alone; missing, it is not on; off Windows
+    nothing is read."""
+    monkeypatch.setattr(capture, "npcap_admin_only", NPCAP_ADMIN_ONLY)
+    monkeypatch.setattr(capture, "sys", types.SimpleNamespace(platform="win32"))
+    for values, on in (({(capture.NPCAP_OPTIONS, "AdminOnly"): 1}, True), ({(capture.NPCAP_OPTIONS, "AdminOnly"): 0}, False),
+                       ({(capture.NPCAP_OPTIONS, "LoopbackSupport"): 1}, False), ({}, False)):
+        registry = Registry(values)
+        monkeypatch.setitem(sys.modules, "winreg", registry)
+        assert capture.npcap_admin_only() is on
+        [(root, path, access)] = registry.opened
+        assert (root, path) == (Registry.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\npcap\Parameters")
+        assert access & Registry.KEY_READ == Registry.KEY_READ and not access & (Registry.KEY_SET_VALUE | 0x0004)  # read only
+    monkeypatch.setattr(capture, "sys", types.SimpleNamespace(platform="linux"))
+    registry = Registry({(capture.NPCAP_OPTIONS, "AdminOnly"): 1})
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    assert capture.npcap_admin_only() is False and registry.opened == []  # off Windows: nothing read
+    assert capture.administrator() is False
+
+
+def test_npcap_for_administrators_only_is_never_asked_anything_by_a_process_that_is_none(monkeypatch):
+    """(fw-windows review F1) Asking Npcap installed for administrators only to list its adapters or open one, from a
+    process that is no administrator's, starts its NpcapHelper with "runas": a UAC prompt from a page that only reads.
+    The capture refuses first (ADMIN_ONLY), asking libpcap nothing; an administrator's process is let through."""
+    monkeypatch.setattr(capture, "sys", types.SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(capture, "npcap_admin_only", lambda: True)
+    monkeypatch.setattr(capture, "administrator", lambda: False)
+    lib = Lib(ADAPTERS)
+    for ask in (lambda src: src.open(LAN, ()), lambda src: src.adapters(), lambda src: src.refresh(),
+                lambda src: src.device_of(LAN)):
+        with pytest.raises(CaptureError) as refused:
+            ask(capture.PcapSource(lib))
+        assert str(refused.value) == capture.ADMIN_ONLY and "UAC prompt" in capture.ADMIN_ONLY
+    assert lib.listed == 0 and lib.opened == []  # Npcap was asked nothing
+    with pytest.raises(CaptureError, match="administrators only"):
+        Capture(LAN, udp=True, host=False, source=capture.PcapSource(lib)).open()
+    loaded = []
+    monkeypatch.setattr(capture, "load_pcap", lambda: loaded.append(1))
+    with pytest.raises(CaptureError):
+        capture.PcapSource().open(LAN, ())
+    assert loaded == []  # not even loaded
+    monkeypatch.setattr(capture, "administrator", lambda: True)  # run as an administrator: no prompt to fear
+    src = capture.PcapSource(lib, expression="(tcp or udp)")
+    src.open(LAN, ())
+    assert lib.listed == 1 and lib.opened == [(r"\Device\NPF_{4A1B}", capture.SNAPLEN, 0, capture.TIMEOUT_MS)]
+    src.close()
+    monkeypatch.setattr(capture, "sys", types.SimpleNamespace(platform="linux"))  # libpcap's way: no such option
+    monkeypatch.setattr(capture, "administrator", lambda: False)
+    capture.PcapSource(Lib(ADAPTERS)).adapters()
 
 
 def test_adapters_are_listed_with_their_ipv6_addresses_and_found_by_either():

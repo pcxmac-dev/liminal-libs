@@ -1,11 +1,14 @@
-"""The eBPF runtime on a native Linux machine (the design: "LinuxRuntime uses bpftool -j through
+"""The eBPF runtime on the Linux the platform runs on (the design: "LinuxRuntime uses bpftool -j through
 machines.linux.Shell, with sudo -n"). It reads the kernel's eBPF state through bpftool and a few /proc and /sys
 files, and builds the confirmed, elevated load, attach, detach and unload commands; it never asks for a password.
 
-Native Linux only (the user, 2026-11-08: "the scope of linux administration is only on native linux O/S"): on
-Windows or inside WSL it reports `applies` False through `machines.linux.why_not_native`, and every read and change
-says why rather than run. Listing and reading objects needs root, which `Shell` takes through `sudo -n`; the tool
-versions and the world-readable settings are read without it."""
+The Linux the platform runs on, and only there: a machine of its own, or a WSL distribution the platform runs inside
+(the user, 2026-11-15: "wsl and firewall linux should always work under linux, if wsl prevents or misses some capability
+this should reflect in the plugin": what WSL's kernel lacks shows in what is read, BTF and the tools' answers among
+it). On Windows or macOS it reports `applies` False through `machines.linux.why_not_native`, and every read and change
+says why rather than run; a platform on Windows never reaches into a WSL distribution from outside. (A library before
+the Linux plugins worked inside WSL still refuses a WSL kernel there.) Listing and reading objects needs root, which
+`Shell` takes through `sudo -n`; the tool versions and the world-readable settings are read without it."""
 from __future__ import annotations
 
 import json
@@ -98,7 +101,7 @@ def default_pin(path) -> str:
 
 class LinuxRuntime(Runtime):
     """The kernel's eBPF, read and driven through bpftool and `Shell`. `shell` stands in for the commands in
-    tests; `system`, `release` and `env` stand in for the native-Linux check."""
+    tests; `system`, `release` and `env` stand in for machines.linux.why_not_native's check."""
 
     system = "linux"
 
@@ -110,7 +113,7 @@ class LinuxRuntime(Runtime):
         return (not self._why), self._why
 
     def _here(self) -> None:
-        """Refuse, in words, on a machine this runtime is not for (Windows, WSL): nothing is run there."""
+        """Refuse, in words, on a machine this runtime is not for (Windows, macOS): nothing is run there."""
         if self._why:
             raise CommandError(self._why)
 

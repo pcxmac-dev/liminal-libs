@@ -1,5 +1,111 @@
 # Changelog
 
+## 1.55.0 (2026-11-16)
+
+The firewalls' World Wide Web tab (`machines/world.py`), the second phase of what the user asked for on 2026-11-14: "so
+for the firewall's both are going to get a 'world wide web view' that shows the globe and the routes incoming all
+traffic, as well as monitoring port traffic stats". The Firewall base has the tab, so plugin-platform-firewall-windows
+0.6.0 and plugin-platform-firewall-linux 0.8.0 carry it. liminal-platform 0.27.0 draws it, and 0.28.0 offers the GeoIP
+licence as a second confirmation.
+
+### The tab
+
+- **Watching only while you look.** Each ask (`WorldView.touch`) starts a `traffic.Watcher` around the capture at the
+  adapter of this machine's way out, or keeps it going (`default_capture`: TCP and UDP, IPv4 and IPv6, the headers
+  alone). It stops 20 s after the last ask (`TIMEOUT_S`), on `stop()`, and for good on `close()`, the plugin's detach. A
+  capture that cannot start is tried again `RETRY_S` (15 s) later at the soonest.
+- **The page.**
+  - The globe: each public network a place, with its kind (allowed in, unanswered in, out), its count, bytes and ports,
+    and its route to home. The local network's peers are summed apart. At most `MAX_DRAWN` (300) places are drawn, the
+    rest summed as "more".
+  - The busiest ports here, charted over ten minutes on the view's own monotonic clock, so a wall clock set back does
+    not freeze them.
+  - Tables of the busiest ports here, the places and the ports elsewhere.
+- **What counts as allowed in.** An inbound attempt not answered yet, or never judged, is drawn unanswered, never
+  allowed in.
+- **Places stay on this machine.** The GeoIP file is mapped only while the tab is watched or asked. Once watching stops
+  it is let go, and opened again at the next ask; `describe()['geoip']` keeps what it was, with `open: False`.
+- **Home.**
+  - The place the user set (`LIMINAL_HOME_PLACE`, `lat,lon[,label]`, read through the plugin's login).
+  - Else where the GeoIP file puts this network's public address, asked of the name servers the plugin names
+    (`dns.public_address`). Their names are made absolute, so no search suffix is sent.
+  - A value that is no place is shown back cut short (`SHOWN`), and decimal commas are refused in words.
+  - Without nslookup, the page says which package to install.
+- **Inside WSL** (`under_wsl`). The page ends with what WSL changes for the tab:
+  - the distribution's own adapter is watched, and Windows' own traffic is the Windows firewall's tab's;
+  - under WSL's NAT networking nothing comes in from the internet but through Windows (mirrored networking aside);
+  - under WSL 1 nothing can be watched at all.
+
+  It reads `machines.linux.wsl`, so it says nothing until the library's check stops refusing a WSL kernel. That is
+  the next release.
+
+### The GeoIP file's install
+
+- **Only on the user's word.** `Firewall.world_geoip(accept_licence=False, log=None)` refuses (`LicenceRefused`, naming
+  `accept_licence`) unless its argument is exactly True. The platform asks that as a second confirmation, with the
+  licence's words (`geoip_form`).
+- **As a job.** `Firewall.JOB_HOOKS = ("world_geoip",)`. Its progress goes to the platform's panel (`log`), with the
+  bytes and the percent at most every `PROGRESS_S`.
+- **One deadline for all of it.** `geo.INSTALL_S` covers both months' fetches, with their connections, TLS, headers and
+  redirects, and the body.
+  - The download runs on a thread of its own. When the time is up, or on detach, its sockets are shut, its reads
+    refused, and nothing is put in place.
+  - A connection still being made ends at its own timeout (`READ_S` at most).
+  - A file read to its end is checked and put in place on this machine, and waited for `LOCAL_S`. Past that the install
+    says so, and the file still goes in place if it passes.
+- **https on every hop, from the plugin's own host.** `fetch_url` follows a redirect only to the same host over https,
+  at most `MAX_REDIRECTS` times. Any other redirect is refused (`RedirectRefused`) before the new address is asked
+  anything, and the address the answer came from is checked again.
+- **Which file.** This month's file, else last month's on a 404. A month's file is never downloaded twice.
+- **Readable later.** `geo.install_mmdb` makes its temporary file with the mode every file of the process gets (0644
+  less the umask), not 0600, so a file installed while the platform ran as root is read by its user later. A refusal
+  by another account's folder says whose it is (POSIX).
+
+### The right to capture
+
+- **On Linux.** `capture_help` advises the right only when libpcap's own words say it is missing, and only to a
+  platform that is not root. The right is CAP_NET_RAW alone, for the platform alone, in one of two ways:
+  - under systemd, `AmbientCapabilities=CAP_NET_RAW` in its system unit (`liminal-platform-boot.service`);
+  - `setcap cap_net_raw=ep` on a copy of Python that is its own (`python3 -m venv --copies`, `chmod 0750`). Under OpenRC
+    or another init, this is the only way.
+
+  It is never given to the system's Python: a venv's `python` links to it, and a hard link to it is the same file. It
+  is never CAP_NET_ADMIN, and never a password. As root, a container or a security module is named. Any other failure
+  is said in libpcap's own words, without the library's hint.
+- **On Windows.** Npcap installed for administrators only is never opened by a platform that is not an administrator
+  (`capture.npcap_admin_only`, `capture.administrator`, `ADMIN_ONLY`): opening it would raise a UAC prompt at every
+  retry. The page names the installer's option to untick, or running the platform as an administrator.
+- **"No adapter holds"** is said as such: Npcap not bound to that adapter, or libpcap's adapter gone or in another
+  network namespace. It is no longer said as "connect to a network".
+
+### The Firewall base
+
+- `TABS = (Tab("world", "World Wide Web", "world", 2.0),)`. `HOOKS` gains `world` and `world_geoip`, and `keys` the
+  home setting.
+- A plugin names its own `GEOIP_URL`, `GEOIP_LICENCE`, `ATTRIBUTION` and `PUBLIC_DNS`. The library names no outside
+  host.
+- `world_view(make=True)` is the tab's view. `make=False` gives the view there is, or None, and never makes one; the
+  plugins' API cards read it that way. A subclass makes its own capture in `make_world_view()`.
+- `settings_changed()` reads the home anew. `detach()` ends the watching for good.
+
+### The Linux plugins and WSL
+
+The eBPF runtime's words follow the user's rule of 2026-11-15: "wsl and firewall linux should always work under linux,
+if wsl prevents or misses some capability this should reflect in the plugin". The Linux runtime is for the Linux the
+platform runs on, a WSL distribution it runs inside included. `machines.linux.why_not_native` decides; the next release
+changes it, and this one still refuses a WSL kernel.
+
+### Tests
+
+- `tests/test_world.py` (45 tests): the page from the traffic counted; watching started by an ask and stopped by the
+  timeout and the detach; the install's licence, deadline, redirects, progress and fall-back month; the GeoIP file let
+  go; the home; the right to capture on each system and init; the platform's own Python told from the system's; WSL's
+  table.
+- `tests/test_capture_world.py`: Npcap's administrators-only option, read from a stand-in registry.
+- `tests/test_geo.py`: the installed file's mode (POSIX only).
+
+No test captures, downloads, asks a name server or starts a process.
+
 ## 1.54.0 (2026-11-15)
 
 The pieces that the firewalls' World Wide Web and Filter tabs, the eBPF API plugin and trapdoor are built on. The user,

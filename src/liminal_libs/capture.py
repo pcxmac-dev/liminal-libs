@@ -16,7 +16,12 @@ clear, and only when asked: a DNS message (port 53, UDP or TCP), MAX_PAYLOAD byt
 port 443, up to its record's length and MAX_HELLO bytes at most (a whole one from Chrome or Edge, with its post-quantum
 key share; one longer than its TCP segment is joined with the segment after it); the path check keeps the headers
 alone. Packets are seen at the adapter, before the machine's firewall decides: a connection the firewall drops still
-shows as its SYN arriving."""
+shows as its SYN arriving.
+
+Npcap installed for administrators only (its installer's "Restrict Npcap driver's access to Administrators only") is
+never asked for its adapters or opened by a process that is no administrator: its Packet.dll would then start its
+NpcapHelper as an administrator ("runas": a UAC prompt) from a page that only reads. Its AdminOnly option is read from
+the registry first (read-only, nothing started), and the capture says why it is not opened (ADMIN_ONLY)."""
 from __future__ import annotations
 
 import ctypes
@@ -35,6 +40,9 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 
 NPCAP = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "Npcap")
+NPCAP_OPTIONS = r"SYSTEM\CurrentControlSet\Services\npcap\Parameters"  # Npcap's install options (HKLM), read, never written
+ADMIN_ONLY = ("Npcap was installed for administrators only (its AdminOnly option) and this process is not an "
+              "administrator's: opening it would ask for an administrator (a UAC prompt), so it is not opened")
 SNAPLEN = 128  # the headers alone: Ethernet, IP (with options), TCP
 HEADROOM = 142  # the headers before a payload at most: Ethernet, two VLAN tags (22), IPv4 and TCP with options (60 each)
 MAX_PAYLOAD = 512  # bytes kept of a DNS message
@@ -71,6 +79,48 @@ class CaptureError(Exception):
 
 def _windows() -> bool:
     return sys.platform == "win32"
+
+
+def npcap_admin_only() -> bool:
+    """Whether Npcap was installed for administrators only: its AdminOnly option under HKLM\\NPCAP_OPTIONS, as Npcap's
+    Packet.dll reads it, read here the same way (read access alone; nothing written, nothing started, nothing shown).
+    False off Windows, and when the option is not there or cannot be read."""
+    if not _windows():
+        return False
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, NPCAP_OPTIONS, 0,
+                            winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)) as key:
+            value, _ = winreg.QueryValueEx(key, "AdminOnly")
+    except OSError:
+        return False
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def administrator() -> bool:
+    """Whether this process has an administrator's rights as Npcap's Packet.dll judges them: the Administrators group
+    enabled in its token (CheckTokenMembership, through IsUserAnAdmin); an administrator's process that is not elevated
+    has not. False off Windows."""
+    if not _windows():
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def _npcap_may_open() -> None:
+    """CaptureError (ADMIN_ONLY), before Npcap is asked anything, when asking would bring up a UAC prompt: Npcap installed
+    for administrators only and this process none (its Packet.dll then starts NpcapHelper with "runas" to list or open
+    an adapter). Looked at each time adapters are listed or one is opened; nothing is asked of the user, ever."""
+    if _windows() and npcap_admin_only() and not administrator():
+        raise CaptureError(ADMIN_ONLY)
 
 
 def tcp_flags(bits: int) -> str:
@@ -542,7 +592,9 @@ class PcapSource:
         self.waits: int | None = None
 
     def _listed(self) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
-        """Every adapter libpcap lists: its pcap name, its IPv4 and IPv6 addresses and its IPv4 broadcast addresses."""
+        """Every adapter libpcap lists: its pcap name, its IPv4 and IPv6 addresses and its IPv4 broadcast addresses. Never
+        asked of Npcap when that would ask for an administrator (_npcap_may_open: CaptureError instead)."""
+        _npcap_may_open()
         lib, err = self.lib, ctypes.create_string_buffer(256)
         found = ctypes.POINTER(_PcapIf)()
         if lib.pcap_findalldevs(ctypes.byref(found), err) != 0:
@@ -599,6 +651,7 @@ class PcapSource:
         return self.holding(address, self.adapters())
 
     def open(self, address: str, ports) -> None:
+        _npcap_may_open()  # before Npcap is even loaded: nothing of it is asked when it would ask for an administrator
         self.lib = self.lib or load_pcap()
         lib, err = self.lib, ctypes.create_string_buffer(256)
         listed = self._listed()  # read once here: the adapter to open, and this machine's addresses

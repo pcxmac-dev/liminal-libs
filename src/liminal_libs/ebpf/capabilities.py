@@ -11,8 +11,8 @@ A cell's lines are separate points, and a line starting "- " is one item of a li
 
 The short of it: on Linux eBPF is part of the kernel and production-grade; on Windows it is a separate,
 pre-release download whose every public build is test-signed (its maintainers have no plans for production-signed
-builds), so on a Secure Boot machine it cannot load without test-signing mode. The Linux functions apply only on a
-native Linux machine, never WSL (the Liminal rule)."""
+builds), so on a Secure Boot machine it cannot load without test-signing mode. The Linux functions apply on the Linux
+the platform runs on, a WSL distribution it runs inside included (the user, 2026-11-15); never from Windows or macOS."""
 from __future__ import annotations
 
 from dataclasses import dataclass

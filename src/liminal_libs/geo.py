@@ -28,7 +28,7 @@ import ipaddress
 import math
 import os
 import re
-import tempfile
+import secrets
 import threading
 import time
 import weakref
@@ -57,6 +57,8 @@ INSTALL_S = 1800.0  # seconds an install may take, its download included (City L
 WALK = 256  # networks a file is stepped through for its first record when opened (a real file's comes in a few)
 REOPEN_S = 5.0  # how often a GeoIP an install let go tries the folder's newest file again while none opens
 STALE_PART_S = 3600.0  # an install's temporary file not written to for an hour is a leftover: that install died
+FILE_MODE = 0o644  # an installed file's mode, less this process's umask: every account that runs the platform reads it
+TEMP_TRIES = 100  # names an install tries for its temporary file before it says none is free
 GZIP = b"\x1f\x8b"  # a gzip file's first two bytes
 SEPARATOR = bytes(16)  # what ends a MaxMind DB file's search tree, before its data
 NAME_FORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")  # an installed file's name, before .mmdb
@@ -465,12 +467,14 @@ def install_mmdb(source, folder, name: str, limit: int = MAX_UNPACKED, timeout: 
     with its address, is the plugin's, and so is the stream's own timeout on each read.
 
     The file is unpacked to a temporary file in the same folder and checked: it opens as a GeoIP opens files, its
-    search tree ends where its metadata says, and the tree leads to a record that decodes. What an install takes is
-    bounded: at most `limit` bytes unpacked (1 GiB), about as many read, no more than BARREN read with nothing
-    unpacked from them, MEMBERS gzip members, and `timeout` seconds in all (half an hour; None: only the stream's own
-    timeouts). Then the file is renamed over <name>.mmdb in one step: a reader never sees half a file. A broken
-    download leaves the current file as it was: GeoError says why (the stream's own errors too), and the temporary
-    file is removed.
+    search tree ends where its metadata says, and the tree leads to a record that decodes. Its mode is every file's
+    of this process (FILE_MODE less the umask, not mkstemp's 0600: _temporary), so whichever account runs the platform
+    later reads it; an install refused for want of the right says whose the folder is when it is another account's.
+    What an install takes is bounded: at most `limit` bytes unpacked (1 GiB), about as many read, no more than BARREN
+    read with nothing unpacked from them, MEMBERS gzip members, and `timeout` seconds in all (half an hour; None: only
+    the stream's own timeouts). Then the file is renamed over <name>.mmdb in one step: a reader never sees half a
+    file. A broken download leaves the current file as it was: GeoError says why (the stream's own errors too), and
+    the temporary file is removed.
 
     Then the older copies go: every other .mmdb in `folder` (it holds one GeoIP file). A copy another program still
     has open stays for the next install. This process's installs put their files in place one at a time, so two at
@@ -490,8 +494,7 @@ def install_mmdb(source, folder, name: str, limit: int = MAX_UNPACKED, timeout: 
     try:
         folder.mkdir(parents=True, exist_ok=True)
         _sweep(folder)
-        handle, temp_name = tempfile.mkstemp(prefix=f".{stem}.", suffix=".part", dir=folder)
-        temp = Path(temp_name)
+        handle, temp = _temporary(folder, stem)
         with os.fdopen(handle, "wb") as out:
             _unpack(source, out, limit, deadline, timeout)
             out.flush()
@@ -506,11 +509,55 @@ def install_mmdb(source, folder, name: str, limit: int = MAX_UNPACKED, timeout: 
     except Exception as e:  # GeoError; OSError (gzip's and zlib's too, the disk's); the stream's own, an HTTP library's
         if placed:
             raise
-        raise GeoError(f"{target.name} was not installed: {e}") from e
+        raise GeoError(f"{target.name} was not installed: {e}{_whose(e)}") from e
     finally:
         if temp is not None and not placed:
             _remove(temp)
     return target
+
+
+def _temporary(folder: Path, stem: str) -> tuple[int, Path]:
+    """A new temporary file in `folder` for an install, open for writing, and its path: made as tempfile.mkstemp makes
+    one (a name of its own, made only where none is, no link followed), yet with the mode every file this process makes
+    has, FILE_MODE less its umask, rather than mkstemp's 0600. The data folder is the checkout's, whichever account runs
+    the platform: a file installed while it ran as root stays readable when it runs as its user."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(TEMP_TRIES):
+        path = folder / f".{stem}.{secrets.token_hex(6)}.part"
+        try:
+            return os.open(path, flags, FILE_MODE), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"no free name for a temporary file in {folder}")
+
+
+def _whose(e: BaseException) -> str:
+    """For an install refused for want of the right (EACCES, EPERM): whose the file or the folder refused is, when it
+    is another account's, in words ("" otherwise, and where this machine cannot say: Windows). The data folder is the
+    checkout's, so a folder made while the platform ran as root refuses it when it runs as its user."""
+    if not isinstance(e, PermissionError) or not e.filename:
+        return ""
+    try:
+        import pwd
+    except ImportError:  # not POSIX
+        return ""
+    path = Path(os.fsdecode(e.filename))
+    for at in (path, path.parent):
+        try:
+            owner = at.stat().st_uid
+        except OSError:
+            continue
+        me = os.geteuid()
+        if owner == me:  # this account's own: its mode refused it, not whose it is
+            return ""
+
+        def name(uid: int) -> str:
+            try:
+                return pwd.getpwuid(uid).pw_name
+            except (KeyError, OverflowError):
+                return f"uid {uid}"
+        return f" ({at} is {name(owner)}'s, and the platform runs as {name(me)})"
+    return ""
 
 
 def _stem(name: str) -> str:

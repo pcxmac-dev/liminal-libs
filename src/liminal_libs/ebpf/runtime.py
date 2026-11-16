@@ -22,7 +22,8 @@ class Runtime:
 
     def applies(self) -> tuple[bool, str]:
         """Whether this runtime is for this machine, and why not in words ("" when it is): the Linux runtime is for
-        a native Linux machine only (never Windows, never WSL), the Windows runtime for Windows."""
+        the Linux the platform runs on (a WSL distribution it runs inside too; never Windows or macOS), the Windows
+        runtime for Windows."""
         return True, ""
 
     def capabilities(self, sources=None) -> list[dict]:

@@ -7,6 +7,7 @@ at once leave one file; a GeoIP an install lets go opens the new file; the newes
 without maxminddb. Nothing is downloaded: the downloads are bytes, files and streams made here."""
 from __future__ import annotations
 
+import errno
 import gc
 import gzip
 import http.client
@@ -14,6 +15,7 @@ import importlib.util
 import io
 import ipaddress
 import os
+import stat
 import struct
 import sys
 import tarfile
@@ -675,6 +677,47 @@ def test_a_failed_install_still_sweeps_the_leftovers_of_dead_ones(tmp_path):
     with pytest.raises(GeoError, match="does not open"):
         install_mmdb(b"not a GeoIP file", folder, "dbip-city-lite-2026-12")
     assert [p.name for p in folder.iterdir()] == [live.name]
+
+
+def _account(uid: int) -> str:
+    """An account's name as the words give it (POSIX)."""
+    import pwd
+
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f"uid {uid}"
+
+
+@needs_reader
+@pytest.mark.skipif(os.name != "posix", reason="file modes and owners are POSIX's")
+def test_an_installed_file_is_read_by_whichever_account_runs_the_platform_later(tmp_path, monkeypatch):
+    """(fw-linux review, minor) An install unpacked into tempfile.mkstemp's file, 0600, and the rename kept that mode: a
+    file installed while the platform ran as root (the data folder is the checkout's) could not be read when it later
+    ran as its user. Now it has the mode every file this process makes has, 0644 less the umask; and an install refused
+    for want of the right says whose the folder is, when it is another account's."""
+    folder = tmp_path / "geoip"
+    umask = os.umask(0o027)
+    try:
+        target = install_mmdb(gzip.compress(mmdb(PLACES)), folder, "dbip-city-lite-2026-11")
+    finally:
+        os.umask(umask)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640  # 0644 less the umask, not 0600
+
+    def refused(at, stem):  # the folder another account's: no file may be made in it
+        raise PermissionError(errno.EACCES, "Permission denied", str(at / f".{stem}.x.part"))
+    monkeypatch.setattr(geo, "_temporary", refused)
+    me = os.geteuid()
+    monkeypatch.setattr(geo.os, "geteuid", lambda: me + 1)  # the platform runs as another account than the folder's
+    with pytest.raises(GeoError) as other:
+        install_mmdb(gzip.compress(mmdb(PLACES)), folder, "dbip-city-lite-2026-12")
+    assert f"Permission denied: '{folder}" in str(other.value)
+    assert str(other.value).endswith(f" ({folder} is {_account(me)}'s, and the platform runs as {_account(me + 1)})")
+    monkeypatch.setattr(geo.os, "geteuid", lambda: me)  # its own folder: its mode refused it, not whose it is
+    with pytest.raises(GeoError) as own:
+        install_mmdb(gzip.compress(mmdb(PLACES)), folder, "dbip-city-lite-2026-12")
+    assert "and the platform runs as" not in str(own.value)
+    assert [p.name for p in folder.iterdir()] == [target.name]  # nothing else written
 
 
 # -- without maxminddb, and the places themselves ---------------------------------------------------------------------

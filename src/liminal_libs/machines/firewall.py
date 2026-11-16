@@ -12,10 +12,15 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from dataclasses import dataclass
 
+from ..apps.tabs import Tab
+from . import world as world_module
 from .plugin import CommandError, MachinePlugin
 from .rulegroups import RuleGroups, Sorted
+from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
+                    TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
 
 GROUP = "Liminal"  # Windows' rule group; a rule's display name is "Liminal: <name>"
 PREFIX = "liminal"  # a Linux rule's comment (liminal:<name>) or service (liminal-<name>)
@@ -33,6 +38,7 @@ APP_PORTS = (  # the framework's own pages: (the app, the variable moving it, it
 )  # these four and no other (the user, 2026-11-14: "i only want ports for liminal-login ; liminal-platform ;
 # liminal-charts ; liminal-integrator"; 1.52.0: the integrator's login at 8796 gone, a login inherited is an object in
 # its app, at that app's port)
+_WORLD_LOCK = threading.Lock()  # a plugin's WorldView made once, however many asks come at once
 
 
 class FirewallError(CommandError):
@@ -146,13 +152,40 @@ class Firewall(MachinePlugin):
     """The base of the firewall plugins. A subclass drives one firewall through the backend methods below;
     the hooks (status, setup) and the platform's asks (allow, remove, wanted) are this base's, and so are the rules'
     groups (1.35.0, rulegroups: System, Application, Other and the user's labels; a subclass sorts its rules with
-    `sorted_rules` and draws its rules table through `groups.table`)."""
+    `sorted_rules` and draws its rules table through `groups.table`).
+
+    1.55.0: the World Wide Web tab is this base's too (machines/world.py; the user, 2026-11-14: "so for the firewall's
+    both are going to get a 'world wide web view' that shows the globe and the routes incoming all traffic, as well as
+    monitoring port traffic stats"): its hook `world` (a read, asked every two seconds while the tab is shown), the
+    GeoIP file's install (`world_geoip`, a change asked from its form alone, run as a job: JOB_HOOKS), and the watching
+    stopped on detach. A subclass names its GeoIP download (GEOIP_URL, GEOIP_LICENCE), the attribution of its places
+    (ATTRIBUTION) and the name servers asked for this network's public address (PUBLIC_DNS), and makes a capture of its
+    own in make_world_view when it needs one; what asks nothing (its API card's facts) reads the tab's view through
+    world_view(make=False)."""
 
     HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted",  # what the platform may ask by name (Plugin.ask)
-             "move_rules", "new_label", "rename_label", "remove_label")
+             "move_rules", "new_label", "rename_label", "remove_label",
+             # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
+             WORLD_HOOK, GEOIP_HOOK)
     STEPS = STEPS
     ICON = "shield"
     GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS
+    # -- the World Wide Web tab (1.55.0) -------------------------------------------------------------------------------
+    TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0),)  # after Main and API: asked every 2 s while it is shown
+    # hooks the platform runs as a job (liminal-platform 0.19.0), their lines followed in the plugin's panel: the GeoIP
+    # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes
+    JOB_HOOKS = (GEOIP_HOOK,)
+    # this month's GeoIP file, {year} and {month} filled in (2026, 11): an https address of the plugin's own ("" offers
+    # no download); last month's is tried when this month's is not out yet
+    GEOIP_URL = ""
+    GEOIP_LICENCE = ""  # the licence's words, shown before the download and accepted in so many words
+    ATTRIBUTION: dict = {}  # {text, url}: drawn wherever places are ("IP Geolocation by DB-IP" with DB-IP's link)
+    # the name servers asked for this network's public address, which places home when the user set none: each in
+    # dns.public_address's shape, (the name, its type, the server, whose), split by the server's IP version; or
+    # {4: (...), 6: (...)}. () asks none: home is then the user's place, or none
+    PUBLIC_DNS: tuple = ()
+    WORLD_TIMEOUT = TIMEOUT_S  # watching stops this long after the tab was last asked
+    keys = (HOME_KEY,)  # LIMINAL_HOME_PLACE (optional), set on the plugin's page: the globe's home, read through the login
 
     # -- the backend: a subclass's -----------------------------------------------------------------
     def backend(self) -> str:
@@ -231,7 +264,7 @@ class Firewall(MachinePlugin):
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
         here = self.not_for_here()
-        if here:  # not for this machine at all (a Linux plugin on Windows or in WSL): asked nothing, no setup offered
+        if here:  # not for this machine at all (a Linux plugin on Windows or macOS): asked nothing, no setup offered
             return self.not_here_status(here, backend="", enabled=False, profiles={}, rules=[])
         note = self.scope_note()
         if note:  # not Liminal's (the user's own distribution): asked nothing at all
@@ -327,3 +360,91 @@ class Firewall(MachinePlugin):
         except CommandError as e:
             step(current, False, str(e))
         return done
+
+    # -- the World Wide Web tab (1.55.0; machines/world.py) -----------------------------------------------------------
+    def world_view(self, make: bool = True) -> WorldView | None:
+        """This plugin's World Wide Web tab: made when first asked (make_world_view), kept until the plugin is detached.
+        `make=False`: the view there is, or None, never making one (for what asks nothing: the plugin's API card's facts,
+        before the tab was first asked since the plugin was attached)."""
+        view = self.__dict__.get("_world")
+        if view is None and make:
+            with _WORLD_LOCK:
+                view = self.__dict__.get("_world")
+                if view is None:
+                    view = self.__dict__["_world"] = self.make_world_view()
+        return view
+
+    def make_world_view(self) -> WorldView:
+        """The WorldView the tab watches with: every packet at the adapter of this machine's way out (world.default_capture),
+        the GeoIP files in the data folder, WORLD_TIMEOUT seconds of watching after the last ask. A subclass with a capture
+        of its own (another adapter, a stand-in in its tests) makes it here."""
+        return WorldView(self.name, timeout=self.WORLD_TIMEOUT)
+
+    def world_home(self, view: WorldView | None = None):
+        """The place the user set for this machine on the globe (LIMINAL_HOME_PLACE, "lat,lon[,label]"), read through this
+        plugin's login, the one way to a setting, at most every world.SETTING_S; None when none is set, nobody is signed in
+        or the login cannot say."""
+        login = getattr(self, "login", None)
+        if login is None:
+            return None
+
+        def read():
+            try:
+                return (login.variables([HOME_PLACE_VAR]) or {}).get(HOME_PLACE_VAR) or None
+            except Exception:  # noqa: BLE001 - a login that cannot say: no place set
+                return None
+        return (view or self.world_view()).setting(read)
+
+    def world(self) -> dict:
+        """The World Wide Web tab's page (apps/tabs.py), asked every two seconds while the tab is shown. Each ask keeps the
+        watching going: a capture at this machine's adapter, which stops by itself WORLD_TIMEOUT seconds after the last ask,
+        and on detach. The page is what has been counted: the globe with the places traffic came from and went to (placed
+        by the GeoIP file on this machine) and their routes to home, the busiest ports' charts, the ports and the places
+        tabled, and the GeoIP file's install form while none is installed. Not for this machine (not_for_here): a page
+        saying so, and nothing started."""
+        here = self.not_for_here()
+        if here:
+            return not_here_page(here)
+        view = self.world_view()
+        view.touch()
+        attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
+        page = view.page(home=self.world_home(view), public=self.PUBLIC_DNS, attribution=attribution,
+                         can_install=bool(self.GEOIP_URL), licence=self.GEOIP_LICENCE, source=self.GEOIP_URL)
+        under = world_module.under_wsl()  # inside a WSL distribution: what WSL changes for the tab, after its own tables
+        if under is not None and isinstance(page.get("tables"), list):
+            page["tables"].append(under)
+        return page
+
+    def world_geoip(self, accept_licence=False, log=None) -> dict:
+        """The GeoIP file installed for the World Wide Web tab, on the user's word: a change, asked only from the tab's
+        install form, never by the page on its own, and run by the platform as a job (JOB_HOOKS: `log` is its panel,
+        given each step and the bytes downloaded with their percent, at most every two seconds). Refused before anything
+        is said or done (world.LicenceRefused, naming accept_licence, which the platform's page asks as a second, explicit
+        confirmation with the licence's words) unless `accept_licence` is exactly True. Then this month's file at
+        GEOIP_URL is downloaded (last month's when this month's is not out yet) and put in place (WorldView.install: one
+        deadline for all of it, https on every hop from the plugin's own host); what was installed, in words."""
+        here = self.not_for_here()
+        if here:
+            raise ValueError(f"not for this machine: {here}")
+        if not self.GEOIP_URL:
+            raise ValueError(f"{self.title or self.name} offers no GeoIP file to download")
+        if accept_licence is not True:
+            raise LicenceRefused(LICENCE_FIRST)
+        return self.world_view().install(self.GEOIP_URL, log=log)
+
+    def settings_changed(self) -> None:
+        """The platform kept one of this plugin's settings (its page's Settings): the home the user set is read anew at the
+        tab's next ask."""
+        view = self.world_view(make=False)
+        if view is not None:
+            view.forget_setting()
+
+    def detach(self) -> None:
+        """Detached by its app: the World Wide Web tab's watching ended for good (WorldView.close: its capture closed, its
+        thread gone, its GeoIP file let go, an ask still under way starting nothing) and forgotten, then the plugin detached
+        as every plugin is."""
+        with _WORLD_LOCK:
+            view = self.__dict__.pop("_world", None)
+        if view is not None:
+            view.close()
+        super().detach()
