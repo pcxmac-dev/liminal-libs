@@ -45,6 +45,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -534,22 +535,30 @@ class Link:
     @classmethod
     def start(cls, command: str, cwd: str | None = None, owner_path=None, name: str = "the files' own system") -> "Link":
         """The helper started on the files' own system with `command` (through WSL's interop: a Windows program run
-        from Linux), spoken to over its standard input and output. Its own words go to LIMINAL_LINK_LOG, or nowhere."""
+        from Linux), spoken to over its standard input and output. Its own words (its standard error) go to the file
+        LIMINAL_LINK_LOG names, else to a file with no name that goes with the link; a helper that never answers
+        is said with the last of them (a library there from before the link has no such module)."""
         log = os.environ.get(LOG_VAR)
-        err = open(log, "ab") if log else subprocess.DEVNULL
+        err = open(log, "a+b") if log else tempfile.TemporaryFile()
         try:
             proc = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
                                     cwd=cwd, **no_window())
         except OSError as e:
+            err.close()
             raise LinkError(f"the helper could not be started ({command}): {e}") from None
-        finally:
-            if log:
-                err.close()
         try:
-            return cls(proc.stdout, proc.stdin, owner_path=owner_path, proc=proc, name=name)
-        except BaseException:
+            link = cls(proc.stdout, proc.stdin, owner_path=owner_path, proc=proc, name=name)
+        except BaseException as e:
             proc.kill()
+            said = _last_words(err)
+            err.close()
+            if isinstance(e, sqlite3.OperationalError):  # its pipe ended before it said hello: it never came up
+                raise LinkError(f"the helper on {name} did not answer ({command}){': ' + said if said else ''}. It is "
+                                "this library's `python -m liminal_libs.storage.link`, there since 1.57.0: the system "
+                                "that holds the files needs that version or a later one") from None
             raise
+        link._err = err
+        return link
 
     # -- asking -------------------------------------------------------------------------------------------------------
     def call(self, op: str, *args, cid: int = 0):
@@ -627,9 +636,10 @@ class Link:
     def close(self) -> None:
         """The pipe closed: the helper ends, and everything it held open with it."""
         self._end("closed by this process")
-        for f in (self._out, self._in):
+        for f in (self._out, self._in, getattr(self, "_err", None)):
             try:
-                f.close()
+                if f is not None:
+                    f.close()
             except (OSError, ValueError):
                 pass
         if self.proc is not None:
@@ -637,6 +647,19 @@ class Link:
                 self.proc.wait(timeout=10)
             except (subprocess.TimeoutExpired, OSError):
                 self.proc.kill()
+
+
+def _last_words(err, most: int = 400) -> str:
+    """The end of what a helper wrote to its standard error (its last line, most of the time the error it ended
+    with), from the file it was given for it."""
+    try:
+        err.flush()
+        size = err.seek(0, os.SEEK_END)
+        err.seek(max(0, size - 4000))
+        lines = [line.strip() for line in err.read().decode("utf-8", "replace").splitlines() if line.strip()]
+    except (OSError, ValueError):
+        return ""
+    return lines[-1][-most:] if lines else ""
 
 
 def _raised(name: str, message: str) -> BaseException:

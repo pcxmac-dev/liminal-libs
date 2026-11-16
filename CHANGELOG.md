@@ -25,6 +25,8 @@ or a share, so two writers, one on each side, would corrupt a file. On a system 
   included. It makes no file with VACUUM INTO and no backup: those are the work of the system that holds the files.
 - **A helper that ends is never started again** by the process that lost it. Its temporary tables, attached files and
   open transactions ended with it; the process says so and is started again by whoever keeps it running.
+  A helper that never answers is said with its own last words (a library there from before the link has no such
+  module), not as a link that "is gone".
 - **A file's layout is its own system's** (`storage.common.owners_layout`, `Behind`). A store brings a file's tables
   up to its software when it opens it, and a process that reads only (LIMINAL_READONLY) did so too before it was
   sealed. From another system that would add a column under the software running where the file is, which writes its

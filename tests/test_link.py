@@ -261,6 +261,53 @@ def test_the_helper_is_started_without_a_window(monkeypatch):
     assert started[0]["stdin"] == lk.subprocess.PIPE and started[0]["stdout"] == lk.subprocess.PIPE
 
 
+def test_a_helper_that_never_answers_is_said_with_its_own_last_words(monkeypatch):
+    """The suite inside WSL started before Windows has this version: the library there has no such module, the helper
+    ends at once, and the process is told so (not that a link it never had "is gone")."""
+    import io
+
+    class Ended:
+        """A process that wrote why to its standard error and ended: nothing on its output."""
+
+        def __init__(self, args, stderr=None, **kw):
+            stderr.write(b"Traceback (most recent call last):\n  ...\n"
+                         b"C:\\app\\.venv\\Scripts\\pythonw.exe: No module named liminal_libs.storage.link\n")
+            self.stdin, self.stdout, self.killed = io.BytesIO(), io.BytesIO(b""), False
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(lk.subprocess, "Popen", Ended)
+    monkeypatch.delenv(lk.LOG_VAR, raising=False)
+    with pytest.raises(LinkError) as said:
+        Link.start("pythonw.exe -m liminal_libs.storage.link", name="Windows")
+    words = str(said.value)
+    assert words.startswith("the helper on Windows did not answer (pythonw.exe -m liminal_libs.storage.link): ")
+    assert "No module named liminal_libs.storage.link" in words and "there since 1.57.0" in words
+
+    class OlderProtocol(Ended):
+        """One that answers, in another version of the link (once it is asked): what it says is passed on as it is."""
+
+        def __init__(self, args, stderr=None, **kw):
+            answer = lk._dumps((1, False, ("LinkError", "the helper speaks version 0 of the link"), (0.0, None, None)))
+            asked = threading.Event()
+
+            class Asked(io.BytesIO):
+                def flush(self):
+                    asked.set()
+
+            class Answer(io.BytesIO):
+                def read(self, n=-1):
+                    asked.wait(5)
+                    return super().read(n)
+
+            self.stdin, self.stdout, self.killed = Asked(), Answer(len(answer).to_bytes(4, "big") + answer), False
+
+    monkeypatch.setattr(lk.subprocess, "Popen", OlderProtocol)
+    with pytest.raises(LinkError, match="^the helper speaks version 0 of the link$"):
+        Link.start("pythonw.exe -m liminal_libs.storage.link", name="Windows")
+
+
 def test_the_helper_opens_nothing_outside_its_folders(linked, tmp_path):
     link, data = linked
     outside = tmp_path / "elsewhere.db"
