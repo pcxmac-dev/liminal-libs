@@ -24,6 +24,18 @@ _ESCAPED = re.compile(r"\\([0-7]{3})")  # a space in a mount point is written \0
 DRIVE_REMOTE = 4  # GetDriveTypeW: a network drive
 
 
+class NotHere(RuntimeError):
+    """Work that only the system whose drive the files are on does, asked for from another."""
+
+
+def owner_only(path, what: str) -> None:
+    """NotHere when `path` is another system's file seen through a mount: `what` (starting MongoDB, a backup, the
+    closed months' copy ...) is done by the system the files belong to. Two systems doing it would undo each
+    other's work, and the files it moves or swaps are open on the other side."""
+    if foreign(path):
+        raise NotHere(f"{what}: {path} is on another system's drive, and that is done from that system, not from here")
+
+
 def table(text: str | None = None) -> list[tuple[str, str]]:
     """The mounts as this process sees them: (mount point, filesystem type), in the order the system lists them (a
     later one at the same point is the one in force). `text`: /proc/self/mounts' content (a test's); without it the

@@ -200,27 +200,38 @@ def take_lease(store, source: str, ticker: str, now_ms: int | None = None) -> bo
     """Claim the build of one series' frames for this process (the sync, the live recorder and a
     "Build missing" may each start one): False while another live process holds an unexpired
     lease. A lease of a process that has ended, or one past LEASE_MS, is taken over."""
+    from . import claims
     from .proc import pid_alive, started
+    from .storage.common import own_files
 
-    pid = os.getpid()
+    pid, me = os.getpid(), claims.instance()
     now_ms = now_ms or int(time_module.time() * 1000)
     taken = [False]
 
     def claim(held: dict) -> dict:
-        other = held.get("pid")
-        if other and other != pid and held.get("until", 0) > now_ms and pid_alive(other) \
-                and (not held.get("start") or started(other) in (None, held["start"])):
-            return held  # another build of this series is going on
+        other, there = held.get("pid"), held.get("instance")
+        mine = other == pid and there in (None, me)
+        if other and not mine and held.get("until", 0) > now_ms:
+            if there in (None, me) and (there == me or own_files(getattr(store, "path", ":memory:"))):
+                # a process of this installation: looked up, as a lock file's owner is
+                live = pid_alive(other) and (not held.get("start") or started(other) in (None, held["start"]))
+            else:  # another installation's (1.56.0): at work while it holds a claim heard from lately
+                live = (there, other) not in claims.gone(store.conn, [(there, other)], own_files=False)
+            if live:
+                return held  # another build of this series is going on
         taken[0] = True
-        return {"pid": pid, "start": started(pid) or 0, "until": now_ms + LEASE_MS}
+        return {"pid": pid, "instance": me, "start": started(pid) or 0, "until": now_ms + LEASE_MS}
 
     store.kv_update(LEASE_KEY.format(source, ticker), claim, {})
     return taken[0]
 
 
 def drop_lease(store, source: str, ticker: str) -> None:
-    pid = os.getpid()
-    store.kv_update(LEASE_KEY.format(source, ticker), lambda held: {} if held.get("pid") == pid else held, {})
+    from . import claims
+
+    pid, me = os.getpid(), claims.instance()
+    store.kv_update(LEASE_KEY.format(source, ticker),
+                    lambda held: {} if held.get("pid") == pid and held.get("instance") in (None, me) else held, {})
 
 
 class Lease:

@@ -63,6 +63,10 @@ FEED = "feed:"
 SYMBOL = "symbol:"
 PLUGIN = "plugin:"
 PROCESS = "process:"
+LIVE = "live"  # the recorder of live trades: one on a database
+PUBLICATIONS = "publications"  # the publications' reader: one pass at a time
+HISTORY = "history"  # the closed months' copy
+POST = "post"  # the pass of composites and derived frames after a sync
 READS_ONLY = "nobody: this process reads only (LIMINAL_READONLY) and takes nothing"
 
 
@@ -550,6 +554,7 @@ class Hold:
     db_path: Path
     claim: Claim
     lock: Path | None = None
+    again: bool = False  # taken again by the process that holds it: let_go gives nothing back
 
     def still(self) -> bool:
         """Whether it is still this process's (False: taken over while it slept; it must not write on)."""
@@ -565,39 +570,66 @@ def _lock_taken(lock: Path) -> str | None:
     return f"process {pid} (lock file {lock})" if pid is not None else None
 
 
-@contextmanager
-def exclusive(db_path, key: str, lock: Path | None = None, *, what: str = "",
-              log: Callable[[str], None] | None = None) -> Iterator[Hold]:
+def hold(db_path, key: str, lock: Path | None = None, *, what: str = "",
+         log: Callable[[str], None] | None = None) -> Hold:
     """This process alone on `key`, for every process on the database whichever system it runs on: Taken when
     another holds it. `lock`: the lock file that kept the key until claims; taken as well (the switch-over, in the
-    module's words), except on another system's drive, where one that exists means Taken. Entered again by the
-    process that holds the key, it gives nothing back when the inner one ends."""
+    module's words), except on another system's drive, where one that exists means Taken. Taken again by the
+    process that holds the key, it is the same hold, and giving that one back gives nothing back. Given back
+    with let_go (exclusive() does both round a block)."""
     db_path = Path(db_path)
     already = mine(db_path).get(key)
     if already is not None:
-        yield Hold(db_path, already, None)
-        return
+        return Hold(db_path, already, None, again=True)
     claim = take(db_path, key, what=what, log=log)
     if claim is None:
         who = READS_ONLY if read_only() else \
             next((h.words() for h in held(db_path, key) if h.key == key and not h.own), "another process")
         raise Taken(key, who)
-    locked = False
     try:
-        if lock is not None:
-            if mounts.foreign(lock):
-                who = _lock_taken(lock)
-                if who:
-                    raise Taken(key, who)
-            elif proc.acquire(lock):
-                locked = True
-            else:
-                raise Taken(key, _lock_taken(lock) or f"another process (lock file {lock})")
-        yield Hold(db_path, claim, lock if locked else None)
-    finally:
-        if locked:
-            proc.release(lock)
+        if lock is None:
+            return Hold(db_path, claim, None)
+        if mounts.foreign(lock):
+            who = _lock_taken(lock)
+            if who:
+                raise Taken(key, who)
+            return Hold(db_path, claim, None)
+        if proc.acquire(lock):
+            return Hold(db_path, claim, lock)
+        raise Taken(key, _lock_taken(lock) or f"another process (lock file {lock})")
+    except BaseException:
         release(db_path, claim)
+        raise
+
+
+def try_hold(db_path, key: str, lock: Path | None = None, *, what: str = "",
+             log: Callable[[str], None] | None = None) -> Hold | None:
+    """hold(), or None while another holds the key (where a lock file was tried, and its holder left to it)."""
+    try:
+        return hold(db_path, key, lock, what=what, log=log)
+    except Taken:
+        return None
+
+
+def let_go(held_: Hold | None) -> None:
+    """A hold given back: its lock file, then its claim (None, or one taken again by its holder: nothing)."""
+    if held_ is None or held_.again:
+        return
+    if held_.lock is not None:
+        proc.release(held_.lock)
+    release(held_.db_path, held_.claim)
+
+
+@contextmanager
+def exclusive(db_path, key: str, lock: Path | None = None, *, what: str = "",
+              log: Callable[[str], None] | None = None) -> Iterator[Hold]:
+    """hold() for the length of a block: Taken when another holds the key; given back at its end, whatever
+    ends it. Entered again by the process that holds the key, it gives nothing back when the inner one ends."""
+    held_ = hold(db_path, key, lock, what=what, log=log)
+    try:
+        yield held_
+    finally:
+        let_go(held_)
 
 
 def feed_runs(db_path) -> dict[str | None, Held]:

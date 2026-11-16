@@ -184,8 +184,13 @@ def settle(store, gov_conn, data_dir: Path, log: Callable[[str], None] = lambda 
     copied, counted, then the plugin's reads and writes go there. Documents written to the store
     left by a process from before (one not restarted yet) are copied on each pass. Nothing is
     removed from where they were. Returns what moved."""
+    from . import mounts
     from .sources.registry import plugin_of, providers, publisher_of, publishers
 
+    if mounts.foreign(data_dir):
+        # the data is another system's: its documents are moved by that system alone (two moving them would
+        # each undo the other's `store:effect` every pass); this one reads and writes where they are
+        return []
     names = [n for n in providers() if plugin_of(n) == n] + [n for n in publishers() if publisher_of(n) == n]
     done = []
     for name in dict.fromkeys(names):
@@ -329,10 +334,14 @@ HISTORY_BUDGET_S = 20 * 60  # a `history run`'s seconds of copying
 
 
 def history_due(settings) -> bool:
-    """Whether a `history run` has work: feeds whose closed months go to DuckDB, and no run going."""
-    from . import proc
+    """Whether a `history run` has work: feeds whose closed months go to DuckDB, and no run going. Never from
+    another system than the one whose drive the data is on: the copy is that system's (mounts.owner_only)."""
+    from . import claims, mounts, proc
     from .storage import Store
 
+    if mounts.foreign(settings.db_path):
+        return False
     with Store(settings.db_path) as store:
         feeds = bars_feeds(store)
-    return bool(feeds) and proc.holder(settings.db_path.with_name(HISTORY_LOCK)) is None
+    return bool(feeds) and proc.holder(settings.db_path.with_name(HISTORY_LOCK)) is None \
+        and not any(h.key == claims.HISTORY for h in claims.held(settings.db_path, claims.HISTORY))

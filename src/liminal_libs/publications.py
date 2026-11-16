@@ -44,7 +44,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from . import gov, killswitch
+from . import claims, gov, killswitch
 from .sources.publisher import Feed, Publisher, Read, parse_rss
 
 USER_AGENT = gov.USER_AGENT
@@ -248,13 +248,12 @@ class Reader:
         """One pass over the publishers' due feeds (the hourly sync's when no recorder runs, and the
         `gov` command), under the machine's lock. Returns the seconds to the next due feed, None when
         another reader holds the lock or the copy is offline."""
-        from . import proc
         from .storage import Store
 
         if getattr(settings, "offline", False):
             return None
-        lock = lock_path(settings.db_path)
-        if not proc.acquire(lock):
+        held = take_reader(settings.db_path)
+        if held is None:
             return None
         gdb = gov.open_db(settings.db_path)
         try:
@@ -262,7 +261,7 @@ class Reader:
                 return cls(gdb, settings, store, log=log).step(now or datetime.now(timezone.utc), force=force)
         finally:
             gdb.close()
-            proc.release(lock)
+            claims.let_go(held)
 
     @classmethod
     def recheck_now(cls, settings, name: str, log: Callable[[str], None], wait_s: float = 30.0) -> dict | None:
@@ -270,15 +269,14 @@ class Reader:
         machine's lock. Pressed again within RECHECK_AGAIN_MINUTES of the last, nothing is sent (the
         findings kept are returned). Returns its findings, or None (unknown, not set up here, or the
         lock busy)."""
-        from . import proc
         from .sources import publishers as registered
         from .storage import Store
 
         pub = registered().get(name)
         if pub is None or getattr(settings, "offline", False):
             return None
-        lock, until = lock_path(settings.db_path), time.monotonic() + wait_s
-        while not proc.acquire(lock):
+        until = time.monotonic() + wait_s
+        while (held := take_reader(settings.db_path)) is None:
             if time.monotonic() > until:
                 return None
             time.sleep(0.5)
@@ -296,7 +294,7 @@ class Reader:
                 return reader.recheck(pub, now)
         finally:
             gdb.close()
-            proc.release(lock)
+            claims.let_go(held)
 
     # -- the fetch queue (storage/queue.py: the Fetcher shows it) -----------------------------------------
     QUEUE_STATE = {"ok": "done", "unchanged": "done", "waiting": "held", "refused": "held", "failed": "failed"}
@@ -904,6 +902,13 @@ class _NoSession:
 # -- running ------------------------------------------------------------------------------------------
 def lock_path(main_db: Path | str) -> Path:
     return Path(main_db).with_name(LOCK)
+
+
+def take_reader(main_db: Path | str):
+    """The reader's place on a database, for one pass: the claim `publications` (claims.py: held against every
+    installation on the database) and, for the processes from before claims, the lock file beside it. None
+    while another reader holds it. Given back with claims.let_go."""
+    return claims.try_hold(main_db, claims.PUBLICATIONS, lock_path(main_db), what="the publications' reader")
 
 
 def run_due(settings, log: Callable[[str], None], force: bool = False, now: datetime | None = None) -> float | None:

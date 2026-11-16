@@ -18,7 +18,7 @@ from .common import _now, own_files, write_transaction
 
 STATES = ("running", "waiting", "held", "failed", "done")
 _COLS = ("plugin", "part", "kind", "key", "title", "state", "priority", "detail", "not_before", "queued_at",
-         "started_at", "finished_at", "requests", "rows", "bytes", "attempts", "error", "pid")
+         "started_at", "finished_at", "requests", "rows", "bytes", "attempts", "error", "pid", "instance")
 # the view's order: what is being fetched, then what waits (by priority), what is held or failed,
 # and the newest done
 _ORDER = ("CASE state WHEN 'running' THEN 0 WHEN 'waiting' THEN 1 WHEN 'held' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END, "
@@ -128,6 +128,18 @@ class QueueStore:
             ids = [(r[0],) for r in rows if (r[1], r[2]) in left]
             self.conn.executemany(back + "rowid=?", ids)
         return len(ids)
+
+    def queue_gone(self, rows: Iterable[dict]) -> set:
+        """Of the rows running, the owners (instance, pid) whose process is gone: what a page shows as
+        stopped. A process of this installation is looked up; another installation's is at work while it
+        holds a claim heard from lately (claims.gone: a page on Windows does not call a job Linux is
+        fetching stopped). This process itself is at work."""
+        from .. import claims
+
+        owners = {(r.get("instance"), r.get("pid")) for r in rows if r.get("state") == "running" and r.get("pid")}
+        me, pid = claims.instance(), os.getpid()
+        return {o for o in claims.gone(self.conn, owners, own_files=own_files(self.path))
+                if not (o[1] == pid and o[0] in (None, me))}
 
     def queue_settle(self, plugin: str, part: str, kind: str, keep: Iterable[str], detail: str = "up to date",
                      now: datetime | None = None) -> int:

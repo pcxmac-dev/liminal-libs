@@ -130,11 +130,12 @@ def _spawn(argv: list[str]) -> int:
 def start(data_dir: Path, wait_s: float = START_WAIT_S) -> int | None:
     """Start the server unless one answers (a start lock keeps two processes from starting it at
     once). Returns the new process's id, or None if it was running. Raises if it cannot start."""
-    from . import proc
+    from . import mounts, proc
 
     if running():
         return None
     startable()
+    mounts.owner_only(data_dir, "MongoDB is started by the system that holds its files")
     lock = data_dir / "mongo-start.lock"
     if not proc.acquire(lock):  # another process is starting it: wait for it to answer
         return None if _answers(wait_s) else _fail(data_dir)

@@ -754,11 +754,10 @@ class Recorder:
         when the saved keys change (a contact set), with the plans the scans found; settings that do
         not load keep the ones before. Nothing here ends the thread but the recorder stopping: a
         file that will not open is logged and tried again."""
-        from . import config, gov, proc, publications, sourcing
+        from . import claims, config, gov, publications, sourcing
         from .storage import Store
 
         settings, saved = self.publications, config.saved_user_keys()
-        lock = publications.lock_path(self.db_path)
         while not self.stop.is_set():
             try:
                 gdb = gov.open_db(self.db_path)
@@ -775,12 +774,13 @@ class Recorder:
                                     except Exception as e:  # noqa: BLE001 - a bad value saved: the settings before stand
                                         self.log(f"live: publications: the saved settings did not load ({e}); "
                                                  "the ones before are kept")
-                                if proc.acquire(lock):
+                                held = publications.take_reader(self.db_path)
+                                if held is not None:
                                     try:
                                         wait = publications.Reader(gdb, settings, store, log=self.log).step(
                                             datetime.now(timezone.utc))
                                     finally:
-                                        proc.release(lock)
+                                        claims.let_go(held)
                             except Exception as e:  # noqa: BLE001 - the network, a locked file: logged, tried again
                                 self.log(f"live: publications: {type(e).__name__}: {e}")
                             self.stop.wait(wait)
@@ -915,9 +915,13 @@ class Recorder:
                                               error=note if down else None, pairs={}, symbols=[])
 
     def holds_locks(self) -> bool:
-        """Whether every lock this recorder took still names it."""
+        """Whether every lock this recorder took still names it, and its place on the database is still its
+        own (the claim `live`: taken over while this computer slept, it stops)."""
         from .proc import owns
 
+        held = getattr(self.locks, "hold", None)
+        if held is not None and not held.still():
+            return False
         return all(owns(p) for p in self.locks)
 
 
@@ -936,32 +940,54 @@ def machine_lock() -> Path:
 
 
 def running(db_path: Path) -> bool:
-    """Whether a recorder runs for this database, or any recorder on this machine."""
+    """Whether a recorder runs for this database (on whichever system: its claim), or any recorder on this
+    machine (the lock files)."""
+    from . import claims
     from .proc import holder
 
-    return any(holder(p) for p in (lock_path(db_path), machine_lock()))
+    if any(holder(p) for p in (lock_path(db_path), machine_lock())):
+        return True
+    return any(h.key == claims.LIVE for h in claims.held(db_path, claims.LIVE))
+
+
+class Locks(list):
+    """The lock files a recorder holds, with its place on the database (`hold`: the claim `live`, claims.py)."""
+
+    hold = None
 
 
 def take_locks(db_path: Path) -> list[Path] | None:
-    """Take both locks for this process, atomically (proc.acquire): None, holding neither, when
-    another recorder holds one."""
+    """Take the recorder's place for this process: on the database, against every installation on it (the
+    claim `live`, and for the processes from before claims its lock file), and on this machine (its lock file:
+    the exchanges' streams are this machine's address's). None, holding nothing, when another recorder holds
+    one. A lock file names a process only its own system can look up, so two systems on one database each
+    took the other's recorder for a dead one."""
+    from . import claims
     from .proc import acquire
 
-    taken = []
-    for path in (lock_path(db_path), machine_lock()):
-        if not acquire(path):
-            release_locks(taken)
-            return None
-        taken.append(path)
+    held = claims.try_hold(db_path, claims.LIVE, lock_path(db_path), what="the live recorder")
+    if held is None:
+        return None
+    taken = Locks([held.lock] if held.lock is not None else [])
+    taken.hold = held
+    if not acquire(machine_lock()):
+        release_locks(taken)
+        return None
+    taken.append(machine_lock())
     return taken
 
 
 def release_locks(locks: list[Path]) -> None:
-    """Remove the locks this process holds (not one another recorder took since)."""
+    """Remove the locks this process holds (not one another recorder took since), and give its place on the
+    database back."""
+    from . import claims
     from .proc import release
 
+    held = getattr(locks, "hold", None)
     for path in locks:
-        release(path)
+        if held is None or path != held.lock:
+            release(path)
+    claims.let_go(held)
 
 
 def recorders() -> list[int]:
