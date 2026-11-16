@@ -34,8 +34,9 @@ or a share, so two writers, one on each side, would corrupt a file. On a system 
   main file, the feeds' files and their ticks, the datasets' files, the agencies' file and the claims' tables.
 - **One clock.** Every answer of the helper carries its clock. What a linked process stamps into a file is stamped by
   the clock of the system that owns it (`storage.common.utc_now`), and `link.clock_off(path)` says in words when the
-  two clocks are more than a second apart, so nothing is fetched then (WSL's clock ran 9.5 s behind Windows' while
-  this was tested).
+  two clocks are more than a second apart, so nothing is fetched then. (On the PC this was built on, Windows' clock
+  ran 9.1 s fast: its time service had never synchronized, while Ubuntu kept time by NTP. WSL's clock was pulled
+  between the two, which is the ten-second jumping seen while the suites ran there.)
 - **The user's saved settings**, the keys among them, are read from the system that holds the database
   (`config.UserEnvironment.linked`): asked of the helper by name, kept nowhere on the other side.
 - **A log of its own.** Beside a database on another system's drive a process writes `liminal-<system>.log`
