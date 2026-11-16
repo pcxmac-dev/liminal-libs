@@ -60,6 +60,17 @@ def _reads_only(monkeypatch) -> None:
     monkeypatch.setattr(common, "_READ_ONLY", [True])
 
 
+def _own(monkeypatch) -> None:
+    """For a while the files are this system's own again: what their own system does to them."""
+    monkeypatch.delenv(lk.FORCE_VAR, raising=False)
+    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: False)
+
+
+def _away(monkeypatch) -> None:
+    monkeypatch.setenv(lk.FORCE_VAR, "loopback")
+    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: True)
+
+
 def _files(path) -> dict[str, str]:
     """Every database file under the data folder, by what it holds. Nothing waits in a log beside one: all of it is
     in the file (a connection that could only read leaves SQLite's empty log file behind; it holds nothing)."""
@@ -107,12 +118,10 @@ def test_an_up_to_date_file_opens_from_another_system_and_is_not_touched(db, els
 
 
 def test_a_file_that_is_behind_is_said_to_be_and_left_as_it_is(db, elsewhere, monkeypatch):
-    monkeypatch.delenv(lk.FORCE_VAR)  # (made older by its own system)
-    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: False)
+    _own(monkeypatch)  # (as its own system's older software left it)
     _older(db)
     before = _files(db)
-    monkeypatch.setenv(lk.FORCE_VAR, "loopback")
-    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: True)
+    _away(monkeypatch)
     for reads_only in (False, True):
         monkeypatch.setattr(common, "_READ_ONLY", [reads_only])
         with pytest.raises(Behind) as said:
@@ -129,11 +138,9 @@ def test_a_file_that_is_behind_is_said_to_be_and_left_as_it_is(db, elsewhere, mo
         claims.take(db, "feed:massive")
     assert claims.held(db) == [] and _files(db) == before
     # its own system brings it up to date, as always; then it opens from the other
-    monkeypatch.delenv(lk.FORCE_VAR)
-    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: False)
+    _own(monkeypatch)
     Store(db).close()
-    monkeypatch.setenv(lk.FORCE_VAR, "loopback")
-    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: True)
+    _away(monkeypatch)
     with Store(db) as s:
         assert s.count_bars("massive", "AAPL", "minute") == 1
     held = claims.take(db, "feed:massive")
@@ -143,17 +150,21 @@ def test_a_file_that_is_behind_is_said_to_be_and_left_as_it_is(db, elsewhere, mo
 
 def test_a_feeds_file_that_is_behind_is_not_upgraded_from_another_system(db, elsewhere, monkeypatch):
     feed = db.parent / "feeds" / "massive.db"
+    _own(monkeypatch)
     with closing(sqlite3.connect(feed)) as raw:  # a file from before its changes were logged
-        raw.executescript("DROP TRIGGER IF EXISTS changes_bars_ins; DROP TABLE changes_since;")
+        raw.executescript("DROP TABLE changes_since;")
     before = _files(db)
+    _away(monkeypatch)
     with pytest.raises(Behind, match="massive.db is on another system's drive and behind this software"):
         Store(db)
     for link in list(lk._links.values()):  # (the main file's connection of the store that did not open)
         link.close()
     lk._links.clear()
     assert _files(db) == before
-    monkeypatch.delenv(lk.FORCE_VAR)
-    monkeypatch.setattr(mounts, "foreign", lambda p, mounts=None: False)
+    if lk.guard():  # where a mount can show another system's drive, nothing opens a file there directly either
+        with pytest.raises(lk.LinkError, match="opened by that system alone"):
+            sqlite3.connect(feed)
+    _own(monkeypatch)
     with Store(db) as s:  # its own system: upgraded, the bar there as before
         assert s.count_bars("massive", "AAPL", "minute") == 1
     assert _files(db) != before
