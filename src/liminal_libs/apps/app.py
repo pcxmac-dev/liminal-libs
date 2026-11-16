@@ -27,11 +27,13 @@ from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
+from .codebase import Codebase
 from .login import PAIRS_PATH, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
 from .tray import Tray, TrayItem
 
 TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
+CODEBASE_PATH = "/api/codebase"  # its repositories, its code and how much of it is which language (apps.codebase)
 SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
 LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
 LOGIN_CLASS = "liminal_login.app:LoginApp"  # the login class an app inherits (liminal-login's), made here when first asked
@@ -112,6 +114,9 @@ class App:
         self.traffic = Traffic()  # what is said, between whom (apps.traffic)
         self.traffic.me = self.NAME
         self.traffic.own(self, self.NAME)
+        # the code this app is made of (apps.codebase, 1.59.0; the user, 2026-11-16: "this class will be added to all
+        # the 'apps' just like connections"): nothing is read until its page asks
+        self.codebase = Codebase(self)
         self._login_lock = threading.Lock()  # one login object made, however many pages ask at once
         self._login_object = None  # the login it inherits, once made (login_object)
         self._login_missing = False  # the login class could not be had: said once, not tried again
@@ -332,6 +337,11 @@ class App:
         if method == "GET" and path == TRAFFIC_PATH:
             raw = str(query.get("last") or "200")
             return 200, self.connections(min(int(raw), 400) if raw.isdecimal() else 200)
+        if method == "GET" and path == CODEBASE_PATH:  # read in a thread when first asked, kept, `fresh=1`: again
+            return 200, self.codebase.snapshot(fresh=str(query.get("fresh") or "").lower() in ("1", "true", "yes"))
+        if method == "POST" and path == CODEBASE_PATH + "/fetch":  # the user's click: the remotes asked what they have
+            names = (body or {}).get("names")
+            return 202, self.codebase.fetch(names if isinstance(names, list) else None)
         if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
             from ..ui import preferences
 

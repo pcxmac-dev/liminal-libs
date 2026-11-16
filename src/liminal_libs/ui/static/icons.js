@@ -70,6 +70,8 @@
     scales: '<g stroke-width="1.5"><circle cx="12" cy="3.3" r="1.1"/><path d="M12 4.4v15.4M8 20.6h8M3.6 6.6h16.8"/><path stroke-width="1.2" d="M3.6 6.6 1.5 12.8M3.6 6.6l2.1 6.2M20.4 6.6l-2.1 6.2M20.4 6.6l2.1 6.2"/><path d="M1 12.8h5.2a2.6 2.3 0 0 1-5.2 0zM17.8 12.8H23a2.6 2.3 0 0 1-5.2 0z"/></g>',
     // the Plugins view: a plug (its two prongs, its body, its cord)
     plug: '<g stroke-width="1.5"><path d="M9 2.2v4.6M15 2.2v4.6"/><path d="M6.2 6.8h11.6v3.4a5.8 5.4 0 0 1-11.6 0z"/><path d="M12 15.6v2.2a3.2 3.2 0 0 0 3.2 3.2H19"/></g>',
+    // a repository's branch: Codebase's entry in an app's list (1.59.0)
+    branch: '<g stroke-width="1.5"><circle cx="6.5" cy="5" r="2.3"/><circle cx="6.5" cy="19" r="2.3"/><circle cx="17.5" cy="8.5" r="2.3"/><path d="M6.5 7.3v9.4M17.5 10.8c0 3.6-4 4.4-8.8 5.6"/></g>',
     // the Resources view: a chip with its leads (three on each side) and its die
     chip: '<g stroke-width="1.5"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.3" y="9.3" width="5.4" height="5.4" rx=".6"/><path stroke-width="1.3" d="M9 2.4V6M12 2.4V6M15 2.4V6M9 18v3.6M12 18v3.6M15 18v3.6M2.4 9H6M2.4 12H6M2.4 15H6M18 9h3.6M18 12h3.6M18 15h3.6"/></g>',
     shield: '<path d="M12 2.8 4.6 5.6v5.6c0 4.7 3.1 8.4 7.4 9.9 4.3-1.5 7.4-5.2 7.4-9.9V5.6z"/><path d="m8.8 12.1 2.2 2.2 4.3-4.4"/>',

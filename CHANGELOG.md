@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.59.0 (2026-11-16)
+
+Codebase: the repositories an app is made of, the code in them, and how much of it is which language (the user: "i
+want to add another functional class called codebase, which has the associated repositories (git/svn/,,,) if there
+are, also the code base, and stats like how much is rust %, javascript %, etc..."; "this class will be added to all
+the 'apps' just like connections"; "it will also say how far it is behind the remote").
+
+- **`apps/codebase.py`, `Codebase`.** Every app of the frame holds one (`App.codebase`, as it holds its `Traffic`) and
+  answers it at `GET /api/codebase`. Nothing is read until a page asks. Then it is read in a thread of its own, kept
+  ten minutes, and read again with `?fresh=1`.
+- **The repositories**: every working copy in the workspace (git, Subversion, Mercurial), and the folders the app's
+  own code runs from when they are in none. Each says its branch, the commit checked out, its remote, what is changed
+  and not committed, how far it is ahead of and behind the branch it follows there, and when that remote was last
+  asked. A remote's address is shown without the name or token someone put in it, in a tool's own error words too. A
+  tool that is not installed is said, and the code is counted all the same.
+- **The code**: a git repository's tracked files, any other folder's files, their lines and bytes by language.
+  Vendored and generated files, binary files and very large ones are counted apart, in no language.
+- **The shares** are of the bytes of code and markup. Prose (Markdown) and data (JSON, TOML, YAML) are listed with
+  their lines and have no share.
+- **Nothing reaches a remote by itself.** How far behind is what each working copy knew when it last asked.
+  `Codebase.fetch()` (`POST /api/codebase/fetch`, a write: the app's own page alone) runs `git fetch` in every
+  repository that has a remote and reads everything again; the page asks for it only on the user's click.
+- **`ui/static/codebase.js`**, `LiminalCodebase.mount(dataEl, sideEl, {get, send, confirm})`: the same picture in
+  every app. One bar by language for the workspace and one for what the app itself runs from (a language keeps its
+  colour whatever its rank; slivers under half a percent are drawn together and still named in the table), the
+  repositories with filters (behind, changed, this app's), every language, and a picked repository's details. It asks
+  again only while a reading or an asking of the remotes is under way.
+- `icons.js`: `branch`, Codebase's entry in an app's list.
+
+Measured with Python's profiler on a workspace of 49 repositories (1,327 files, 317,172 lines): 4.0 s of a 4.25 s
+reading was waiting for its 196 git commands one after another, 0.2 s reading the files. The repositories are now
+read six at a time: 0.9 s.
+
 ## 1.58.1 (2026-11-16)
 
 On Windows a path is judged as it really is (`mounts.foreign`, `mounts.foreign_on_windows`). Found by the review of
