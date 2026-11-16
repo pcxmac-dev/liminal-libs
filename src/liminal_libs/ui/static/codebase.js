@@ -74,19 +74,21 @@
     const other = rest.reduce((a, l) => a + l.share, 0);
     const out = own.map((l) => ({ name: l.name, share: l.share, lines: l.lines, files: l.files, color: colorOf(l.name) }));
     if (rest.length) {
-      out.push({ name: 'Other', share: Math.round(other * 10) / 10, lines: rest.reduce((a, l) => a + l.lines, 0),
+      out.push({ name: 'Other', share: other, lines: rest.reduce((a, l) => a + l.lines, 0),
         files: rest.reduce((a, l) => a + l.files, 0), color: 'var(--muted)', of: rest.map((l) => l.name).join(', ') });
     }
     return out;
   }
+  // a share in words: one decimal; what is there and rounds to nothing is said to be under a tenth, not "0"
+  const pct = (share) => (share > 0 && share < 0.05 ? '< 0.1 %' : `${Math.round(share * 10) / 10} %`);
   function bar(languages, what) {
     const segs = parts(languages);
     if (!segs.length) return '<p class="muted small">No code counted here.</p>';
-    const words = segs.map((s) => `${s.name} ${s.share} %`).join(', ');
+    const words = segs.map((s) => `${s.name} ${pct(s.share)}`).join(', ');
     return `<div class="cb-bar" role="img" aria-label="${esc(`${what}: ${words}`)}">`
-      + segs.map((s) => `<span class="cb-seg" style="flex:${Math.max(s.share, 0.01)} 1 0;background:${s.color}" title="${esc(`${s.name}${s.of ? ` (${s.of})` : ''}: ${s.share} % · ${num(s.lines)} lines · ${num(s.files)} files`)}"></span>`).join('')
+      + segs.map((s) => `<span class="cb-seg" style="flex:${Math.max(s.share, 0.01)} 1 0;background:${s.color}" title="${esc(`${s.name}${s.of ? ` (${s.of})` : ''}: ${pct(s.share)} · ${num(s.lines)} lines · ${num(s.files)} files`)}"></span>`).join('')
       + `</div><ul class="cb-legend">`
-      + segs.map((s) => `<li${s.of ? ` title="${esc(s.of)}"` : ''}><span class="cb-dot" style="background:${s.color}"></span>${esc(s.name)} <span class="pct">${s.share} %</span></li>`).join('')
+      + segs.map((s) => `<li${s.of ? ` title="${esc(s.of)}"` : ''}><span class="cb-dot" style="background:${s.color}"></span>${esc(s.name)} <span class="pct">${esc(pct(s.share))}</span></li>`).join('')
       + '</ul>';
   }
   function languageTable(languages) {

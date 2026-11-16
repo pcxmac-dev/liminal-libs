@@ -337,3 +337,18 @@ def test_every_app_holds_one_and_answers_it_at_its_own_address(workspace, tools,
         assert [f for f, c in tools.asked if c.startswith("git fetch")] == ["common"]
     finally:
         app.stop()
+
+
+def test_the_drawing_and_its_icon_come_with_the_library():
+    """codebase.js is the library's, served beside every app's page (ui.STATIC): the same picture in each."""
+    from liminal_libs import ui
+
+    js = (ui.STATIC / "codebase.js").read_text(encoding="utf-8")
+    assert "window.LiminalCodebase = { html, side, mount, unmount, colorOf, parts };" in js
+    assert "/api/codebase" in js and "/api/codebase/fetch" in js and "'X-Liminal-Charts': '1'" in js  # a write is the page's own
+    # a language keeps its colour whatever its rank: the themes' series in a fixed order, the rest together
+    assert "const ORDER = ['Python', 'JavaScript', 'Rust', 'CSS', 'HTML', 'TypeScript', 'Shell'];" in js
+    assert "var(--series-${i + 1})" in js and "'Other'" in js and "'< 0.1 %'" in js
+    assert "await m.confirm(" in js and js.index("await m.confirm(") < js.index("m.send('/api/codebase/fetch'")  # asked first
+    assert "http://" not in js and "https://" not in js  # it names no place outside the app
+    assert "    branch: '<g stroke-width=" in (ui.STATIC / "icons.js").read_text(encoding="utf-8")
