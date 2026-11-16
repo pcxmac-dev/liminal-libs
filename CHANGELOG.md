@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.57.0 (2026-11-16)
+
+The link: a SQLite file on another system's drive is opened by that system alone (the user: "keep the databases
+(sql/duck/etc) in the same place find a way to link linux to windows using an SSHFS or networking arrangement that is
+safe and secure"). The suite is to run a second time inside WSL on Windows' own databases. A mount cannot be made safe
+for that: SQLite's locks and its write-ahead log's shared memory do not cross from Windows to Linux over /mnt/c, SSHFS
+or a share, so two writers, one on each side, would corrupt a file. On a system with its own files nothing changes.
+
+- **`storage/link.py`.** `connect(path, ...)` is now the one way a SQLite file is opened. A file on this system's own
+  disk is opened as always. A file on another system's drive (`mounts.foreign`) is opened by a **helper** on that
+  system, a process of this library started there (`python -m liminal_libs.storage.link`, through WSL's interop) and
+  spoken to over its standard input and output: no port, nothing listening, nothing installed, and it ends with the
+  process that started it. There is no falling back to opening such a file directly, and on Linux an audit hook
+  refuses a direct `sqlite3.connect` there from any code in the process, a plugin's included.
+- **The connection** it gives is shaped like sqlite3's for what this software uses: execute, executemany,
+  executescript, cursors read in batches, transactions, `with conn:`, rows by name, ATTACH with the file named as its
+  own system names it, `set_trace_callback`, `interrupt`. `frame(sql, conn, params)` reads a query into a DataFrame
+  on either kind; `time_limit(conn, seconds)` ends a read that runs too long on either kind.
+- **What crosses the pipe** is plain data and nothing else (numbers, text, bytes, tuples, lists, dicts): neither end
+  rebuilds a class from it, and what is not plain is refused by the one who gave it before a byte is sent. Each
+  request has an id and each connection its own thread in the helper, so one long query does not hold up another.
+- **What the helper opens**: files inside the data folder and the ledger folder it was started for, an ATTACH
+  included. It makes no file with VACUUM INTO and no backup: those are the work of the system that holds the files.
+- **A helper that ends is never started again** by the process that lost it. Its temporary tables, attached files and
+  open transactions ended with it; the process says so and is started again by whoever keeps it running.
+- **A file's layout is its own system's** (`storage.common.owners_layout`, `Behind`). A store brings a file's tables
+  up to its software when it opens it, and a process that reads only (LIMINAL_READONLY) did so too before it was
+  sealed. From another system that would add a column under the software running where the file is, which writes its
+  rows by position. So there the layout part of an open runs query-only: a file that is up to date opens untouched, one
+  that is behind is said to be (what it lacks, and that its own system brings it up to date), and no database is made
+  on another system's drive. A process that reads only opens such a file read-only as well as sealed. This covers the
+  main file, the feeds' files and their ticks, the datasets' files, the agencies' file and the claims' tables.
+- **One clock.** Every answer of the helper carries its clock. What a linked process stamps into a file is stamped by
+  the clock of the system that owns it (`storage.common.utc_now`), and `link.clock_off(path)` says in words when the
+  two clocks are more than a second apart, so nothing is fetched then (WSL's clock ran 9.5 s behind Windows' while
+  this was tested).
+- **The user's saved settings**, the keys among them, are read from the system that holds the database
+  (`config.UserEnvironment.linked`): asked of the helper by name, kept nowhere on the other side.
+- **A log of its own.** Beside a database on another system's drive a process writes `liminal-<system>.log`
+  (`liminal-linux.log`), never the file the other system appends to.
+- **The Linux plugins work on any Linux**, a WSL distribution included (the user: "wsl and firewall linux should always
+  work under linux, if wsl prevents or misses some capability this should reflect in the plugin").
+  `machines.linux.why_not_native` refuses only a machine that is not Linux; `wsl()`, `wsl_generation()`,
+  `systemd_runs()` and `wsl_table(kind)` say what a distribution under WSL is and lacks, shown as an "Under WSL" table
+  (`Admin.machine_tables`). What stays ruled out is a platform on Windows reaching into a distribution from outside.
+- **For the tests** the same protocol runs inside one process (`Link.loopback`), and `LIMINAL_LINK=loopback` sends
+  every file through it, so a whole suite can be run over the link.
+
+Found by running the charts app's suite over the link, and fixed:
+- A price read out of a table (a numpy.float64, which sqlite3 binds as the number it is) went onto the pipe as
+  numpy's own class; the helper reads plain data only, so the link ended for the whole process. A value of a class
+  built on a number, text or bytes now crosses as what it holds. A numpy integer, which sqlite3 would store as eight
+  raw bytes, is refused in sqlite3's words.
+- `close()` came back before the helper had closed the file, so the caller found it still open, its last writes
+  still in its log.
+- The helper was started without the flag that keeps a console window away on Windows (`proc.no_window`).
+- A request made on a link that was just ending could wait for ever.
+
 ## 1.56.0 (2026-11-16)
 
 Claims: who is working on what, for every process on one database, whichever system it runs on (the user: "If i run
