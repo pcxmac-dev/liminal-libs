@@ -154,6 +154,7 @@ class Claims:
         self._clock = clock
         self.lock = threading.RLock()
         self.held: dict[str, Claim] = {}  # what this object took and has not given back (a taken-over one leaves at a beat)
+        self.lost: set[str] = set()  # the keys taken over from it while it was silent, until it takes or releases them
         with self.lock:
             self.tables = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='claim_tokens'").fetchone() is not None
             if create:
@@ -231,6 +232,7 @@ class Claims:
                                       (key, self.me, self.pid, self.started, token, now, now, what, int(bool(shared))))
                     claim = Claim(key, token, self.me, self.pid)
             self.held[key] = claim
+            self.lost.discard(key)
             return claim
 
     def _drop(self, key: str, inst: str, pid: int) -> None:
@@ -247,6 +249,7 @@ class Claims:
         key = claim.key if isinstance(claim, Claim) else claim
         with self.lock:
             self.held.pop(key, None)
+            self.lost.discard(key)
             if not self.tables:
                 return
             with write_transaction(self.conn):
@@ -256,6 +259,7 @@ class Claims:
         """Everything this process holds given back (its end). Returns how many."""
         with self.lock:
             self.held.clear()
+            self.lost.clear()
             if not self.tables:
                 return 0
             with write_transaction(self.conn):
@@ -273,6 +277,7 @@ class Claims:
                                       "WHERE instance=? AND pid=?", (self.now(), self.me, self.pid)).rowcount
                 if n != len(self.held):
                     still = dict(self.conn.execute("SELECT key, token FROM claims WHERE instance=? AND pid=?", (self.me, self.pid)))
+                    self.lost |= {k for k, c in self.held.items() if still.get(k) != c.token}
                     self.held = {k: c for k, c in self.held.items() if still.get(k) == c.token}
             return n
 
@@ -285,6 +290,20 @@ class Claims:
             row = self.conn.execute("SELECT token FROM claims WHERE key=? AND instance=? AND pid=?",
                                     (claim.key, claim.instance, claim.pid)).fetchone()
         return row is not None and row[0] == claim.token
+
+    def was_lost(self, key: str) -> bool:
+        """Whether a key this object took is its own no more: taken over while it was silent. One it never took,
+        or gave back: False."""
+        with self.lock:
+            if key in self.lost:
+                return True
+            claim = self.held.get(key)
+        if claim is None or self.holds(claim):
+            return False
+        with self.lock:
+            self.held.pop(key, None)
+            self.lost.add(key)
+        return True
 
     def holders(self, prefix: str = "", elsewhere: bool = False) -> list[Held]:
         """The claims held now on keys starting with `prefix`: this instance's by processes still running, another's
@@ -391,7 +410,7 @@ def _using(db_path, make: bool, log: Callable[[str], None] | None = None) -> Ite
         if m is not None:
             with _process_lock:
                 m.users -= 1
-                done = m.users == 0 and not m.claims.held and _process.get(k) is m
+                done = m.users == 0 and not m.claims.held and not m.claims.lost and _process.get(k) is m
                 if done:
                     del _process[k]
             if done:
@@ -420,6 +439,14 @@ def holds(db_path, claim: Claim) -> bool:
     """Whether a claim is still this process's (Claims.holds): asked before writing on."""
     with _using(db_path, False) as claims:
         return claims is not None and claims.holds(claim)
+
+
+def lost(db_path, key: str) -> bool:
+    """Whether a key this process took on a database was taken over from it while it was silent (a computer
+    asleep for longer than the other installation waited): asked before writing on. One it never took: False,
+    and nothing is read."""
+    with _using(db_path, False) as claims:
+        return claims is not None and claims.was_lost(key)
 
 
 def mine(db_path) -> dict[str, Claim]:

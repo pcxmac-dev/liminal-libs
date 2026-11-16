@@ -13,13 +13,14 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from time import monotonic
+from pathlib import Path
+from time import monotonic, sleep
 from typing import Callable, Iterator
 from zoneinfo import ZoneInfo
 
 from .config import UNLIMITED_BACKFILL_YEARS, Tier, asset_tier
 from .errors import BudgetExhausted, NotEntitled, Paused, RateLimited, SourceError
-from . import freshness
+from . import claims, freshness
 from .futures import candidate_contracts, roll_schedule
 from .coverage import (STEP_MS, FeedProfile, Planner, day_start_ms, frame_parts, frontier_ms, has_open_time, ms,
                        same_market, second_floor)
@@ -28,6 +29,7 @@ from .sources import is_archive, providers
 from .sources.base import DataSource
 from .symbols import ASSETS
 from .storage import Store
+from .storage.common import read_only
 
 ET = ZoneInfo("America/New_York")
 Log = Callable[[str], None]
@@ -206,7 +208,63 @@ def invert_bars(bars: list[dict]) -> list[dict]:
     return out
 
 
+# A symbol another installation on the database is working on (the user, 2026-11-15: "if one symbol is being
+# operated on, the other integrator would have to operate on another symbol"): put back in the run's line and
+# taken again after a wait that doubles from DEFER_MIN_S to DEFER_MAX_S; still held DEFER_FOR_S after it was first
+# met, it is left for the next run. The symbols opened in the chart wait the same way.
+DEFER_MIN_S = 15.0
+DEFER_MAX_S = 120.0
+DEFER_FOR_S = 600.0
+ELSEWHERE = object()  # take_symbol's answer: another installation is working on the symbol
+
+
+def _claimable(store) -> Path | None:
+    """The database a store's claims are kept in: None for a store in memory, a stand-in without a file, and a
+    process that reads only (it fetches nothing)."""
+    path = getattr(store, "path", None)
+    if path is None or str(path) == ":memory:" or read_only():
+        return None
+    return Path(path)
+
+
+def take_symbol(store, asset: str, ticker: str, what: str = ""):
+    """This process's claim on a symbol (claims.py: `symbol:<asset>:<ticker>`), for as long as it works on it:
+    shared with this installation's other runs (its feeds fetch a symbol side by side, as they always did), held
+    against every other installation on the database. Returns the claim; None when there is nothing to claim on
+    (_claimable); ELSEWHERE while another installation holds it. Given back with give_symbol."""
+    path = _claimable(store)
+    if path is None:
+        return None
+    conn = getattr(store, "conn", None)
+    if conn is not None and conn.in_transaction:
+        conn.commit()  # the claim is written over a connection of its own: nothing of the store's is left open under it
+    claim = claims.take(path, claims.symbol_key(asset, ticker), shared=True, what=what)
+    return claim if claim is not None else ELSEWHERE
+
+
+def give_symbol(store, claim) -> None:
+    """A symbol's claim given back (None or ELSEWHERE: nothing was held)."""
+    if claim is not None and claim is not ELSEWHERE:
+        claims.release(store.path, claim)
+
+
+def symbol_holder(store, asset: str, ticker: str) -> str:
+    """Who else is working on a symbol, in words."""
+    path, key = _claimable(store), claims.symbol_key(asset, ticker)
+    held = claims.held(path, key, elsewhere=True) if path is not None else []
+    return next((h.words() for h in held if h.key == key), "another installation")
+
+
+def _fence(store, feed: str) -> None:
+    """Before a page is stored: this run is still its feed's. A run whose computer slept longer than the other
+    installation waited was taken over (claims.py); it finds out here and stores nothing more."""
+    path = _claimable(store)
+    if path is not None and claims.lost(path, claims.feed_key(feed)):
+        raise StopRun(f"{feed}'s run was taken over by another installation while this one was silent; stopping")
+
+
 def _store_bars(store: Store, source: DataSource, ticker: str, timespan: str, page: list[dict], invert: bool) -> int:
+    _fence(store, source.name)
     span, mult = frame_parts(timespan)
     return store.upsert_bars(source.name, ticker, span, mult, invert_bars(page) if invert else page)
 
@@ -936,6 +994,9 @@ def daily_first(source: DataSource, store: Store, me: FeedProfile, feeds: dict[s
         if not _plan(store, me, feeds, ticker, "stock", "day", max(floor, listed) if listed else floor, now, listed,
                      retired_end(item), item.get("exchange"), planner=planner):
             continue  # another feed is better placed for it, or nothing is left: nothing asked here
+        claim = take_symbol(store, "stock", ticker, f"{source.name}'s daily bars")
+        if claim is ELSEWHERE:  # another installation is at it: the run's own pass, or a later sweep, takes it
+            continue
         try:
             listing = check_listing(source, store, item, today, log)
             row = _watch_row(store, source.name, ticker, log)
@@ -964,6 +1025,8 @@ def daily_first(source: DataSource, store: Store, me: FeedProfile, feeds: dict[s
                 raise StopRun(f"{server_fails} symbols in a row failed on {source.name}'s side (last: {e})",
                               strike=True) from e
             continue
+        finally:
+            give_symbol(store, claim)
         server_fails = 0
         done += 1
         log(f"{ticker} day: {n} rows (daily bars first)")
@@ -1211,11 +1274,16 @@ def picked_symbols(store: Store, now: datetime | None = None) -> set[str]:
     return on_lists | set(priority_requests(store, now))
 
 
-def _unserved_request(store: Store, source: str, now: datetime, served: dict | None = None) -> str | None:
+def _unserved_request(store: Store, source: str, now: datetime, served: dict | None = None,
+                      deferred: dict | None = None) -> str | None:
     """A symbol opened in the chart that this feed has not synced since (nor taken this run:
-    `served`): it goes before anything else (the daily-first sweep stops for it)."""
+    `served`): it goes before anything else (the daily-first sweep stops for it). One another
+    installation is working on (`deferred`: ticker -> when it is tried again, by `monotonic`)
+    is not waited for here: the sweep goes on until its time comes."""
     for ticker, req in priority_requests(store, now).items():
         if served and served.get(ticker) == req["at"]:
+            continue
+        if deferred and deferred.get(ticker, 0.0) > monotonic():
             continue
         row = next(iter(store.watchlist(source, ticker)), None)
         if row is not None and (row.get("synced_at") is None or row["synced_at"] < req["at"]):
@@ -1331,17 +1399,21 @@ def _futures_kept_current(watched: list[dict], order: dict[str, int], store: Sto
 
 
 def _next_item(pending: list[dict], store: Store, now: datetime, source: str = "",
-               served: dict | None = None) -> tuple[dict, bool]:
+               served: dict | None = None, deferred: dict | None = None) -> tuple[dict, bool]:
     """The next symbol to work on, and whether it was asked for: a symbol opened in the chart
     since this feed last synced it goes first, wherever it is in the line, and also when the run
     has already passed it (skipped as up to date before the request came: AMD waited hours for
     the next run). Read before every symbol, so a request made while the run is going is taken at
-    the next one; `served` (ticker -> request time) takes each request once."""
+    the next one; `served` (ticker -> request time) takes each request once. `deferred` (ticker ->
+    when it is tried again, by `monotonic`): the symbols another installation is working on,
+    passed over until their time; when only they are left, the run waits for the first of them."""
     asked = priority_requests(store, now)
     served = served if served is not None else {}
+    waits = deferred or {}
+    clock = monotonic()
     for ticker, req in asked.items():
         at = req.get("at")
-        if not at or served.get(ticker) == at:
+        if not at or served.get(ticker) == at or waits.get(ticker, 0.0) > clock:
             continue
         i = next((i for i, w in enumerate(pending) if w["ticker"] == ticker), None)
         row = pending[i] if i is not None else next(iter(store.watchlist(source, ticker)), None) if source else None
@@ -1350,7 +1422,11 @@ def _next_item(pending: list[dict], store: Store, now: datetime, source: str = "
             if i is not None:
                 pending.pop(i)
             return row, True
-    return pending.pop(0), False
+    i = next((i for i, w in enumerate(pending) if waits.get(w["ticker"], 0.0) <= clock), None)
+    if i is None:  # every symbol left is being worked on elsewhere: the first whose time comes
+        i = min(range(len(pending)), key=lambda j: waits.get(pending[j]["ticker"], 0.0))
+        sleep(max(0.0, waits.get(pending[i]["ticker"], 0.0) - clock))
+    return pending.pop(i), False
 
 
 class Collector:
@@ -1397,6 +1473,8 @@ class Collector:
         self.order: dict[str, int] = {}
         self.filling = 0
         self.served: dict = {}
+        self.deferred: dict[str, float] = {}  # being worked on elsewhere: ticker -> when it is tried again (monotonic)
+        self.waited: dict[str, tuple[float, int]] = {}  # ... -> (when it was first met so, how often since)
         self.sweep_left = 0
         self.pending: list[dict] = []
         self.queue: RunQueue | None = None
@@ -1433,12 +1511,12 @@ class Collector:
             self._before_symbols()
             self._plan_run()
             while self.pending:
-                if self.sweep_left and not _unserved_request(store, source.name, self.clock(), self.served):
+                if self.sweep_left and not _unserved_request(store, source.name, self.clock(), self.served, self.deferred):
                     self._sweep()  # the symbols opened in the chart are served: back to daily bars first
                 # This symbol's time, not the run's start: a symbol opened hours into a run was fetched
                 # only up to when the run began, and its stamp left its request unmet ("next in line").
                 at = self.clock()
-                item, urgent = _next_item(self.pending, store, at, source.name, self.served)
+                item, urgent = _next_item(self.pending, store, at, source.name, self.served, self.deferred)
                 try:
                     through = self._step(item, urgent, at)
                 except RateLimited as e:  # the server says slow down: the run stops and the feed is killed
@@ -1636,6 +1714,49 @@ class Collector:
             if synced and ticker not in self.futures_daily and now - synced < timedelta(days=FUTURES_WEEKLY_DAYS):
                 result.skipped += 1  # a less traded future: refreshed weekly
                 return False
+        # It is to be fetched: claimed first, so another installation on the database works on another symbol
+        # meanwhile (after the skips above: a symbol left alone costs no write)
+        claim = self._take_symbol(item)
+        if claim is ELSEWHERE:
+            return False
+        try:
+            return self._fetch(item, urgent, at, floor, horizon, planner)
+        finally:
+            give_symbol(store, claim)
+
+    def _take_symbol(self, item: dict):
+        """This run's claim on the symbol it is about to fetch (take_symbol). Held by another installation: the
+        symbol goes back to the end of the run's line, to be taken again after a wait that doubles (DEFER_MIN_S to
+        DEFER_MAX_S); still held DEFER_FOR_S after it was first met so, it is left for the next run."""
+        ticker, asset = item["ticker"], item["asset"]
+        claim = take_symbol(self.store, asset, ticker, f"{self.source.name}'s run")
+        if claim is not ELSEWHERE:
+            self.deferred.pop(ticker, None)
+            self.waited.pop(ticker, None)
+            return claim
+        who = symbol_holder(self.store, asset, ticker)
+        first, tries = self.waited.get(ticker, (monotonic(), 0))
+        wait = min(DEFER_MAX_S, DEFER_MIN_S * 2 ** tries)
+        self.deferred.pop(ticker, None)
+        if monotonic() - first + wait > DEFER_FOR_S:
+            self.waited.pop(ticker, None)
+            self.result.skipped += 1
+            self.log(f"{ticker}: {who} is still working on it; left for the next run")
+            return ELSEWHERE
+        self.waited[ticker] = (first, tries + 1)
+        self.deferred[ticker] = monotonic() + wait
+        self.served.pop(ticker, None)  # opened in the chart: asked for still, when its time comes
+        self.pending.append(item)
+        if not tries:
+            self.log(f"{ticker}: {who} is working on it; taken again later in this run")
+        return ELSEWHERE
+
+    def _fetch(self, item: dict, urgent: bool, at: datetime, floor: date, horizon: datetime, planner: Planner) -> bool:
+        """_step's fetch itself, the symbol claimed: what _step's words say of a symbol that is fetched."""
+        source, store, log, now, today = self.source, self.store, self.log, self.now, self.today
+        only, archival, me, feeds = self.only, self.archival, self.me, self.feeds
+        refusals, queue, result = self.refusals, self.queue, self.result
+        ticker, asset = item["ticker"], item["asset"]
         queue.start(ticker)
         if self.on_item:
             self.on_item(ticker)
@@ -2286,8 +2407,17 @@ def download_bars(
         start = floor
     end = min(end or today, today)
     saved = 0
-    for page in _guard(source.bar_pages(ticker, start, end, timespan, multiplier)):
-        saved += store.upsert_bars(source.name, ticker, timespan, multiplier, page)
+    row = next(iter(store.watchlist(source.name, ticker)), None)
+    asset = row["asset"] if row else "stock"
+    claim = take_symbol(store, asset, ticker, f"{source.name}: a download by hand")
+    if claim is ELSEWHERE:  # another installation is working on it: nothing is asked twice
+        log(f"{ticker}: {symbol_holder(store, asset, ticker)} is working on it; try again in a moment")
+        return 0
+    try:
+        for page in _guard(source.bar_pages(ticker, start, end, timespan, multiplier)):
+            saved += store.upsert_bars(source.name, ticker, timespan, multiplier, page)
+    finally:
+        give_symbol(store, claim)
     log(f"{ticker} {multiplier}/{timespan}: {saved} bars ({start} to {end})")
     return saved
 
