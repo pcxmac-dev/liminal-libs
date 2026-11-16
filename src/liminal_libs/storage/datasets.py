@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .common import _ET, BUSY_TIMEOUT_S, _feed_name, _now, seal
+from .common import _ET, BUSY_TIMEOUT_S, Behind, _feed_name, _now, own_files, owners_layout, seal
 from .link import connect
 
 
@@ -100,18 +100,23 @@ class DatasetStore:
         with self._feeds_lock:
             conn = self._dataset_conns.get(provider)
             if conn is None:
-                if path is not None:
+                if path is not None and own_files(path):  # (another system's folder is its own to make)
                     path.parent.mkdir(parents=True, exist_ok=True)
                 conn = connect(str(path) if path else ":memory:", check_same_thread=self._check_same_thread,
                                timeout=BUSY_TIMEOUT_S)
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA journal_size_limit=67108864")  # cut back to 64 MB once checkpointed
-                with conn:
-                    for table, column in (("observations", "available_at"), ("constituents", "member")):
-                        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-                        if cols and column not in cols:
-                            conn.execute(f"ALTER TABLE {table} RENAME TO {table}_v1")
-                conn.executescript(DATASET_SCHEMA)
+                try:
+                    with owners_layout(conn, path):  # (a file on another system's drive is never altered here)
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute("PRAGMA journal_size_limit=67108864")  # cut back to 64 MB once checkpointed
+                        with conn:
+                            for table, column in (("observations", "available_at"), ("constituents", "member")):
+                                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                                if cols and column not in cols:
+                                    conn.execute(f"ALTER TABLE {table} RENAME TO {table}_v1")
+                        conn.executescript(DATASET_SCHEMA)
+                except Behind:
+                    conn.close()
+                    raise
                 self._dataset_conns[provider] = seal(conn)  # read-only (LIMINAL_READONLY): no write from here on
         return conn
 

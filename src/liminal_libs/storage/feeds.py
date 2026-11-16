@@ -26,7 +26,8 @@ from typing import Iterable, Sequence
 import pandas as pd
 
 from . import history
-from .common import BUSY_TIMEOUT_S, _date_ms, _distinct, _feed_name, _now, add_column, seal, write_transaction
+from .common import (BUSY_TIMEOUT_S, Behind, _date_ms, _distinct, _feed_name, _now, add_column, own_files, owners_layout, seal,
+                     write_transaction)
 from .link import connect, frame
 
 
@@ -172,6 +173,7 @@ CREATE TABLE IF NOT EXISTS ticks.trades (
     PRIMARY KEY (ticker, ts_ns, seq)
 ) WITHOUT ROWID;
 """
+_TICK_TABLES = ("trades",)  # what a tick file must hold to be attached where it cannot be made (another system's)
 
 # Composite model of an asset traded on several exchanges (the bars of the 'composite' feed): the
 # deviation across exchanges per bar (see composite.py). Kept in the composite's own file.
@@ -397,6 +399,19 @@ class _Feed:
         self.ticks_path = folder / f"{name}-ticks.db" if folder else None
         self.conn = connect(str(self.path) if self.path else ":memory:", check_same_thread=check_same_thread,
                             timeout=BUSY_TIMEOUT_S)
+        try:
+            with owners_layout(self.conn, self.path):  # (a file on another system's drive is never altered here)
+                self._layout(name)
+        except Behind:
+            self.conn.close()
+            raise
+        seal(self.conn)  # read-only (LIMINAL_READONLY): no write from here on
+        self.ticks = False
+        self._lock = threading.Lock()
+        self.has_ticks()
+
+    def _layout(self, name: str) -> None:
+        """The file's tables and triggers as this software has them: made in a new file, an older file upgraded."""
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute(f"PRAGMA journal_size_limit={WAL_LIMIT}")
         # Upgrades of an older file are looked for without a lock, then made under the write lock
@@ -426,10 +441,6 @@ class _Feed:
             with self.conn:  # complete from now: the triggers exist, so every write after this is logged
                 self.conn.execute("INSERT INTO changes_since SELECT ? WHERE NOT EXISTS (SELECT 1 FROM changes_since)",
                                   (_stored_ms(),))
-        seal(self.conn)  # read-only (LIMINAL_READONLY): no write from here on
-        self.ticks = False
-        self._lock = threading.Lock()
-        self.has_ticks()
 
     def _upgrade_triggers(self) -> None:
         """Replace triggers made by an older version whose text changed (_TRIGGER_UPGRADES): dropped
@@ -460,7 +471,16 @@ class _Feed:
             self.conn.execute("ATTACH DATABASE ? AS ticks", (str(self.ticks_path) if self.ticks_path else ":memory:",))
             self.conn.execute("PRAGMA ticks.journal_mode=WAL")
             self.conn.execute(f"PRAGMA ticks.journal_size_limit={WAL_LIMIT}")
-            self.conn.executescript(TICKS_SCHEMA)
+            if self.ticks_path is None or own_files(self.ticks_path):
+                self.conn.executescript(TICKS_SCHEMA)
+            else:  # another system's file: looked at, never altered (this connection may be writing bars meanwhile)
+                have = {r[0] for r in self.conn.execute("SELECT name FROM ticks.sqlite_master WHERE type='table'")}
+                lacks = [t for t in _TICK_TABLES if t not in have]
+                if lacks:
+                    self.conn.execute("DETACH DATABASE ticks")
+                    raise Behind(f"{self.ticks_path} is on another system's drive and behind this software (no table "
+                                 f"{', '.join(lacks)}): its tables are brought up to date by the system that holds it, "
+                                 "and nothing of it is changed from here")
             self.ticks = True
 
     def version(self) -> tuple:

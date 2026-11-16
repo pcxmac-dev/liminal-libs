@@ -9,6 +9,8 @@ from datetime import date, datetime, timezone
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
+from ..mounts import NotHere
+
 
 _ET = ZoneInfo("America/New_York")
 
@@ -57,6 +59,37 @@ def own_files(path) -> bool:
     from .. import mounts
 
     return str(path) == ":memory:" or not mounts.foreign(path)
+
+
+class Behind(NotHere):
+    """A file on another system's drive whose tables are older than this software's: it is brought up to date by
+    the system that holds it, never from here."""
+
+
+@contextmanager
+def owners_layout(conn, path, behind: str = "") -> Iterator[None]:
+    """Round the part of an open that brings a file's tables up to this software's (the schema's scripts, the
+    upgrades of an older file). On a file of this system's own: as always, it is made and upgraded here. On a file
+    on another system's drive nothing of its layout is changed from here: that part runs query-only, which does
+    nothing to a file that is up to date, and a file that is behind is said to be (Behind) rather than altered
+    under the software running on the system that holds it (a column added by a newer suite in WSL would break the
+    older one's writes on Windows). A process that reads only (LIMINAL_READONLY) stays query-only after it.
+    `behind()`: what the file lacks, in words, when the caller can say."""
+    if path is None or own_files(path):
+        yield
+        return
+    conn.execute("PRAGMA query_only=ON")
+    try:
+        yield
+    except sqlite3.OperationalError as e:
+        if "readonly" not in str(e).lower():
+            raise
+        lacks = behind() if callable(behind) else behind
+        raise Behind(f"{path} is on another system's drive and behind this software{f' ({lacks})' if lacks else ''}: "
+                     "its tables are brought up to date by the system that holds it (the suite started there on "
+                     "this version), and nothing of it is changed from here") from None
+    if not _READ_ONLY[0]:
+        conn.execute("PRAGMA query_only=OFF")
 
 
 def add_column(conn: sqlite3.Connection, table: str, column: str, kind: str) -> None:

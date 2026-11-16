@@ -3,6 +3,7 @@ one part per responsibility, the other modules of this package."""
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -11,7 +12,7 @@ from ..layout import DATASETS, FEEDS, HISTORY
 from .admin import AdminStore
 from .appstate import AppStateStore
 from .audits import AuditStore
-from .common import BUSY_TIMEOUT_S, add_column, seal, write_transaction
+from .common import BUSY_TIMEOUT_S, Behind, add_column, own_files, owners_layout, seal, write_transaction
 from .link import connect
 from .datasets import DatasetStore
 from .directory import DirectoryStore
@@ -35,7 +36,7 @@ class Store(ProvenanceStore, AdminStore, FeedStore, PrunedStore, DatasetStore, D
         # Whether the feeds' tick files are opened at all (bars-only mode: not; feeds.set_tick_access)
         self.ticks_allowed = tick_access() if ticks is None else ticks
         memory = str(path) == ":memory:"
-        if not memory:
+        if not memory and own_files(path):  # (another system's folder is its own to make)
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.feeds_dir = Path(feeds_dir) if feeds_dir else (None if memory else self.path.with_name(FEEDS))
         self.datasets_dir = Path(datasets_dir) if datasets_dir else (None if memory else self.path.with_name(DATASETS))
@@ -43,16 +44,21 @@ class Store(ProvenanceStore, AdminStore, FeedStore, PrunedStore, DatasetStore, D
         self._dataset_conns: dict[str, sqlite3.Connection] = {}
         self._check_same_thread = check_same_thread
         self.conn = connect(str(path), check_same_thread=check_same_thread, timeout=BUSY_TIMEOUT_S)
-        old = old_layout(self.conn, None if memory else self.path)
-        if old:
+        try:
+            # (a file on another system's drive is never altered here: one that is behind is said to be)
+            with owners_layout(self.conn, path, self._lacks):
+                old = old_layout(self.conn, None if memory else self.path)
+                if old:
+                    raise OldLayout(f"{self.path} still holds every feed's data in one place ({', '.join(old)}): "
+                                    "run `liminal-charts admin split-feeds` to move each feed to its own "
+                                    "files (it backs up first)")
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA journal_size_limit=67108864")  # cut back to 64 MB once checkpointed
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+        except (OldLayout, Behind):
             self.conn.close()
-            raise OldLayout(f"{self.path} still holds every feed's data in one place ({', '.join(old)}): "
-                            "run `liminal-charts admin split-feeds` to move each feed to its own "
-                            "files (it backs up first)")
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA journal_size_limit=67108864")  # cut back to 64 MB once checkpointed
-        self.conn.executescript(SCHEMA)
-        self._migrate()
+            raise
         seal(self.conn)  # read-only (LIMINAL_READONLY): no write from here on
         self._feeds: dict[str, _Feed] = {}
         self._feeds_lock = threading.Lock()
@@ -90,6 +96,15 @@ class Store(ProvenanceStore, AdminStore, FeedStore, PrunedStore, DatasetStore, D
 
     def _wrote(self) -> None:
         self._writes += 1
+
+    def _lacks(self) -> str:
+        """What the main file lacks of this software's tables and columns, in words (a file that is behind)."""
+        have = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = [t for t in dict.fromkeys(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA)) if t not in have]
+        columns = [f"{t}.{c}" for t, c, _ in MIGRATIONS
+                   if t in have and c not in {r[1] for r in self.conn.execute(f"PRAGMA table_info({t})")}]
+        return "; ".join(w for w in ("no table " + ", ".join(tables) if tables else "",
+                                     "no column " + ", ".join(columns) if columns else "") if w)
 
     def _migrate(self) -> None:
         # Looked at without a lock (every store opened takes this path; almost always nothing is

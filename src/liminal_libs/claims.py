@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from . import mounts, proc
-from .storage.common import BUSY_TIMEOUT_S, read_only, write_transaction
+from .storage.common import BUSY_TIMEOUT_S, Behind, own_files, read_only, write_transaction
 from .storage.schema import CLAIMS as SCHEMA  # the main file's tables are the schema's to say
 
 BEAT_S = 20.0  # a holder says it is alive this often
@@ -177,12 +177,20 @@ class Claims:
 
     @classmethod
     def open(cls, db_path: Path | str, **kw) -> "Claims":
-        """Claims on the main file at `db_path`, over a connection of their own (any thread may use it under the lock)."""
+        """Claims on the main file at `db_path`, over a connection of their own (any thread may use it under the lock).
+        A file on another system's drive is never given the tables from here (its layout is its owner's): one from
+        before claims holds none, and a process that would take one there is told the file is behind (Behind)."""
         from .storage.link import connect
 
+        own, create = own_files(db_path), kw.pop("create", True)
         conn = connect(str(db_path), timeout=BUSY_TIMEOUT_S, check_same_thread=False)
         try:
-            return cls(conn, **kw)
+            claims = cls(conn, create=create and own, **kw)
+            if create and not own and not claims.tables and not read_only():
+                raise Behind(f"{db_path} is on another system's drive and behind this software (no table claims): its "
+                             "tables are brought up to date by the system that holds it (the suite started there on "
+                             "this version), and nothing is taken or changed there from here")
+            return claims
         except BaseException:
             conn.close()
             raise

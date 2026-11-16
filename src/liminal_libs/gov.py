@@ -36,7 +36,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from .layout import gov_db
-from .storage.common import seal
+from .storage.common import Behind, own_files, owners_layout, seal
 from .sources.publisher import Feed
 
 USER_AGENT = "liminal/1 (personal research)"
@@ -135,13 +135,18 @@ class GovDB:
     (stores.py; `main`: the main file, where that is recorded)."""
 
     def __init__(self, path: Path | None, main: Path | None = None):
-        if path is not None:
+        if path is not None and own_files(path):  # (another system's folder is its own to make)
             path.parent.mkdir(parents=True, exist_ok=True)
         from .storage.link import connect
 
         self.conn = connect(str(path) if path else ":memory:", check_same_thread=False, timeout=30)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
+        try:
+            with owners_layout(self.conn, path):  # (a file on another system's drive is never altered here)
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.executescript(SCHEMA)
+        except Behind:
+            self.conn.close()
+            raise
         seal(self.conn)  # read-only (LIMINAL_READONLY): no write from here on
         self.main = main
         self._engines_seen: tuple[float, dict] | None = None
