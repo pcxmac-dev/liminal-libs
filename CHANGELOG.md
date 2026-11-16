@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.56.0 (2026-11-16)
+
+Claims: who is working on what, for every process on one database, whichever system it runs on (the user: "If i run
+integrator on both sides, there cannot be any conflicts, so if one symbol is being operated on, the other integrator
+would have to operate on another symbol"). The suite is to run a second time inside WSL on Windows' own databases.
+Until now a run was kept to itself by a lock file naming a process id, which only that process's own system can look
+up: from the other system a held lock named a process that "did not exist", so it was taken over and both sides
+fetched the same feed. Nothing was claimed by symbol at all. With one installation on a database nothing changes
+but the fixes at the end.
+
+- **`claims.py`.** A claim is a row in the main file's `claims` table, taken in one write transaction, naming its key,
+  the instance (`windows::NEPTUNE`, `linux::Ubuntu`; `LIMINAL_INSTANCE` to say it outright) and the process holding it.
+  A holder of the same instance is judged by its process, as a lock file's was. One of another instance is judged by
+  its heartbeat (every 20 s): silent for 90 s it is challenged, and taken over only when still silent 45 s after that.
+  A computer asleep wakes both sides with old heartbeats at once; a single check would have let each take the other
+  over. Every take has a token one higher than the last, so a holder taken over while it slept finds out before it
+  writes on. Every time is the database's own clock, read in SQL (WSL's clock jumped ten seconds, back and forth,
+  while the tests ran there). A claim taken `shared` is held by every process of its instance that asks shared.
+- **This process's claims** by the database's path: `take`, `release`, `holds`, `held`, `mine`, `lost`, `present`,
+  `hold`/`try_hold`/`let_go`, `exclusive`, `feed_runs`. One connection and one heartbeat thread, there only while the
+  process holds something; everything is given back at exit. A process that reads only (LIMINAL_READONLY) takes none.
+- **Keys.** `feed:<name>` (one run per feed), `symbol:<asset>:<ticker>` (shared inside an installation, held against
+  the others), `plugin:<name>` (a plugin's own fetching), `publications`, `live`, `history`, `post`, and
+  `process:<instance>:<pid>` (a process at work that holds nothing else says so).
+- **The switch-over.** A hold takes the lock file that kept its key until now as well, because processes started
+  before this release look at lock files alone. On another system's drive (`mounts.py`: Windows' drive seen from WSL,
+  a share) a lock file cannot be judged: none is written there, and one that is there without a claim is held.
+  `proc.run_holders` stays the lock files'; `claims.feed_runs` says the runs of every system.
+- **A symbol being fetched is claimed** (`Collector._step`, after the skips, so a symbol left alone costs no write;
+  the daily-first sweep and `download_bars` too). One another installation is working on goes back to the end of the
+  run's line and is taken again after a wait that doubles from 15 s to two minutes; still held ten minutes on, it is
+  left for the next run. A symbol opened in the chart waits the same way.
+- **A run taken over stores nothing more**: before each page is stored the run asks whether its feed is still its own.
+- **A reset takes back only what a process that is gone left** (`claims.gone`). `fetch_requests` and `fetch_queue` rows
+  name the installation that took them (`instance`). `request_reset` and `queue_reset` used to reset every row being
+  worked on, whoever was at it; `queue_reset(mine_alone=True)` is for the caller whose claim makes the rows its own
+  (a feed's run and its bars). `queue_gone(rows)` is the same judgement for a page.
+- **One pass per plugin at a time** (`Runner.plugin`): a second is stopped, saying who is at it.
+- **The publications' reader, the live recorder and a series' build of derived frames** are held against every
+  installation: `publications.take_reader`, `live.take_locks` (its `Locks` carry the hold; `holds_locks` asks the
+  claim), `derive.take_lease` (the lease names its installation).
+- **Work that is the files' own system's** is refused from another, in words (`mounts.owner_only`, `NotHere`):
+  starting MongoDB, moving a plugin's documents between engines (`stores.settle`), the closed months' copy
+  (`stores.history_due`). Two systems doing these would undo each other's work on files the other has open.
+
+Fixed on the way:
+- Two asks at once each found no open request for a symbol and each made one (`request_put` now takes the write lock
+  from its start).
+- A plugin's pass starting reset the rows a feed's run of the same plugin was fetching (shown as waiting while they
+  were being fetched).
+
 ## 1.55.0 (2026-11-16)
 
 The firewalls' World Wide Web tab (`machines/world.py`), the second phase of what the user asked for on 2026-11-14: "so
