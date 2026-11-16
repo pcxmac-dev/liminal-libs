@@ -238,7 +238,10 @@ def test_the_remotes_are_asked_only_when_told_and_what_fails_is_said_without_a_t
     assert [e["name"] for e in fetching["errors"]] == ["second"] and "timed out" in fetching["errors"][0]["why"]
     assert "OTHERTOKEN" not in repr(got) and got["state"] == "ready"  # read again after the remotes answered
     tools.asked.clear()
-    assert base.fetch(names=["common"]) == {"started": True}
+    (workspace / "plugins" / "common" / ".git").mkdir(parents=True)  # another of the same name, elsewhere
+    tools.git("common", [], remote="https://github.com/pcxmac-dev/liminal-libs.git")
+    tools.say("common", "git fetch", b"")
+    assert base.fetch(paths=[workspace / "common"]) == {"started": True}  # told by where it is, not by its name
     end = time.monotonic() + 10
     while time.monotonic() < end and not (base.snapshot().get("fetching") or {}).get("ended"):
         time.sleep(0.01)
@@ -299,6 +302,8 @@ def test_every_app_holds_one_and_answers_it_at_its_own_address(workspace, tools,
     app.codebase._roots, app.codebase.runner = [workspace], tools
     parts = dict(app.codebase.parts())
     assert set(parts) == {"the demo app", "the library"} and parts["the library"].name == "liminal_libs"
+    # from here its parts are the test's own folders (the real ones are this library's checkout, wherever the tests run)
+    app.codebase._own_parts = lambda: [("the demo app", workspace / "loose"), ("the library", workspace / "common" / "src")]
     app.start(0)
     try:
         port = int(app.served.split("127.0.0.1:", 1)[1].split("/", 1)[0])
@@ -322,7 +327,7 @@ def test_every_app_holds_one_and_answers_it_at_its_own_address(workspace, tools,
         refused, _ = ask("POST", CODEBASE_PATH + "/fetch", {})
         assert refused == 403 and not [c for _, c in tools.asked if c.startswith("git fetch")]
         tools.say("common", "git fetch", b"")
-        status, began = ask("POST", CODEBASE_PATH + "/fetch", {"names": ["common"]},
+        status, began = ask("POST", CODEBASE_PATH + "/fetch", {"paths": [str(workspace / "common")]},
                             {"Content-Type": "application/json", web.WRITE_HEADER: "1"})
         assert status == 202 and began == {"started": True}
         end = time.monotonic() + 10

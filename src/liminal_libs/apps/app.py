@@ -340,8 +340,8 @@ class App:
         if method == "GET" and path == CODEBASE_PATH:  # read in a thread when first asked, kept, `fresh=1`: again
             return 200, self.codebase.snapshot(fresh=str(query.get("fresh") or "").lower() in ("1", "true", "yes"))
         if method == "POST" and path == CODEBASE_PATH + "/fetch":  # the user's click: the remotes asked what they have
-            names = (body or {}).get("names")
-            return 202, self.codebase.fetch(names if isinstance(names, list) else None)
+            paths = (body or {}).get("paths")  # the repositories asked, by where they are; none named: every one
+            return 202, self.codebase.fetch(paths if isinstance(paths, list) else None)
         if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
             from ..ui import preferences
 

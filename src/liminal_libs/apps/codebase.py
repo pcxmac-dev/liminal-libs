@@ -462,12 +462,13 @@ class Codebase:
         return self.snapshot()
 
     # -- asking the remotes (the user's own click) ---------------------------------------------------------------------
-    def fetch(self, names=None) -> dict:
+    def fetch(self, paths=None) -> dict:
         """The remotes asked what they have (git fetch: the remote-tracking branches move, nothing checked out does),
-        for every git working copy that has one, or the named ones; then everything is read again. In a thread:
+        for every git working copy that has one, or the ones at `paths` (a repository is told by where it is: two
+        of one name are not rare, a plugin's checkout and its clone); then everything is read again. In a thread:
         `snapshot` says how far it is (`fetching`: done, total, the ones that could not be asked). Asked for by the
         user on the page, never by itself."""
-        wanted = {str(n) for n in names} if names else None
+        wanted = {str(Path(p)) for p in paths} if paths else None
         with self._lock:
             if self._fetching is not None and not self._fetching.get("ended"):
                 return {"started": False, "why": "the remotes are being asked already"}
@@ -478,7 +479,7 @@ class Codebase:
     def _fetch_all(self, wanted: set | None) -> None:
         errors: list[dict] = []
         try:
-            tops = [top for top, kind, _ in self.find() if kind == "git" and (wanted is None or top.name in wanted)]
+            tops = [top for top, kind, _ in self.find() if kind == "git" and (wanted is None or str(top) in wanted)]
             with self._lock:
                 self._fetching["total"] = len(tops)
             for top in tops:
