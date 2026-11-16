@@ -101,18 +101,28 @@ def run_lock_path(db_path: Path, feed: str | None = None) -> Path:
     return db_path.with_suffix(".lock") if feed is None else db_path.with_name(f"{db_path.stem}-fetch-{feed}.lock")
 
 
-def run_holders(db_path: Path) -> dict[str | None, int]:
-    """The runs going now: {feed: the id of the process fetching it}, None for the whole database's
-    lock (every feed is busy while it is held)."""
-    out: dict[str | None, int] = {}
-    whole = holder(run_lock_path(db_path))
-    if whole is not None:
+def run_lock_files(db_path: Path) -> dict[str | None, Path]:
+    """The run locks that exist beside a database, held or left behind: {feed: its file}, None for the
+    whole database's."""
+    out: dict[str | None, Path] = {}
+    whole = run_lock_path(db_path)
+    if whole.exists():
         out[None] = whole
     prefix = f"{db_path.stem}-fetch-"
-    for path in db_path.parent.glob(f"{prefix}*.lock"):
+    for path in sorted(db_path.parent.glob(f"{prefix}*.lock")):
+        out[path.name[len(prefix):-len(".lock")]] = path
+    return out
+
+
+def run_holders(db_path: Path) -> dict[str | None, int]:
+    """The runs going now by their lock files: {feed: the id of the process fetching it}, None for the
+    whole database's lock (every feed is busy while it is held). A lock file names a process of this
+    system: the runs of every system on the database are claims.feed_runs's to say."""
+    out: dict[str | None, int] = {}
+    for feed, path in run_lock_files(db_path).items():
         pid = holder(path)
         if pid is not None:
-            out[path.name[len(prefix):-len(".lock")]] = pid
+            out[feed] = pid
     return out
 
 

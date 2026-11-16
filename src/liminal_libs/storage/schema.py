@@ -19,6 +19,28 @@ CREATE TABLE IF NOT EXISTS {name} (
     PRIMARY KEY (source, ticker, timespan, origin, start_ms)
 )"""
 
+# Who is working on what (claims.py, 1.56.0): one row per holder of a key; taken in one write transaction.
+CLAIMS = """
+CREATE TABLE IF NOT EXISTS claims (       -- who is working on what (claims.py)
+    key           TEXT NOT NULL,          -- feed:massive, symbol:stock:AAPL, history, post, publications, live:massive
+    instance      TEXT NOT NULL,          -- the installation holding it: windows::NEPTUNE, linux::Ubuntu
+    pid           INTEGER NOT NULL,       -- its process there
+    started       INTEGER NOT NULL DEFAULT 0,  -- that process's start (proc.started): an id given to another is not it
+    token         INTEGER NOT NULL,       -- one higher at every take of the key
+    taken_at      REAL NOT NULL,          -- unix seconds, the database's clock
+    beat_at       REAL NOT NULL,          -- its last heartbeat
+    challenged_at REAL,                   -- when another instance found it silent and asked
+    challenged_by TEXT,
+    what          TEXT NOT NULL DEFAULT '',  -- in words, for the page
+    shared        INTEGER NOT NULL DEFAULT 0,  -- 1: other processes of its instance asking shared hold it too (a symbol)
+    PRIMARY KEY (key, instance, pid)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS claim_tokens ( -- the last token given for a key: it outlives the claim
+    key   TEXT PRIMARY KEY,
+    token INTEGER NOT NULL
+) WITHOUT ROWID;
+"""
+
 SCHEMA = """
 -- SIP trade conditions and which bar fields each may update (consolidated rules), from the
 -- source's reference data: bars built from ticks follow the same rules as the feeds' own bars.
@@ -389,9 +411,14 @@ CREATE TABLE IF NOT EXISTS evaluations (  -- the AI assistants' answers to argum
 CREATE INDEX IF NOT EXISTS evaluations_by_assistant ON evaluations (assistant, at);
 CREATE INDEX IF NOT EXISTS evaluations_by_argument ON evaluations (argument_id);
 """
+SCHEMA += CLAIMS
 
 # Columns added after the first release: (table, column, type). Applied to older databases on open.
 MIGRATIONS = [
+    # Which installation took a request or a queued job (claims.instance, 1.56.0): one of two on a database
+    # resets and takes back only its own.
+    ("fetch_requests", "instance", "TEXT"),
+    ("fetch_queue", "instance", "TEXT"),
     ("coverage", "origin", "TEXT NOT NULL DEFAULT 'download'"),
     # A closed feed's symbol: everything it should hold is in; it is not asked again.
     ("watchlist", "closed_at", "TEXT"),
