@@ -551,6 +551,12 @@ def discover_everything() -> tuple[dict[str, FeedPlugin], dict[str, PublisherPlu
             files.update({d.provider: p.name for d in p.declared})
         elif isinstance(p, (AssistantPlugin, MachinePlugin)):
             pass  # an assistant or a machine has no feeds, datasets or live feeds to clash
+        elif not isinstance(p, FeedPlugin):
+            # a kind this registry does not file (a bare IntegratorPlugin, a kind a newer library adds): left out and
+            # said so (1.53.1). Read as a provider it had no `live`, and that error ended discovery for every plugin
+            errors.append((p.origin, f"plugin {p.name!r}: a kind of plugin this version does not know "
+                                     f"({type(p).__name__})"))
+            continue
         else:
             # a live feed's name is its own provider's, or a name no other provider has
             clash = next((x.name for x in p.live if lives.get(x.name, p.name) != p.name

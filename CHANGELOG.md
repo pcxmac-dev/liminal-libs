@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.53.1 (2026-11-15)
+
+What running every suite on Linux found (the user: "check for bugs in the linux environment"), the suite being cloned
+into WSL's Ubuntu. Nothing changes on Windows.
+- **A socket file left behind no longer stops a host.** A host that ended without closing its socket (killed, a crash)
+  left the file, the next host's bind failed on it, and that read as "another host answers": no fetcher came up until
+  the file was removed by hand. `host.py` now removes a socket nothing listens on before binding, under a lock so two
+  hosts starting at once cannot take each other's. A live host's socket is left alone.
+- **A host started off Windows gets a session of its own** (`Host.start`): a terminal closing, or a Ctrl+C there, ended
+  the host with no chance to secure its data. On Windows it was already detached from its console.
+- **A database is named as its system compares paths** (`host._digest`): the case was folded everywhere, so on Linux
+  two databases whose paths differ only in case shared one host. Windows' names are as they were.
+- **A unit file's words are written as systemd reads them**: new `systemd.py` (`word`, `command`, `assignment`). The
+  integrator's unit wrote its paths bare, so a data folder with a space in its name split `Environment=LIMINAL_DB=` in
+  two (liminal-integrator 1.9.1 uses it).
+- **A plugin of a kind the registry does not file is left out and said so**, where it used to end discovery for every
+  plugin: a bare `IntegratorPlugin` was read as a provider and had no `live`.
+
 ## 1.53.0 (2026-11-15)
 
 A linked app is reached at its own address (the user, 2026-11-14: "linking vs including the objects, is so that parts

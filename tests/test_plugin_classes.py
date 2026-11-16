@@ -359,3 +359,16 @@ def test_a_process_loads_every_plugin_found_the_ones_named_or_none(installed, mo
     registry.reload()
     assert registry.selection().names == ("zenith", "acme-news") and set(registry.providers()) == {"acme", "acme-fx", "zenith"}
     assert registry.selection().left_out == () and registry.Selection.parse(" All ").everything
+
+
+def test_a_plugin_of_a_kind_the_registry_does_not_file_is_left_out_and_said(installed):
+    """1.53.1: a bare IntegratorPlugin (or a kind a newer library adds) was read as a provider, had no `live`, and
+    that AttributeError ended discovery for every plugin."""
+    from liminal_libs.sources.registry import IntegratorPlugin
+
+    class Odd(IntegratorPlugin):
+        name, title, about = "odd", "An odd kind", "neither a feed nor a publisher"
+
+    found = installed(Odd(), AcmeFeed(), AcmeNews())
+    assert "acme" in found and "odd" not in found and "acme-news" in registry.publishers()
+    assert [why for _, why in registry.errors()] == ["plugin 'odd': a kind of plugin this version does not know (Odd)"]

@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from multiprocessing.connection import AuthenticationError, Client, Listener
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from . import config
 from .proc import pid_alive
@@ -69,7 +71,10 @@ def key() -> bytes:
 
 
 def _digest(db_path: Path) -> str:
-    return hashlib.sha1(str(Path(db_path).resolve()).lower().encode("utf-8")).hexdigest()[:10]
+    """What names a database in a pipe's or a socket's name: its path as this system compares paths (1.53.1: the
+    case folded on Windows alone, as before there; it was folded everywhere, so on Linux two databases whose paths
+    differ only in case shared one host)."""
+    return hashlib.sha1(os.path.normcase(str(Path(db_path).resolve())).encode("utf-8")).hexdigest()[:10]
 
 
 def address(name: str, db_path: Path) -> str:
@@ -81,6 +86,50 @@ def address(name: str, db_path: Path) -> str:
 
 def family() -> str:
     return "AF_PIPE" if sys.platform == "win32" else "AF_UNIX"
+
+
+def _clear_stale(where: str) -> bool:
+    """A socket file left by a host that ended without closing it (killed, a crash, the power): nothing listens on
+    it, yet the next host's bind fails on it ("address already in use"), which read as another host answering, so no
+    host came up until the file was removed by hand (1.53.1). Removed when a connection to it is refused; left when
+    something answers (a live host: the bind then fails, as it should) or when that cannot be told. A pipe on Windows
+    goes with its process: nothing to clear. Returns whether a file was removed."""
+    if sys.platform == "win32" or not os.path.exists(where):
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.0)
+        probe.connect(where)
+    except (ConnectionRefusedError, FileNotFoundError):
+        try:
+            os.unlink(where)
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False  # busy, or not this user's to judge: left
+    finally:
+        probe.close()
+    return False
+
+
+@contextmanager
+def _binding(where: str) -> Iterator[None]:
+    """One process at a time clears a stale socket and binds it: two hosts starting at once would each find it
+    stale, and the second's removal would take the first's new socket, leaving two hosts for one name. A lock file
+    beside the socket, held for the moment of the bind (flock: the folder is this user's, on this machine's disk)."""
+    if sys.platform == "win32":
+        yield
+        return
+    import fcntl
+
+    Path(where).parent.mkdir(parents=True, exist_ok=True)
+    with open(where + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def idle_seconds() -> float:
@@ -112,13 +161,16 @@ class Host:
     @classmethod
     def start(cls, name: str, db_path: Path) -> None:
         """Start the host `name` as a process of its own: no window, outliving this process, on this
-        database (LIMINAL_DB in its environment). The hosts' code is the app's (APP_MODULE)."""
+        database (LIMINAL_DB in its environment). The hosts' code is the app's (APP_MODULE). Off Windows it gets a
+        session of its own (1.53.1): left in its starter's, a terminal closing or a Ctrl+C there ended the host with
+        no chance to secure its data, where on Windows it is detached from its console."""
         exe = Path(sys.executable)
         pythonw = exe.with_name("pythonw.exe") if os.name == "nt" and exe.with_name("pythonw.exe").exists() else exe
         flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NEW_GROUP | NO_WINDOW
         env = {**os.environ, "LIMINAL_DB": str(db_path)}
         subprocess.Popen([str(pythonw), "-m", APP_MODULE, "host", name], creationflags=flags, close_fds=True, env=env,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=os.name != "nt")
 
     def clients(self) -> list[int]:
         with self._lock:
@@ -142,8 +194,12 @@ class Host:
         returns); then `secure()` (the host's flush and close), listening no more. Returns why it
         stopped. A host already listening for this name: nothing runs here."""
         self.handle = handle
+        where = address(self.name, self.db_path)
         try:
-            self._listener = Listener(address(self.name, self.db_path), family(), authkey=key())
+            with _binding(where):
+                if _clear_stale(where):
+                    self.log(f"host {self.name}: a socket file left by a host that ended without closing it was removed")
+                self._listener = Listener(where, family(), authkey=key())
         except OSError as e:
             self.reason = f"another host answers for {self.name} ({e})"
             self.log(f"host {self.name}: {self.reason}")
