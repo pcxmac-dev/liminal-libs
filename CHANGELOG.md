@@ -32,8 +32,9 @@ or a share, so two writers, one on each side, would corrupt a file. On a system 
   sealed. From another system that would add a column under the software running where the file is, which writes its
   rows by position. So there the layout part of an open runs query-only: a file that is up to date opens untouched, one
   that is behind is said to be (what it lacks, and that its own system brings it up to date), and no database is made
-  on another system's drive. A process that reads only opens such a file read-only as well as sealed. This covers the
-  main file, the feeds' files and their ticks, the datasets' files, the agencies' file and the claims' tables.
+  on another system's drive. A process that reads only opens such a file read-only as well as sealed, and a file it
+  attaches (a feed's ticks) is opened the same way. This covers the main file, the feeds' files and their ticks, the
+  datasets' files, the agencies' file and the claims' tables.
 - **One clock.** Every answer of the helper carries its clock. What a linked process stamps into a file is stamped by
   the clock of the system that owns it (`storage.common.utc_now`), and `link.clock_off(path)` says in words when the
   two clocks are more than a second apart, so nothing is fetched then. (On the PC this was built on, Windows' clock

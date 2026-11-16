@@ -187,6 +187,7 @@ class _Worker(threading.Thread):
         self.cursors: dict[int, sqlite3.Cursor] = {}
         self._ids = itertools.count(1)
         self.attach_checked = False  # the statement being run is an ATTACH whose file this worker has checked
+        self.mode = ""  # "ro": opened for reading alone; "rw": never made (another system's process asked); "": as sqlite3 opens
         self.traced: list | None = None  # the statements SQLite ran since the last answer, while they are asked for
         self.opened = threading.Event()
         self.error: BaseException | None = None
@@ -220,6 +221,7 @@ class _Worker(threading.Thread):
     def _open(self) -> sqlite3.Connection:
         kw = dict(self.kw)
         read_only, must_exist = kw.pop("read_only", False), kw.pop("must_exist", False)
+        self.mode = "ro" if read_only else "rw" if must_exist else ""  # how a file it attaches is opened too
         args: dict = {"timeout": float(kw.pop("timeout", 5.0)), "check_same_thread": False}
         if "isolation_level" in kw:
             args["isolation_level"] = kw.pop("isolation_level")
@@ -241,20 +243,33 @@ class _Worker(threading.Thread):
             return sqlite3.SQLITE_OK
         if arg1 is None:
             return sqlite3.SQLITE_OK if self.attach_checked else sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK if arg1 in ("", ":memory:") or self.server.inside(str(arg1)) else sqlite3.SQLITE_DENY
+        if arg1 in ("", ":memory:"):
+            return sqlite3.SQLITE_OK
+        if self.mode:  # a file named in the statement would be opened for writing, and made: only the parameter's way
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK if self.server.inside(str(arg1)) else sqlite3.SQLITE_DENY
 
-    def _attach(self, sql: str, params) -> bool:
-        """Whether a statement is an ATTACH of the one file given as its parameter (`ATTACH DATABASE ? AS name`, as
-        the storage writes it), that file checked against the helper's folders. Any other ATTACH is SQLite's to ask
+    def _attach(self, sql: str, params):
+        """The parameters of an ATTACH of the one file given as its parameter (`ATTACH DATABASE ? AS name`, as the
+        storage writes it), that file checked against the helper's folders; None for any other statement. On a
+        connection that reads only, or that makes no file, the attached file is opened the same way (as plain
+        ATTACH it would be opened for writing, and made when it is not there). Any other ATTACH is SQLite's to ask
         about: a file named in the statement is checked then, a computed one refused."""
         if not _ATTACH_ONE.match(sql) or isinstance(params, dict) or len(params) != 1:
-            return False
+            return None
         p = params[0]
         if not isinstance(p, str):
-            return False
-        if p not in ("", ":memory:") and not self.server.inside(p):
+            return None
+        if p in ("", ":memory:"):
+            return params
+        if not self.server.inside(p):
             raise mounts.NotHere(f"{p}: not in the folders this helper opens, so not attached")
-        return True
+        if not self.mode:
+            return params
+        if not Path(p).is_file():
+            raise mounts.NotHere(f"{p}: there is no such database, and one is made by the system that holds the files "
+                                 "(the suite started there), not for another through the link")
+        return (f"{Path(p).resolve().as_uri()}?mode={self.mode}",)
 
     def _state(self) -> tuple:
         """What goes back with every answer: this system's clock, whether a transaction is open, the changes made so
@@ -275,9 +290,10 @@ class _Worker(threading.Thread):
         if op == "exec":
             sql, params = args
             _no_new_files(sql)
-            self.attach_checked = self._attach(sql, params)
+            checked = self._attach(sql, params)
+            self.attach_checked = checked is not None
             try:
-                cur = conn.execute(sql, params)
+                cur = conn.execute(sql, params if checked is None else checked)
             finally:
                 self.attach_checked = False
             if cur.description is None:

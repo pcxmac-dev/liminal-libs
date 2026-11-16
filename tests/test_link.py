@@ -338,6 +338,40 @@ def test_the_helper_opens_nothing_outside_its_folders(linked, tmp_path):
     conn.close()
 
 
+def test_a_file_attached_to_a_connection_that_reads_only_is_opened_for_reading_too(linked):
+    """A feed's ticks are attached to its bars' connection. As plain ATTACH the file would be opened for writing,
+    and made when it is not there, whatever the connection it is attached to was opened for."""
+    link, data = linked
+    for name in ("bars.db", "ticks.db"):
+        raw = sqlite3.connect(str(data / name))
+        raw.execute("CREATE TABLE t (n)")
+        raw.commit()
+        raw.close()
+    ro = link.open(data / "bars.db", read_only=True)
+    ro.execute("ATTACH DATABASE ? AS ticks", (str(data / "ticks.db"),))
+    assert ro.execute("SELECT COUNT(*) FROM ticks.t").fetchone() == (0,)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        ro.execute("INSERT INTO ticks.t VALUES (1)")
+    with pytest.raises(mounts.NotHere, match="no such database"):
+        ro.execute("ATTACH DATABASE ? AS more", (str(data / "never-made.db"),))
+    literal = str(data / "ticks.db").replace("'", "''")
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        ro.execute(f"ATTACH DATABASE '{literal}' AS named")  # named in the statement it would be opened for writing
+    ro.execute("ATTACH DATABASE ? AS scratch", (":memory:",))  # this process's own: as always
+    ro.close()
+    rw = link.open(data / "bars.db", must_exist=True)  # another system's process that may write rows: nothing is made
+    rw.execute("ATTACH DATABASE ? AS ticks", (str(data / "ticks.db"),))
+    rw.execute("INSERT INTO ticks.t VALUES (1)")
+    rw.commit()
+    assert rw.execute("SELECT COUNT(*) FROM ticks.t").fetchone() == (1,)
+    with pytest.raises(mounts.NotHere, match="no such database"):
+        rw.execute("ATTACH DATABASE ? AS more", (str(data / "never-made.db"),))
+    rw.close()
+    with pytest.raises(mounts.NotHere, match="no such database"):
+        link.open(data / "never-made.db", must_exist=True)
+    assert not (data / "never-made.db").exists()
+
+
 def test_nothing_but_plain_data_is_rebuilt_from_the_pipe():
     for bad in (datetime(2026, 11, 15), time.time, {"k": sqlite3.OperationalError("x")}, [LinkError]):
         with pytest.raises(pickle.UnpicklingError, match="plain data only"):
