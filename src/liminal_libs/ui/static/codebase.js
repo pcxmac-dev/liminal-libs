@@ -71,9 +71,11 @@
     const counted = (languages || []).filter((l) => l.share !== null && l.share !== undefined);
     const own = counted.filter((l) => ORDER.includes(l.name) && l.share >= SLIVER);
     const rest = counted.filter((l) => !own.includes(l));
-    const other = rest.reduce((a, l) => a + l.share, 0);
+    // the rest's share from its bytes: each one's own share came rounded to a tenth, and a few zeros add up to "0"
+    const all = counted.reduce((a, l) => a + (l.bytes || 0), 0);
+    const other = all ? 100 * rest.reduce((a, l) => a + (l.bytes || 0), 0) / all : 0;
     const out = own.map((l) => ({ name: l.name, share: l.share, lines: l.lines, files: l.files, color: colorOf(l.name) }));
-    if (rest.length) {
+    if (rest.length && other > 0) {
       out.push({ name: 'Other', share: other, lines: rest.reduce((a, l) => a + l.lines, 0),
         files: rest.reduce((a, l) => a + l.files, 0), color: 'var(--muted)', of: rest.map((l) => l.name).join(', ') });
     }
