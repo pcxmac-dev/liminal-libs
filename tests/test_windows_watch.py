@@ -295,6 +295,162 @@ def test_an_unopenable_source_is_said_and_the_watch_stops_cleanly():
     assert _wait(lambda: not any(t.name == "npcap-etw-watch" and t.is_alive() for t in threading.enumerate()))
 
 
+# -- a source lost after it opened (1.60.0) ------------------------------------------------------------------
+
+class EndingCapture(FakeCapture):
+    """A stand-in capture with the real one's `running` and `error`: `end(why)` is its reading ending by itself
+    (an adapter removed, a read failing), as the real one's thread does."""
+
+    def __init__(self):
+        super().__init__()
+        self.running, self.error = False, ""
+
+    def start(self):
+        super().start()
+        self.running = True
+
+    def end(self, why=""):
+        self.error, self.running = why, False
+
+    def stop(self):
+        super().stop()
+        self.running = False
+
+
+class EndingEtw(FakeEtw):
+    """A stand-in ETW consumer with the real one's `running` and `error`: `end(why)` is the session ending under
+    it (stopped from outside, the consumer failing)."""
+
+    def __init__(self, providers):
+        super().__init__(providers)
+        self.running, self.error = False, ""
+
+    def start(self):
+        super().start()
+        self.running = True
+
+    def end(self, why=""):
+        self.error, self.running = why, False
+
+    def stop(self):
+        super().stop()
+        self.running = False
+
+
+def _make_ending(kinds):
+    refs: dict = {}
+    w = ww.NpcapEtwWatch(kinds, {"poll": 0.01, "tag": "t", "address": "10.0.0.2"},
+                         capture_factory=lambda: refs.setdefault("cap", EndingCapture()),
+                         etw_factory=lambda p: refs.setdefault("etw", EndingEtw(p)), timeout=5.0)
+    return w, refs
+
+
+def _no_watch_thread():
+    return _wait(lambda: not any(t.name == "npcap-etw-watch" and t.is_alive() for t in threading.enumerate()))
+
+
+def test_a_capture_lost_after_it_opened_is_said_and_the_watch_stops():
+    # the reviewers' finding: an adapter gone under a net watch left it live, its reads empty, as a quiet machine
+    for why, said in (("the adapter is gone", "the capture stopped: the adapter is gone"),
+                      ("", "the capture stopped: its reading of the adapter ended")):
+        w, refs = _make_ending({"net", "process"})
+        w.start()
+        assert _wait(lambda: "cap" in refs and refs["cap"].running and "etw" in refs)
+        refs["etw"].feed(_proc(1000, "C:/tools/curl.exe"))
+        assert _wait(lambda: w.read(0)[0] == 1)
+        refs["cap"].end(why)
+        assert _wait(lambda: w.stopped), "the watch stops itself"
+        assert _no_watch_thread()  # the pump ends after its own teardown: stop() sets the flag before it closes
+        assert w.error == said
+        assert refs["etw"].stopped and refs["cap"].stopped  # the other source is closed too
+        assert [e.pid for e in w.read(0)[1]] == [1000]  # what came before is still read
+
+
+def test_an_etw_session_lost_after_it_opened_is_said_and_the_watch_stops():
+    for why, said in (("the session was stopped from outside", "the ETW session ended: the session was stopped from "
+                                                                "outside"),
+                      ("", "the ETW session ended: its consumer stopped reading")):  # a consumer giving no reason
+        w, refs = _make_ending({"process", "file"})
+        w.start()
+        assert _wait(lambda: "etw" in refs and refs["etw"].running)
+        refs["etw"].end(why)
+        assert _wait(lambda: w.stopped)
+        assert _no_watch_thread()  # the pump ends after its own teardown
+        assert w.error == said
+        assert refs["etw"].stopped and "cap" not in refs  # no capture for a watch without net
+
+
+def test_a_capture_ending_under_a_watch_without_net_is_not_its_loss():
+    # only a net watch reads the capture; the others never open one, and a stand-in left about is not theirs
+    w, refs = _make_ending({"process"})
+    w.start()
+    assert _wait(lambda: "etw" in refs and refs["etw"].running)
+    w._capture = EndingCapture()  # a capture the watch does not read (never opened for process alone)
+    w._capture.end("not this watch's")
+    time.sleep(0.1)
+    assert not w.stopped and w.error == ""
+    w.stop()
+
+
+def test_a_watch_stopped_on_purpose_says_no_loss_though_its_sources_then_stop():
+    for _ in range(20):  # the pump may be anywhere in its loop when the stop lands: never said as a loss
+        w, refs = _make_ending({"net", "process"})
+        w.start()
+        assert _wait(lambda: "cap" in refs and refs["cap"].running and "etw" in refs)
+        w.stop()
+        assert w.stopped and w.error == "" and not refs["cap"].running and not refs["etw"].running
+    assert _no_watch_thread()
+
+
+def test_after_a_stop_its_closed_sources_are_no_loss():
+    # the guard itself, not left to a race the loop above may never hit: once a stop has begun, the sources it closed
+    # are never said as lost
+    w, refs = _make_ending({"net", "process"})
+    w.start()
+    assert _wait(lambda: "cap" in refs and refs["cap"].running and "etw" in refs)
+    w.stop()
+    assert not refs["cap"].running and not refs["etw"].running
+    assert w._source_lost() == "" and w.error == ""
+    assert _no_watch_thread()
+
+
+class StopLandsOnRead(EndingCapture):
+    """A source whose `running` is read just as a stop lands: the read sets the watch's stop flag (as stop() does,
+    before it closes anything), then answers False, as the source it closes would."""
+
+    def __init__(self, watch):
+        super().__init__()
+        self.watch = watch
+
+    @property
+    def running(self):
+        self.watch._stop.set()
+        return False
+
+    @running.setter
+    def running(self, value):
+        pass
+
+
+def test_a_stop_landing_while_the_sources_are_read_is_no_loss():
+    # _source_lost reads the sources first and the stop flag after (the 1.60.0 CHANGELOG's guarantee): a stop that
+    # lands between the two is seen, for the capture of a net watch and for the ETW session of any
+    for kinds, held in (({"net"}, "_capture"), ({"process"}, "_etw")):
+        w, _ = _make_ending(kinds)  # not started: the reads alone are asked
+        setattr(w, held, StopLandsOnRead(w))
+        assert w._source_lost() == "", kinds
+        assert w._stop.is_set()  # the stop did land during the read
+
+
+def test_a_stand_in_source_without_running_is_taken_as_running():
+    w, etw, cap = _make({"net", "process"})  # the plain stand-ins have no `running`
+    w.start()
+    assert _wait(lambda: etw["ref"] is not None and cap["ref"] is not None)
+    time.sleep(0.1)  # several polls
+    assert not w.stopped and w.error == "" and w._source_lost() == ""
+    w.stop()
+
+
 # -- available() ---------------------------------------------------------------------------------------------
 
 def test_available_reports_both_sources(monkeypatch):

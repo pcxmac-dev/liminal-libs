@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.60.0 (2026-11-16)
+
+What building the eBPF plugin found in the library's eBPF layer (plugin-platform-ebpf 0.1.0; the user, 2026-11-14:
+"we need an ebpf api plugin, that shows the difference between windows and linux capabilities as well as basic
+functionality"), and eBPF's mark.
+
+- **A net watch on Linux starts.** `ebpf/scripts/net.bt` probed `kprobe:udp_v6_sendmsg`, a name no kernel has (the
+  kernel's is `udpv6_sendmsg`, net/ipv6/udp.c), and bpftrace refuses a probe it cannot attach: every watch with net
+  ended at its start, in bpftrace's words. It probes `udpv6_sendmsg` now, and a test pins the scripts' kprobes to the
+  kernel's own functions.
+- **Test signing is read, not guessed.** Without an administrator `bcdedit /enum {current}` prints its refusal where
+  the entry goes and exits 1, and `WindowsRuntime.why_not_here` read that as test signing off. Test signing comes
+  first from this boot's own start options (the registry's `SystemStartOptions`, which any user may read, carries
+  `TESTSIGNING` while Windows runs in test-signing mode): what is in effect now, which is what decides whether a
+  test-signed driver loads. bcdedit only where that value cannot be read, and its words only when it answered (exit
+  0, the `{current}` entry printed). The facts gain `test_signing_source` ("boot options", "bcdedit" or "unknown") and
+  the words say where it was read; a read naming no source says nothing of test signing, and where Secure Boot alone
+  settles the verdict its head says so ("Secure Boot is on, which keeps test-signing mode off"). Where the registry
+  answers, bcdedit is not run at all. The key, the value and both patterns are named constants
+  (`BOOT_OPTIONS_KEY`, `BOOT_OPTIONS_VALUE`, `TESTSIGNING_OPTION`, `BCD_TESTSIGNING`), so the tests pin the script's
+  lines whole and try the patterns on what Windows gives. The comparison's points say the same: this boot's start
+  options need no administrator, bcdedit's setting does.
+- **A Windows watch says a source lost under it.** `NpcapEtwWatch` read on after Npcap's capture ended (an adapter
+  removed, a read failing) or its ETW session ended (stopped from outside, the consumer failing), and answered reads
+  with nothing new, as a quiet machine would. It now says which in `error`, in the source's own words, and stops, as
+  `BpftraceWatch` does when bpftrace ends, so its caller can start another. `EtwConsumer.running` (the session up and
+  its consumer still reading) and `EtwConsumer.error` (why it ended while still wanted: stopped from outside, or the
+  consumer failing, by ProcessTrace's own status or an exception) are new. A stop of the watch's own is never said as
+  a loss: the sources are read before the stop flag, which a stop sets before it closes anything, and tests pin both
+  the guard and that order.
+- `icons.js`: `ebpf`, eBPF's bee (its makers' mark), for the eBPF plugin.
+
 ## 1.59.0 (2026-11-16)
 
 Codebase: the repositories an app is made of, the code in them, and how much of it is which language (the user: "i

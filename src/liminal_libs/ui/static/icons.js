@@ -177,6 +177,15 @@
     // Google Cloud's cloud and the hexagon at its heart
     googlecloud: '<path stroke-width="1.6" d="M7.6 19h9.6a4.4 4.4 0 0 0 .7-8.74A6 6 0 0 0 6.3 9.7 4.7 4.7 0 0 0 7.6 19z"/>'
       + '<path stroke-width="1.3" d="M12 11.2l2 1.15v2.3l-2 1.15-2-1.15v-2.3z"/>',
+    // eBPF's bee, its makers' mark (the eBPF plugin, 1.60.0): the head with its eye and feelers, the striped body
+    // and its sting, two wings swept back
+    ebpf: '<g transform="translate(0 1.2)"><g stroke-width="1.5"><ellipse cx="14.6" cy="13.6" rx="6.3" ry="4.4"/>'
+      + '<circle cx="6.3" cy="13.1" r="2.5"/><path d="M12.9 9.45c1 2.75 1 5.55 0 8.3M16.3 9.55c.9 2.65.9 5.35 0 8"/>'
+      + '<path d="M20.85 12.95 22.8 13.7l-1.95.75"/></g><g stroke-width="1.3">'
+      + '<ellipse cx="12.3" cy="6.2" rx="2.1" ry="3.5" transform="rotate(22 12.3 6.2)"/>'
+      + '<ellipse cx="16" cy="6.9" rx="1.8" ry="2.9" transform="rotate(30 16 6.9)"/>'
+      + '<path d="M5.3 10.9C4.9 8.9 3.9 7.8 2.6 7.4M7.1 10.8c.1-1.9-.4-3.4-1.4-4.5"/></g>'
+      + '<circle cx="5.4" cy="12.6" r=".75" fill="currentColor" stroke="none"/></g>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 

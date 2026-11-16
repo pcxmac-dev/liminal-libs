@@ -383,16 +383,42 @@ class NpcapEtwWatch(Watch):
 
     def _pump(self) -> None:
         """Drain ETW and the queued packets into events until the watch stops, then once more so the last events
-        are not lost, and close the open flows. One thread; it exits the moment the watch is stopped from anywhere."""
+        are not lost, and close the open flows. One thread; it exits the moment the watch is stopped from anywhere.
+        A source that ends under the watch while it is still wanted (`_source_lost`) is said in `error` and stops the
+        watch, as BpftraceWatch does when bpftrace ends, so nothing reads a source that is gone as a quiet machine."""
         try:
             while not self._stop.is_set():
                 self._pump_once()
+                lost = self._source_lost()
+                if lost:
+                    if not self.error:
+                        self.error = lost
+                    self.stop()
+                    break
                 self._stop.wait(self._poll)
             self._pump_once()
             if "net" in self.kinds:
                 self._sweep_flows(final=True)
         except Exception:  # noqa: BLE001 - the pump never takes the process down
             pass
+
+    def _source_lost(self) -> str:
+        """What ended under the watch while it was still wanted, in words, else "": Npcap's reading of the adapter
+        (gone, or failing: the capture's own words) when net is watched, or the ETW session (stopped from outside, or
+        its consumer failed: the consumer's own words). The sources are read first and the stop flag after, so a
+        teardown under way (stop() sets the flag before it closes anything) is never taken for a loss. A stand-in
+        source without `running` is taken as running."""
+        words = ""
+        capture, consumer = self._capture, self._etw
+        if capture is not None and "net" in self.kinds and getattr(capture, "running", True) is False:
+            why = str(getattr(capture, "error", "") or "")
+            words = "the capture stopped: " + (why or "its reading of the adapter ended")
+        elif consumer is not None and getattr(consumer, "running", True) is False:
+            why = str(getattr(consumer, "error", "") or "")
+            words = "the ETW session ended: " + (why or "its consumer stopped reading")
+        if self._stop.is_set() or self._torn:
+            return ""
+        return words
 
     def _pump_once(self) -> None:
         if self._etw is not None:

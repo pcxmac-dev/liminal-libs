@@ -56,9 +56,11 @@ tracepoint:sock:inet_sock_set_state
 // zero here, which is fine (the peer is unknown at this hook). skc_dport is in network order, so it is byte-swapped.
 // A socket and peer is said the first time it sends in a minute (the seen map is cleared every 60 s), at most 50
 // lines a second (near enough, as in file.bt). The rest are counted and said once a second, as one line:
-// {"evt":"net","act":"skipped","proto":"udp","count":N}. udp_v6_sendmsg hands an IPv4 peer of an AF_INET6 socket
+// {"evt":"net","act":"skipped","proto":"udp","count":N}. udpv6_sendmsg hands an IPv4 peer of an AF_INET6 socket
 // on to udp_sendmsg, so udp_sendmsg speaks only for AF_INET sockets (the v6 probe has already said that one). The
-// seen key is the socket, the peer's address (its last four bytes for IPv6) and its port, all as uint64.
+// seen key is the socket, the peer's address (its last four bytes for IPv6) and its port, all as uint64. The two
+// probes name the kernel's own functions (net/ipv4/udp.c udp_sendmsg, net/ipv6/udp.c udpv6_sendmsg): a kprobe on a
+// name the kernel lacks keeps bpftrace from attaching, and the whole watch ends at its start.
 
 kprobe:udp_sendmsg
 {
@@ -80,7 +82,7 @@ kprobe:udp_sendmsg
     }
 }
 
-kprobe:udp_v6_sendmsg
+kprobe:udpv6_sendmsg
 {
     $sk = (struct sock *)arg0;
     $dport = $sk->__sk_common.skc_dport;

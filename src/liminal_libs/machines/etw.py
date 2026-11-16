@@ -53,12 +53,18 @@ TRACE_LEVEL_VERBOSE = 5
 INVALID_PROCESSTRACE_HANDLE = (1 << 64) - 1
 ERROR_SUCCESS = 0
 ERROR_ACCESS_DENIED = 5
+ERROR_INVALID_HANDLE = 6
 ERROR_INVALID_PARAMETER = 87
 ERROR_INSUFFICIENT_BUFFER = 122
 ERROR_ALREADY_EXISTS = 183
 # ERROR_MORE_DATA: from a ControlTraceW STOP, the session is stopped and only its properties did not fit; from
 # QueryAllTracesW, more sessions run than there are slots, and the slots given are still filled.
 ERROR_MORE_DATA = 234
+ERROR_NOACCESS = 998
+ERROR_WMI_INSTANCE_NOT_FOUND = 4201
+# ProcessTrace's failure statuses by name, for a consumer's words when it ends by itself
+STATUS_NAMES = {ERROR_ACCESS_DENIED: "ERROR_ACCESS_DENIED", ERROR_INVALID_HANDLE: "ERROR_INVALID_HANDLE",
+                ERROR_INVALID_PARAMETER: "ERROR_INVALID_PARAMETER", ERROR_NOACCESS: "ERROR_NOACCESS"}
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYSTEM_PROCESS_INFORMATION = 5            # NtQuerySystemInformation's class for the system's process list
 STATUS_INFO_LENGTH_MISMATCH = 0xC0000004  # the process list did not fit the buffer
@@ -842,6 +848,16 @@ def reclaim_stale_sessions(advapi32=None, *, pid_alive=None, ctime_of=None) -> l
     return stopped
 
 
+def _ended_words(status) -> str:
+    """Why ProcessTrace returned by itself while its session was still wanted. ERROR_SUCCESS (or no status, from a
+    stand-in) and ERROR_WMI_INSTANCE_NOT_FOUND are the session stopped from outside; any other status is the consumer
+    failing, said by its number and, where known, its name."""
+    if status is None or status in (ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND):
+        return "the session was stopped from outside"
+    name = STATUS_NAMES.get(status) if isinstance(status, int) else None
+    return f"its consumer failed: ProcessTrace returned {status}" + (f" ({name})" if name else "")
+
+
 class EtwConsumer:
     """A private real-time ETW session over `providers` (keys of PROVIDERS), consumed on one daemon thread.
     `advapi32` and `tdh` stand in for the function tables in tests; otherwise they are built on start()
@@ -879,6 +895,7 @@ class EtwConsumer:
         self._lock = threading.Lock()          # guards the record queue (the hot callback path)
         self._life_lock = threading.Lock()     # guards start()/stop(): the session is brought up or torn down once
         self.drops = 0
+        self.error = ""  # why the consumer ended while the session was still wanted ("" otherwise)
         self._control = None
         self._trace = None
         self._thread: threading.Thread | None = None
@@ -891,6 +908,14 @@ class EtwConsumer:
     @property
     def _stopped(self) -> bool:
         return self._state == "stopped"
+
+    @property
+    def running(self) -> bool:
+        """Whether the session is up and its consumer still reading it: False before start() and after stop(), and
+        False once ProcessTrace has returned by itself (the session stopped from outside, or the consumer failed:
+        `error` then says which), so a caller can tell a quiet machine from a session that is gone."""
+        thread = self._thread
+        return self._state == "started" and thread is not None and thread.is_alive()
 
     def start(self) -> None:
         """Start the session, enable each provider, open the trace and consume it on a daemon thread, all under the
@@ -936,10 +961,18 @@ class EtwConsumer:
             self._thread.start()
 
     def _run(self) -> None:
+        """Consume the trace until ProcessTrace returns: at stop(), or by itself when the session ends from outside
+        (an administrator's `logman stop`, another program stopping it) or the consumer fails (an exception, or a
+        failure status: `_ended_words`). Only the last two are said in `error`: stop() marks the state stopped before
+        it stops the session."""
         try:
-            self._advapi32.process_trace(self._trace)
-        except Exception:  # noqa: BLE001 - the trace handle went away when the session stopped
-            pass
+            status = self._advapi32.process_trace(self._trace)
+        except Exception as e:  # noqa: BLE001 - the trace handle went away when the session stopped
+            if self._state == "started":
+                self.error = f"its consumer failed: {type(e).__name__}: {e}"
+        else:
+            if self._state == "started":
+                self.error = _ended_words(status)
         finally:
             try:
                 self._advapi32.close_trace(self._trace)

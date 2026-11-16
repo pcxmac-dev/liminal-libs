@@ -16,6 +16,8 @@ from ..machines.windows import PowerShell
 from .runtime import Runtime
 
 SERVICES = ("eBPFCore", "NetEbpfExt", "eBPFSvc")
+# Where test signing was read, as FACTS_READ names it, and how the words say it.
+SIGNING_SOURCES = {"boot options": "this boot's start options", "bcdedit": "bcdedit's entry for this Windows"}
 TEST_SIGNED = ("every eBPF for Windows build is test-signed pre-release, so it needs test-signing mode "
                "(Secure Boot off, a Test Mode desktop) before the core driver will start")
 
@@ -37,10 +39,25 @@ try {
 [pscustomobject]@{ Services = $svc; Version = $ver }
 """
 
+# This boot's start options: where Windows keeps them (any user may read the value), the option test-signing mode adds
+# to them (as a whole word, matched as PowerShell's -match does, ignoring case: never NOTESTSIGNING), and bcdedit's
+# line for the setting in its {current} entry.
+BOOT_OPTIONS_KEY = r"HKLM:\SYSTEM\CurrentControlSet\Control"
+BOOT_OPTIONS_VALUE = "SystemStartOptions"
+TESTSIGNING_OPTION = r"(^|\s)TESTSIGNING(\s|$)"
+BCD_TESTSIGNING = r"(?m)^\s*testsigning\s+Yes\b"
+
 # Secure Boot, memory integrity (HVCI) and test signing, each read on its own so one failing does not lose the rest.
-FACTS_READ = r"""
+# Test signing is read first from this boot's own start options (the registry's SystemStartOptions, which carries
+# TESTSIGNING while Windows runs in test-signing mode): what is in effect now, which is what decides whether a
+# test-signed driver loads. bcdedit's {current} entry only where that value cannot be read, and only when bcdedit
+# answered: without an administrator it prints an error where the entry would be (its words differ from one build to
+# another) and exits 1, so only its exit code and the entry are trusted (1.60.0: its error was read as the entry,
+# and test signing was said off unread). The names and patterns above are put in where @KEY@, @VALUE@, @OPTION@ and
+# @BCD@ stand.
+FACTS_READ = (r"""
 $out = [ordered]@{ SecureBoot = $null; SecureBootSource = 'unknown'; Hvci = $null
-    TestSigning = $null; TestSigningReadable = $false }
+    TestSigning = $null; TestSigningReadable = $false; TestSigningSource = 'unknown' }
 try { $out.SecureBoot = [bool](Confirm-SecureBootUEFI); $out.SecureBootSource = 'firmware' }
 catch {
     try {
@@ -53,11 +70,25 @@ try {
     $out.Hvci = [bool](@([int[]]$dg.SecurityServicesRunning) -contains 2)
 } catch { $out.Hvci = $null }
 try {
-    $bcd = cmd /c 'bcdedit /enum {current} 2>nul' | Out-String
-    if ($bcd -and $bcd.Trim()) { $out.TestSigningReadable = $true; $out.TestSigning = [bool]($bcd -match 'testsigning\s+Yes') }
+    $control = Get-ItemProperty -Path '@KEY@' -Name @VALUE@ -ErrorAction Stop
+    $opts = $control.@VALUE@
+    if ($null -ne $opts) {
+        $out.TestSigning = [bool]([string]$opts -match '@OPTION@')
+        $out.TestSigningReadable = $true; $out.TestSigningSource = 'boot options'
+    }
 } catch { }
+if (-not $out.TestSigningReadable) {
+    try {
+        $bcd = cmd /c 'bcdedit /enum {current} 2>nul' | Out-String
+        if ($LASTEXITCODE -eq 0 -and $bcd -match '\{current\}') {
+            $out.TestSigning = [bool]($bcd -match '@BCD@')
+            $out.TestSigningReadable = $true; $out.TestSigningSource = 'bcdedit'
+        }
+    } catch { }
+}
 [pscustomobject]$out
-"""
+""".replace("@KEY@", BOOT_OPTIONS_KEY).replace("@VALUE@", BOOT_OPTIONS_VALUE)
+              .replace("@OPTION@", TESTSIGNING_OPTION).replace("@BCD@", BCD_TESTSIGNING))
 
 
 class WindowsRuntime(Runtime):
@@ -120,9 +151,12 @@ class WindowsRuntime(Runtime):
     def why_not_here(self) -> dict:
         """Secure Boot, memory integrity and test signing on this machine, and the words for the page. Read-only:
         Confirm-SecureBootUEFI when it answers unelevated, else the registry; memory integrity from the device
-        guard information; test signing from bcdedit when it is readable. The test-signed caveat is always said."""
+        guard information; test signing from this boot's start options (`test_signing_source` "boot options"),
+        else from bcdedit when it answered ("bcdedit"), else not read ("unknown", `test_signing_readable` False).
+        The test-signed caveat is always said."""
         facts: dict = {"secure_boot": None, "secure_boot_source": "unknown", "hvci": None,
-                       "test_signing": None, "test_signing_readable": False, "blocked": None, "words": ""}
+                       "test_signing": None, "test_signing_readable": False, "test_signing_source": "unknown",
+                       "blocked": None, "words": ""}
         try:
             read = self.ps.json(FACTS_READ)
         except CommandError as e:
@@ -133,8 +167,12 @@ class WindowsRuntime(Runtime):
             facts["secure_boot"] = _bool(data.get("SecureBoot"))
             facts["secure_boot_source"] = str(data.get("SecureBootSource") or "unknown")
             facts["hvci"] = _bool(data.get("Hvci"))
-            facts["test_signing"] = _bool(data.get("TestSigning"))
-            facts["test_signing_readable"] = bool(data.get("TestSigningReadable"))
+            readable = bool(data.get("TestSigningReadable"))
+            source = str(data.get("TestSigningSource") or "unknown")
+            value = _bool(data.get("TestSigning"))
+            if readable and source in SIGNING_SOURCES and value is not None:  # a read gives a source and a value
+                facts["test_signing"] = value
+                facts["test_signing_readable"], facts["test_signing_source"] = True, source
         facts["blocked"], facts["words"] = self._verdict(facts)
         return facts
 
@@ -150,13 +188,16 @@ class WindowsRuntime(Runtime):
         elif hvci is False:
             parts.append("memory integrity is off")
         if facts["test_signing_readable"]:
-            parts.append("test signing is " + ("on" if ts else "off"))
+            where = SIGNING_SOURCES[facts["test_signing_source"]]
+            parts.append(f"test signing is {'on' if ts else 'off'}, read from {where}")
         else:
-            parts.append("test signing could not be read here (it needs an administrator)")
+            parts.append("test signing could not be read here (neither this boot's start options nor bcdedit answered)")
         blocked: bool | None
         if sb is True and ts is not True:
             blocked = True
-            head = "the test-signed runtime cannot load here: Secure Boot is on and test signing is off"
+            head = ("the test-signed runtime cannot load here: Secure Boot is on and test signing is off" if ts is False
+                    else "the test-signed runtime cannot load here: Secure Boot is on, which keeps test-signing mode "
+                    "off")
         elif ts is True and hvci is not True:
             blocked = False
             head = "a test-signed native driver could load (test signing is on)"

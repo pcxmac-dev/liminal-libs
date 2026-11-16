@@ -313,6 +313,56 @@ def test_start_is_idempotent():
     c.stop()
 
 
+def test_running_says_whether_the_session_is_still_read_and_a_stop_is_no_error():
+    adv = FakeAdvapi32([_rec(1)])
+    c = etw.EtwConsumer("fw", providers=("process",), advapi32=adv, tdh=FakeTdh())
+    assert not c.running and c.error == ""  # not started yet
+    c.start()
+    assert adv.delivered.wait(2.0) and c.running
+    c.stop()
+    assert not c.running and c.error == ""  # its own stop ends ProcessTrace: no error said
+
+
+class EndsByItself(FakeAdvapi32):
+    """ProcessTrace returning by itself after the canned records, as no stop() asked for: with a status, as the real
+    WinAdvapi32.process_trace returns ProcessTrace's own (ERROR_SUCCESS when the session was stopped from outside, a
+    failure status when the consumer failed), or raising (the consumer failing in ctypes)."""
+
+    def __init__(self, status=0, raises=None):
+        super().__init__([_rec(1)])
+        self.status, self.raises = status, raises
+
+    def process_trace(self, trace):
+        self.calls.append(("process_trace", trace))
+        for rec in self.records:
+            self._cb(rec)
+        self.delivered.set()
+        if self.raises is not None:
+            raise self.raises
+        return self.status
+
+
+def test_a_session_ended_from_outside_or_a_failed_consumer_is_said_and_running_goes_false():
+    # 1.60.0: a session gone under a consumer left `running` unknowable, and a watch read it as a quiet machine
+    cases = ((EndsByItself(), "the session was stopped from outside"),
+             (EndsByItself(status=None), "the session was stopped from outside"),
+             (EndsByItself(status=etw.ERROR_WMI_INSTANCE_NOT_FOUND), "the session was stopped from outside"),
+             (EndsByItself(status=6), "its consumer failed: ProcessTrace returned 6 (ERROR_INVALID_HANDLE)"),
+             (EndsByItself(status=1234), "its consumer failed: ProcessTrace returned 1234"),
+             (EndsByItself(raises=OSError("access violation")), "its consumer failed: OSError: access violation"))
+    for adv, said in cases:
+        c = etw.EtwConsumer("fw", providers=("process",), advapi32=adv, tdh=FakeTdh())
+        c.start()
+        assert adv.delivered.wait(2.0)
+        deadline = time.monotonic() + 3.0
+        while c.running and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not c.running and c.error == said
+        assert [r.pid for r in c.drain()] == [1]  # what came before the end is still there
+        c.stop()  # still stops cleanly, and the words stay
+        assert c.error == said and not _thread_alive(f"etw-{c.tag}")
+
+
 def test_a_failed_enable_stops_the_session_rather_than_leaking_it():
     class FailingAdv(FakeAdvapi32):
         def enable_trace(self, control, guid, level, keywords):

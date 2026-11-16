@@ -237,31 +237,100 @@ def test_windows_program_listing_needs_an_administrator():
 
 def test_windows_why_not_here_reads_secure_boot_hvci_and_test_signing():
     facts = {"SecureBoot": True, "SecureBootSource": "firmware", "Hvci": True,
-             "TestSigning": False, "TestSigningReadable": True}
+             "TestSigning": False, "TestSigningReadable": True, "TestSigningSource": "boot options"}
     runner, _ = win_runner([_svc("eBPFCore")], facts=facts)
     rt = WindowsRuntime(PowerShell(runner=runner))
     why = rt.why_not_here()
     assert why["secure_boot"] is True and why["hvci"] is True and why["test_signing"] is False
+    assert why["test_signing_readable"] is True and why["test_signing_source"] == "boot options"
     assert why["blocked"] is True
     assert "cannot load here" in why["words"] and "Secure Boot is on" in why["words"]
     assert "memory integrity is on" in why["words"] and "test-signed pre-release" in why["words"]
+    assert "test signing is off, read from this boot's start options" in why["words"]
 
 
 def test_windows_why_not_here_when_test_signing_is_on_and_integrity_off():
     facts = {"SecureBoot": False, "SecureBootSource": "registry", "Hvci": False,
-             "TestSigning": True, "TestSigningReadable": True}
+             "TestSigning": True, "TestSigningReadable": True, "TestSigningSource": "bcdedit"}
     runner, _ = win_runner([_svc("eBPFCore")], facts=facts)
     why = WindowsRuntime(PowerShell(runner=runner)).why_not_here()
-    assert why["blocked"] is False and "could load" in why["words"] and "test signing is on" in why["words"]
+    assert why["blocked"] is False and "could load" in why["words"]
+    assert "test signing is on, read from bcdedit's entry for this Windows" in why["words"]
+    assert why["test_signing_source"] == "bcdedit"
 
 
 def test_windows_why_not_here_when_facts_cannot_be_read():
     # null facts (nothing readable unelevated): tri-state stays None, and the caveat is still said
     runner, _ = win_runner([_svc("eBPFCore")], facts={"SecureBoot": None, "Hvci": None,
-                                                      "TestSigning": None, "TestSigningReadable": False})
+                                                      "TestSigning": None, "TestSigningReadable": False,
+                                                      "TestSigningSource": "unknown"})
     why = WindowsRuntime(PowerShell(runner=runner)).why_not_here()
     assert why["secure_boot"] is None and why["hvci"] is None
+    assert why["test_signing"] is None and not why["test_signing_readable"] and why["test_signing_source"] == "unknown"
     assert "could not be read" in why["words"] and "test-signed pre-release" in why["words"]
+    assert "neither this boot's start options nor bcdedit answered" in why["words"]
+
+
+def test_test_signing_is_never_said_from_a_read_with_no_source():
+    # 1.60.0: unelevated, bcdedit printed an error where its entry goes, and that was read as test signing off.
+    # A read carrying no source the script names, or no value, is no read at all: nothing is said of test signing from
+    # it, not even in the verdict's head, which says what Secure Boot alone settles.
+    for odd in ({"TestSigning": False, "TestSigningReadable": True},
+                {"TestSigning": False, "TestSigningReadable": True, "TestSigningSource": "the screen"},
+                {"TestSigning": None, "TestSigningReadable": True, "TestSigningSource": "boot options"}):
+        runner, _ = win_runner([_svc("eBPFCore")], facts={"SecureBoot": True, "Hvci": True, **odd})
+        why = WindowsRuntime(PowerShell(runner=runner)).why_not_here()
+        assert why["test_signing"] is None and not why["test_signing_readable"]
+        assert why["test_signing_source"] == "unknown" and "could not be read here" in why["words"]
+        assert why["blocked"] is True and "test signing is off" not in why["words"]
+        assert why["words"].startswith("the test-signed runtime cannot load here: Secure Boot is on, which keeps "
+                                       "test-signing mode off (")
+
+
+def test_the_facts_script_reads_this_boots_options_first_and_bcdedit_only_when_it_answered():
+    # The registry's SystemStartOptions any user may read, and it is this boot's: TESTSIGNING while in test mode.
+    # bcdedit only where it cannot be read, and its words only when it exited 0 and printed the {current} entry
+    # (without an administrator it prints an error where the entry would be, its words differing between builds,
+    # and exits 1).
+    w = ebpf.windows
+    script = w.FACTS_READ
+    boot, bcd = script.index(f"-Name {w.BOOT_OPTIONS_VALUE}"), script.index("bcdedit /enum {current}")
+    assert boot < bcd and "if (-not $out.TestSigningReadable)" in script[boot:bcd]
+    assert "$LASTEXITCODE -eq 0 -and $bcd -match '\\{current\\}'" in script
+    assert "TestSigningSource = 'boot options'" in script and "TestSigningSource = 'bcdedit'" in script
+    assert set(w.SIGNING_SOURCES) == {"boot options", "bcdedit"}
+
+
+def test_the_facts_script_reads_the_value_it_names_and_matches_test_signing_as_said():
+    # Nothing starts PowerShell here, so the script's test-signing lines are pinned whole, and their patterns are tried
+    # with Python's re on what Windows gives, ignoring case as PowerShell's -match does.
+    w = ebpf.windows
+    # Windows' own names, spelt out: a misspelt key or value reads nothing, and the read falls to bcdedit
+    assert w.BOOT_OPTIONS_KEY == r"HKLM:\SYSTEM\CurrentControlSet\Control"
+    assert w.BOOT_OPTIONS_VALUE == "SystemStartOptions"
+    lines = [line.strip() for line in w.FACTS_READ.splitlines()]
+    assert not any(mark in w.FACTS_READ for mark in ("@KEY@", "@VALUE@", "@OPTION@", "@BCD@"))
+    assert (f"$control = Get-ItemProperty -Path '{w.BOOT_OPTIONS_KEY}' -Name {w.BOOT_OPTIONS_VALUE} -ErrorAction Stop"
+            in lines)
+    assert f"$opts = $control.{w.BOOT_OPTIONS_VALUE}" in lines
+    boot_value = f"$out.TestSigning = [bool]([string]$opts -match '{w.TESTSIGNING_OPTION}')"
+    bcd_value = f"$out.TestSigning = [bool]($bcd -match '{w.BCD_TESTSIGNING}')"
+    # each value is worked out before the read is called readable: a match that throws leaves nothing said read
+    # (and bcdedit still asked), never a source with no value
+    assert lines.index(boot_value) + 1 == lines.index(
+        "$out.TestSigningReadable = $true; $out.TestSigningSource = 'boot options'")
+    assert lines.index(bcd_value) + 1 == lines.index(
+        "$out.TestSigningReadable = $true; $out.TestSigningSource = 'bcdedit'")
+    assert "-notmatch" not in w.FACTS_READ
+    option = re.compile(w.TESTSIGNING_OPTION, re.IGNORECASE)
+    assert option.search(" TESTSIGNING  NOEXECUTE=OPTIN") and option.search(" NOEXECUTE=OPTIN  testsigning")
+    assert option.search("TESTSIGNING")
+    assert not option.search(" NOEXECUTE=OPTIN  HYPERVISORLAUNCHTYPE=AUTO  FVEBOOT=2666496  NOVGA")  # this PC's
+    assert not option.search(" NOTESTSIGNING  NOVGA") and not option.search(" TESTSIGNINGS")
+    entry = ("Windows Boot Loader\r\n-------------------\r\nidentifier              {current}\r\n"
+             "testsigning             Yes\r\nnx                      OptIn\r\n")
+    bcd = re.compile(w.BCD_TESTSIGNING, re.IGNORECASE)
+    assert bcd.search(entry) and not bcd.search(entry.replace("Yes", "No"))
 
 
 # -- the watch base and the bpftrace backend -----------------------------------------------------------------
@@ -870,7 +939,7 @@ def tcp_change(old, new, *, family=2, src="10.0.0.2", dst="93.1.2.3", sport=5100
 
 
 def udp_send(sk, *, family=2, src="10.0.0.2", dst="1.1.1.1", sport=40000, dport=53, pid=700, comm="resolved"):
-    """A udp_sendmsg / udp_v6_sendmsg call: arg0 the socket, its sock_common in `mem`."""
+    """A udp_sendmsg / udpv6_sendmsg call: arg0 the socket, its sock_common in `mem`."""
     if family == 2:
         s4, d4, s6, d6 = socket.inet_aton(src), socket.inet_aton(dst), bytes(16), bytes(16)
     else:
@@ -990,6 +1059,17 @@ def test_the_scripts_keep_no_begin_or_end_of_their_own():
         assert not re.search(r"(?m)^\s*(?:BEGIN|END)\b", code), name
 
 
+def test_the_scripts_kprobes_name_the_kernels_own_functions():
+    # 1.60.0: net.bt probed udp_v6_sendmsg, a name no kernel has (net/ipv6/udp.c calls it udpv6_sendmsg), and
+    # bpftrace refuses a probe it cannot attach, so every net watch ended at its start. Nothing here has a kernel to
+    # look in, so the kprobes the scripts use are pinned to the kernel's own (net/ipv4/udp.c, net/ipv6/udp.c).
+    kprobes: set[str] = set()
+    for name in watchmod.SCRIPTS.values():
+        code = watchmod._bare((watchmod.SCRIPTS_DIR / name).read_text(encoding="utf-8"))
+        kprobes |= set(re.findall(r"(?m)^\s*k(?:ret)?probe:([A-Za-z0-9_.]+)", code))
+    assert kprobes == {"udp_sendmsg", "udpv6_sendmsg"}
+
+
 # -- net.bt: IPv6 addresses (F2), UDP low-rate, and who owns a TCP socket -------------------------------------
 
 def test_tcp_lines_carry_ipv6_addresses_from_the_v6_fields():
@@ -1041,14 +1121,14 @@ def test_tcp_lines_name_the_sockets_owner_or_say_the_pid_is_approximate():
 def test_udp_sends_are_said_once_per_socket_and_peer_within_a_budget():
     # F1 (net.bt): the UDP kprobes fire per datagram; a QUIC stream must not be a line per datagram
     sim, _ = sim_for({"net"})
-    send4, send6 = "kprobe:udp_sendmsg", "kprobe:udp_v6_sendmsg"
+    send4, send6 = "kprobe:udp_sendmsg", "kprobe:udpv6_sendmsg"
     quic = [sim.fire(send4, **udp_send(0x100, dst="142.250.1.1", dport=443, comm="chrome")) for _ in range(1000)]
     assert sum(len(x) for x in quic) == 1
     line = json.loads(quic[0][0])
     assert (line["saddr"], line["sport"], line["daddr"], line["dport"]) == ("10.0.0.2", 40000, "142.250.1.1", 443)
     six = sim.fire(send6, **udp_send(0x200, family=10, src="2001:db8::2", dst="2001:4860:4860::8888"))
     assert [(json.loads(x)["daddr"], json.loads(x)["dport"]) for x in six] == [("2001:4860:4860::8888", 53)]
-    # an IPv4 peer of an AF_INET6 socket: udp_v6_sendmsg hands it to udp_sendmsg, and it is said once
+    # an IPv4 peer of an AF_INET6 socket: udpv6_sendmsg hands it to udp_sendmsg, and it is said once
     mapped = udp_send(0x300, family=10, src="::ffff:10.0.0.2", dst="::ffff:1.1.1.1")
     assert [json.loads(x)["daddr"] for x in sim.fire(send6, **mapped) + sim.fire(send4, **mapped)] == ["::ffff:1.1.1.1"]
     # 60 new sockets in the same second: 50 lines in all for the second, the rest counted

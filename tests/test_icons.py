@@ -9,7 +9,8 @@ from liminal_libs.ui import STATIC
 
 MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "claude", "openai", "grok", "copilot",
          "cursor", "docker", "kubernetes", "lxd", "hyperv", "libvirt",
-         "digitalocean", "linode", "ec2", "vultr", "azure", "googlecloud")  # the clouds (1.49.0)
+         "digitalocean", "linode", "ec2", "vultr", "azure", "googlecloud",  # the clouds (1.49.0)
+         "ebpf")  # eBPF's bee (1.60.0)
 
 
 def _paths() -> dict[str, str]:

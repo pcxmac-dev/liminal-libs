@@ -408,6 +408,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         "A driver loads only if it is production-signed, a kernel debugger is attached, or test-signing mode is "
         "on. Public eBPF for Windows builds are test-signed, so they need test signing.\n"
         "- Turning it on: 'bcdedit -set TESTSIGNING ON' from an elevated prompt, then reboot.\n"
+        "- Reading it: this boot's start options (the registry's SystemStartOptions, readable by any user) carry "
+        "TESTSIGNING while it is on; bcdedit shows the setting for the next boot and needs an administrator.\n"
         "- Windows refuses while Secure Boot protects the setting, so Secure Boot must go off first.\n"
         "- The desktop then shows 'Test Mode' and any certificate can sign drivers (HVCI still requires a "
         "signature).\n"
@@ -575,10 +577,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         "DisplayVersion of the 'eBPF for Windows' MSI entry, or the file version of C:\\Program "
         "Files\\ebpf-for-windows\\EbpfApi.dll. Not 'bpftool version': it prints the port's own 0.1 and its bundled "
         "libbpf. Also show what decides whether anything can load:\n"
-        "- test signing on or off ('bcdedit /enum {current}', or the 'Test Mode' watermark)\n"
+        "- test signing on or off (this boot's start options, the registry's SystemStartOptions, carry TESTSIGNING "
+        "while it is on; 'bcdedit /enum {current}' shows the setting for the next boot; or the 'Test Mode' "
+        "watermark)\n"
         "- memory integrity (Win32_DeviceGuard SecurityServicesRunning contains 2)\n"
-        "Rights: No administrator for the service state and the version; an administrator for bcdedit and for the "
-        "Win32_DeviceGuard query, which Microsoft documents as elevated."),
+        "Rights: No administrator for the service state, the version and this boot's start options; an administrator "
+        "for bcdedit. Microsoft documents the Win32_DeviceGuard query as elevated; whether a user may run it is that "
+        "WMI namespace's permission."),
     Capability(
         "Basic functions", "List programs, maps and links",
         "'bpftool -j prog show', 'bpftool -j map show', 'bpftool -j link show'. Attachments: 'bpftool -j net show' "
@@ -673,8 +678,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         "- The type numbers themselves are compile-time constants (ebpf_structs.h).\n"
         "- 'netsh ebpf show verification FILE.o' checks one program against the installed program info.\n"
         "Rights: No administrator for reading the store and the service state (HKLM\\Software is normally readable "
-        "by users; not checked for this key); an administrator for the signing and HVCI status (bcdedit, "
-        "Win32_DeviceGuard)."),
+        "by users; not checked for this key), or for test signing from this boot's start options "
+        "(SystemStartOptions); an administrator for bcdedit's setting and, as Microsoft documents it, for the HVCI "
+        "status (Win32_DeviceGuard)."),
     Capability(
         "Basic functions", "Watch events (ring buffer, perf buffer, printk)",
         "libbpf ring_buffer__new and ring_buffer__poll (mmap and epoll), or perf_buffer__new and "
