@@ -4,21 +4,27 @@ The plain half of the database plugins (storage/databases.py says the whole of i
 `Share`), the value a plugin's instances are kept in through its login (`Kept`, `Instances`), what a form's fields
 must be (`clean_name`, `clean_holds`, `clean_who`; a `Refusal` otherwise), and `SharePolicy`, what the link's helper
 lets another system's suite open. It imports nothing of the plugin contract: the helper (storage/link.py) loads this
-module alone, and stays small."""
+module alone, and stays small.
+
+What every kind of instance shares (a name, its variables, `Refusal`, `is_local`, `listening`, the value kept through
+a login) is liminal_libs/instances.py's since 1.62.0, as plain as this module, and is imported back here under the
+same names, the same objects: the model servers' instances (machines/modelserver.py) use it too."""
 from __future__ import annotations
 
 import json
 import ntpath
 import os
 import re
-import socket
+import socket  # noqa: F401 - a test of the databases reaches the socket module through here
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
-from .. import layout
+from .. import instances as shared
+from ..instances import (  # noqa: F401 - the same objects, importable from here as before 1.62.0
+    HEARD_S, MAX_KEPT, MAX_TITLE, NAME, VERSION, Refusal, Store, _heard, clean_name, clean_title, credential_variables,
+    is_local, now_iso, secret_variable, variable_of)
 
 ENGINES = {"sqlite": "SQLite", "duckdb": "DuckDB", "mongodb": "MongoDB", "postgres": "PostgreSQL", "mariadb": "MariaDB"}
 SUFFIXES = {"sqlite": (".db", ".sqlite", ".sqlite3"), "duckdb": (".duckdb",)}  # a file engine's files
@@ -35,15 +41,11 @@ ACCESS = ("read", "write")
 NONE = "none"  # share(..., "none"): the share taken away
 INSTANCES = "instances"  # the data folder's folder for the databases made here
 OWN_FOLDERS = ("feeds", "history", "datasets", "gov", "login", "mongo", "logs", "sources", "cache")  # the app's own
-NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")  # an instance's name in its plugin
 WHO = re.compile(r"^[A-Za-z0-9_.-]{1,32}::[A-Za-z0-9_. -]{1,64}$")  # a suite as it is named on a database
 DATABASE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,62}$")  # a server's database, a role
 HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$|^\[?[0-9A-Fa-f:]{2,39}\]?$")
 MAX_INSTANCES = 24  # kept by one plugin
 MAX_SHARES = 12  # of one instance
-MAX_KEPT = 30000  # characters of the value kept: an environment variable holds 32,767
-MAX_TITLE = 60
-VERSION = 1  # of the value kept
 POLICY_S = 5.0  # a helper reads the shares again after this long
 
 
@@ -67,15 +69,6 @@ METHODS = {m.name: m for m in (
     Method("socket", "Socket", "a Unix socket, or a Windows named pipe, on this machine", address=True),
     Method("tcp", "TCP", "an address and a port; off this machine only with TLS and credentials", address=True),
 )}
-
-
-class Refusal(ValueError):
-    """A change not made, and why, in words: nothing was changed. `accept`: the argument that, set, makes it anyway (an
-    instance reached off this machine: accept_remote), which a page asks as a second, explicit confirmation."""
-
-    def __init__(self, message: str, accept: str | None = None):
-        super().__init__(message)
-        self.accept = accept
 
 
 @dataclass(frozen=True)
@@ -151,39 +144,6 @@ class Instance:
                 "builtin": self.builtin, "made": self.made, "at": self.at, "note": self.note}
 
 
-def variable_of(plugin: str) -> str:
-    """The variable a database plugin's instances are kept under, through its login: sqlite's is SQLITE_INSTANCES."""
-    return f"{str(plugin).strip().upper().replace('-', '_')}_INSTANCES"
-
-
-def credential_variables(plugin: str, instance: str) -> tuple[str, str]:
-    """The variables an instance's name and password are kept under, through the plugin's login (pairs, never in a
-    file): mongodb's `atlas` signs in with MONGODB_ATLAS_USER and MONGODB_ATLAS_PASSWORD."""
-    stem = f"{str(plugin).strip().upper().replace('-', '_')}_{str(instance).strip().upper().replace('-', '_')}"
-    return f"{stem}_USER", f"{stem}_PASSWORD"
-
-
-def now_iso(clock: Callable[[], float] = time.time) -> str:
-    return datetime.fromtimestamp(clock(), timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def clean_name(name) -> str:
-    """An instance's name as typed, checked: lowercase letters, digits and dashes, 32 at most, starting with a letter or
-    a digit. Refusal otherwise."""
-    text = str(name or "").strip().lower()
-    if not NAME.match(text):
-        raise Refusal("an instance's name is lowercase letters, digits and dashes, 32 at most, starting with a letter or "
-                      f"a digit: not {str(name or '')[:40]!r}")
-    return text
-
-
-def clean_title(title) -> str:
-    text = " ".join(str(title or "").split())
-    if len(text) > MAX_TITLE or any(ord(c) < 32 or ord(c) == 127 for c in text):
-        raise Refusal(f"a title is {MAX_TITLE} characters at most, with no control characters")
-    return text
-
-
 def clean_holds(holds, allowed: Iterable[str]) -> tuple[str, ...]:
     """What an instance is to hold, as given (names, or their text comma separated), each one of `allowed`."""
     allowed = tuple(allowed)
@@ -203,45 +163,16 @@ def clean_who(who) -> str:
     return text
 
 
-def is_local(host: str) -> bool:
-    """Whether a host is this machine (127.0.0.1, localhost, ::1): the only ones reached without being asked twice."""
-    return str(host or "").strip().strip("[]").lower() in layout.LOCAL_HOSTS
-
-
 def is_absolute(where: str) -> bool:
     """Whether a path is a whole one, as Windows or as Linux writes it (what is kept on one system is read on the
     other): C:\\data\\x.db, \\\\server\\share\\x.db, /srv/x.db."""
     return bool(ntpath.splitdrive(where)[0]) or where.startswith(("/", "\\"))
 
 
-HEARD_S = 3.0  # whether a port of this machine listens is remembered this long
-_heard: dict[tuple[str, int], tuple[float, bool]] = {}
-
-
 def listening(host: str, port: int, timeout: float = 0.3, fresh: bool = False) -> bool:
-    """Whether something listens at host:port. Asked of this machine alone by a page's status; of another only by a
-    test the user asked for. A port of this machine that does not listen takes the whole wait to say so (Windows
-    tries again before it gives up), so its answer is remembered HEARD_S: a page's asks, a few a second apart, do not
-    each wait (`fresh`: asked now all the same). Another machine's is never remembered."""
-    key = (host.strip("[]").lower(), port) if isinstance(port, int) and not isinstance(port, bool) else None
-    local = key is not None and is_local(key[0])
-    now = time.monotonic()
-    if local and not fresh:
-        was = _heard.get(key)
-        if was is not None and now - was[0] < HEARD_S:
-            return was[1]
-    try:
-        if key is None:
-            raise ValueError("not a port")
-        with socket.create_connection((key[0], port), timeout=timeout):
-            heard = True
-    except (OSError, ValueError, TypeError):
-        heard = False
-    if local:
-        if len(_heard) > 256:
-            _heard.clear()
-        _heard[key] = (now, heard)
-    return heard
+    """Whether something listens at host:port (liminal_libs.instances.listening says the whole of it), remembered in
+    this module's own `_heard`: the shared one unless something put another in its place (a test of the databases)."""
+    return shared.listening(host, port, timeout, fresh, heard=_heard)
 
 
 # -- what is kept ------------------------------------------------------------------------------------------------------
@@ -319,21 +250,17 @@ class Kept:
         return json.dumps(out, separators=(",", ":"), ensure_ascii=True)
 
 
-class Instances:
+class Instances(Store):
     """A plugin's kept instances, read and kept through its login under `variable` (`login_of`: the plugin's login now,
     None when it has none: then nothing is kept). `saved`: given only where the data folder is another system's (the
     suite inside WSL on Windows' data): what is kept is then that system's, asked of it (its user's saved variables,
-    through the link) and never of this one's login, which keeps none of it."""
+    through the link) and never of this one's login, which keeps none of it. The value's text is read as every
+    Store's is (liminal_libs.instances.Store.text)."""
 
     def __init__(self, variable: str, login_of: Callable[[], object], engine: str = "",
                  saved: Callable[[], Mapping[str, str]] | None = None):
-        self.variable, self._login_of, self.engine, self._saved = variable, login_of, engine, saved
-
-    def text(self) -> str:
-        if self._saved is not None:
-            return self._saved().get(self.variable, "") or ""
-        login = self._login_of()
-        return (login.variables([self.variable]).get(self.variable, "") or "") if login is not None else ""
+        super().__init__(variable, login_of, saved)
+        self.engine = engine
 
     def read(self) -> Kept:
         try:
