@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.62.0 (2026-11-18)
+
+The base under six AI plugins, and root access for the Linux plugins. The user, 2026-11-16: "claude i need 3 plugins
+for inference serving local models on the platform, :: lama.cpp, ollama and vLLM, i also need 3 harness plugins for the
+platform :: OpenCode, Aider, and Continue"; "they will be classified as AI plugins"; "the plugins manage the services,
+the app can be started @ boot like a service, ports can be configured via the plugin, the plugin should report
+conflicts". And 2026-11-17, of the Linux firewall that could not be read inside WSL: "the plugin needs to be able to
+handle permissions if required"; asked how a password is typed, "A field on its page"; "(enable / disable)", "but
+only if required". The six plugins themselves are packages of their own, built on this release.
+
+- **What every kind of instance shares** (`liminal_libs/instances.py`, plain: the standard library and `layout`):
+  the names lifted out of `storage/instances.py` (`NAME`, `Refusal`, `variable_of`, `credential_variables`,
+  `clean_name`, `clean_title`, `is_local`, `listening`, ...), the same objects from either place, and `Store`, one
+  value kept through a login, which the databases' `Instances` now is. `secret_variable` names one secret of an
+  instance as a pair of its own.
+- **AI plugins** (`machines/ai.py`): `AiPlugin` under `MachinePlugin`, `SECTION = "ai"` and a `GROUP`
+  ("inference", "harness"). Valid without its software. Install, update and uninstall from the page as confirmed jobs
+  that can be cancelled, with the size and the licence said first, every archive pinned by size and sha256 (or said
+  as not checked), into the plugin's own folder: `app/<pin>/` and `app/CURRENT`, the install in use never rebuilt over
+  itself. A start and an install exclude each other. Its status never raises. No pair of Liminal's reaches a child it
+  starts (`dropped()`: every declared variable, and `LIMINAL_*`). `Setting`, `Package`, `Installed`, `Outside`.
+- **Model servers** (`machines/modelserver.py`): `ModelServer` and its instances (run here, found here, remote),
+  kept through the login as one value (`LIMINAL_AI_<NAME>_INSTANCES`), a key as its own pair. Start and stop as a
+  windowless child the plugin owns; start at boot (a logon task on Windows, a systemd user unit on Linux); a port for
+  each instance with its conflicts said (another program by name and pid, WSL's relay, another instance, a Liminal
+  app's port); this machine only by default, shared only when asked twice and with a key; plain http to another
+  machine asked twice. `serving` and `models_of`, services other plugins ask through the platform; the Models tab, Try
+  it. **`python -m liminal_libs.machines.launch serve`**: what a task or a unit runs, supervising itself, ending 0
+  with its words in the log when there is nothing it can ever start.
+- **Harnesses** (`machines/harness.py`): `Harness`: Use... an instance of an inference plugin (asked through the
+  platform), Open... in a folder (a terminal window on Windows, else the lines to paste), Command...; a stopped
+  instance or a folder on another system's drive refused.
+- **What they stand on**: `machines/children.py` (a child a plugin owns: no window, a job object on Windows that ends
+  it with the platform, Ctrl+C then the end, its log rotated and cleaned of secrets; `stream` for an installer's
+  lines, its timeout and cancel ending what it started; `shown` for lines to paste, a secret's value never among
+  them), `console.py` (the window holder and the Ctrl+C helper, the standard library only), `machines/endpoint.py` (a
+  model server asked over http, bounded by bytes and time), `machines/download.py` (https only, redirects to listed
+  hosts only, resumed, checked, cancelled; unpacking that refuses a way out), `machines/gpu.py` (nvidia-smi read,
+  never for a status), `machines/autostart.py`, `machines/uv.py`. `Output.cancel()`, `.cancelled`,
+  `.wait_cancelled()` and `Cancelled` (`machines/terminal.py`): a job's Cancel. `windows.quote` doubles all five of
+  PowerShell's single-quote characters. Six makers' marks in `ui/static/icons.js`: llamacpp, ollama, vllm, opencode,
+  aider, continuedev (llama.cpp's and OpenCode's drawn anew, not traced from their brand files).
+- **Root access for the Linux plugins** (`machines/linux.py`): `Shell.run(..., password=)` hands the user's typed
+  password to `sudo -S -k -p ""` on standard input, once, never in an argument, the environment, a log, an answer or
+  an error's words; `PasswordRefused`. `needs_password` reads sudo's own listing for a rule that runs the command as
+  root without a password (sudoers' `listpw` makes `sudo -n -l <command>`'s exit code say nothing of that).
+  `grant`, `revoke`, `granted`: a narrow grant for the group `liminal`, helpers root:liminal 0750 under
+  `/usr/local/libexec/liminal/<name>/` and one sudoers rule naming exactly them with no arguments, checked with
+  `visudo -cf` before it is put in place, with a take-back helper so that turning it off needs no password. Never
+  `NOPASSWD: ALL`.
+- **Tests**: a shared guard, `no_outside` (`tests/conftest.py`), that fails a test which starts a process, opens,
+  binds or listens on a socket, or looks a name up for real, and that the code's own `except Exception` cannot
+  silence. Every new test file asks for it. The release was reviewed area by area; every finding was reproduced
+  before it was fixed, with a test that fails without the fix.
+
 ## 1.61.2 (2026-11-16)
 
 A request is in the picture before it is answered. Found in Ubuntu: the platform's test of who talks to whom failed

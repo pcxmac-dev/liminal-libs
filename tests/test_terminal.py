@@ -90,3 +90,85 @@ def test_a_read_is_held_until_there_is_output():
     threading.Timer(0.05, out.finish).start()
     started = time.monotonic()
     assert out.wait(1, 5.0) is False and time.monotonic() - started < 2.0 and out.finished  # the end said at once
+
+
+def test_a_jobs_output_can_be_asked_to_cancel_and_a_waiter_is_told():
+    import threading
+
+    from liminal_libs.machines.terminal import Cancelled, Output
+
+    out = Output()
+    assert out.cancelled is False and out.wait_cancelled(0) is False
+    answers: list = []
+    waiter = threading.Thread(target=lambda: answers.append(out.wait_cancelled(30)), daemon=True)
+    waiter.start()
+    out.cancel()
+    waiter.join(10)
+    assert answers == [True] and out.cancelled is True  # told at once, not after its 30 s
+    out.cancel()  # twice changes nothing
+    out.finish()
+    out.cancel()  # and after the end
+    assert out.cancelled is True and out.finished is True and out.text == ""
+    assert out.wait(0, 0) is False  # a page's read still waits for text: a cancel alone gives it nothing to show
+    assert issubclass(Cancelled, Exception) and not issubclass(Cancelled, ValueError)  # no refusal: a stop
+
+
+def test_a_cancel_leaves_what_was_written_readable():
+    from liminal_libs.machines.terminal import Output
+
+    out = Output()
+    out("downloading")
+    out.cancel()
+    out("cancelled: nothing was installed")
+    assert out.read(0)[0] == "downloading\ncancelled: nothing was installed\n" and out.wait(0, 0) is True
+
+
+def test_a_wait_may_have_no_end_or_one_longer_than_threading_takes():
+    """wait_cancelled(None) waits until a cancel; a wait of inf, or longer than threading.TIMEOUT_MAX, is held to
+    that bound instead of raising in the job (OverflowError); and wait() holds its seconds the same way. Each waiter
+    is in its wait before it is told: the cancel (or the text) takes the lock the wait lets go of."""
+    from liminal_libs.machines.terminal import Output
+
+    for timeout in (None, float("inf"), 1e12, threading.TIMEOUT_MAX * 2):
+        for tell, ask in ((Output.cancel, lambda out: out.wait_cancelled(timeout)),
+                          (lambda out: out.write("x"), lambda out: out.wait(0, timeout))):
+            out = Output()
+            entered, real = threading.Event(), out._grew.wait
+
+            def waiting(seconds=None, real=real, entered=entered):  # in its wait, the lock about to be let go
+                entered.set()
+                return real(seconds)
+            out._grew.wait = waiting
+            answers: list = []
+
+            def wait(out=out, ask=ask, answers=answers, entered=entered):
+                try:
+                    answers.append(ask(out))
+                except BaseException as e:  # noqa: BLE001 - what the waiter met is the answer
+                    answers.append(e)
+                    entered.set()
+            waiter = threading.Thread(target=wait, daemon=True)
+            waiter.start()
+            assert entered.wait(10), timeout
+            tell(out)
+            waiter.join(10)
+            assert answers == [True], (timeout, answers)
+    out = Output()
+    assert [out.wait_cancelled(t) for t in (float("nan"), -5, 0)] == [False] * 3  # no wait at all
+    out.cancel()
+    assert out.wait_cancelled(None) is True  # asked already: no wait
+    out.write("x")
+    assert out.wait(0, None) is True and out.wait(0, float("inf")) is True
+
+
+def test_a_child_inherits_the_environment_given_else_this_ones_without_liminals_own(monkeypatch):
+    from liminal_libs.machines import terminal
+
+    monkeypatch.setenv("LIMINAL_AI_OLLAMA_DEFAULT_KEY", "s3cret")
+    monkeypatch.setenv("Liminal_Platform_Dir", "/somewhere")  # any case: told apart without regard to it
+    monkeypatch.setenv("SOMETHING_OF_THE_USERS", "kept")
+    own = terminal.inherited()
+    assert not any(name.upper().startswith("LIMINAL_") for name in own) and own["SOMETHING_OF_THE_USERS"] == "kept"
+    given = {"PATH": "/usr/bin", "LIMINAL_GIVEN": "1"}  # one given is the whole of it, as it is: its maker's to make
+    assert terminal.inherited(given) == given and terminal.inherited(given) is not given
+

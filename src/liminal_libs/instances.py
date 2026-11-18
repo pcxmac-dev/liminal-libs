@@ -2,10 +2,11 @@
 
 A plugin can hold instances: the database plugins' databases (storage/instances.py, storage/databases.py) and the
 model servers' servers (machines/modelserver.py). Each kind has its own fields; what they share is here: how an
-instance is named (`NAME`, `clean_name`, `clean_title`), the variables its plugin's pairs are kept under through the
-login (`variable_of`, `credential_variables`, `secret_variable`), the refusal a page asks a second time (`Refusal`),
-whether an address is this machine and whether something listens there (`is_local`, `listening`), and the one value a
-plugin's instances are kept in through its login (`Store`).
+instance is named (`NAME`, `clean_name`, `clean_title`, and `has_control`, which other checks of a text share), the
+variables its plugin's pairs are kept under through the login (`variable_of`, `credential_variables`,
+`secret_variable`), the refusal a page asks a second time (`Refusal`), whether an address is this machine and whether
+something listens there (`is_local`, `listening`), and the one value a plugin's instances are kept in through its
+login (`Store`).
 
 These names were storage/instances.py's until 1.62.0 and stay importable from there and from storage/databases.py,
 the same objects. This module is plain on purpose: the standard library and `layout` only, nothing of the apps or of
@@ -70,9 +71,15 @@ def clean_name(name) -> str:
     return text
 
 
+def has_control(text: str) -> bool:
+    """Whether a text holds a control character (below 32, or DEL): what no title here holds, nor a path an instance
+    is asked at, an archive's member name or a word of a command at boot (endpoint, download, autostart)."""
+    return any(ord(c) < 32 or ord(c) == 127 for c in text)
+
+
 def clean_title(title) -> str:
     text = " ".join(str(title or "").split())
-    if len(text) > MAX_TITLE or any(ord(c) < 32 or ord(c) == 127 for c in text):
+    if len(text) > MAX_TITLE or has_control(text):
         raise Refusal(f"a title is {MAX_TITLE} characters at most, with no control characters")
     return text
 

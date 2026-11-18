@@ -186,6 +186,41 @@
       + '<ellipse cx="16" cy="6.9" rx="1.8" ry="2.9" transform="rotate(30 16 6.9)"/>'
       + '<path d="M5.3 10.9C4.9 8.9 3.9 7.8 2.6 7.4M7.1 10.8c.1-1.9-.4-3.4-1.4-4.5"/></g>'
       + '<circle cx="5.4" cy="12.6" r=".75" fill="currentColor" stroke="none"/></g>',
+    // The local AI plugins (the user, 2026-11-16: "i need 3 plugins for inference serving local models on the
+    // platform, :: lama.cpp, ollama and vLLM, i also need 3 harness plugins for the platform :: OpenCode, Aider, and
+    // Continue"; "they will be classified as AI plugins"), each by its maker's mark, as the AI icons above:
+    // llama.cpp's slanted L, split like a bolt: two leaning bars, the foot stepped across the line that parts them
+    // (drawn anew from that description, not traced from its maker's brand files, which are CC BY-NC; their level
+    // edges lie where an 18 px drawing has whole rows for them, so the split stays open in a list)
+    llamacpp: '<path stroke-width="1.5" d="M10.2 2h6l-6 12h-6zM8.87 16.67h11L17.2 22h-11z"/>',
+    // Ollama's llama from the front, one outline open below: two upright ears, the head, the shoulders (cut short,
+    // so that the head has more of the box), then its eyes, its muzzle and the small Y of its nose (the face set
+    // where an 18 px drawing has whole pixels for it, a little wider than its maker's)
+    ollama: '<path stroke-width="1.4" d="M4.9 21.94C4.79 20.41 4.48 18.79 4.48 16.86C4.48 15.83 4.72 14.89 5.04 14.32'
+      + 'C4.67 13.76 4.48 13.19 4.48 12.63V10.28C4.48 8.96 6.08 8.78 6.08 7.46V3.89C6.08 1.51 9.65 1.51 9.65 3.89V5.3'
+      + 'C10.87 4.55 13.13 4.55 14.35 5.3V3.89C14.35 1.51 17.92 1.51 17.92 3.89V7.46C17.92 8.78 19.52 8.96 19.52 10.28'
+      + 'V12.63C19.52 13.19 19.33 13.76 18.96 14.32C19.28 14.89 19.52 15.83 19.52 16.86'
+      + 'C19.52 18.79 19.21 20.41 19.1 21.94"/>'
+      + '<g stroke-width="1.1"><ellipse cx="12" cy="14" rx="3.33" ry="2.67"/>'
+      + '<path stroke-width="1" d="M11.25 13.35 12 14.1l.75-.75M12 14.1v.85"/></g>'
+      + '<g fill="currentColor" stroke="none"><circle cx="7.33" cy="11.33" r=".9"/>'
+      + '<circle cx="16.67" cy="11.33" r=".9"/></g>',
+    // vLLM's V: two flat shapes meeting in one point, the right arm the taller
+    vllm: '<g stroke-width="1.5"><path d="M3.35 6.82H10.26V20.65z"/>'
+      + '<path d="M10.26 20.65H15.7L20.36 3.05 13.97 6.42z"/></g>',
+    // OpenCode's upright frame, a stroke a quarter of its width, the lower two thirds of its opening shaded: filled
+    // shapes, not an outline (its brand page asks that the logo is not outlined)
+    opencode: '<g fill="currentColor" stroke="none"><path fill-rule="evenodd" d="M4 2h16v20H4zM8 6v12h8V6z"/>'
+      + '<path fill-opacity=".2" d="M8 10h8v8H8z"/></g>',
+    // Aider's a, as its terminal face writes it: five scan lines
+    aider: '<path stroke-width="2.5" stroke-linecap="butt" '
+      + 'd="M7.5 4H15M15 8h2.5M7.5 12h10M5 16h2.5M15 16h2.5M7.5 20H15M17.5 20H20"/>',
+    // Continue's hexagon of three folded chevrons, each with its two inner bars (continuedev: `continue` is a word
+    // of the page's own language)
+    continuedev: '<g stroke-linecap="butt" stroke-linejoin="miter">'
+      + '<path stroke-width="1.6" d="M17.7 5.94 21.2 12l-3.5 6.06M13.2 20.66h-7L2.7 14.6M2.7 9.4l3.5-6.06h7"/>'
+      + '<path stroke-width="1.2" d="M17.49 11.57 15.1 7.44M17.49 12.43 15.1 16.56M8.43 17.66h4.77M7.68 17.23 5.3 13.1'
+      + 'M7.68 6.77 5.3 10.9M8.43 6.34h4.77"/></g>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 

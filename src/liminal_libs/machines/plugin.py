@@ -50,8 +50,12 @@ class MachinePlugin(PlatformPlugin):
     #   "virtualization": a hypervisor's or a container engine's (Hyper-V, libvirt, LXD, Docker, Kubernetes, ...);
     #   "os": an operating system's (WSL's distributions, the firewalls, the admin plugins);
     #   "cloud": a cloud provider's account or a cloud service (DigitalOcean, Linode, Vultr, EC2, Azure, Google Cloud,
-    #   Namecheap).
-    # liminal-platform 0.26.0 draws the four, in that order; a platform before it knows "machine" and "cloud" only.
+    #   Namecheap);
+    #   "ai" (1.62.0; the user, 2026-11-16: "they will be classified as AI plugins"): an AI plugin's (machines/ai.py,
+    #   AiPlugin), drawn under the AI heading in the group its GROUP names: "inference" for a model server's (llama.cpp,
+    #   Ollama, vLLM: ModelServer), "harness" for a harness's (OpenCode, Aider, Continue: Harness).
+    # liminal-platform 0.26.0 draws the first four, in that order (a platform before it knows "machine" and "cloud"
+    # only); 0.31.0 draws "ai" after the AI assistants, by GROUP, and one whose GROUP it does not draw as "machine".
     SECTION = "machine"
     # Its own tabs on its page, after Main and API (apps/tabs.py; the user, 2026-11-14: "so for the firewall's both are
     # going to get a 'world wide web view'"; "there needs to be a way to 'filter' (another tab)"):

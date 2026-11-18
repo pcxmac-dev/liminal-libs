@@ -10,20 +10,51 @@ import os
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 
 MAX_KEPT = 256 * 1024
+OWN = "LIMINAL_"  # the names of Liminal's own pairs: never in the environment a child inherits (`inherited`)
+
+
+def _seconds(timeout: float | None) -> float | None:
+    """A wait's seconds as threading takes them: None stays None (no end); a number is held between 0 and
+    threading.TIMEOUT_MAX (a longer one would raise there, OverflowError), and one that is no number (NaN) is 0."""
+    if timeout is None:
+        return None
+    seconds = float(timeout)
+    if seconds != seconds:
+        return 0.0
+    return min(max(0.0, seconds), threading.TIMEOUT_MAX)
+
+
+class Cancelled(Exception):
+    """Work stopped because its user cancelled it (a job's Cancel): nothing went wrong, and what was asked for was
+    not finished."""
+
+
+def inherited(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """A child's whole environment (gpu's command, autostart's, download's zstd): `env` as it is given (an AI
+    plugin's child_env(): every variable an installed plugin declares and every LIMINAL_* name taken out), else this
+    process's own without any LIMINAL_* name, told apart without regard to case. That default is a net only: it takes
+    out Liminal's own pairs and no other plugin's (a key named by its plugin's variable, NAMECHEAP_API_KEY), which
+    cannot be known here, so a plugin hands its own (the AI base does)."""
+    if env is not None:
+        return {str(name): str(value) for name, value in env.items()}
+    return {name: value for name, value in os.environ.items() if not name.upper().startswith(OWN)}
 
 
 class Output:
-    """Text that grows (a terminal's, a job's), read from an offset: what a page has not seen yet."""
+    """Text that grows (a terminal's, a job's), read from an offset: what a page has not seen yet. A job's work may
+    be cancelled through it (1.62.0): `cancel()` sets a flag the work looks at (`cancelled`) between its steps."""
 
     def __init__(self, max_kept: int = MAX_KEPT):
         self.max_kept = max_kept
         self._text = ""
         self._base = 0  # the offset of the first character kept
         self._lock = threading.Lock()
-        self._grew = threading.Condition(self._lock)  # told of every write, and of the end
+        self._grew = threading.Condition(self._lock)  # told of every write, of the end, and of a cancel
         self.finished = False
+        self._cancelled = False
 
     def write(self, text: str) -> None:
         if not text:
@@ -42,11 +73,34 @@ class Output:
             self.finished = True
             self._grew.notify_all()
 
-    def wait(self, since: int, timeout: float) -> bool:
-        """Until there is text after `since`, the end, or `timeout` seconds: whether there is text (a page's read held
-        until there is something to show: its echo at once, one read at a time)."""
+    def cancel(self) -> None:
+        """The work writing here is asked to stop: the flag is set for it to see, and whoever waits is told now.
+        Asking twice, or after the end, changes nothing."""
+        with self._lock:
+            self._cancelled = True
+            self._grew.notify_all()
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether a cancel was asked: the work looks at it between its steps and stops by itself (Cancelled)."""
+        with self._lock:
+            return self._cancelled
+
+    def wait_cancelled(self, timeout: float | None) -> bool:
+        """Until a cancel is asked or `timeout` seconds pass (None: until a cancel, however long that is): whether
+        one was. A wait the work may take between two tries, ended at once by a cancel; a wait longer than threading
+        can take (threading.TIMEOUT_MAX: 49 days on Windows) is held to that."""
         with self._grew:
-            self._grew.wait_for(lambda: self._base + len(self._text) > since or self.finished, timeout=max(0.0, timeout))
+            self._grew.wait_for(lambda: self._cancelled, timeout=_seconds(timeout))
+            return self._cancelled
+
+    def wait(self, since: int, timeout: float | None) -> bool:
+        """Until there is text after `since`, the end, or `timeout` seconds (held as wait_cancelled holds them):
+        whether there is text (a page's read held until there is something to show: its echo at once, one read at a
+        time)."""
+        with self._grew:
+            self._grew.wait_for(lambda: self._base + len(self._text) > since or self.finished,
+                                timeout=_seconds(timeout))
             return self._base + len(self._text) > since
 
     def __call__(self, line: str) -> None:  # a log line (a setup's step)

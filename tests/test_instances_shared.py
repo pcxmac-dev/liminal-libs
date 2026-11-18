@@ -16,6 +16,8 @@ from liminal_libs import instances as shared
 from liminal_libs.storage import databases
 from liminal_libs.storage import instances as kept
 
+pytestmark = pytest.mark.usefixtures("no_outside")
+
 SRC = Path(liminal_libs.__file__).parent
 LIFTED = ("NAME", "MAX_KEPT", "MAX_TITLE", "VERSION", "HEARD_S", "Refusal", "variable_of", "credential_variables",
           "now_iso", "clean_name", "clean_title", "is_local")
@@ -54,6 +56,11 @@ def test_a_refusal_names_what_accepts_it():
     assert shared.clean_name(" GPU-box ") == "gpu-box" and shared.clean_title("  a   title ") == "a title"
     with pytest.raises(shared.Refusal, match="60 characters at most"):
         shared.clean_title("x" * 61)
+    with pytest.raises(shared.Refusal, match="no control characters"):
+        shared.clean_title("a\x7ftitle")
+    # a control character: one below 32, or DEL (the checks of a title, a path, a member's name, a command's word)
+    assert shared.has_control("a\x7fb") and shared.has_control("line\nbreak") and shared.has_control("\x00")
+    assert not shared.has_control("a title, with spaces: é") and not shared.has_control("")
 
 
 # -- plain: what importing it loads ------------------------------------------------------------------------------------

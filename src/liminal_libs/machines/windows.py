@@ -25,11 +25,16 @@ PRELUDE = ("$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyCont
            "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n")
 DENIED = ("access is denied", "access denied", "0x80070005", "requires elevation", "run as administrator",
           "administrator privileges", "permission denied", "not have permission")
+SINGLE_QUOTES = "'‘’‚‛"  # what PowerShell takes for a single quote: ' and the typographic four
 
 
 def quote(text) -> str:
-    """`text` as a PowerShell single-quoted string."""
-    return "'" + str(text).replace("'", "''") + "'"
+    """`text` as a PowerShell single-quoted string. PowerShell ends such a string at any of five characters, the
+    apostrophe and the typographic ‘ ’ ‚ ‛ (a folder named Ciara’s project, a title typed on a keyboard that curls
+    its quotes), and reads one doubled as itself: each is doubled, as PowerShell's own escaper does
+    (CodeGeneration.EscapeSingleQuotedStringContent), so the string holds `text` exactly and nothing after it is
+    read as a command."""
+    return "'" + "".join(c + c if c in SINGLE_QUOTES else c for c in str(text)) + "'"
 
 
 def is_elevated() -> bool:
