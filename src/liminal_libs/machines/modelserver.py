@@ -481,11 +481,22 @@ class ModelServer(AiPlugin):
     MODEL_COLUMNS: tuple = ()  # the titles of model_cells' cells
     CHILD = None  # the class its servers are started and found again with; None: children.Child (a test's stand-in)
     # What it says of the interface it shares (the contract's words of liminal-libs 1.63.0, read by name by the Internal
-    # API tab; nothing reads them before it): its reads beside its bases', the services other plugins ask of it
-    # through the platform, and what it asks of the others
-    READ_HOOKS = ("log_of", "models", SERVING, "models_of")
+    # API tab; nothing reads them before it): its reads beside its bases' (`choose` changes only which instance its
+    # page shows, until the platform restarts), the services other plugins ask of it through the platform, what it
+    # asks of the others, and what it keeps through the login (KEEPS, below; its keys' names in INTERNAL_NOTES)
+    READ_HOOKS = ("choose", "log_of", "models", SERVING, "models_of")
     SERVICE_HOOKS = (SERVING, "models_of")
     ASKS = (("", SERVING, "whether another inference plugin's instance holds a port of this machine"),)
+    INTERNAL_NOTES = ("Each instance's key is a secret pair of its own, LIMINAL_AI_<NAME>_<INSTANCE>_KEY "
+                      "(key_variable), kept apart from its instances' pair and never in an answer, a log, an "
+                      "error or a command line.",)
+
+    @property
+    def KEEPS(self) -> tuple:  # noqa: N802 - a declared word of the contract, as READ_HOOKS
+        """What it keeps through its login beside its keys (Plugin.KEEPS): its instances, one JSON pair under
+        LIMINAL_AI_<NAME>_INSTANCES (`kept_instances`). Said by name: no login is asked."""
+        return ((self.variable("instances"), "its instances: where each is, its address and port, whether it is "
+                 "shared, keyed or started at boot, and its settings"),)
 
     # -- what a subclass says ---------------------------------------------------------------------------------------
     def launch(self, instance: Instance, key: str = "") -> children.Launch:

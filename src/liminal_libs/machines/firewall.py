@@ -167,11 +167,12 @@ class Firewall(MachinePlugin):
              "move_rules", "new_label", "rename_label", "remove_label",
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
              WORLD_HOOK, GEOIP_HOOK)
+    READ_HOOKS = ("wanted",)  # its reads beside MachinePlugin's (Plugin.READ_HOOKS); world reads as its tab's hook
     STEPS = STEPS
     ICON = "shield"
     GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS
     # -- the World Wide Web tab (1.55.0) -------------------------------------------------------------------------------
-    TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0),)  # after Main and API: asked every 2 s while it is shown
+    TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0),)  # after Main and the API tabs: asked every 2 s while shown
     # hooks the platform runs as a job (liminal-platform 0.19.0), their lines followed in the plugin's panel: the GeoIP
     # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes
     JOB_HOOKS = (GEOIP_HOOK,)
@@ -225,6 +226,12 @@ class Firewall(MachinePlugin):
         variable = self.GROUPS_VARIABLE or re.sub(r"[^A-Z0-9]+", "_", str(self.name or "firewall").upper()).strip("_") + "_GROUPS"
         return RuleGroups(variable, lambda: getattr(self, "login", None))
 
+    @property
+    def KEEPS(self) -> tuple:
+        """What it keeps through its login beside its keys (Plugin.KEEPS, for its Internal API tab): the user's labels
+        and the moves of its rules, under the variable its `groups` are kept in. Said by name: no login is asked."""
+        return ((self.groups.variable, "the labels and the moves of its rules"),)
+
     def sorted_rules(self) -> dict[str, Sorted]:
         """Every rule this firewall reads, by its key (rulegroups.key_of), with the group found for it: a subclass's."""
         return {}
@@ -238,6 +245,8 @@ class Firewall(MachinePlugin):
         return self.groups.new_label(name)
 
     def rename_label(self, name, to) -> dict:
+        """A label of the user's renamed, the rules moved into it staying in it under the new name (nothing in the
+        firewall changes)."""
         return self.groups.rename_label(name, to)
 
     def remove_label(self, name) -> dict:
@@ -263,6 +272,10 @@ class Firewall(MachinePlugin):
 
     # -- the hooks ----------------------------------------------------------------------------------
     def status(self) -> dict:
+        """What the firewall is and how it does, for the platform's page: its backend, on or off in each profile
+        (`enabled`, `profiles`), Liminal's own rules, and whether the rules the framework's services need (`wanted`) are
+        there. Valid when it is Liminal's, on and holds Liminal's rules, none of those missing; `why` says what is not,
+        `problem` what could not be read. Not for this machine, not on Liminal's or not present: said, nothing asked."""
         here = self.not_for_here()
         if here:  # not for this machine at all (a Linux plugin on Windows or macOS): asked nothing, no setup offered
             return self.not_here_status(here, backend="", enabled=False, profiles={}, rules=[])

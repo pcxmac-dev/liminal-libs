@@ -1,5 +1,89 @@
 # Changelog
 
+## 1.63.0 (2026-11-18)
+
+An External API tab and an Internal API tab for every plugin and every app. The user, 2026-11-16: "for all apps, and
+all plugins, there should be an external api tab, and an internal api tab, the internal api is for interfaces the
+plugin shares with the rest of the app, the external should be all the SDKs/APIs the plugin associates with"; and
+2026-11-17: "a second tab for all plugins which describe the internal API like structure that the app code can work
+with", "all plugins all apps", "all plugins are middleware", "even for other plugins", "and then the app object code".
+The External API tab is the API tab's cards, as they were: the SDKs, APIs, commands and data a plugin or an app
+associates with. The Internal API tab is what it shares with the rest of the app, made from the object itself so that
+it cannot go stale: for a plugin, the middleware it is (its base, and so the standard interface it implements, then
+its own hooks, and who uses each); for an app, what its code calls on its plugins and what it offers them. The library
+gives both to every app and every plugin; liminal-platform 0.32.0 draws them for its plugins and for itself, and the
+charts, the integrator and the login take them up in releases of their own.
+
+- **For a plugin, nothing has to change.** The plugin API stays 2.3 and no plugin's floor moves. A plugin that says
+  nothing new has both tabs all the same, each hook of its own listed as a change until it says it only reads. What
+  it may say, all optional, are plain tuples of words on its class, read by name (`sources/plugin.py`, on `Plugin`):
+  `READ_HOOKS` (its hooks that only read, beside its bases'), `SERVICE_HOOKS` (those other plugins ask through the
+  app), `ASKS` (`(plugin, hook[, why])`, the plugin `""` for whichever offers the hook), `KEEPS` (`(variable, about)`:
+  what it keeps through its login beside its keys; a property where the variable is named after the plugin) and
+  `INTERNAL_NOTES` (a few lines of at most 400 characters). The rule a read is held to: it changes nothing here, at a
+  provider or in what is kept through the login; it may run a command that reads and ends, ask a provider without
+  spending its requests or quota, or change only what its page shows until the app restarts. A hook that spends them
+  (a scan, a publisher's `read`), costs money, starts a program that keeps running, opens a listener, takes an
+  `accept_*` argument or is one of its JOB_HOOKS is not one. liminal-platform 0.32.0 asks a read as one (`reads_of`):
+  noted so in who talks to whom and kept out of its log. A package's own test holds it to its words:
+  `pytest.importorskip("liminal_libs.internal")`, then `assert internal.problems(PLUGIN) == []`.
+- **What the bases say**, for every plugin built on them. READ_HOOKS on `FeedPlugin` (every hook but its scan),
+  `PublisherPlugin` (`moments`, `calendar`), `AssistantPlugin` (`build`), `MachinePlugin` (`present`, `status`,
+  `instances`), `Firewall` (`wanted`), `Admin` (`processes`), `WslDistribution` (`check`, `services`),
+  `DatabasePlugin` (`builtin`, `probe`, as agreed with the session of that file), `AiPlugin` (`refresh`), `ModelServer`
+  (`choose`, `log_of`, `models`, `serving` and `models_of`, the last two its SERVICE_HOOKS) and `Harness` (`command`,
+  `ask_models`). A harness asks every model server's `serving` and an instance's `models_of`, a model server the
+  others' `serving` (for a port). `KEEPS`: a firewall's groups, a model server's instances, what a harness's Use...
+  keeps. `INTERNAL_NOTES`: a WSL plugin's rename of its install kept as its DISTRIBUTION_VAR, a model server's keys
+  each a secret pair of its own, the server's key a harness reads to open a window. Docstrings of their own for
+  `Firewall.rename_label` and `status`, and for `WslDistribution`'s `present`, `status`, `run` and `instances`: base
+  hooks every firewall and WSL plugin shows.
+- **The cards without the registry** (`liminal_libs/apis.py`): the External API's module (`Api`, `Area`, `Call`,
+  `Link`, `as_dicts`, `facts_of`, `problems`, `dead_links` and the rest) lifted out of `sources/apis.py` unchanged, into
+  a module of the standard library alone, so an app that holds no plugin (the login, the charts' front) says what it
+  associates with without loading the registry, pandas or numpy. `sources/apis.py` imports every name back, the same
+  objects: no plugin changes an import.
+- **A plugin's Internal API** (`liminal_libs/internal.py`, the standard library alone). `internal_of(plugin, ...)`
+  reads it as middleware: what it sits on (its `apis`), the library class it is built on and that class's line up to
+  `Plugin` (`builtOn`, `chain`), and so the standard interface it implements, each base's HOOKS a layer, nearest first
+  (`standard`). Then each hook, the standard ones first and its own after them: its arguments, its docstring's first
+  sentence and the whole of it, the layer naming it, whose code answers it (its own, a library class's or the
+  contract's default), whether it only reads, is a job (and can be cancelled), a tab's page or asked twice (its
+  `accept_*` arguments), and who uses it here: the app's code (in the app's words), other plugins (its SERVICE_HOOKS,
+  with the plugins whose ASKS name it), both, or whoever asks it by name. Then how the app is asked for it, what it
+  asks of the others (with what each finds here), the settings it reads and keeps through the login, what the app
+  reads of it by name, its tabs, its steps and its notes. Nothing of a plugin is called or evaluated: its hooks are
+  looked up as they are declared (a property is never read), only its declared words, `keys`, `plan_vars`, `options`
+  and `apis` are read, each in its own try, and the answer is plain JSON. Beside it: `problems(plugin)`; `reads_of`
+  (what an app asks as reads: never a job, never a read that takes an `accept_*` argument); `answered_by`, the
+  contract's rule of whose code answers a hook, which `Plugin.gives` now asks, so that `interface()`, the frame's
+  `ask`, the tab and `App.askable` follow one rule; `answers`, `declared`, `kind_of`, `tabs_key`, `line_of`, `doc_of`
+  and `args_of`.
+- **An app's Internal API** (`app_internal`), its object code's side: what it calls and reads on its plugins of each
+  kind (`App.CALLS`, `App.ATTRIBUTES`) and the words it is asked in; what it offers them and other apps (`interface()`'s
+  eight methods, the login it lends, and for code `plugin_internal`, `internal` and `own_apis`); its routes (its own,
+  then the frame's: `FRAME_ROUTES`, and `LOGIN_ROUTES` while it inherits a login); the login it includes, with the
+  switch that turns it off; the apps it links and its plugins. `literals_in` and `route_problems` hold a table of
+  routes to the code that answers them (a test's).
+- **The frame** (`apps/app.py`): `GET /api/app/apis` answers an app's own two views (`app`, `internal`, `apis`,
+  `apiFacts`), and with `?plugin=NAME` an attached plugin's (404 for any other name), so that every app gives its
+  plugins' structure to code with no code of its own. New on `App`: `apis`, `ROUTES`, `LINKED`, `CALLS`, `ATTRIBUTES`
+  and `INTERNAL_NOTES`; `api_facts`, `routes`, `askable` (read as declared: nothing evaluated), `known_plugins`,
+  `call_words`, `plugin_internal` (kept per object and per tabs asked, `KEPT_INTERNAL` at the most), `internal` and
+  `own_apis`. `interface()` and `GET /api/plugins` are unchanged.
+- **The drawing** (`ui/static/internal.js`): `LiminalInternal.html(d, opts)` for a plugin, a list of them (a plugin of
+  several feeds) or an app; `tabs(list, shown, label)` for a page with no tabs of its own; `style()`, its own styles on
+  the themes' variables, so that a page without liminal.css or apis.js draws it alike; `KINDS`. A plugin's tab leads
+  with what kind of middleware it is and how it is called, then its base's standard interface layer by layer, then its
+  own hooks, each saying who uses it. It asks nothing of any server, and what was opened is kept in this browser under
+  `liminal:internal:folds` (600 at the most). `apps/tabs.py`: a plugin's page has Main, External API and Internal API,
+  and the page's own ids, whatever their case, are main, external, internal and api (an old `#name/api` opens External
+  API).
+- **Tests**: test_apis_lift, test_contract_words (the whole library imported, every base with HOOKS held to the
+  words), test_internal, test_internal_app, test_ui_internal and test_ai_internal (a harness's asks find the model
+  servers, a model server's `serving` and `models_of` name who asks them, and what each keeps), on stand-ins, under
+  1.62.0's `no_outside` guard.
+
 ## 1.62.0 (2026-11-18)
 
 The base under six AI plugins, and root access for the Linux plugins. The user, 2026-11-16: "claude i need 3 plugins

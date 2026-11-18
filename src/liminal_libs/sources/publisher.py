@@ -81,6 +81,7 @@ class PublisherPlugin(IntegratorPlugin):
     CONTRACT = True
     KIND = "publisher"
     HOOKS = ("moments", "calendar", "read", "scan", "settings")
+    READ_HOOKS = ("moments", "calendar")  # its reads beside Plugin's settings: its read and scan send requests
 
     feeds: tuple[Feed, ...] = ()
     policy: Policy = Policy()

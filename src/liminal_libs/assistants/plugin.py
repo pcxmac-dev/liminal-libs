@@ -42,6 +42,7 @@ class AssistantPlugin(PlatformPlugin):
     # not a CONTRACT class: its scan (Connect), settings and build are the real hooks every assistant gives
     KIND = "assistant"
     HOOKS = ("build", "scan", "settings")
+    READ_HOOKS = ("build",)  # its reads beside Plugin's settings (Plugin.READ_HOOKS): its scan, Connect, sends requests
 
     vendor: str = ""  # Anthropic, xAI, OpenAI
     assistant: "type[Assistant] | None" = None  # its Assistant subclass

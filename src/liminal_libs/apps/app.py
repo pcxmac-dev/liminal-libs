@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,8 @@ from .tray import Tray, TrayItem
 
 TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
 CODEBASE_PATH = "/api/codebase"  # its repositories, its code and how much of it is which language (apps.codebase)
+APIS_PATH = "/api/app/apis"  # its own External and Internal API (1.63.0); ?plugin=NAME: an attached plugin's two
+KEPT_INTERNAL = 256  # plugins' Internal APIs an app keeps at the most (App.plugin_internal), one for each object
 SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
 LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
 LOGIN_CLASS = "liminal_login.app:LoginApp"  # the login class an app inherits (liminal-login's), made here when first asked
@@ -47,6 +50,19 @@ def _caller(handler) -> str:
     """Who sent a request: the app's page in a browser (it names its origin), else a program."""
     h = handler.headers
     return "page" if (h.get("Origin") or h.get("Sec-Fetch-Site") or h.get("Referer")) else "client"
+
+
+def _cards_of(obj) -> tuple[list, dict]:
+    """What an app or a plugin associates with, as its External API draws it (1.63.0): its cards (liminal_libs.apis'
+    as_dicts of its `apis`) and what it learned of them (facts_of); none when its declaration cannot be read or
+    imported."""
+    from ..apis import as_dicts, facts_of  # (plain: the standard library alone, no registry)
+
+    try:
+        apis = as_dicts(obj.apis)
+    except Exception:  # noqa: BLE001 - a declaration that cannot be read (an apis.py that cannot be imported): none
+        return [], {}
+    return apis, facts_of(obj) if apis else {}
 
 
 class Refused(Exception):
@@ -72,7 +88,9 @@ class PortTaken(OSError):
 
 class App:
     """The frame of one app. A subclass sets the class attributes and overrides `api` (its routes),
-    `items` (its tray's plugins) and, when its page depends on the request, `page`."""
+    `items` (its tray's plugins) and, when its page depends on the request, `page`. For its own two
+    views (1.63.0) it declares `apis`, ROUTES, LINKED, CALLS, ATTRIBUTES and INTERNAL_NOTES; where it
+    knows more of its plugins than the frame does, it says so in askable, known_plugins and call_words."""
 
     NAME = ""  # "login", "charts", "integrator", "platform", "plugins"
     TITLE = ""
@@ -88,6 +106,16 @@ class App:
     TRACE_LOGIN = False
     WATCH_OUTSIDE = False
     READ_HOOKS: tuple[str, ...] = ()  # hooks asked by name that only read (noted as reads, not asks)
+    # its own two views (1.63.0; GET /api/app/apis): its External API, the cards of what it associates with (`apis`:
+    # liminal_libs.apis' Api, declared in its own package; a property importing them when asked, where its start must
+    # not load them) and what it learned of them (api_facts); its Internal API, made from the object by
+    # liminal_libs.internal (internal, plugin_internal), with these words of its own
+    apis: tuple = ()
+    ROUTES: tuple = ()  # its own routes beside the frame's: (method, path, about[, kind[, who]]), a `{...}` part varies
+    LINKED: tuple = ()  # the apps it links, each reached at its own address: (name, how[, variable[, prefix]])
+    CALLS: Mapping[str, Mapping[str, str]] = {}  # what its own code calls on a plugin of each KIND: {kind: {name: how}}
+    ATTRIBUTES: Mapping[str, tuple[str, ...]] = {}  # what its code reads of a plugin by name, never called: {kind: ()}
+    INTERNAL_NOTES: tuple[str, ...] = ()  # a few lines more for its Internal API, each at most 400 characters
     # the login this app inherits (1.46.0; the user, 2026-11-10: "make sure that the platform inherits the login app so we
     # can login to platform"; 2026-11-14: "the platform and integrator inherit the login function, they are separate login
     # instances, class vs object"; "login doesn't point to anything except the app that inherited it"): since 1.52.0 an
@@ -109,6 +137,8 @@ class App:
         self.served: str | None = None  # the URL once started
         self.touched = time.monotonic()  # the last request (serve's until_quiet)
         self._plugins: dict[str, object] = {}  # the plugins attached, by name (attach)
+        self._internal: dict[tuple, tuple] = {}  # what each plugin shares (plugin_internal), by (id, tabs): (it, that)
+        self._internal_known: tuple = ()  # the plugins it knew when those were made (known_plugins)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.traffic = Traffic()  # what is said, between whom (apps.traffic)
@@ -192,6 +222,7 @@ class App:
         return interface
 
     def detach(self, name: str) -> bool:
+        """The plugin of that name let go: it holds this app and its login no more; False when none is attached."""
         plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
@@ -318,6 +349,92 @@ class App:
         dirs = self.static_dirs()
         return {t for t in (web.static_target(self.INDEX, dirs), web.static_target(SIGNIN, dirs)) if t is not None}
 
+    # -- its own External and Internal API, and its plugins' (1.63.0; the user, 2026-11-16: "for all apps, and all
+    # plugins, there should be an external api tab, and an internal api tab"; 2026-11-17: "all plugins are middleware",
+    # "even for other plugins", "and then the app object code") ---------------------------------------------------
+    def api_facts(self) -> Mapping[str, Mapping[str, str]]:
+        """What it learned of what it associates with while it ran, {api name (one of `apis`): {label: words}}, asking
+        nothing to answer it, as a plugin's api_facts: the frame's, nothing learned."""
+        return {}
+
+    def routes(self) -> tuple:
+        """Its own routes beside the frame's, as its Internal API lists them (ROUTES); an app whose routes depend on how
+        it is served says so here."""
+        return self.ROUTES
+
+    def askable(self, plugin) -> set[str]:
+        """The hooks of a plugin it asks by name, for its page, a client or another plugin: the frame's ask takes any
+        hook the plugin answers itself (Plugin.interface, as Plugin.gives tells them), read here as the plugin declares
+        them (liminal_libs.internal.answers), so nothing of it is called or evaluated."""
+        from ..internal import answers  # (plain: the standard library alone)
+
+        return set(answers(plugin))
+
+    def known_plugins(self) -> list:
+        """The plugins it knows, which what one asks of the others and who asks it are read from: the frame's, those
+        attached."""
+        return list(self._plugins.values())
+
+    def call_words(self, plugin) -> dict:
+        """How its code is asked one of a plugin's hooks, in words, for that plugin's Internal API: the frame's, by
+        another plugin through its app's ask, the arguments as the hook takes them."""
+        return {"plugins": f"self.app.ask({plugin.name!r}, hook, *arguments)", "terms": "any hook it answers"}
+
+    def plugin_internal(self, plugin, tabs=None) -> dict:
+        """What a plugin shares with this app, as this app's code works with it: its Internal API, made from the plugin
+        object itself (liminal_libs.internal.internal_of). What this app says of its plugins goes with it: its
+        READ_HOOKS, its CALLS and ATTRIBUTES for the plugin's KIND, askable, known_plugins and call_words, and `tabs`,
+        its own list of the plugin's tabs (else the plugin's TABS). Nothing of the plugin is called by the frame's own
+        parts (a subclass's askable, known_plugins and call_words are its own). Kept for the app's life, for that object
+        alone and the tabs it was asked with (by its id and those tabs, the object held with it, so an id used again is
+        never taken for it; KEPT_INTERNAL at the most), while the app knows the same plugins (what they ask of each
+        other is read from them): the same dict each time, which a caller adding to it copies first."""
+        from ..internal import internal_of, kind_of, tabs_key  # (plain: the standard library alone)
+
+        known = self.known_plugins()
+        known = list(known.values() if isinstance(known, Mapping) else known)
+        held = self._internal_known
+        if len(known) != len(held) or any(a is not b for a, b in zip(known, held)):
+            self._internal.clear()  # a plugin attached or let go (the frame's known: those attached): made again
+            self._internal_known = held = tuple(known)
+        if tabs is not None and not isinstance(tabs, (tuple, list)):  # listed once: an iterator is read once
+            try:
+                tabs = [] if isinstance(tabs, (str, bytes, Mapping)) else list(tabs)
+            except Exception:  # noqa: BLE001 - tabs that cannot be listed: none, as internal_of reads them
+                tabs = []
+        key = (id(plugin), tabs_key(plugin, tabs))  # the same object asked with other tabs: its answer made apart
+        hit = self._internal.get(key)
+        if hit is not None and hit[0] is plugin:
+            return hit[1]
+        kind = kind_of(plugin)
+        calls = self.CALLS.get(kind, {}) if isinstance(self.CALLS, Mapping) else {}
+        attributes = self.ATTRIBUTES.get(kind, ()) if isinstance(self.ATTRIBUTES, Mapping) else ()
+        answer = internal_of(plugin, reads=self.READ_HOOKS, calls=calls, askable=self.askable(plugin), tabs=tabs,
+                             known=known, words=self.call_words(plugin), attributes=attributes)
+        if self._internal_known is not held:  # others came to be known while it was made: not kept, made again
+            return answer
+        if len(self._internal) >= KEPT_INTERNAL:  # more objects than an app holds plugins: made again, the old let go
+            self._internal.clear()
+        self._internal[key] = (plugin, answer)
+        return answer
+
+    def internal(self) -> dict:
+        """This app's own Internal API, its object code's side (liminal_libs.internal.app_internal). What it calls and
+        reads on its plugins of each kind and how it is asked for them; what it offers them and other apps; its routes,
+        the login it includes, the apps it links and its plugins. Made when asked; nothing of a plugin is asked."""
+        from ..internal import app_internal
+
+        return app_internal(self)
+
+    def own_apis(self) -> dict:
+        """Its own two views, as GET /api/app/apis answers them: what a client learns of it first, its Internal API and
+        its External API. `app` is describe(), `internal` is internal(), and `apis` and `apiFacts` are the cards of what
+        it associates with and what it learned of them, the two keys a plugin's status carries, so a page draws both
+        with the same calls. Made for each request, asking no plugin anything; a declaration that cannot be read or
+        imported is none."""
+        apis, facts = _cards_of(self)
+        return {"app": self.describe(), "internal": self.internal(), "apis": apis, "apiFacts": facts}
+
     # -- the routes ------------------------------------------------------------------------------
     def api(self, handler, method: str, path: str, query: dict, body: dict | None):
         """The app's routes: returns (status, data) or (status, data, headers) for an /api/ request,
@@ -346,6 +463,15 @@ class App:
             from ..ui import preferences
 
             return 200, preferences()
+        if method == "GET" and path == APIS_PATH:  # its own two views; ?plugin=NAME, an attached plugin's (1.63.0)
+            name = str(query.get("plugin") or "")
+            if not name:
+                return 200, self.own_apis()
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                raise Refused(HTTPStatus.NOT_FOUND, f"no plugin {name!r} is attached to {self.NAME}")
+            apis, facts = _cards_of(plugin)
+            return 200, {"name": name, "internal": self.plugin_internal(plugin), "apis": apis, "apiFacts": facts}
         raise Refused(HTTPStatus.NOT_FOUND, "not found")
 
     # -- the server ------------------------------------------------------------------------------

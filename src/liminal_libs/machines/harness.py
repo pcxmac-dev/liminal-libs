@@ -261,10 +261,13 @@ class Harness(ai.AiPlugin):
     RUN_STATE = HarnessRun
     # What it says of the interface it shares (the contract's words of liminal-libs 1.63.0, read by name by the Internal
     # API tab; nothing reads them before it): its reads beside its bases', what it asks of the other plugins through
-    # the platform, and what it keeps through the login (KEEPS, below)
+    # the platform, and what it keeps through the login (KEEPS, below) and reads there (INTERNAL_NOTES: a server's key)
     READ_HOOKS = ("command", "ask_models")
     ASKS = (("", SERVING, "what each model server serves: its instances, their addresses, states and models"),
             ("", MODELS_OF, "one model server's models, asked now (Ask…)"))
+    INTERNAL_NOTES = ("A model server's key is read through its login by the variable that server's `serving` row "
+                      "names, only to open a window, and is handed to the tool in its environment alone: never on "
+                      "its command line, in an answer, a log or the lines to paste (its placeholder is there).",)
 
     @property
     def KEEPS(self) -> tuple:  # noqa: N802 - a declared word of the contract, as READ_HOOKS

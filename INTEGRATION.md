@@ -154,6 +154,62 @@ to the app with that login. The integrator's fetcher and the charts app hold an 
 daemon can hold a login session of its own; the login app lists the pairs the plugins ask for
 (`GET /api/pairs/known`) so a user adds a key under the name the plugin reads.
 
+## The External and Internal API tabs (liminal-libs 1.63.0)
+
+The user, 2026-11-16: "for all apps, and all plugins, there should be an external api tab, and an internal api tab,
+the internal api is for interfaces the plugin shares with the rest of the app, the external should be all the
+SDKs/APIs the plugin associates with"; 2026-11-17: "all plugins are middleware". So the library gives every app
+and every plugin both. The External API is what it associates with: its `apis`, the cards of `liminal_libs.apis` (the
+standard library alone; `liminal_libs.sources.apis` names the same objects), and what it learned of them,
+`api_facts()`. The Internal API is what it shares with the rest of the app, made from the object itself by
+`liminal_libs.internal` (the standard library alone; nothing of a plugin is called or evaluated) and drawn by
+`ui/static/internal.js`.
+
+What a plugin says of it, all optional: plain tuples of words on its class, read by name (`sources/plugin.py`; no
+plugin API number moved, no floor moved). A plugin that says nothing has both tabs all the same, each hook of its own
+listed as a change.
+- `READ_HOOKS`: its hooks that only read, beside its bases' (a base's names stay its subclasses'). A read changes
+  nothing here, at a provider or in what is kept through the login: it may run a command that reads and ends, ask a
+  provider without spending its requests or quota, or change only what its page shows until the app restarts. A
+  hook that spends them (a scan, a publisher's `read`), costs money, starts a program that keeps running, opens a
+  listener, takes an `accept_*` argument or is a job is not one.
+- `SERVICE_HOOKS`: its hooks other plugins ask through the app (`self.app.ask(...)`); its page draws none for them.
+- `ASKS`: what it asks of other plugins, rows `(plugin, hook)` or `(plugin, hook, why)`, the plugin `""` for
+  whichever offers the hook.
+- `KEEPS`: what it keeps through its login beside its keys, rows `(variable, about)`; a property where the variable
+  is named after the plugin (a firewall's groups, a model server's instances).
+- `INTERNAL_NOTES`: a few lines more, each at most 400 characters (the first 40 are read).
+
+Each package's own test holds it to them:
+
+```python
+internal = pytest.importorskip("liminal_libs.internal")
+
+
+def test_what_it_says_of_the_interface_it_shares_is_sound():
+    assert internal.problems(MACHINE) == []
+```
+
+What the library gives code (`liminal_libs.internal`): `internal_of(plugin, ...)`, a plugin's Internal API as plain
+JSON; `app_internal(app)`, an app's; `problems(plugin)`; `reads_of(plugin, reads, tabs)`, what an app asks as reads
+(the app's own, its tabs' hooks, then the READ_HOOKS the plugin answers itself, never a job or a read that takes an
+`accept_*` argument); `answers(plugin)`, the hooks it answers itself; `answered_by(obj, name)`, whose code answers a
+hook (the rule `Plugin.gives` asks); `kind_of(plugin)`; `tabs_key(plugin, tabs)`; and `literals_in` and
+`route_problems`, for a test holding a table of routes to the code that answers them.
+
+What an app says and offers (`apps/app.py`): `apis` (a property importing them when asked, where its start must not
+load them), `ROUTES` (its own routes beside the frame's, `(method, path, about[, kind[, who]])`), `LINKED` (the apps it
+links, `(name, how[, variable[, prefix]])`), `CALLS` (`{kind: {name: how}}`, what its code calls on a plugin of each
+kind), `ATTRIBUTES` (`{kind: (name, ...)}`, what it reads of one by name) and `INTERNAL_NOTES`; where it knows more of
+its plugins than the frame does, `askable(plugin)`, `known_plugins()` and `call_words(plugin)`; and for code
+`plugin_internal(plugin, tabs=None)`, `internal()` and `own_apis()`. Every app answers `GET /api/app/apis` with
+`{"app", "internal", "apis", "apiFacts"}`, and `GET /api/app/apis?plugin=NAME` with an attached plugin's `{"name",
+"internal", "apis", "apiFacts"}` (404 for any other name). A page draws them with `LiminalApis.html` and
+`LiminalInternal.html(d, opts)` (a plugin's `internal`, a list of them, an app's, or null: then `opts.older`);
+`LiminalInternal.tabs(list, shown, label)` gives a page with no tabs of its own a row of them, and
+`LiminalInternal.style()` its styles. liminal-platform 0.32.0 draws both for its plugins and for itself; the charts,
+the integrator and the login follow.
+
 ## Containers (liminal-libs 1.18)
 
 `liminal_libs.docker` drives the docker command (or Rancher Desktop's `nerdctl`: LIMINAL_DOCKER_COMMAND) for

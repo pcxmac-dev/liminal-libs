@@ -289,6 +289,7 @@ class Admin(MachinePlugin):
     (status, setup) and the checks of what is asked are this base's."""
 
     HOOKS = (*MachinePlugin.HOOKS, "service", "startup", "register", "unregister", "processes")  # what the platform may ask by name
+    READ_HOOKS = ("processes",)  # its reads beside MachinePlugin's (Plugin.READ_HOOKS): the rest change what runs
     STEPS = STEPS
     ICON = "wrench"
     SERVICES: tuple = ()  # (name, title, what of the framework uses it, may the setup start it)

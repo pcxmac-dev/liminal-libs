@@ -42,6 +42,7 @@ class MachinePlugin(PlatformPlugin):
     CONTRACT = True
     KIND = "machine"
     HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
+    READ_HOOKS = ("present", "status", "instances")  # its reads beside Plugin's settings (Plugin.READ_HOOKS)
     STEPS: tuple = ()  # the setup's steps, in order: what the platform's page offers one at a time
     ICON = "chip"  # its icon in the platform's tray (icons.js) when it is active
     # The section of the platform's list it is drawn under (1.51.0; the user, 2026-11-14: "classify the cloud plugins under
@@ -57,8 +58,9 @@ class MachinePlugin(PlatformPlugin):
     # liminal-platform 0.26.0 draws the first four, in that order (a platform before it knows "machine" and "cloud"
     # only); 0.31.0 draws "ai" after the AI assistants, by GROUP, and one whose GROUP it does not draw as "machine".
     SECTION = "machine"
-    # Its own tabs on its page, after Main and API (apps/tabs.py; the user, 2026-11-14: "so for the firewall's both are
-    # going to get a 'world wide web view'"; "there needs to be a way to 'filter' (another tab)"):
+    # Its own tabs on its page, after Main, External API and Internal API (apps/tabs.py; the user, 2026-11-14:
+    # "so for the firewall's both are going to get a 'world wide web view'"; "there needs to be a way to 'filter'
+    # (another tab)"):
     #   each a Tab(id, title, hook, every): the hook, listed in HOOKS like any it answers, is a read the platform's page
     #   asks every `every` seconds while the tab is shown, and the page draws what it answers;
     #   none by default.

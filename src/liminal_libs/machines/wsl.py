@@ -495,8 +495,12 @@ class WslDistribution(MachinePlugin):
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
     HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall",
              "start_install", "pause_install", "stop_install", "rename_install")
+    READ_HOOKS = ("check", "services")  # its reads beside MachinePlugin's (Plugin.READ_HOOKS): the rest change or start
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
+    INTERNAL_NOTES = ("A rename of its own install (rename_install) is kept through its login as its DISTRIBUTION_VAR "
+                      "(WSL_UBUNTU_DISTRIBUTION for wsl-ubuntu), which distribution_name reads before the "
+                      "environment's: the plugin follows its install to the new name.",)
     # its system's installs (1.36.0): those WSL records with one of these flavors, else named or packaged so (any case);
     # () for the system's own name, from `distribution` (Liminal-Ubuntu: ubuntu)
     FLAVORS: tuple = ()
@@ -663,6 +667,7 @@ class WslDistribution(MachinePlugin):
 
     # -- the hooks ---------------------------------------------------------------------------------
     def present(self) -> bool:
+        """Whether its own distribution is installed: WSL is here and lists distribution_name (nothing started)."""
         return self.wsl.here and self.wsl.distribution(self.distribution_name) is not None
 
     # -- every install of its system (the user: "they need to list all the 'operating systems' that are installed under
@@ -911,6 +916,10 @@ class WslDistribution(MachinePlugin):
                 *self.install_forms()]
 
     def status(self) -> dict:
+        """What WSL and its own distribution are and how they do, for the platform's page: WSL itself, every install of
+        its system (a table to choose one from, the tasks' forms) and, while its own runs, Docker and the services
+        inside. A status never starts a distribution: a stopped one's Docker is said as last seen. Valid when WSL is
+        here and Liminal's own distribution is installed; `why` says what is not."""
         wsl = self.wsl.status() if self.wsl.here else {"present": False, "version": "", "distribution": ""}
         listed = self.wsl.distributions() if wsl.get("present") else []  # one list for its own and its system's installs
         d = next((x for x in listed if x.name.lower() == self.distribution_name.lower()), None)
@@ -1074,9 +1083,15 @@ class WslDistribution(MachinePlugin):
         return done
 
     def run(self, *command: str, user: str | None = None, stdin: str | None = None, timeout: float = TIMEOUT_S) -> str:
+        """A command in its own distribution, run as given with no shell between, as `user` (the distribution's default
+        user when None) with `stdin`: its output, or a WslError in its words when it fails. A stopped distribution
+        starts to run it."""
         return self.wsl.run(self.distribution_name, *command, user=user, stdin=stdin, timeout=timeout)
 
     def instances(self) -> tuple[Instance, ...]:
+        """Docker inside its own distribution as an instance (docker.Instance: `wsl -d NAME --exec docker`, the paths
+        given to it translated for WSL), asked inside only while the distribution runs. None when it is not installed
+        or was last seen without Docker; a stopped one is not started to ask, its instance starting it when used."""
         name = self.distribution_name
         d = self.wsl.distribution(name) if self.wsl.here else None
         if d is None:

@@ -75,6 +75,7 @@ class DatabasePlugin(IntegratorPlugin):
     CONTRACT = True
     KIND = "database"
     HOOKS = ("builtin", "open", "probe", "make", "own_port", "scan", "settings")
+    READ_HOOKS = ("builtin", "probe")  # its reads (Plugin.READ_HOOKS), agreed 2026-11-16 with the session of this file
     ICON = "database"  # its icon on a page (icons.js)
     ENGINE = ""  # one of ENGINES
     METHODS: tuple[str, ...] = ()  # the ways its instances are reached, the usual one first

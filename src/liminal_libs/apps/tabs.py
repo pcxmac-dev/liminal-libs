@@ -1,11 +1,13 @@
 """A plugin's own tabs on its page (the user, 2026-11-14: "so for the firewall's both are going to get a 'world wide web
 view' that shows the globe and the routes incoming all traffic, as well as monitoring port traffic stats"; "on top of the
 monitoring there needs to be a way to 'filter' (another tab) that allows you to monitor send and receive traffic"). A
-plugin's page has Main and API; a machine plugin declares more in its `TABS` (machines/plugin.py), each a `Tab`:
+plugin's page has Main, External API and Internal API (liminal-platform 0.32.0; Main and API before it); a machine
+plugin declares more in its `TABS` (machines/plugin.py), each a `Tab`:
 
 - `id`: the tab in the page's address (#name/<id>), so a reload or a link keeps it. It is url-safe: letters, digits, "-"
-  and "_" (RFC 4648's URL and filename alphabet), at most MAX_ID long. The platform leaves out a tab whose id is Main's
-  or API's ("main", "api"), or another tab's;
+  and "_" (RFC 4648's URL and filename alphabet), at most MAX_ID long. The platform leaves out a tab whose id is one of
+  the page's own, whatever its case ("main", "external", "internal", and "api", whose old addresses open External API),
+  or another tab's; a Tab refuses none of them itself: the app whose page draws the tabs decides;
 - `title`: the words on the tab ("World Wide Web", "Filter");
 - `hook`: one of the plugin's hooks (listed in its HOOKS like any it answers), asked with no arguments, answering the page
   the tab draws. It is a read: the platform notes it as one in who talks to whom, never as a change, and keeps it out of

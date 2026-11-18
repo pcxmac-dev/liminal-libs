@@ -34,6 +34,12 @@ is about"): `apis`, an Api for each thing it talks to (a vendor's API, a command
 kernel's interface ...) with the maker's pages, the API's parts and calls (those it uses and the rest), its limits and
 costs, and `api_facts()`, what it learned of them while it ran; every app's page draws both.
 
+liminal-libs 1.63.0 adds what a plugin says of the interface it shares with the rest of the app (the user, 2026-11-16:
+"the internal api is for interfaces the plugin shares with the rest of the app"), no plugin API number moved: which of
+its hooks only read, which other plugins ask, what it asks of them, what it keeps through its login and a few notes
+(`READ_HOOKS`, `SERVICE_HOOKS`, `ASKS`, `KEEPS`, `INTERNAL_NOTES`), read by liminal_libs.internal for the Internal API
+tab beside the External API one (its `apis`), and by an app's code.
+
 A plugin instance is shared by every thread of a process: it holds what it declares, never a run's
 state. This module imports no registry and no collector: the contract knows nothing of who loads it.
 """
@@ -48,6 +54,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 from .. import layout
+from ..internal import answered_by  # whose code answers a hook (plain: the standard library alone)
 from ..layout import Database
 from ..models import is_foreign
 from .fetching import Fetcher
@@ -197,6 +204,23 @@ class Plugin:
     HOOKS: tuple[str, ...] = ("scan", "settings")
     login: "Login | None" = None  # the one way to a key, an account or a password: self.login.key(self.name)
     app: object = None  # the app it is attached to (an apps.App, the integrator's or the charts app's)
+    # What it says of the interface it shares with the rest of the app (liminal-libs 1.63.0): read by name and never
+    # called, by liminal_libs.internal for its Internal API tab and by an app's code; plain tuples of words, so a plugin
+    # imports nothing for them. Each class names only its own: READ_HOOKS and SERVICE_HOOKS add to its bases' (a base's
+    # names stay its subclasses'), each a name among its HOOKS; ASKS, KEEPS and INTERNAL_NOTES are read as the plugin
+    # has them (a subclass's replace its base's). READ_HOOKS: its hooks that only read (a hook nothing says only reads,
+    # its tabs' and its app's own reads aside, is taken for a change). A read changes nothing here, at a provider or in
+    # what is kept through the login: it may run a command that reads and ends (`wsl --version`, `docker ps`), ask a
+    # provider without spending its requests or quota, or change only what its page shows until the app restarts. A
+    # hook that spends them (a scan, a publisher's `read`), costs money, starts a program that keeps running (a server,
+    # a daemon, a stopped distribution) or opens a listener is not one, nor is a hook taking an `accept_*` argument
+    # (what a refusal asked a second time sets) or one of its JOB_HOOKS.
+    READ_HOOKS: tuple[str, ...] = ("settings",)
+    SERVICE_HOOKS: tuple[str, ...] = ()  # its hooks other plugins ask through the app (app.ask); its page draws none
+    ASKS: tuple = ()  # what it asks of other plugins: (plugin, hook[, why]), plugin "" for whichever offers it
+    KEEPS: tuple = ()  # what it keeps through its login beside its keys: (variable, about); a property where the
+    # variable is named after the plugin (Firewall's groups)
+    INTERNAL_NOTES: tuple[str, ...] = ()  # a few lines more for that tab, each at most 400 characters
 
     def __init__(self, **attributes) -> None:
         """A plugin with these attributes set on it (a test's FeedPlugin(name=..., build=...)); a real
@@ -255,13 +279,9 @@ class Plugin:
     def gives(self, name: str) -> bool:
         """Whether this plugin answers a hook itself: a record's callback field set, an attribute set
         on the instance (with_, __init__), or a method of its class overriding the contract's (a
-        class attribute `scan = None` in a subclass drops an inherited one)."""
-        if name in self.__dict__:
-            return self.__dict__[name] is not None
-        for cls in type(self).__mro__:
-            if name in cls.__dict__:
-                return "CONTRACT" not in cls.__dict__ and cls.__dict__[name] is not None
-        return False
+        class attribute `scan = None` in a subclass drops an inherited one): the nearest declaration
+        decides, by liminal_libs.internal.answered_by, which the Internal API tab and App.askable read."""
+        return bool(answered_by(self, name))
 
     def _answer(self, name: str, default, *args):
         """A hook's answer: the record's callback (or an attribute set on the instance), else the
@@ -359,6 +379,8 @@ class FeedPlugin(IntegratorPlugin):
     KIND = "feed"
     HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries", "plan_resolutions", "reporter", "scan",
              "settings")
+    # its reads beside Plugin's settings (Plugin.READ_HOOKS): every hook but its scan, which sends requests
+    READ_HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries", "plan_resolutions", "reporter")
 
     assets: frozenset = frozenset()  # asset classes it can collect at all (with keys / on some plan)
     keyless: frozenset = frozenset()  # asset classes served without its keys (Alpaca: crypto)

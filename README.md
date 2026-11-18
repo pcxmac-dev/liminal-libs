@@ -17,6 +17,15 @@ and publication delays (`freshness.py`, `sessions.py`), the resident hosts over 
 recorder (`live.py`), the composites, derived frames and provenance, the datasets, the publishers, and the settings
 (`config.py`: keys only from your environment variables).
 
+Every app and every plugin can show an External API tab and an Internal API tab (1.63.0; liminal-platform 0.32.0
+is the first app to draw them). The External API is the cards of what it associates with (`apis.py`: the standard
+library alone, so that an app holding no plugin needs neither the registry nor pandas to say it; `sources/apis.py`
+names the same objects). The Internal API is made from the object itself by `internal.py` (a plugin as middleware:
+the base it is built on and so the standard interface it implements, its hooks and who uses each; an app's: what
+its code calls on its plugins and what it offers them, its routes) and drawn by `ui/static/internal.js`. Every app
+answers both at `GET /api/app/apis`, and an attached plugin's with `?plugin=NAME` (INTEGRATION.md says what a
+plugin and an app may declare for them).
+
 The workspace (`layout.py`): one folder holds `common/` (this library's checkout), `app/` (the chart app),
 `store/` (the integrator, the databases in `store/data/`) and `plugins/` (a checkout per plugin, loaded from
 there by the registry). Found by its four folders above this checkout, or named by `LIMINAL_HOME`.
