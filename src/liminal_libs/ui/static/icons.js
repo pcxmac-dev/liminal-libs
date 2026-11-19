@@ -221,6 +221,40 @@
       + '<path stroke-width="1.6" d="M17.7 5.94 21.2 12l-3.5 6.06M13.2 20.66h-7L2.7 14.6M2.7 9.4l3.5-6.06h7"/>'
       + '<path stroke-width="1.2" d="M17.49 11.57 15.1 7.44M17.49 12.43 15.1 16.56M8.43 17.66h4.77M7.68 17.23 5.3 13.1'
       + 'M7.68 6.77 5.3 10.9M8.43 6.34h4.77"/></g>',
+    // The AI plugins of 2026-11-18 (the user: "now i need an MCP plugin for platform, basically a protocol plugin
+    // that mediates MCP connections to resources by local AI agents"; "top 4 inference engines, top 4 agentic
+    // harnesses (open source)"), each by its maker's mark, drawn anew in the set's line from what the mark shows,
+    // not traced from its maker's files:
+    // LMDeploy's bolt, leaning right, and three rings swept round its lower half like a whirl, their backs behind it
+    lmdeploy: '<path stroke-width="1.5" d="M18.2 2 7.4 12h3.8l-2.8 10L19.2 12h-3.8z"/>'
+      + '<path stroke-width="1.1" d="M17.88 16.51A8.2 1.7 0 1 1 5.14 16.55M18.15 16.14A8.2 1.7 12 1 1 5.68 13.53'
+      + 'M18.49 15.83A8.2 1.7 24 1 1 6.83 10.69"/>',
+    // Codex's own mark (the Codex CLI plugin's; the Codex plugin, OpenAI's service, keeps OpenAI's knot above): a
+    // cloud of six round lobes, the prompt >_ inside it
+    codexcli: '<g stroke-width="1.5"><path d="M20.02 9.85A5 5 0 0 1 17.87 17.87 5 5 0 0 1 9.85 20.02'
+      + ' 5 5 0 0 1 3.98 14.15 5 5 0 0 1 6.13 6.13 5 5 0 0 1 14.15 3.98 5 5 0 0 1 20.02 9.85z"/>'
+      + '<path d="M7.8 9.4 9.6 12l-1.8 2.6M12.8 14.6h3.6"/></g>',
+    // Pi's mark: P and i in square blocks, the gaps between them standing for its three colours (the P's top and
+    // right side; its stem and the foot of its bowl; the i's stem)
+    pi: '<path stroke-width="3.4" stroke-linecap="square" stroke-linejoin="miter" '
+      + 'd="M5.4 5.4h8.8v4.4M5.4 9.8v8.8M5.4 14.2h4.4M18.6 14.2v4.4"/>',
+    // Cline's robot: its head, the sides bent out like < and >, the knob on its short neck, two tall eyes
+    cline: '<g stroke-width="1.5"><path d="M12 7.4h4.4a2 2 0 0 1 2 2v1.15l2.4 3.15-2.4 3.15V18a2 2 0 0 1-2 2H7.6'
+      + 'a2 2 0 0 1-2-2v-1.15L3.2 13.7l2.4-3.15V9.4a2 2 0 0 1 2-2zM12 7.4V5.8"/><circle cx="12" cy="4.6" r="1.2"/></g>'
+      + '<path stroke-width="1.8" d="M9.7 12.3v2.8M14.3 12.3v2.8"/>',
+    // goose's goose in flight, seen from below: the neck stretched up to the right with its head and beak, one wing
+    // raised and one lowered, three feathers at the end of each, the tail down to the left (its plugin is built
+    // only on the user's word, in Cline's place or Pi's)
+    goose: '<g stroke-width="1.3"><path d="M21 3 18.4 7 15 10.9Q19 13.4 21.9 20.6A2.6 2.6 0 0 1 18.6 21.9'
+      + ' 2.4 2.4 0 0 1 15.4 21.6 2.6 2.6 0 0 1 12.6 19.6L10.6 17.4 4.5 20.5 4.9 15.2 6.2 13.8A3.2 3.2 0 0 1 2.5 10.2'
+      + ' 3 3 0 0 1 2 6.2 3 3 0 0 1 3.2 2Q8.6 4.2 13 9.6L16.9 5.6Q17.4 3.4 19.4 3.6z"/>'
+      + '<path stroke-width="1.1" d="M2 6.2 4.84 7.15M2.5 10.2 5.5 10.15M18.6 21.9 17.55 19.09M15.4 21.6 15.17 18.61"/>'
+      + '</g>',
+    // the Model Context Protocol's mark (the MCP plugin's): three hairpins of one line at a slant, linked like a
+    // chain (an end of one lies in the bend of the next), the last ending in a short foot
+    mcp: '<path stroke-width="1.3" d="M3.37 11.31 11.58 3.11A2.9 2.9 0 0 1 15.68 7.21L9.52 13.36'
+      + 'M13.63 5.16 7.47 11.31A2.9 2.9 0 0 0 11.58 15.42L17.73 9.26'
+      + 'M9.52 13.36 15.68 7.21A2.9 2.9 0 0 1 19.78 11.31L12.09 19A.97 .97 0 0 0 12.09 20.37L13.46 21.74"/>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 

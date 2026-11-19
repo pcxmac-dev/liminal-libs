@@ -21,13 +21,15 @@ import threading
 import time
 import webbrowser
 from collections.abc import Mapping
+from contextlib import nullcontext
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .. import web
 from ..ui import STATIC as UI_STATIC
+from . import asking
 from .codebase import Codebase
 from .login import PAIRS_PATH, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
@@ -139,7 +141,7 @@ class App:
         self._plugins: dict[str, object] = {}  # the plugins attached, by name (attach)
         self._internal: dict[tuple, tuple] = {}  # what each plugin shares (plugin_internal), by (id, tabs): (it, that)
         self._internal_known: tuple = ()  # the plugins it knew when those were made (known_plugins)
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: web.Server | None = None
         self._thread: threading.Thread | None = None
         self.traffic = Traffic()  # what is said, between whom (apps.traffic)
         self.traffic.me = self.NAME
@@ -197,6 +199,27 @@ class App:
         except Exception:  # noqa: BLE001 - a login that cannot say: as if there were none
             return None
 
+    def present(self, handler) -> bool | None:
+        """Whether the person at the browser of `handler` is shown to be there, for a hook only its page may ask
+        (PAGE_ONLY_HOOKS; apps.asking). The login's own proof of presence when it offers one (its present(handler)),
+        else whether that browser is signed in to it (signed_in). True only when the proof says True: a login that
+        cannot say, or a proof that fails, is False. None when this app holds no login: it inherits none, or none
+        could be made. A login object that is itself an app has the frame's present() too: that one is not its proof."""
+        login = self.login_object()
+        try:
+            prove = getattr(login, "present", None) if login is not None else None
+        except Exception:  # noqa: BLE001 - a login that cannot say whether it has a proof proves nothing
+            return False
+        if callable(prove) and getattr(prove, "__func__", None) is not App.present:
+            try:
+                return prove(handler) is True
+            except Exception:  # noqa: BLE001 - a proof that fails proves nothing
+                return False
+        said = self.signed_in(handler)
+        if said is None:
+            return None if login is None else False
+        return said is True
+
     def trays(self) -> list[dict]:
         """The trays of what this app holds besides its own, for the foot of its rail: the login it inherits."""
         login = self.login_object()
@@ -245,12 +268,19 @@ class App:
 
     def ask(self, name: str, hook: str, *args, **kwargs):
         """One attached plugin's hook called by name (LookupError: no such plugin or hook); noted as asked by whoever
-        calls (a plugin asking another through its app, else the app)."""
+        calls (a plugin asking another through its app, else the app). A plugin that asks is the asker of that call
+        (apps.asking): the hook reads its name with asking.asker(), never from an argument. The app's own code asks
+        as whoever it asks for: the page, inside a route that says so, else no one. A hook the plugin says only other
+        plugins ask (PLUGIN_ONLY_HOOKS), or only its page (PAGE_ONLY_HOOKS), is refused to any other asker, in words
+        (asking.AskRefused), and noted as an ask that failed. A plugin named "page" asks as no one."""
         plugin = self._plugins.get(name)
         if plugin is None:
             raise LookupError(f"no plugin {name!r} is attached to {self.NAME}")
-        caller = self.traffic.actor(sys._getframe(1)) or self.NAME
-        with self.traffic.timed(caller, name, "read" if hook in self.READ_HOOKS else "ask", hook):
+        who = self.traffic.actor(sys._getframe(1))
+        caller = who or self.NAME
+        held = nullcontext() if not who or who == self.NAME else asking.asking(None if who == asking.PAGE else who)
+        with held, self.traffic.timed(caller, name, "read" if hook in self.READ_HOOKS else "ask", hook):
+            asking.check(plugin, hook)
             return plugin.ask(hook, *args, **kwargs)
 
     # -- who talks to whom (apps.traffic) ---------------------------------------------------------------------------
@@ -477,12 +507,13 @@ class App:
     # -- the server ------------------------------------------------------------------------------
     def start(self, port: int | None = None, open_browser: bool = False) -> str:
         """Serve in a thread of its own on `port` (the app's by default; 0, any free one, is a test's); returns the URL
-        (`served`). A port another program holds is refused (PortTaken), never traded for another (1.52.0)."""
+        (`served`). A port another program holds is refused (PortTaken), never traded for another (1.52.0). The server
+        is web.Server, whose port is its own on every system: on Windows no later server can bind it while it serves."""
         port = self.port() if port is None else port
-        if port and web.listening(port):  # a bind alone cannot tell on Windows (web.listening)
+        if port and web.listening(port):  # who holds it, said in words before the bind (web.Server's bind refuses too)
             raise PortTaken(self, port)
         try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(self))
+            httpd = web.Server(("127.0.0.1", port), make_handler(self))
         except OSError as e:
             raise PortTaken(self, port, e) from None
         self._httpd = httpd
@@ -625,7 +656,7 @@ def make_handler(app: App):
             if data:
                 try:
                     body = json.loads(data)
-                except ValueError:
+                except (ValueError, RecursionError):  # nested too deep to read is not JSON here either (1.66.0)
                     return web.send_json(self, {"error": "the body is not JSON"}, HTTPStatus.BAD_REQUEST)
                 if not isinstance(body, dict):
                     return web.send_json(self, {"error": "the body must be a JSON object"}, HTTPStatus.BAD_REQUEST)

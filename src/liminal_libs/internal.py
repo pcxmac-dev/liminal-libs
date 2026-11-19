@@ -26,10 +26,13 @@ So a plugin is read as middleware, from the object itself, so that what is said 
 What a plugin says of itself is plain tuples of words on its class (sources/plugin.py: READ_HOOKS, SERVICE_HOOKS, ASKS,
 KEEPS, INTERNAL_NOTES; JOB_HOOKS, CANCEL_HOOKS and TABS as before), read by name, so a plugin imports nothing for them:
 one that says nothing has both tabs all the same, each hook of its own listed as a change until it says it only reads.
-`problems(plugin)` is what a plugin's own test holds it to. `reads_of` is what an app asks as reads (the platform's
-log), and `answers`, `kind_of` and `tabs_key` what the frame reads of a plugin for its own parts (App.askable,
-App.plugin_internal), each as the plugin declares it. `answered_by` is the contract's own rule (Plugin.gives asks it):
-whose code answers a hook.
+Two more say who may ask a hook (2026-11-18, for the MCP plugin): PLUGIN_ONLY_HOOKS, asked only by another plugin
+through its app, never by a page or a program; and PAGE_ONLY_HOOKS, asked only from its page, never by another plugin.
+Plugin declares neither: a plugin that says neither has none (`plugin_only`, `page_only`), and apps.asking holds an
+ask to them. `problems(plugin)` is what a plugin's own test holds it to. `reads_of` is what an app asks as reads (the
+platform's log), and `answers`, `kind_of` and `tabs_key` what the frame reads of a plugin for its own parts
+(App.askable, App.plugin_internal), each as the plugin declares it. `answered_by` is the contract's own rule
+(Plugin.gives asks it): whose code answers a hook.
 
 Nothing of a plugin is called or evaluated here. Its hooks and what the app calls on it are looked up as they are
 declared (inspect.getattr_static's way: the instance's own attributes, then its classes'): a function gives its
@@ -69,7 +72,10 @@ DEFAULT_CHARS = 40  # a str default among a hook's arguments, at the most
 MAX_KNOWN = 400  # plugins an app is read as knowing at the most
 KINDS = ("read", "tab", "change", "job", "service", "own")  # a hook's kind (the first that holds), the page's tag order
 USERS = ("both", "plugins", "app", "named", "")  # who uses a hook here (the first that holds)
-DECLARED = ("READ_HOOKS", "SERVICE_HOOKS", "JOB_HOOKS", "CANCEL_HOOKS")  # the declarations made of hooks' names
+PLUGIN_ONLY = "PLUGIN_ONLY_HOOKS"  # its hooks only another plugin asks, through its app: never a page or a program
+PAGE_ONLY = "PAGE_ONLY_HOOKS"  # its hooks only its page asks: never another plugin
+DECLARED = ("READ_HOOKS", "SERVICE_HOOKS", "JOB_HOOKS", "CANCEL_HOOKS", PLUGIN_ONLY,
+            PAGE_ONLY)  # the declarations made of hooks' names
 CONSTANTS = ("SECTION", "ICON", "STEPS", "JOB_HOOKS")  # the class constants an app reads, given by value (`declares`)
 APP_METHODS = ("describe", "tray", "plugins", "attach", "detach", "ask", "interface", "connections")  # interface()'s
 OFFERS = ("plugin_internal", "internal", "own_apis")  # what an app offers code besides them (kept out of interface())
@@ -412,12 +418,42 @@ def declared(plugin, attr: str) -> tuple[str, ...]:
     it: the instance's own, then every class's (getattr's, then each class's own, nearest first), each name once. So a
     base's names stay its subclasses': a subclass names only what it adds, and cannot take back what a base says.
     Anything that is not a tuple or a list of str counts as nothing (problems() says so)."""
+    return _declared(plugin, attr)[0]
+
+
+def _declared(plugin, attr: str) -> tuple[tuple[str, ...], str]:
+    """declared()'s names, with the words of what kept it from reading them all ("" when nothing did): a failure to
+    read the word, or a declaration that is not a tuple or a list of str."""
+    values, failed = _values(plugin, attr)
     out: list[str] = []
-    for value in _values(plugin, attr)[0]:
-        for name in _names(value) or ():
+    for value in values:
+        names = _names(value)
+        if names is None:
+            failed = failed or f"{attr} must be a tuple of str"
+        for name in names or ():
             if name and name not in out:
                 out.append(name)
-    return tuple(out)
+    return tuple(out), failed
+
+
+def _gated(plugin, attr: str) -> tuple[str, ...]:
+    names, failed = _declared(plugin, attr)
+    if failed:  # a gate that cannot read its word refuses rather than lets through
+        raise ValueError(failed if failed.startswith(attr) else f"{attr} cannot be read ({failed})")
+    return names
+
+
+def plugin_only(plugin) -> tuple[str, ...]:
+    """The hooks a plugin says only another plugin asks, through its app (PLUGIN_ONLY_HOOKS, as declared() reads it):
+    never its page or a program. () when it says none. A ValueError when the word cannot be read, or is not a tuple
+    of str, so a gate that asks it refuses rather than lets through (problems() says the same in words)."""
+    return _gated(plugin, PLUGIN_ONLY)
+
+
+def page_only(plugin) -> tuple[str, ...]:
+    """The hooks a plugin says only its page asks (PAGE_ONLY_HOOKS, as declared() reads it): never another plugin. ()
+    when it says none. A ValueError when the word cannot be read, or is not a tuple of str (as plugin_only)."""
+    return _gated(plugin, PAGE_ONLY)
 
 
 def _hooks(plugin) -> list[str]:
@@ -574,6 +610,11 @@ def _offers(plugin, hook: str) -> bool:
     return hook in _hooks(plugin) and bool(answered_by(plugin, hook))
 
 
+def _page_alone(plugin, hook: str) -> bool:
+    """Whether a plugin says only its page asks `hook` (PAGE_ONLY_HOOKS), so another plugin's ask of it is refused."""
+    return hook in _try(lambda: declared(plugin, PAGE_ONLY), ())
+
+
 def _asked_by(plugin, others: list) -> dict[str, list[str]]:
     """For each hook of `plugin`, the plugins among `others` whose ASKS name it (by its name, or "" for whichever)."""
     me = _text(_static(plugin, "name", ""))
@@ -594,8 +635,8 @@ def _here(plugin, target: str, hook: str, others: list | None) -> str:
     """What one of a plugin's asks finds among the app's plugins, in words ("" when the app gave none)."""
     if others is None:
         return ""
-    if not target:
-        n = sum(1 for o in others if o is not plugin and _offers(o, hook))
+    if not target:  # (one its page alone asks does not count: it refuses other plugins)
+        n = sum(1 for o in others if o is not plugin and _offers(o, hook) and not _page_alone(o, hook))
         return ("no plugin offers it here" if n == 0 else "1 plugin offers it here" if n == 1
                 else f"{n} plugins offer it here")
     there = next((o for o in [plugin, *others] if _text(_static(o, "name", "")) == target), None)
@@ -603,6 +644,8 @@ def _here(plugin, target: str, hook: str, others: list | None) -> str:
         return "not installed here"
     if not _offers(there, hook):
         return f"{target} offers no {hook} here"
+    if _page_alone(there, hook):
+        return f"{target} answers {hook} only from its page: it refuses other plugins"
     return "offered" if hook in declared(there, "SERVICE_HOOKS") else "a hook there, not said to be a service"
 
 
@@ -635,11 +678,15 @@ def _hook_row(plugin, name: str, layer: str, ctx: types.SimpleNamespace) -> dict
     askable = name in ctx.askable if ctx.askable is not None else bool(answered)
     users = ("both" if service and by_app else "plugins" if service else "app" if by_app else "named" if askable
              else "")
+    plugin_alone, page_alone = name in ctx.plugin_only, name in ctx.page_only
+    if plugin_alone and users in ("named", ""):  # only other plugins ask it, whether or not it says it is a service
+        users = "plugins"
     return {"name": name, "args": args, "line": line_of(doc), "doc": doc_of(doc), "layer": layer, "answered": answered,
             "kind": kind, "reads": name in ctx.reads, "job": job, "cancels": name in ctx.cancels,
             "twice": [p for p in params if p.startswith("accept_")], "tab": tab["id"] if tab else "",
             "every": tab["every"] if tab else None, "how": ctx.how.get(name, ""), "users": users, "askable": askable,
-            "askedBy": list(ctx.asked_by.get(name, ())), "property": _is_property(value)}
+            "askedBy": list(ctx.asked_by.get(name, ())), "property": _is_property(value), "pluginOnly": plugin_alone,
+            "pageOnly": page_alone}
 
 
 def _also_row(plugin, name: str, how: str) -> dict | None:
@@ -710,7 +757,7 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
          "builtOn": {class, module, line}, "chain": [{class, module, line}, ...], "sitsOn": [api names],
          "standard": [{class, module, hooks: [names]}, ...], "calls": {plugins, clients, jobs, terms},
          "hooks": [{name, args, line, doc, layer, answered, kind, reads, job, cancels, twice, tab, every, how, users,
-                    askable, askedBy, property}, ...],
+                    askable, askedBy, property, pluginOnly, pageOnly}, ...],
          "counts": {hooks, answered, standard, own, left, kinds: {read, tab, change, job, service, own}},
          "left": [names], "also": [{name, args, line, doc, how, property}], "attributes": [names], "declares": {...},
          "tabs": [{id, title, hook, every}], "settings": [{variable, pair, label, secret, hint}], "options": [names],
@@ -728,7 +775,9 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
     A hook's `kind` is the first that holds: "service" (SERVICE_HOOKS), "job" (JOB_HOOKS), "tab" (a tab's hook), "own"
     (the app's code calls it: `calls`), "read" (reads_of), else "change"; and `users` the first that holds: "both" (a
     service the app's code or a tab uses too), "plugins" (a service), "app" (`calls` or a tab), "named" (`askable`), ""
-    (nothing here uses it). `counts.kinds` counts the hooks it answers. Nothing of the plugin is called or evaluated."""
+    (nothing here uses it). `counts.kinds` counts the hooks it answers. `pluginOnly` and `pageOnly` say whether the
+    hook is among its PLUGIN_ONLY_HOOKS or its PAGE_ONLY_HOOKS; a hook only other plugins ask is used by "plugins"
+    where it would be "named" or "". Nothing of the plugin is called or evaluated."""
     out: dict = {"v": VERSION, "of": "plugin", "name": "", "title": "", "kind": "", "system": "", "pluginApi": "",
                  "builtOn": {"class": "", "module": "", "line": ""}, "chain": [], "sitsOn": [], "standard": [],
                  "calls": {}, "hooks": [], "counts": {"hooks": 0, "answered": 0, "standard": 0, "own": 0, "left": 0,
@@ -756,6 +805,8 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
         services=set(_try(lambda: declared(plugin, "SERVICE_HOOKS"), ())),
         jobs=set(_try(lambda: declared(plugin, "JOB_HOOKS"), ())),
         cancels=set(_try(lambda: declared(plugin, "CANCEL_HOOKS"), ())),
+        plugin_only=set(_try(lambda: declared(plugin, PLUGIN_ONLY), ())),
+        page_only=set(_try(lambda: declared(plugin, PAGE_ONLY), ())),
         tab_of={t["hook"]: t for t in reversed(out["tabs"])},
         reads=set(_try(lambda: reads_of(plugin, reads, tabs), ())), how=_try(lambda: _calls(calls), {}),
         askable=None if askable is None else set(_try(lambda: _strs(askable), [])),
@@ -796,8 +847,10 @@ def problems(plugin) -> list[str]:
     names that is not a tuple of str, or names one outside its HOOKS; a read that is one of its jobs or takes an
     `accept_*` argument (a refusal's second ask belongs to a change); a hook of its own package's whose docstring says
     nothing (its first sentence is the hook's line on the tab), or one its HOOKS names and nothing defines; a row of
-    ASKS or KEEPS of the wrong shape, or given twice; notes too long; a tab whose hook is not among its HOOKS. Nothing
-    of the plugin is called."""
+    ASKS or KEEPS of the wrong shape, or given twice; notes too long; a tab whose hook is not among its HOOKS. Of who
+    may ask a hook: a hook both PLUGIN_ONLY_HOOKS and PAGE_ONLY_HOOKS name (no one could ask it), a service only its
+    page asks, a tab whose hook only other plugins ask (a tab is its page's). A plugin that says neither word gets none
+    of these. Nothing of the plugin is called."""
     tag = f"plugin {_text(_static(plugin, 'name', ''))!r}"
     out: list[str] = []
     if _names(_static(plugin, "HOOKS", ())) is None:
@@ -812,6 +865,13 @@ def problems(plugin) -> list[str]:
     reads, services, jobs = (declared(plugin, a) for a in ("READ_HOOKS", "SERVICE_HOOKS", "JOB_HOOKS"))
     out += [f"{tag}: READ_HOOKS names {n!r}, which is not among its HOOKS" for n in reads if n not in hooks]
     out += [f"{tag}: SERVICE_HOOKS names {n!r}, which is not among its HOOKS" for n in services if n not in hooks]
+    by_plugins, by_page = declared(plugin, PLUGIN_ONLY), declared(plugin, PAGE_ONLY)
+    out += [f"{tag}: {PLUGIN_ONLY} names {n!r}, which is not among its HOOKS" for n in by_plugins if n not in hooks]
+    out += [f"{tag}: {PAGE_ONLY} names {n!r}, which is not among its HOOKS" for n in by_page if n not in hooks]
+    out += [f"{tag}: {n!r} is said to be asked only by other plugins ({PLUGIN_ONLY}) and only from its page "
+            f"({PAGE_ONLY}): no one could ask it" for n in by_plugins if n in by_page]
+    out += [f"{tag}: {n!r} is a service other plugins ask (SERVICE_HOOKS), yet only its page may ask it ({PAGE_ONLY})"
+            for n in services if n in by_page]
     for name in reads:
         if name in jobs:
             out.append(f"{tag}: {name!r} is said to only read (READ_HOOKS) and is one of its jobs")
@@ -838,6 +898,9 @@ def problems(plugin) -> list[str]:
     for tab in _tabs(plugin):
         if tab["hook"] not in hooks:
             out.append(f"{tag}: tab {tab['id']!r}: its hook {tab['hook']!r} is not a hook")
+        elif tab["hook"] in by_plugins:
+            out.append(f"{tag}: tab {tab['id']!r}: its hook {tab['hook']!r} is asked only by other plugins "
+                       f"({PLUGIN_ONLY}), yet its page asks a tab's hook")
     return out
 
 

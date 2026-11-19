@@ -8,6 +8,11 @@ out of its reach holds its output), every child stopped side by side, and a laun
 quoted so that no word can end its string early, with no secret among them, and refused where Windows PowerShell 5.1
 would not hand a word over as it is (a model of how it passes words, measured on it).
 
+A piped child (1.66.0, an MCP server over stdio): its three pipes and how it is started on each system, its job
+object, its lines handed on as they come, its errors in its log, a line sent, a line too long or one its plugin cannot
+take ending it, a stop that closes its input first (and one a send that is not read cannot hold up), the SIGTERM and
+SIGKILL that follow on Linux, an earlier run's child ended before the next one starts, and every one stopped at exit.
+
 Everything outside is a stand-in: subprocess.Popen, the console's Ctrl+C, Windows' kernel32, the job object, the
 signals, this machine's process table and the clock. The shared guard (`no_outside`) fails a test that starts a
 process or opens a connection; this file's own fails one that tells a process of this machine anything by its
@@ -267,11 +272,11 @@ def a_job(monkeypatch, starter, ends=True):
     return done
 
 
-def real_linux(monkeypatch):
+def real_linux(monkeypatch, kind=None):
     """Real processes on Linux as stand-ins: one's end seen without collecting it, its group told by its number.
     (Popen's stand-in, the processes made, what happened to them in order.) A group told by a number that was
-    collected already fails the test."""
-    starter, events = Starter(kind=Real), []
+    collected already fails the test. `kind`: the stand-in's class (Real unless given: a piped one has three pipes)."""
+    starter, events = Starter(kind=kind or Real), []
 
     def popen(argv, **kw):
         process = starter(argv, **kw)
@@ -1501,3 +1506,412 @@ def test_a_real_streamed_command_on_linux_is_ended_by_its_group_before_it_is_col
     lines: list = []
     assert stream(["uv", "sync"], lines.append, popen=ended, system="linux") == 0 and lines == ["Installed 3 packages"]
     assert events == [("group", 4400, children.KILL), "collected"]  # what it left running, then it is collected
+
+
+# -- a child spoken to through pipes -----------------------------------------------------------------------------------
+class Input:
+    """A piped child's standard input as a stand-in: what was written to it, and when it was closed (noted in its
+    process's `told`). A write can be held, as a child that does not read its input holds it; its end breaks it."""
+
+    def __init__(self, told: list):
+        self.told = told
+        self.written = bytearray()
+        self.closed = False
+        self.held: threading.Event | None = None  # set by the test: a write waits for it
+        self.writing = threading.Event()  # a write has begun
+        self.broken = False  # its child has ended: a write fails
+        self.at_end = None  # what its child does when it reads the end of its input
+
+    def write(self, data):
+        if self.closed:
+            raise ValueError("write to closed file")
+        self.writing.set()
+        if self.held is not None:
+            self.held.wait(10)
+        if self.broken:
+            raise BrokenPipeError(32, "Broken pipe")
+        self.written += bytes(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.told.append("input closed")
+            if self.at_end is not None:
+                self.at_end()
+
+
+class Talker(Process):
+    """A piped child as a stand-in: its three pipes. It ends when its input is closed, unless the test makes it
+    `stubborn`; its end ends its output, its errors and any write that waits on its input."""
+
+    def __init__(self, argv, pid=4321, **kw):
+        super().__init__(argv, pid=pid, **kw)
+        self.stdin = Input(self.told)
+        self.stderr = Pipe()
+        self.stubborn = False
+        self.stdin.at_end = lambda: None if self.stubborn else self.end(0)
+
+    def end(self, code=0):
+        super().end(code)
+        self.stderr.done.set()
+        self.stdin.broken = True
+        if self.stdin.held is not None:
+            self.stdin.held.set()
+
+
+class RealTalker(Real):
+    """A piped child as the real subprocess.Popen makes one, as far as isinstance can tell (Real's, with three
+    pipes). Its end comes before it is collected, as a real one's."""
+
+    def __init__(self, argv, pid=4321, **kw):
+        super().__init__(argv, pid=pid, **kw)
+        self.told: list = []
+        self.stdin = Input(self.told)
+        self.stderr = Pipe()
+        self.stubborn = False
+        self.stdin.at_end = lambda: None if self.stubborn else self.end(0)
+
+    def end(self, code=0):
+        super().end(code)
+        self.stderr.done.set()
+        self.stdin.broken = True
+
+
+def piped(folder, system, launch=None, starter=None, line=None, **outside):
+    """A piped child over stand-ins, in a folder of its own: (the child, what stands in for Popen, the lines handed
+    on, what it was told at its end)."""
+    starter = starter or Starter(kind=Talker)
+    lines, ends = [], []
+    outside.setdefault("clock", Clock())
+    outside.setdefault("sleep", lambda seconds: None)
+    child = children.Piped("git", launch or Launch(("uvx", "mcp-server-git")), Path(folder) / "logs" / "default.log",
+                           Path(folder) / "run" / "default.pid", line=line or lines.append, ended=ends.append,
+                           popen=starter, system=system, **outside)
+    return child, starter, lines, ends
+
+
+def heard(child):
+    """Its errors copied, its lines read, its end seen and cleaned up after."""
+    for thread in (child._reader, child._hearer, child._watcher):
+        thread.join(10)
+        assert not thread.is_alive()
+
+
+def until(test, seconds=5.0):
+    """Waited for: what a thread of the child does comes as it comes."""
+    end = time.monotonic() + seconds
+    while not test():
+        assert time.monotonic() < end, "it did not come in time"
+        time.sleep(0.005)
+
+
+PIPES = (subprocess.PIPE,) * 3
+
+
+def test_a_piped_child_is_started_windowless_with_three_pipes_and_held_in_a_job(tmp_path, monkeypatch, nothing_real,
+                                                                                 k32):
+    launch = Launch(("C:/tools/uv/uvx.exe", "mcp-server-git", "--repository", str(tmp_path)),
+                    {"PATH": "C:\\Windows", "GIT_TOKEN": SECRET}, drop=("*",), secret=("GIT_TOKEN",))
+    monkeypatch.setenv("OLLAMA_ORIGINS", "*")
+    child, starter, lines, ends = piped(tmp_path, "windows", launch)
+    done = a_job(monkeypatch, starter)
+    assert isinstance(child, Child) and (child.pid, child.alive, child.code, child.why) == (None, False, None, "")
+    assert child.start() == 4321 and child.alive and child.pid == 4321
+    kw = starter.made[0].kw
+    assert (kw["stdin"], kw["stdout"], kw["stderr"]) == PIPES and kw["bufsize"] == 0 and kw["cwd"] is None
+    assert kw["creationflags"] == 0x08000000 and "start_new_session" not in kw  # windowless, no group of its own
+    assert kw["env"] == {"PATH": "C:\\Windows", "GIT_TOKEN": SECRET}  # drop "*": what its launch gives, alone
+    assert done == [("hold", 77, 4321)] and children._all == [child] and nothing_real == [children.stop_all]
+    assert k32.calls == []  # its console's Ctrl+C is never asked for: it is told by its input
+    names = [(t.name, t.daemon) for t in (child._reader, child._hearer, child._watcher)]
+    assert names == [("child-git", True), ("child-out-git", True), ("child-end-git", True)]
+    first = child.log.read_text("utf-8").splitlines()[0]
+    assert re.fullmatch(r"\S+ liminal: git started \(pid 4321\), its input and output piped: .*mcp-server-git.*", first)
+    assert SECRET not in first and child.pidfile.read_text().split()[0] == "4321"
+    starter.made[0].end(0)
+    heard(child)
+    assert done == [("hold", 77, 4321), ("close", 77)] and not child.alive and child.code == 0
+    assert ends == [""] and children._all == [] and not child.pidfile.exists()
+
+
+def test_on_linux_a_piped_child_leads_a_session_of_its_own(tmp_path, monkeypatch):
+    monkeypatch.setattr(keep_mod, "_job", refusing("job object"))  # Windows' way: not asked for here
+    child, starter, lines, ends = piped(tmp_path, "linux", Launch(("uvx", "mcp-server-time"), cwd=str(tmp_path)))
+    child.start()
+    kw = starter.made[0].kw
+    assert kw["start_new_session"] is True and "creationflags" not in kw and kw["cwd"] == str(tmp_path)
+    assert (kw["stdin"], kw["stdout"], kw["stderr"]) == PIPES and kw["bufsize"] == 0
+
+
+def test_each_line_it_prints_is_handed_on_as_it_comes(tmp_path):
+    child, starter, lines, ends = piped(tmp_path, "linux")
+    child.start()
+    out = starter.made[0].stdout
+    out.chunks += [b'{"jsonrpc":"2.0","id":1,', b'"result":{}}\r\n']  # one line in two pieces, ended as on Windows
+    until(lambda: lines == ['{"jsonrpc":"2.0","id":1,"result":{}}'])  # handed on before it ends
+    word = "é".encode()
+    out.chunks += [b"\n  \n" + b'{"id":2}\n{"id"', b":3}\n" + word[:1], word[1:] + b" its last line, not ended"]
+    starter.made[0].end(0)
+    heard(child)
+    assert lines == ['{"jsonrpc":"2.0","id":1,"result":{}}', '{"id":2}', '{"id":3}', "é its last line, not ended"]
+    assert ends == [""] and child.why == "" and starter.made[0].stdout.closed  # its pipe closed once read to its end
+    assert starter.made[0].stdin.closed  # its input too, once its output has ended
+    assert '"id"' not in child.log.read_text("utf-8")  # what it says is no part of its log
+
+
+def test_what_it_prints_as_errors_goes_into_its_log_without_its_secret(tmp_path, monkeypatch):
+    launch = Launch(("uvx", "mcp-server-git"), {"GIT_TOKEN": SECRET}, secret=("GIT_TOKEN",))
+    child, starter, lines, ends = piped(tmp_path, "linux", launch)
+    child.start()
+    key = SECRET.encode()
+    starter.made[0].stderr.chunks += [b"warning: token " + key[:4], key[4:] + b" refused\n", b"listening on stdio\n"]
+    starter.made[0].end(0)
+    heard(child)
+    text = child.log.read_text("utf-8")
+    assert SECRET not in text and text.splitlines()[1:] == [f"warning: token {PLACEHOLDER} refused",
+                                                            "listening on stdio"]
+    assert child.tail(1) == ["listening on stdio"] and lines == []
+    monkeypatch.setattr(children, "LOG_MAX", 200)  # past its size it is moved aside, as a Child's
+    child.start()
+    starter.made[1].stderr.chunks += [bytes([65 + i]) * 89 + b"\n" for i in range(3)]
+    starter.made[1].end(0)
+    heard(child)
+    both = child.log.with_name("default.log.1").read_bytes() + child.log.read_bytes()
+    assert all(bytes([65 + i]) * 89 + b"\n" in both for i in range(3)) and child.log.stat().st_size < 200
+
+
+def test_a_line_is_sent_whole_and_what_is_not_one_line_is_refused(tmp_path):
+    child, starter, lines, ends = piped(tmp_path, "windows")
+    with pytest.raises(ChildError, match="^git does not run: nothing was sent to it$"):
+        child.send("{}")  # not started
+    child.start()
+    child.send('{"jsonrpc":"2.0","id":1,"method":"ping"}')
+    child.send(b'{"id":2}')
+    child.send("é")
+    stdin = starter.made[0].stdin
+    assert bytes(stdin.written) == b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n{"id":2}\n' + "é\n".encode()
+    for bad in ("a\nb", "a\rb", b"x\n", "{}\r\n"):
+        with pytest.raises(ValueError, match="^a line sent to git holds no line break: each message is one line$"):
+            child.send(bad)
+    stdin.broken = True  # its input broke (it is ending)
+    with pytest.raises(ChildError, match=r"^git did not take the line: its input is closed \(.*Broken pipe"):
+        child.send("{}")
+    starter.made[0].end(0)
+    heard(child)
+    with pytest.raises(ChildError, match="^git does not run: nothing was sent to it$"):
+        child.send("{}")
+    assert child._input is None and stdin.closed
+
+
+def test_a_line_longer_than_its_most_ends_the_child(tmp_path, monkeypatch):
+    monkeypatch.setattr(children, "LINE_MAX", 64)
+    child, starter, lines, ends = piped(tmp_path, "windows")
+    done = a_job(monkeypatch, starter)
+    child.start()
+    starter.made[0].stubborn = True  # (the end of its input would not end it)
+    starter.made[0].stdout.chunks += [b'{"id":1}\n', b"x" * 40, b"y" * 40]  # no line end within 64 bytes
+    heard(child)
+    words = "it printed a line longer than 64 bytes"
+    assert lines == ['{"id":1}'] and child.why == words and ends == [words]
+    assert done == [("hold", 77, 4321), ("end", 77), ("close", 77)] and not child.alive  # ended with its job, at once
+    assert child.code == 1 and f"liminal: git was ended: {words}" in child.log.read_text("utf-8")
+    assert starter.made[0].told == ["input closed"]
+    # one whole line longer than that, on Linux: killed; what it printed after it is read and dropped
+    child, starter, lines, ends = piped(tmp_path / "linux", "linux")
+    child.start()
+    starter.made[0].stubborn = True
+    starter.made[0].stdout.chunks += [b"z" * 70 + b"\n" + b'{"id":2}\n', b'{"id":3}\n']
+    heard(child)
+    assert lines == [] and ends == [words] and starter.made[0].told == ["input closed", "kill"]
+    child.start()  # its next start is a start like any other
+    assert child.why == "" and child.alive
+
+
+def test_its_most_is_four_mib():
+    assert children.LINE_MAX == 4 * 1024 * 1024 and children.TERM_S == 2.0 and children.SEND_WAIT_S == 1.0
+
+
+def test_a_line_its_plugin_cannot_take_ends_the_child(tmp_path):
+    def take(text):
+        raise ValueError(f"not JSON: {text[:5]}")
+    child, starter, lines, ends = piped(tmp_path, "linux", line=take)
+    child.start()
+    starter.made[0].stubborn = True
+    starter.made[0].stdout.chunks.append(b"hello there\n")
+    heard(child)
+    assert child.why == "its line could not be taken (ValueError: not JSON: hello)" and ends == [child.why]
+    assert starter.made[0].told == ["input closed", "kill"] and not child.alive
+    said: list = []
+
+    def told(why):
+        said.append(why)
+        raise RuntimeError("its plugin's own fault")
+    talker = Starter(kind=Talker)
+    child = children.Piped("git", Launch(("uvx",)), tmp_path / "b.log", tmp_path / "b.pid", ended=told, popen=talker,
+                           system="linux")  # no `line`: its lines are dropped
+    child.start()
+    talker.made[0].stdout.chunks.append(b'{"id":1}\n')
+    talker.made[0].end(0)
+    heard(child)
+    assert said == [""] and not child.alive and child.why == ""
+
+
+def test_stop_closes_its_input_first_and_one_that_ends_then_is_not_ended_by_force(tmp_path, monkeypatch):
+    child, starter, lines, ends = piped(tmp_path, "windows", interrupt=refusing("Ctrl+C: it is told by its input"))
+    done = a_job(monkeypatch, starter)
+    assert child.stop() == "was not started"
+    child.start()
+    assert child.stop() == "ended when its input was closed, after 2.0 s"  # (the stand-in clock: a second a look)
+    assert starter.made[0].told == ["input closed"] and done == [("hold", 77, 4321), ("close", 77)]
+    assert child.stop() == "had ended already (exit code 0)" and starter.made[0].told == ["input closed"]
+    heard(child)
+    assert ends == [""]
+
+
+def test_one_that_does_not_end_at_the_end_of_its_input_is_ended_after_its_grace_on_windows(tmp_path, monkeypatch):
+    clock = Clock()
+    child, starter, lines, ends = piped(tmp_path, "windows", clock=clock)
+    done = a_job(monkeypatch, starter)
+    child.start()
+    starter.made[0].stubborn = True
+    assert child.stop() == "did not end within 8 s after its input was closed: ended with what it started"
+    assert clock.now >= GRACE_S and done == [("hold", 77, 4321), ("end", 77), ("close", 77)]
+    assert starter.made[0].told == ["input closed"] and child.code == 1  # (its job's end: TerminateJobObject)
+    # without a job: the child alone, and that is said
+    monkeypatch.setattr(keep_mod, "_job", lambda: None)
+    child, starter, lines, ends = piped(tmp_path / "alone", "windows")
+    child.start()
+    starter.made[0].stubborn = True
+    assert child.stop(2) == ("did not end within 2 s after its input was closed: ended; what it started is not held "
+                             "with it and may still run")
+    assert starter.made[0].told == ["input closed", "kill"]
+
+
+def test_on_linux_sigterm_then_sigkill_follow_its_grace(tmp_path):
+    clock = Clock()
+    child, starter, lines, ends = piped(tmp_path, "linux", clock=clock)
+    child.start()
+    starter.made[0].stubborn = True  # it goes on past the end of its input, and ends at SIGTERM
+    assert child.stop() == ("did not end within 8 s after its input was closed: ended by SIGTERM, with what it "
+                            "started")
+    assert starter.made[0].told == ["input closed", "terminate"] and child.code == -15
+    child.start()
+    starter.made[1].stubborn = starter.made[1].deaf = True  # and SIGTERM too: SIGKILL, TERM_S later
+    began = clock.now
+    assert child.stop(2) == ("did not end within 2 s after its input was closed, nor within 2 s after SIGTERM: "
+                             "ended with what it started")
+    assert starter.made[1].told == ["input closed", "terminate", "kill"] and clock.now - began >= 4
+
+
+def test_a_real_piped_child_on_linux_is_ended_by_its_group_before_it_is_collected(tmp_path, monkeypatch):
+    popen, made, events = real_linux(monkeypatch, kind=RealTalker)
+    child, _, lines, ends = piped(tmp_path, "linux", starter=popen)
+    child.start()
+    assert child.stop() == "ended when its input was closed, after 2.0 s"
+    # its input closed; it ended; what it left in its group killed while its number was its own; then collected
+    assert made[0].told == ["input closed"] and events == [("group", 4321, children.KILL), "collected"]
+    child, _, lines, ends = piped(tmp_path / "2", "linux", starter=popen)
+    child.start()
+    made[1].stubborn = True
+    assert child.stop() == ("did not end within 8 s after its input was closed: ended by SIGTERM, with what it "
+                            "started")
+    assert events[2:] == [("group", 4322, children.TERM), ("group", 4322, children.KILL), "collected"]
+
+
+def test_a_send_its_child_does_not_read_does_not_hold_up_its_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(children, "SEND_WAIT_S", 0.05)
+    child, starter, lines, ends = piped(tmp_path, "linux")
+    child.start()
+    stdin = starter.made[0].stdin
+    stdin.held = threading.Event()  # it reads nothing: the write waits
+    failed: list = []
+
+    def send():
+        try:
+            child.send('{"id":1,"method":"tools/call"}')
+        except ChildError as e:
+            failed.append(str(e))
+    sender = threading.Thread(target=send, name="sender")
+    sender.start()
+    assert stdin.writing.wait(5)
+    # its input cannot be closed under the write (Windows would wait as long as the write): no grace, it is ended,
+    # SEND_WAIT_S after the stop was asked (the write would hold it 10 s)
+    began = time.monotonic()
+    assert child.stop() == ("its input could not be closed (a line it does not read was being sent): ended by "
+                            "SIGTERM, with what it started")
+    assert time.monotonic() - began < 2.0
+    assert starter.made[0].told[:1] == ["terminate"]  # its input was not closed first (its reader may, at its end)
+    sender.join(10)
+    assert failed and failed[0].startswith("git did not take the line: its input is closed")
+
+
+def test_a_piped_child_an_earlier_run_left_is_ended_before_the_next_one_starts(tmp_path, monkeypatch):
+    pidfile, alive = an_earlier_run(tmp_path, monkeypatch)
+    told: list = []
+    monkeypatch.setattr(children, "_leads", lambda pid: True)
+    monkeypatch.setattr(children, "_signal_group",
+                        lambda pid, sig: told.append(("group", pid, sig)) or alive.discard(pid) or True)
+    child, starter, lines, ends = piped(tmp_path, "linux")
+    assert child.start() == 4321 and told == [("group", 5555, children.TERM)]
+    first, second = child.log.read_text("utf-8").splitlines()[:2]
+    assert first.endswith("liminal: git of an earlier run (pid 5555) was ended first: ended by SIGTERM")
+    assert "git started (pid 4321)" in second and child.pidfile.read_text().split()[0] == "4321"
+    starter.made[0].end(0)
+    heard(child)
+    # deaf to SIGTERM: SIGKILL to its group, TERM_S later
+    pidfile, alive = an_earlier_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(children, "_signal_group", lambda pid, sig: told.append(("group", pid, sig)) or (
+        alive.discard(pid) if sig == children.KILL else None) or True)
+    child.start()
+    assert told[1:] == [("group", 5555, children.TERM), ("group", 5555, children.KILL)]
+    assert "was ended first: did not end within 2 s after SIGTERM: ended with what it started" in child.log.read_text(
+        "utf-8")
+    starter.made[1].end(0)
+    heard(child)
+    # one that cannot be ended: nothing is started
+    pidfile, alive = an_earlier_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(children, "_signal_group", lambda pid, sig: True)
+    with pytest.raises(ChildError, match=r"^git could not start: an earlier run's \(pid 5555\) still runs and could "
+                                         r"not be ended$"):
+        child.start()
+    assert len(starter.made) == 2
+
+
+def test_an_earlier_run_s_piped_child_on_windows_is_ended_alone_and_not_asked_with_ctrl_c(tmp_path, monkeypatch):
+    pidfile, alive = an_earlier_run(tmp_path, monkeypatch)
+    ended: list = []
+    monkeypatch.setattr(children, "interrupt", refusing("Ctrl+C: a piped child is not asked so"))
+    monkeypatch.setattr(proc_mod, "terminate", lambda pid: ended.append(pid) or alive.discard(pid) or True)
+    adopted = children.Piped.adopt("git", tmp_path / "x.log", pidfile, clock=Clock(), sleep=lambda s: None,
+                                   system="windows")
+    assert isinstance(adopted, children.Piped) and adopted.adopted and adopted.pid == 5555
+    with pytest.raises(ChildError, match=r"^git's input is closed: nothing was sent to it \(an earlier run started "
+                                         r"it\)$"):
+        adopted.send("{}")  # its pipes were an earlier run's
+    assert adopted.stop() == "ended; what it started is not held with it and may still run" and ended == [5555]
+    assert not pidfile.exists() and adopted.stop() == "had ended already"
+
+
+def test_one_this_process_runs_is_never_ended_for_another_start(tmp_path, monkeypatch):
+    first, starter, lines, ends = piped(tmp_path, "linux")
+    first.start()
+    monkeypatch.setattr(proc_mod, "pid_alive", lambda pid: pid == 4321)
+    second, unused, _, _ = piped(tmp_path, "linux")  # the same pidfile: the first one's
+    with pytest.raises(ChildError, match=r"^git runs already \(pid 4321\)$"):
+        second.start()
+    assert first.alive and starter.made[0].told == [] and unused.made == []
+
+
+def test_piped_children_are_stopped_at_exit_with_every_other(tmp_path, nothing_real):
+    plain, plain_starter = make(tmp_path / "plain", "linux")
+    talker, starter, lines, ends = piped(tmp_path / "piped", "linux")
+    plain.start()
+    talker.start()
+    assert nothing_real == [children.stop_all] and children._all == [plain, talker]  # registered once
+    children.stop_all()
+    assert not plain.alive and not talker.alive and children._all == []
+    assert starter.made[0].told == ["input closed"] and plain_starter.made[0].told == ["terminate"]

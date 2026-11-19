@@ -66,6 +66,7 @@ API_KINDS = {  # an API's form -> its words on the page
     "query": "query API over HTTPS",
     "feed": "files and feeds over HTTPS",
     "stream": "WebSocket stream",
+    "rpc": "JSON-RPC over HTTP or a program's standard input and output",  # MCP's two transports, among others
     "dns": "DNS",
     "command": "command line",
     "powershell": "PowerShell",

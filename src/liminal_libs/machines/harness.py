@@ -40,13 +40,35 @@ to plugin); and open the harness in a terminal in a folder the user picks"):
 The windows it opened are followed while they are open (`running`), so Install and Uninstall wait until they are
 closed; nothing ends them when the platform stops: a window is its user's. A window is asked to leave any job object
 the platform is held in (a keeper's ends what it holds with itself); where the job lets nothing leave it, the window
-is opened in it all the same, and Open… says that it ends with that program."""
+is opened in it all the same, and Open… says that it ends with that program.
+
+1.66.0 (the user, 2026-11-18: "top 4 inference engines, top 4 agentic harnesses (open source)", "both linux and
+windows compatibility", and an MCP plugin "that mediates MCP connections to resources by local AI agents"):
+
+- A window on Linux too. A window opens where the platform's environment has a display (DISPLAY or WAYLAND_DISPLAY;
+  WSLg sets both, and the window then opens on Windows' desktop) and a terminal program of TERMINALS is on its PATH.
+  It is found with shutil.which, which looks at files and starts nothing, since a status asks at every draw. Each
+  terminal is one whose flag hands the rest of the line over as separate words, so no shell reads the command.
+  x-terminal-emulator is used only when its link leads to one of them. The terminal starts in a session of its own,
+  and keeps the display's variables whatever its launch drops. Without a display or a terminal (a boot service),
+  Open… still answers with the lines to paste.
+- Liminal's MCP, for a harness that offers it (MCP_OPTION among its OPTIONS, and MCP_WIRES). It is off unless Use…
+  turns it on. Then the MCP plugin is asked through the platform how it is reached (client_offer) and for this
+  harness's agent (ensure_client). Each Open… that opens a window asks it for a token for that window alone
+  (launch_token), and ends that token once the window is gone (end_launch), at a status or at the platform's stop.
+  The token reaches the tool in LIMINAL_MCP_TOKEN alone, a secret of its launch: never on its command line, in a
+  file or in the lines to paste. Command… gives none. A plugin's launch asks `mcp_wiring` how to write its MCP part.
+- Values a harness would read as more than text are refused (critique 1): a model's id, an option's text and every
+  value a plugin writes into its tool's configuration (`clean_value`) hold none of OPENERS (${, $(, {env:, {file:,
+  ${{) and do not begin with "!". A plugin adds its tool's own openers (Harness.OPENERS)."""
 from __future__ import annotations
 
+import contextvars
 import copy
 import dataclasses
 import json
 import os
+import posixpath
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -72,6 +94,7 @@ FOLDER_CHARS = 1024  # characters of a folder typed
 NOTE_CHARS = 300  # characters of one plugin's words in the table's note
 MODELS_SHOWN = 4  # model ids named in a row of the Model servers table
 WINDOWS_KEPT = 16  # windows followed at most
+TOKENS_KEPT = 64  # windows' launch tokens followed at most: past it the oldest is ended at once
 # a key this long is looked for inside other text, a shorter one only as a whole word or after a word's "=" (a folder's
 # or a file's name may hold a short key's letters by chance, as my-test-app holds "test")
 KEY_INSIDE = 16
@@ -86,6 +109,152 @@ WHERE_WORDS = {"local": "runs here", "found": "found running here", "remote": "o
 EXAMPLES = {"windows": "C:\\Users\\you\\project", "linux": "/home/you/project"}
 OPENS = {True: "in a terminal window of its own, in the folder you give",
          False: "no window from here: Open… shows the command, to run in a terminal of yours"}
+
+# -- a window on Linux (1.66.0) ---------------------------------------------------------------------------------------
+DISPLAYS = ("DISPLAY", "WAYLAND_DISPLAY")  # one of them set: the platform has a desktop (WSLg sets both)
+# what a window's terminal is given from the platform's environment whatever its launch drops: it opens its window
+# with them (the display, the folder that holds the Wayland socket, the session's bus)
+DESKTOP_KEEPS = ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+ALTERNATIVE = "x-terminal-emulator"  # Debian's link to the terminal its user chose: used when it leads to one below
+
+
+@dataclass(frozen=True)
+class Terminal:
+    """A terminal program a window is opened with on Linux, and how it is told, each flag read from its own manual
+    (2026-11-19). `stay`: what keeps the program that is started running as long as its window, so that the window
+    is followed (`running`) and its launch token ended once it is gone. `folder`: how it is given the folder, each word
+    with {folder} in it (none: it runs the command in the folder it is started in). `run`: the flag after which the
+    rest of the line is the command, each word handed over as it is (none: the words after its options are)."""
+
+    name: str
+    stay: tuple[str, ...] = ()
+    folder: tuple[str, ...] = ()
+    run: tuple[str, ...] = ()
+
+    def argv(self, path, folder: str, command: Iterable) -> list[str]:
+        """The terminal at `path` started on `command` in `folder`: every word of the command is a word of its own."""
+        return [str(path), *self.stay, *(word.format(folder=folder) for word in self.folder), *self.run,
+                *(str(word) for word in command)]
+
+
+TERMINALS = (
+    # gnome-terminal(1): "[-- PROGRAM [ARG...]]" (-e splits one string); --wait: "Wait until the terminal's child exits"
+    Terminal("gnome-terminal", ("--wait",), ("--working-directory={folder}",), ("--",)),
+    # ptyxis(1): "[-- PROGRAM ARGUMENTS]" (-x takes the whole line as one argument); "Single instance mode is implied
+    # when running a -- command": the program started holds the window
+    Terminal("ptyxis", (), ("-d", "{folder}"), ("--",)),
+    # xfce4-terminal: -x "Execute the remainder of the command line inside the terminal" (-e takes one string);
+    # --disable-server: "the new window will run in a new process, not trying to open a new window from a running
+    # instance"
+    Terminal("xfce4-terminal", ("--disable-server",), ("--working-directory={folder}",), ("-x",)),
+    # konsole: -e "will catch all following arguments passed to Konsole, and execute it as command"; --separate: "Run
+    # the new instance of Konsole in a separate process", so the program started holds the window
+    Terminal("konsole", ("--separate",), ("--workdir", "{folder}"), ("-e",)),
+    # kitty: "kitty [options] [program-to-run ...]"; one instance for each start unless --single-instance is given
+    Terminal("kitty", (), ("--directory", "{folder}")),
+    # alacritty(1): -e "Command and args to execute (must be last argument)"
+    Terminal("alacritty", (), ("--working-directory", "{folder}"), ("-e",)),
+    # foot(1): "All trailing (non-option) arguments are treated as a command, and its arguments"; it serves several
+    # windows only with --server
+    Terminal("foot", (), ("--working-directory={folder}",)),
+    # xterm(1): -e "the program (and its command line arguments) to be run in the xterm window", the last option; the
+    # command runs in the folder xterm is started in
+    Terminal("xterm", (), (), ("-e",)),
+)
+BY_NAME = {terminal.name: terminal for terminal in TERMINALS}
+
+
+def _no_terminal() -> str:
+    """Why no window can open where a display is set, in words: no terminal program is installed (the user's Ubuntu
+    likely has none)."""
+    names = ", ".join(terminal.name for terminal in TERMINALS)
+    return (f"no terminal program to open a window with is installed here ({names}): installing one, such as xterm, "
+            "is a step for root")
+
+
+# -- values a harness would read as more than text (1.66.0, critique 1) -----------------------------------------------
+# ${NAME} and $(command): Pi resolves ${NAME} in its MCP entries and a shell runs $(...); {env:NAME} and {file:PATH}:
+# OpenCode replaces them anywhere in its configuration's text, closed or not; ${{ secrets.X }}: Continue's templating.
+# A harness adds its own (Harness.OPENERS).
+OPENERS = ("${", "$(", "{env:", "{file:", "${{")
+RUNS = "!"  # a value that begins with it is run as a command (Pi's "!command" values)
+
+# -- Liminal's MCP (1.66.0) -------------------------------------------------------------------------------------------
+MCP = "mcp"  # the MCP plugin (AI plugins, Protocols), asked through the platform
+MCP_VARIABLE = "LIMINAL_MCP_TOKEN"  # the one variable a window's token reaches its tool by
+MCP_SLACK_S = 60  # a harness's own MCP timeout is the hold and this much more (a call held for your answer, then run)
+HOLD_S = 50  # the hold MCP's page gives a new agent: taken where its offer says none
+WIRES = ("stdio", "http")  # how a harness reaches it: the bridge (a program it starts), or the platform's own address
+WIRE_WORDS = {"stdio": "the MCP plugin's bridge (stdio)", "http": "the MCP plugin's address on the platform (HTTP)"}
+TOKEN = re.compile(r"^[A-Za-z0-9_~+/=.-]{16,512}$")  # a launch token as the MCP plugin mints it (token_urlsafe)
+TOKEN_VARIABLE = re.compile(r"^LIMINAL_[A-Z0-9_]{1,100}$")  # Liminal's own: dropped from every other child
+MCP_OPTION = Setting(
+    "mcp", "Liminal's MCP", "choice", "off",
+    choices=(("off", "off", "it reaches no MCP server of Liminal's"),
+             ("on", "on", "it reaches Liminal's MCP plugin, which decides what it may list and call")),
+    note=("Off unless you turn it on. On: each window it opens gets a token of its own for Liminal's MCP plugin (AI "
+          "plugins, Protocols), ended once the window is gone. What it may list and call is granted on that "
+          "plugin's page."))
+MCP_ASKS = (
+    (MCP, "client_offer", "how Liminal's MCP is reached here: its bridge, its address and headers, its revisions and "
+                          "its hold"),
+    (MCP, "ensure_client", "this harness's agent, made when Use… turns Liminal's MCP on (granted nothing)"),
+    (MCP, "launch_token", "a token for one window, at each Open… that opens one"),
+    (MCP, "end_launch", "that window's token ended, once the window is gone"),
+)
+MCP_NOTES = ("With Liminal's MCP on, each window's token is asked of the MCP plugin at the Open… that opens it, and "
+             "is handed to the tool in LIMINAL_MCP_TOKEN alone, a secret of its launch: never on its command line, in "
+             "a file, in an answer or in the lines to paste (Command… gives none). It is ended once the window is "
+             "gone.",)
+MCP_LINES = ("Liminal's MCP takes its token from {variable}, which these lines do not set: Show its token once… on "
+             "the MCP plugin's page gives one")
+# set while a start prepares its launch: whether it opens a window (only then is a token asked), the token asked, and
+# whether the plugin's launch asked how Liminal's MCP is reached (`mcp_wiring`)
+_PREPARING: contextvars.ContextVar[dict | None] = contextvars.ContextVar("liminal_harness_preparing", default=None)
+
+
+def _link_target(path) -> str:
+    """Where a link leads, read from the file system (a link read, never a process)."""
+    return os.path.realpath(path)
+
+
+def _own_path(path: str | None) -> str | None:
+    """Linux's PATH as a terminal program is looked for in it: its folders on another system's drive left out
+    (mounts.foreign). WSL puts Windows' own folders there, under /mnt: no Linux terminal is in them, and each look
+    crosses to Windows (about 170 ms a status for 38 of them in the user's Ubuntu). None stays None (shutil.which then
+    reads this process's own)."""
+    if not path:
+        return path
+
+    def foreign(folder: str) -> bool:
+        try:
+            return bool(mounts.foreign(folder))
+        except Exception:  # noqa: BLE001 - a folder that cannot say is looked in, as before
+            return False
+
+    return ":".join(folder for folder in str(path).split(":") if not folder or not foreign(folder))
+
+
+def evaluated(value, openers: Iterable[str] = OPENERS) -> str:
+    """Why a harness would read `value` as more than text, in words: it holds one of `openers` (closed or not: a
+    harness may read from one to the end of the text), or it begins with "!". "" when it would not."""
+    text = str(value if value is not None else "")
+    for opener in sorted({str(o) for o in openers if str(o)}, key=len, reverse=True):
+        if opener in text:
+            return f"it holds {opener!r}, which a harness reads as a variable, a file or a command"
+    if text.lstrip().startswith(RUNS):
+        return f"it begins with {RUNS!r}, which a harness runs as a command"
+    return ""
+
+
+def clean_value(value, what: str, openers: Iterable[str] = OPENERS) -> str:
+    """A value written into a harness's configuration, as text, checked: a Refusal in words when a harness would read
+    part of it as more than text (`evaluated`)."""
+    text = str(value if value is not None else "")
+    why = evaluated(text, openers)
+    if why:
+        raise Refusal(f"{what} cannot be written into a harness's configuration as it is: {why}")
+    return text
 
 
 def _control(text: str) -> bool:
@@ -102,10 +271,11 @@ def split_server(server) -> tuple[str, str]:
     return found.group(1), found.group(2)
 
 
-def clean_model(model, of: str = "its server") -> str:
+def clean_model(model, of: str = "its server", openers: Iterable[str] = OPENERS) -> str:
     """A model's id as typed, checked: not empty, MODEL_CHARS at most, on one line, without a double quote (a word that
     holds one is not handed to a program as it is from a line pasted into Windows PowerShell 5.1: children.not_passed;
-    a harness puts the id in its command, and the switches after it would be read into it). A Refusal in words
+    a harness puts the id in its command, and the switches after it would be read into it), and holding nothing a
+    harness would read as more than text (`evaluated`: a model server's list may name anything). A Refusal in words
     otherwise."""
     text = str(model if model is not None else "").strip()
     if not text:
@@ -113,6 +283,9 @@ def clean_model(model, of: str = "its server") -> str:
     if len(text) > MODEL_CHARS or _control(text) or '"' in text:
         raise Refusal(f"a model's id is {MODEL_CHARS} characters at most, without a line break, a control character or "
                       'a double quote (")')
+    why = evaluated(text, openers)
+    if why:
+        raise Refusal(f"a model's id is written into its harness's configuration, and this one cannot be: {why}")
     return text
 
 
@@ -160,6 +333,12 @@ def _line(e: BaseException, named: bool = False) -> str:
 
 def _listed(value) -> list:
     return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _noted(said: str, notes: Iterable[str]) -> str:
+    """Words with what more is to be said of them in brackets, where there is any."""
+    more = [str(note) for note in notes if str(note or "").strip()]
+    return f"{said} ({'; '.join(more)})" if more else said
 
 
 def _at(answer: Mapping, row: Mapping) -> dict:
@@ -238,6 +417,71 @@ class Use:
         return cls(server, model, folder, options)
 
 
+@dataclass(frozen=True)
+class McpWiring:
+    """How one start of a harness reaches Liminal's MCP, as the MCP plugin offers it (`Harness.mcp_wiring`).
+
+    `wire` says which of two ways this start uses. "stdio": `argv` is the bridge's command, a program the tool starts
+    and talks MCP to over its standard input and output. "http": `url` is the endpoint on the platform, and `headers`
+    go with each request. `token_variable` is the variable the token reaches the tool by (LIMINAL_MCP_TOKEN): its
+    configuration names that variable, never the token. `token` is this window's launch token, "" when none was asked
+    (Command…, the lines to paste); the base puts it in that variable itself. `hold_s` is how long a call may wait
+    for your answer on the MCP plugin's page, and `timeout_s` the tool's own MCP timeout: the hold and a minute more.
+    `revisions` are the revisions of the protocol it speaks. The token is in no repr."""
+
+    argv: tuple[str, ...] = ()
+    url: str = ""
+    headers: Mapping[str, str] = field(default_factory=dict, hash=False)
+    token_variable: str = MCP_VARIABLE
+    token: str = field(default="", repr=False)
+    wire: str = "stdio"
+    hold_s: int = HOLD_S
+    revisions: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "argv", tuple(str(word) for word in self.argv or ()))
+        object.__setattr__(self, "headers", {str(k): str(v) for k, v in dict(self.headers or {}).items()})
+        object.__setattr__(self, "revisions", tuple(str(r) for r in self.revisions or ()))
+
+    @property
+    def timeout_s(self) -> int:
+        """The tool's own MCP timeout, in seconds: a call held for your answer, then run."""
+        return int(self.hold_s) + MCP_SLACK_S
+
+
+def _offer_of(said) -> dict | None:
+    """The MCP plugin's client_offer as this module reads it, each part checked. What its plugin says (`offer`):
+    "wires", the ways it serves, of WIRES; "bridge", the bridge's command; "endpoint" and "headers", its address on the
+    platform and what goes with each request; "revisions". What the protocol base adds: "variable", the token's
+    variable (LIMINAL_MCP_TOKEN), and "hold_s". A way it names without what it needs is left out. Kept as {"wires",
+    "bridge", "endpoint", "headers", "token_variable", "hold_s", "revisions"}; None when it is not an offer."""
+    if not isinstance(said, Mapping):
+        return None
+    bridge = said.get("bridge")
+    if isinstance(bridge, (list, tuple)) and bridge and all(isinstance(w, str) and w and not _control(w)
+                                                            for w in bridge):
+        bridge = tuple(bridge)
+    else:
+        bridge = ()
+    endpoint = said.get("endpoint")
+    endpoint = endpoint.strip() if isinstance(endpoint, str) and not _control(endpoint) else ""
+    headers = said.get("headers") or {}
+    if not isinstance(headers, Mapping) or not all(
+            isinstance(k, str) and isinstance(v, str) and k.strip() and not _control(k) and not _control(v)
+            for k, v in headers.items()):
+        return None
+    variable = said.get("variable", MCP_VARIABLE)
+    if not isinstance(variable, str) or not TOKEN_VARIABLE.fullmatch(variable):
+        return None
+    hold = said.get("hold_s")
+    hold = hold if isinstance(hold, int) and not isinstance(hold, bool) and 0 < hold <= 3600 else HOLD_S
+    revisions = tuple(r for r in _listed(said.get("revisions")) if isinstance(r, str) and r.strip())
+    wires = [w for w in _listed(said.get("wires")) if w in WIRES]
+    wires = [w for w in dict.fromkeys(wires) if (w == "stdio" and bridge) or (w == "http" and endpoint)]
+    return {"wires": tuple(wires), "bridge": bridge, "endpoint": endpoint, "headers": dict(headers),
+            "token_variable": variable, "hold_s": hold, "revisions": revisions}
+
+
 class HarnessRun(ai.Run):
     """A harness's run state: what the model servers said last and when, and the windows it opened."""
 
@@ -247,6 +491,9 @@ class HarnessRun(ai.Run):
         self.served_at = 0.0  # when, by the Outside's clock
         self.served_notes: list[str] = []  # the plugins that refused, in their words
         self.windows: list[tuple[object, str]] = []  # (its process, its folder): the windows opened, while open
+        # (its process, its launch token): each window opened with a token for Liminal's MCP, followed until it is gone
+        # even once WINDOWS_KEPT no longer follows it (a token outlives no window), TOKENS_KEPT at most
+        self.tokens: list[tuple[object, str]] = []
 
 
 class Harness(ai.AiPlugin):
@@ -259,6 +506,13 @@ class Harness(ai.AiPlugin):
     HOOKS = (*ai.AiPlugin.HOOKS, "use", "open", "command", "ask_models")
     OPTIONS: tuple[Setting, ...] = ()  # the tool's own options, asked under Use… after the server and the model
     RUN_STATE = HarnessRun
+    # How the tool reaches Liminal's MCP, in its order of preference: "stdio" (the MCP plugin's bridge) and "http"
+    # (its address on the platform). (): not at all. With MCP_OPTION among its OPTIONS, Use… can turn it on; a plugin
+    # that wires it adds MCP_ASKS to its ASKS and MCP_NOTES to its INTERNAL_NOTES.
+    MCP_WIRES: tuple[str, ...] = ()
+    # what its tool reads in a value of its configuration as more than text: the base's, and a plugin's own beside them
+    # (OPENERS = (*Harness.OPENERS, "{secret:"))
+    OPENERS: tuple[str, ...] = OPENERS
     # What it says of the interface it shares (the contract's words of liminal-libs 1.63.0, read by name by the Internal
     # API tab; nothing reads them before it): its reads beside its bases', what it asks of the other plugins through
     # the platform, and what it keeps through the login (KEEPS, below) and reads there (INTERNAL_NOTES: a server's key)
@@ -396,6 +650,7 @@ class Harness(ai.AiPlugin):
             return None, ""
         try:
             use = Use.of(text)
+            clean_model(use.model, openers=self.OPENERS)  # (with its tool's own openers too)
         except ValueError as e:
             return None, f"the choice kept in {variable} could not be read ({e}): Use… keeps a new one"
         good: dict = {}
@@ -405,7 +660,7 @@ class Harness(ai.AiPlugin):
                     value = setting.clean(use.options[setting.name])
                 except ValueError:
                     continue
-                if value is not None:
+                if value is not None and not (setting.kind == "text" and evaluated(value, self.OPENERS)):
                     good[setting.name] = value
         return (use if good == dict(use.options) else dataclasses.replace(use, options=good)), ""
 
@@ -419,26 +674,285 @@ class Harness(ai.AiPlugin):
         for setting, value in zip(self.OPTIONS, values):
             kept = setting.clean(value)
             if kept is not None:
+                if setting.kind == "text":  # (a text option is written into the tool's configuration)
+                    self.clean_value(kept, setting.label)
                 out[setting.name] = kept
         return out
+
+    def clean_value(self, value, what: str) -> str:
+        """A value this plugin writes into its tool's configuration, as text, checked against its tool's openers
+        (OPENERS) and a leading "!": a Refusal in words when the tool would read part of it as more than text. A
+        plugin passes every value it writes through it: the model server's address, the folder, a path."""
+        return clean_value(value, what, self.OPENERS)
+
+    # -- Liminal's MCP ------------------------------------------------------------------------------------------------
+    def _offers_mcp(self) -> bool:
+        """Whether this harness offers Liminal's MCP: its OPTIONS hold MCP_OPTION (by its name)."""
+        return any(setting.name == MCP_OPTION.name for setting in self.OPTIONS)
+
+    def mcp_on(self, use: Use | None) -> bool:
+        """Whether a start against `use` reaches Liminal's MCP: this harness offers it, names how (MCP_WIRES), and
+        Use… turned it on."""
+        return (use is not None and bool(self.MCP_WIRES) and self._offers_mcp()
+                and str(use.options.get(MCP_OPTION.name) or "") == "on")
+
+    def mcp_wiring(self, use: Use | None = None) -> McpWiring | None:
+        """How a start against `use` (None: the choice kept) reaches Liminal's MCP, for the plugin's launch to write
+        into its tool's configuration; None when it does not (`mcp_on`). The MCP plugin is asked through the platform
+        how it is reached (client_offer), and the first of MCP_WIRES it serves is used. Inside an Open… that opens a
+        window, a token for that window is asked too (launch_token): the base hands it to the tool in its variable
+        alone, and ends it once the window is gone. Anywhere else (Command…, the lines to paste) none is asked. A
+        Refusal in words when the MCP plugin does not answer, serves none of MCP_WIRES, or offers a value the tool
+        would read as more than text."""
+        use = self.use_kept() if use is None else use
+        if not self.mcp_on(use):
+            return None
+        offer = self._mcp_offer()
+        wire = self._wire_of(offer)
+        box, token = _PREPARING.get(), ""
+        if box is not None:
+            box["asked"], box["variable"] = True, offer["token_variable"]
+            if box["window"]:
+                token = box["token"] or self._launch_token()
+                box["token"] = token
+        stdio = wire == "stdio"
+        return McpWiring(argv=offer["bridge"] if stdio else (), url="" if stdio else offer["endpoint"],
+                         headers={} if stdio else offer["headers"], token_variable=offer["token_variable"],
+                         token=token, wire=wire, hold_s=offer["hold_s"], revisions=offer["revisions"])
+
+    def _mcp_words(self, why: str) -> str:
+        name = self.title or self.name
+        return (f"Liminal's MCP is on for {name} (Use…), and the MCP plugin {why}. Nothing was started: turn the MCP "
+                "plugin on (AI plugins, Protocols), or turn Liminal's MCP off under Use…")
+
+    def _mcp_offer(self) -> dict:
+        """The MCP plugin's client_offer, asked through the platform and checked (`_offer_of`), each value the tool is
+        given checked against its openers. A Refusal in words when it cannot be had."""
+        app = self.app
+        if app is None:
+            raise Refusal(self._mcp_words("cannot be asked: this plugin is not attached to the platform"))
+        try:
+            said = self._ask_app(app, MCP, "client_offer", [])
+        except Exception as e:  # noqa: BLE001 - its refusal, or its absence, in its words
+            raise Refusal(self._mcp_words(f"did not say how it is reached: {self._refused(e)}")) from None
+        offer = _offer_of(said)
+        if offer is None:
+            raise Refusal(self._mcp_words("answered something that is not how it is reached"))
+        problem = " ".join(str(said.get("problem") or "").split())  # (the protocol base's words for its own fault)
+        if problem and not offer["wires"]:
+            raise Refusal(self._mcp_words(f"could not say how it is reached: {self._scrubbed(problem)[:NOTE_CHARS]}"))
+        for word in offer["bridge"]:
+            self.clean_value(word, "the MCP plugin's bridge")
+        self.clean_value(offer["endpoint"], "the MCP plugin's address")
+        for header, value in offer["headers"].items():
+            self.clean_value(header, "a header the MCP plugin names")
+            self.clean_value(value, f"the MCP plugin's header {header}")
+        return offer
+
+    def _wire_of(self, offer: Mapping) -> str:
+        """The first of MCP_WIRES the offer serves. A Refusal in words when it serves none of them."""
+        for wire in self.MCP_WIRES:
+            if wire in offer["wires"]:
+                return wire
+        served = ai._and([WIRE_WORDS[w] for w in offer["wires"]]) or "neither way"
+        wanted = ai._and([WIRE_WORDS.get(w, repr(w)) for w in self.MCP_WIRES])
+        raise Refusal(self._mcp_words(f"serves {served} here, and {self.title or self.name} reaches it by {wanted} "
+                                      "alone"))
+
+    def _launch_token(self) -> str:
+        """A token for one window, asked of the MCP plugin through the platform (launch_token: the agent is the asking
+        plugin's, as the platform names it). It is kept among this plugin's secrets, so no word of it is said. A
+        Refusal in words when none can be had."""
+        app = self.app
+        if app is None:
+            raise Refusal(self._mcp_words("cannot be asked: this plugin is not attached to the platform"))
+        try:
+            said = self._ask_app(app, MCP, "launch_token", [])
+        except Exception as e:  # noqa: BLE001 - its refusal in its words
+            raise Refusal(self._mcp_words(f"gave no token for the window: {self._refused(e)}")) from None
+        token = said.get("token") if isinstance(said, Mapping) else said
+        if not isinstance(token, str) or not TOKEN.fullmatch(token):
+            raise Refusal(self._mcp_words("gave nothing that can be a token for the window"))
+        self._keep_secret(token)
+        return token
+
+    def _end_launch(self, token: str) -> None:
+        """A window's launch token ended (end_launch), its window gone or never opened: asked through the platform with
+        no lock held. A refusal is let be: the MCP plugin ends every launch token at its own stop. The token then
+        leaves the secrets this plugin takes out of its words, so that the keys stay among them (SECRETS_KEPT)."""
+        app = self.app
+        if not token:
+            return
+        try:
+            if app is not None:
+                self._ask_app(app, MCP, "end_launch", [token])
+        except Exception:  # noqa: BLE001 - one it cannot end now ends with it
+            pass
+        with self._rt.lock:
+            if token in self._rt.secrets:
+                self._rt.secrets.remove(token)
+
+    def _mcp_use(self, options: Mapping) -> list[str]:
+        """Liminal's MCP as Use… turns it on: the MCP plugin asked how it is reached (client_offer) and for this
+        harness's agent (ensure_client, with its title: made once, granted nothing). Its words for the answer; [] when
+        it is off or this harness does not offer it. A Refusal in words when it cannot be wired."""
+        if str(options.get(MCP_OPTION.name) or "") != "on" or not self._offers_mcp():
+            return []
+        name = self.title or self.name
+        if not self.MCP_WIRES:
+            raise Refusal(f"{name} cannot reach Liminal's MCP from here: turn Liminal's MCP off under Use…")
+        offer = self._mcp_offer()
+        wire = self._wire_of(offer)
+        try:
+            said = self._ask_app(self.app, MCP, "ensure_client", [name])
+        except Exception as e:  # noqa: BLE001 - its refusal in its words
+            raise Refusal(self._mcp_words(f"did not make {name}'s agent: {self._refused(e)}")) from None
+        words = " ".join(str(said.get("said") or "").split()) if isinstance(said, Mapping) else ""
+        return [f"Liminal's MCP: {words}" if words else
+                f"Liminal's MCP: {name}'s agent is on the MCP plugin's page, granted nothing until you grant it there",
+                f"each window it opens reaches it by {WIRE_WORDS[wire]}, with a token of its own"]
+
+    def _prepared(self, folder: str, use: Use, at: dict, key: str, *, window: bool) -> tuple[children.Launch, str, str]:
+        """The plugin's launch as one start needs it (`_launch`), with Liminal's MCP where its choice has it on: in an
+        Open… that opens a window (`window`), the token `mcp_wiring` asked for it is handed to the tool in its
+        variable alone, a secret of the launch, and is ended at once when the start goes no further. (The launch; its
+        token, or ""; the token's variable where the MCP was wired without one: the lines to paste.) ChildError when
+        the plugin's launch leaves Liminal's MCP out while it is on."""
+        box = {"window": bool(window), "token": "", "asked": False, "variable": MCP_VARIABLE}
+        mark = _PREPARING.set(box)
+        try:
+            made = self._launch(folder, use, at, key)
+            if self.mcp_on(use) and not box["asked"]:
+                raise children.ChildError(f"{self.title or self.name}'s launch leaves Liminal's MCP out, and it is on "
+                                          "for it (Use…): it is not started")
+            token, variable = box["token"], box["variable"]
+            if token:
+                made = self._token_in(made, token, variable)
+            elif box["asked"] and made.env.get(variable) == "":
+                made = dataclasses.replace(made, env={n: v for n, v in made.env.items() if n != variable})
+        except BaseException:
+            self._end_launch(box["token"])
+            raise
+        finally:
+            _PREPARING.reset(mark)
+        return made, token, (variable if box["asked"] and not token else "")
+
+    def _token_in(self, made: children.Launch, token: str, variable: str) -> children.Launch:
+        """A window's launch with its token in `variable` alone, named a secret of it. Refused in words when the
+        plugin's launch puts the token anywhere else: a word of its command, its folder, another variable."""
+        name = self.title or self.name
+        if any(children.carries(word, token, KEY_INSIDE) for word in (*made.argv, made.cwd)):
+            raise Refusal(f"{name} would put its token for Liminal's MCP on its command line, where every program here "
+                          "can read it: it is not started")
+        others = sorted(n for n, v in made.env.items()
+                        if n.upper() != variable.upper() and children.carries(v, token, KEY_INSIDE))
+        if others:
+            raise Refusal(f"{name} would hand its token for Liminal's MCP over in {', '.join(others)}, and only "
+                          f"{variable} carries it: it is not started")
+        env = {n: v for n, v in made.env.items() if n.upper() != variable.upper()}
+        env[variable] = token
+        return dataclasses.replace(made, env=env, secret=tuple(dict.fromkeys([*made.secret, variable])))
 
     # -- the windows it opened ----------------------------------------------------------------------------------------
     def running(self) -> list[str]:
         """The windows it opened that are still open, by their folder ("the window open in C:\\work\\x"): Install and
-        Uninstall wait until they are closed (its program's files are in use)."""
+        Uninstall wait until they are closed (its program's files are in use). The launch token of a window seen gone
+        is ended here (end_launch), asked with no lock held: a status asks this at every draw. A window no longer
+        followed past WINDOWS_KEPT still has its token ended once it is gone."""
         with self._rt.lock:
             self._rt.windows = [(child, folder) for child, folder in self._rt.windows if _alive(child)]
-            return [f"the window open in {folder}" for _, folder in self._rt.windows]
+            shown = [f"the window open in {folder}" for _, folder in self._rt.windows]
+            kept, gone = [], []
+            for child, token in self._rt.tokens:
+                (kept if _alive(child) else gone).append((child, token))
+            self._rt.tokens = kept
+        for _, token in gone:
+            self._end_launch(token)
+        return shown
+
+    def app_stopping(self) -> None:
+        """The platform stops, or this plugin is turned off: its windows are their user's and stay open; the launch
+        tokens of those already gone are ended. It bears a second call."""
+        self.running()
 
     def _desktop(self) -> bool:
-        """Whether a window can be opened here: Windows, on a desktop (windows.interactive: not a boot service's)."""
+        """Whether a window can be opened here. Windows: on a desktop (windows.interactive: not a boot service's).
+        Linux: a display is set in the platform's environment and a terminal program is found (`_terminal`)."""
         if self.system != "windows":
-            return False
+            return self._terminal() is not None
         ask = self.out.interactive if self.out.interactive is not None else windows.interactive
         try:
             return bool(ask())
         except Exception:  # noqa: BLE001 - not known: no window
             return False
+
+    def _env(self) -> Mapping[str, str]:
+        """The platform's environment, as this plugin reads it (the Outside's, a test's, when it gives one)."""
+        return self.out.env if self.out.env is not None else os.environ
+
+    def _display(self) -> bool:
+        """Whether the platform's environment names a display a window can open on (Linux: DISPLAY, WAYLAND_DISPLAY;
+        a boot service has neither)."""
+        env = self._env()
+        return any(str(env.get(name) or "").strip() for name in DISPLAYS)
+
+    def _terminal(self) -> tuple[str, Terminal] | None:
+        """The terminal program a window is opened with on Linux, and where it is: (its path, its Terminal); None
+        without a display, or when none is on the platform's PATH. x-terminal-emulator comes first, when its link
+        leads to one of TERMINALS (its user's choice); then TERMINALS in their order. Each is looked for with
+        shutil.which (the Outside's `which`), which looks at files and starts nothing: a status asks at every draw.
+        It looks in this system's own folders of PATH alone (`_own_path`)."""
+        if not self._display():
+            return None
+        path = _own_path(self._env().get("PATH"))
+        if path == "":  # (no folder of this system's own on it: nothing to look in)
+            return None
+
+        def found(name: str) -> str:
+            try:
+                return str(self.out.which(name, path=path) or "")
+            except Exception:  # noqa: BLE001 - a look that fails finds nothing
+                return ""
+
+        chosen = found(ALTERNATIVE)
+        if chosen:
+            try:
+                real = str(_link_target(chosen) or "")
+            except (OSError, ValueError):
+                real = ""
+            terminal = BY_NAME.get(posixpath.basename(real.replace("\\", "/")))
+            if terminal is not None:
+                return real, terminal
+        for terminal in TERMINALS:
+            where = found(terminal.name)
+            if where:
+                return where, terminal
+        return None
+
+    def _window_env(self, launch: children.Launch) -> dict[str, str]:
+        """A window's environment: the launch's (children.environment), and on Linux the display's variables of the
+        platform's environment (DESKTOP_KEEPS) whatever the launch drops, which its terminal opens the window with.
+        The launch's own value of one wins."""
+        env = children.environment(launch, base=self.out.env, system=self.system)
+        if self.system != "windows":
+            base = self._env()
+            for name in DESKTOP_KEEPS:
+                value = base.get(name)
+                if value and name not in launch.env:
+                    env[name] = str(value)
+        return env
+
+    def _opens(self, desktop: bool, terminal: tuple[str, Terminal] | None) -> str:
+        """How it opens, in words: a window, and on Linux which terminal it is and where it shows (under WSLg,
+        Windows' desktop), or the lines to paste, and on Linux what a window still needs."""
+        if self.system == "windows":
+            return OPENS[desktop]
+        if terminal is not None:
+            where = ", on Windows' desktop (WSLg)" if self.wsl else ""
+            return f"in a terminal window of its own ({terminal[1].name}){where}, in the folder you give"
+        if self._display():
+            return f"{OPENS[False]} ({_no_terminal()})"
+        return OPENS[False]
 
     # -- the hooks ----------------------------------------------------------------------------------------------------
     def refresh(self) -> dict:
@@ -451,7 +965,9 @@ class Harness(ai.AiPlugin):
         """It is started against `server` ("<plugin>/<instance>") with `model` from now on, with its OPTIONS' `values`
         in their order (one left empty: the tool's own default), kept through the login; nothing is written into the
         tool's own configuration. Refused in words: no server named; one not offered now; one it cannot use
-        (`fits`); no model, or one the server does not list; an option's value; more values than it has OPTIONS."""
+        (`fits`); no model, or one the server does not list; an option's value; more values than it has OPTIONS.
+        With Liminal's MCP turned on, the MCP plugin is asked how it is reached and for this harness's agent first;
+        nothing is kept when it cannot be wired."""
         self._usable()
         name = self.title or self.name
         if server is None or not str(server).strip():
@@ -467,51 +983,64 @@ class Harness(ai.AiPlugin):
         unfit = self.fits(at)
         if unfit:
             raise Refusal(unfit)
-        model = clean_model(model, words)
+        model = clean_model(model, words, self.OPENERS)
         listed = model_ids(at)
         if listed and model not in listed:
             raise Refusal(f"{words} lists no model {model!r} (it lists {', '.join(listed[:MODELS_SHOWN])}"
                           f"{' …' if len(listed) > MODELS_SHOWN else ''}): Ask… reads its list again")
         options = self._options_of(values)
+        mcp = self._mcp_use(options)  # (asked of the MCP plugin before anything is kept)
         before, _ = self._kept()
         chosen = Use(at["server"], model, before.folder if before is not None else "", options)
         where = self.keep_pair(self.variable("use"), chosen.text())
         lasting = self.lasting()
         return self._reply(f"From now on {name} is started against {words} with {model}", True,
-                           [f"kept in {where}", *([lasting] if lasting else [])])
+                           [f"kept in {where}", *mcp, *([lasting] if lasting else [])])
 
     def open(self, folder=None) -> dict:
-        """It is started in `folder` against what it uses. On Windows with a desktop, in a console window of its own
-        (CREATE_NEW_CONSOLE, held by `python -m liminal_libs.console hold -- ...`), the server's key read through the
-        login and given in its environment alone; anywhere else the lines to paste into a terminal of yours, the key
-        among them as its placeholder. The folder is kept for the next time. Refused in words: its library too old;
-        not installed; `runs_here`; an install under way; nothing chosen; a folder that is not a whole path, not one
-        here, or on another system's drive; its server not offered now, one it cannot use, a local one that is not
-        running, or one found here that answers nothing; its plugin's own refusal (`launch`), a launch that would
-        put the key on its command line, and lines PowerShell would not hand its words as they are."""
+        """It is started in `folder` against what it uses. With a desktop, in a terminal window of its own: on Windows
+        a console window (CREATE_NEW_CONSOLE), on Linux a terminal program's (`_terminal`), held by `python -m
+        liminal_libs.console hold -- ...`; the server's key read through the login and given in its environment
+        alone, and so is the window's token for Liminal's MCP where Use… turned it on. Anywhere else the lines to
+        paste into a terminal of yours, the key among them as its placeholder, and no token. The folder is kept for
+        the next time. Refused in words: its library too old; not installed; `runs_here`; an install under way;
+        nothing chosen; a folder that is not a whole path, not one here, or on another system's drive; its server not
+        offered now, one it cannot use, a local one that is not running, or one found here that answers nothing; its
+        plugin's own refusal (`launch`), a launch that would put the key or the token on its command line, Liminal's
+        MCP on and its plugin not answering, and lines PowerShell would not hand its words as they are."""
         self._usable()
         use, at, path = self._ready(folder, opening=True)
         name, words = self.title or self.name, server_words(at)
         if not self._desktop():
-            lines = self._shown(self._launch(path, use, at, children.PLACEHOLDER if self._keyed(at) else ""))
-            unkept = self._keep_folder(path)
-            return self._lines(f"{RUN_IT} ({unkept})" if unkept else RUN_IT, lines)
-        launch = self._launch(path, use, at, self._key_of(at))
-        pid, held = self._window(launch, path)
+            made, _, variable = self._prepared(path, use, at, children.PLACEHOLDER if self._keyed(at) else "",
+                                               window=False)
+            lines = self._shown(made)
+            notes = [MCP_LINES.format(variable=variable) if variable else "", self._keep_folder(path)]
+            return self._lines(_noted(RUN_IT, notes), lines)
+        made, token, _ = self._prepared(path, use, at, self._key_of(at), window=True)
+        try:
+            pid, held = self._window(made, path, token)
+        except BaseException:
+            self._end_launch(token)  # (nothing opened: its token goes at once)
+            raise
         unkept = self._keep_folder(path)
-        lines = [f"its window's process: {pid}" if pid else "", "closing the window ends it", held, unkept]
+        mcp = "Liminal's MCP: the window has a token of its own, ended once it is gone" if token else ""
+        lines = [f"its window's process: {pid}" if pid else "", "closing the window ends it", held, mcp, unkept]
         return self._reply(f"{name} opened in a window of its own in {path}, started against {words} with {use.model}",
                            True, lines)
 
     def command(self, folder=None) -> dict:
         """The lines that start it in `folder` (None: the folder kept from the last Open…) against what it uses, to
         paste into a terminal of yours (PowerShell's on Windows, sh's on Linux): nothing is started. A key is never
-        among them: its placeholder is, for you to type. Refused as Open… is, but for a server that is not running
-        or answers nothing (the lines are for later)."""
+        among them: its placeholder is, for you to type. No token for Liminal's MCP is asked for them: its words say
+        where one is given. Refused as Open… is, but for a server that is not running or answers nothing (the lines
+        are for later)."""
         self._usable()
         use, at, path = self._ready(folder, opening=False)
-        launch = self._launch(path, use, at, children.PLACEHOLDER if self._keyed(at) else "")
-        return self._lines(RUN_IT, self._shown(launch))
+        made, _, variable = self._prepared(path, use, at, children.PLACEHOLDER if self._keyed(at) else "",
+                                           window=False)
+        return self._lines(_noted(RUN_IT, [MCP_LINES.format(variable=variable) if variable else ""]),
+                           self._shown(made))
 
     def ask_models(self, server) -> dict:
         """The models of `server` ("<plugin>/<instance>"), asked of it now through its plugin (`models_of`): its words
@@ -642,27 +1171,47 @@ class Harness(ai.AiPlugin):
             made = dataclasses.replace(made, secret=tuple(dict.fromkeys([*made.secret, *same])))
         return made
 
-    def _window(self, launch: children.Launch, folder: str) -> tuple[int | None, str]:
-        """The launch started in a console window of its own (Windows), held open by the console's `hold` until its
-        user has read how it ended: (its process's number, "" or what is to be said of it). It is asked to leave any
-        job object the platform is held in (CREATE_BREAKAWAY_FROM_JOB: a keeper's, keep.py's, ends what it holds
-        with itself), since a window is its user's; where that job lets nothing leave it, Windows refuses the start,
-        and the window is started in it all the same, which is said."""
-        argv = console.hold_command(launch.argv)
-        env = children.environment(launch, base=self.out.env, system=self.system)
+    def _window(self, launch: children.Launch, folder: str, token: str = "") -> tuple[int | None, str]:
+        """The launch started in a window of its own, held open by the console's `hold` until its user has read how it
+        ended: (its process's number, "" or what is to be said of it). The window is followed while it is open, with
+        its launch token (`token`, ended once it is gone: `running`).
+
+        Windows: a console window. It is asked to leave any job object the platform is held in
+        (CREATE_BREAKAWAY_FROM_JOB: a keeper's, keep.py's, ends what it holds with itself), since a window is its
+        user's; where that job lets nothing leave it, Windows refuses the start, and the window is started in it all
+        the same, which is said. Linux: the terminal program `_terminal` finds, given the command word by word, in a
+        session of its own (a window outlives the platform), with nothing of the platform's standard input or
+        output."""
+        name = self.title or self.name
+        env = self._window_env(launch)
         popen = self.out.popen if self.out.popen is not None else subprocess.Popen  # looked up now: a test's stands in
-        note = ""
+        where, note = launch.cwd or folder, ""
         try:
-            try:
-                child = popen(argv, env=env, cwd=launch.cwd or folder, creationflags=NEW_CONSOLE | BREAKAWAY)
-            except PermissionError:  # the platform is held in a job that lets nothing leave it
-                child = popen(argv, env=env, cwd=launch.cwd or folder, creationflags=NEW_CONSOLE)
-                note = HELD_WORDS
+            if self.system == "windows":
+                argv = console.hold_command(launch.argv)
+                try:
+                    child = popen(argv, env=env, cwd=where, creationflags=NEW_CONSOLE | BREAKAWAY)
+                except PermissionError:  # the platform is held in a job that lets nothing leave it
+                    child = popen(argv, env=env, cwd=where, creationflags=NEW_CONSOLE)
+                    note = HELD_WORDS
+            else:
+                found = self._terminal()
+                if found is None:
+                    raise children.ChildError(f"{name}'s window could not be opened: {_no_terminal()}")
+                path, terminal = found
+                child = popen(terminal.argv(path, where, console.hold_command(launch.argv)), env=env, cwd=where,
+                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
         except (OSError, ValueError, TypeError) as e:
-            raise children.ChildError(f"{self.title or self.name}'s window could not be opened: "
-                                      f"{self._scrubbed(_line(e))}") from None
+            raise children.ChildError(f"{name}'s window could not be opened: {self._scrubbed(_line(e))}") from None
         with self._rt.lock:
             self._rt.windows = [*self._rt.windows, (child, folder)][-WINDOWS_KEPT:]
+            past: list[tuple[object, str]] = []
+            if token:
+                tokens = [*self._rt.tokens, (child, token)]
+                past, self._rt.tokens = tokens[:-TOKENS_KEPT], tokens[-TOKENS_KEPT:]
+        for _, old in past:  # (no lock held: asked of the MCP plugin through the platform)
+            self._end_launch(old)
         pid = getattr(child, "pid", None)
         return (pid if isinstance(pid, int) and not isinstance(pid, bool) else None), note
 
@@ -733,18 +1282,19 @@ class Harness(ai.AiPlugin):
         served, notes = self._served()
         every = _every(served)
         chosen = every.get(use.server) if use is not None else None
-        desktop = self._desktop()
+        terminal = self._terminal() if self.system != "windows" else None  # (files looked at: nothing is started)
+        desktop = terminal is not None if self.system != "windows" else self._desktop()
         out["uses"] = self._uses(use, chosen)
         if use is not None and use.folder:
             out["opensIn"] = use.folder
-        out["opens"] = OPENS[desktop]
+        out["opens"] = self._opens(desktop, terminal)
         more = self._more(problems)
         have, here = self.installed(), self.runs_here()
         out["tables"] = [*_listed(out.get("tables")), *_listed(more.get("tables")),
                          self._servers_table(every, notes, use)]
         out["forms"] = [*_listed(out.get("forms")), self._use_form(every, use),
-                        self._open_form(use, chosen, desktop, problems), self._command_form(use), self._models_form(),
-                        *_listed(more.get("forms"))]
+                        self._open_form(use, chosen, desktop, problems, terminal), self._command_form(use),
+                        self._models_form(), *_listed(more.get("forms"))]
         out["actions"] = [*_listed(out.get("actions")), *self._buttons(have, here, use, chosen, every),
                           *_listed(more.get("actions"))]
         if problems:
@@ -882,16 +1432,26 @@ class Harness(ai.AiPlugin):
             out["note"] = "left empty: the folder kept from the last Open…"
         return out
 
-    def _open_form(self, use: Use | None, chosen: Mapping | None, desktop: bool, problems: list[str]) -> dict:
+    def _open_form(self, use: Use | None, chosen: Mapping | None, desktop: bool, problems: list[str],
+                   terminal: tuple[str, Terminal] | None = None) -> dict:
         name = self.title or self.name
         server = (server_words(chosen) if chosen is not None else use.server if use is not None
                   else "the model server you choose (Use…)")
-        if desktop:
+        if desktop and terminal is not None:  # (Linux)
+            words = f"A terminal window ({terminal[1].name}) opens there with {name} started against {server}."
+            if self.wsl:
+                words += " It opens on Windows' desktop, through WSLg."
+            words += " Closing it ends it."
+            yes = "Open it"
+        elif desktop:
             words = f"A terminal window opens there with {name} started against {server}. Closing it ends it."
             yes = "Open it"
         else:
             words, yes = ("No window can be opened from here: the command is shown, to run in a terminal of yours.",
                           "Show the command")
+            if self.system != "windows" and self._display():
+                said = _no_terminal()
+                words += f" {said[0].upper()}{said[1:]}."
         if use is not None and chosen is not None:
             try:
                 more = str(self.open_words(use, chosen) or "")

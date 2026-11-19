@@ -8,7 +8,9 @@ the harnesses' (machines/harness.py: Harness). It is drawn under the platform's 
 its GROUP names) and is valid wherever it can serve anything (A.2): what a system lacks is a fact and a refusal in
 words, never a reason to be invalid. A subclass says what Install brings here (`package`), what is there now
 (`installed`: files looked at only, nothing run), how its software is installed and removed (`install_into`,
-`remove_from`) and why it cannot run on this system (`runs_here`). The base gives the rest:
+`remove_from`) and why it cannot run on this system (`runs_here`). Software that is the plugin's own code (a protocol
+plugin's: machines/protocol.py) is there as a part of it (1.66.0: Installed.how "part"): nothing to install, nothing
+to remove. The base gives the rest:
 
 - Install, a job the page asks as a confirmed form: its size, its hosts, what of it is checked against a sum pinned in
   the plugin (Package.checked) and its licence said first, the licence accepted in a second confirmation
@@ -90,6 +92,10 @@ UNWRITTEN = ("Cc", "Cf", "Zl", "Zp")  # what a setting's text never holds: Unico
 # characters (a direction's override shows a switch otherwise than it is) and its line and paragraph separators
 SETTING_NAME = re.compile(r"^[a-z][a-z0-9_]{0,39}$")  # a setting's name: its form field's, a cell's value fills it
 KINDS = ("text", "number", "choice")
+# how what is installed came (Installed.how): this plugin's install, the user's own found here, or (1.66.0) the plugin's
+# own code, a part of it with nothing to install or remove
+HOWS = ("plugin", "found", "part")
+PART = "part of this plugin, nothing to install"  # what a part is said as
 SIZE_LOOKS = 4096  # entries looked at, at the most, to say how much its downloads/ holds
 CANCELLED = "cancelled: nothing was installed (what was downloaded is kept for the next try)"
 CANCELLED_AFRESH = "cancelled: nothing was installed (nothing was kept: the next try downloads it again)"
@@ -242,7 +248,8 @@ class Package:
 class Installed:
     """What is installed here: its `version` ("": not read yet, as with one found and not run), its program's or its
     folder's `path`, `how` it came ("plugin": this plugin's install; "found": the user's own, used as it is and never
-    replaced or removed from here), and a `note` shown beside it on the page."""
+    replaced or removed from here; "part", 1.66.0: software that is the plugin's own code, with no install and no
+    uninstall, its version the plugin's), and a `note` shown beside it on the page."""
 
     version: str
     path: str
@@ -250,8 +257,8 @@ class Installed:
     note: str = ""
 
     def __post_init__(self):
-        if self.how not in ("plugin", "found"):
-            raise ValueError(f"an install is the plugin's or one found, not {self.how!r}")
+        if self.how not in HOWS:
+            raise ValueError(f"an install is the plugin's, one found or a part of the plugin, not {self.how!r}")
         object.__setattr__(self, "version", str(self.version or ""))
         object.__setattr__(self, "path", str(self.path))
 
@@ -1096,12 +1103,27 @@ class AiPlugin(MachinePlugin):
             if pkg is not None:
                 return f"not installed: Install… brings {pkg.title} {pkg.version} ({self._size(pkg)})"
             return "not installed, and nothing is installed from here on this system"
-        if have.how == "plugin":
+        if have.how == "part":
+            said = self._part_words(have)
+        elif have.how == "plugin":
             said = f"{self._version_of(have)}, installed by this plugin in {have.path}"
         else:
             said = (f"{self._version_of(have)} at {have.path}: your own install, used as it is and never replaced "
                     "from here")
         return f"{said} · {have.note}" if have.note else said
+
+    def _part_words(self, have: Installed) -> str:
+        """What software that is part of the plugin is said as: "{title} {version}: part of this plugin, nothing to
+        install" (its version its own, else the plugin's)."""
+        version = self._known_version(have) or str(self.version or "")
+        return " ".join(x for x in (self.title or self.name, version) if x) + f": {PART}"
+
+    def _not_part(self, what: str) -> None:
+        """Refused in words when its software is part of the plugin (Installed.how "part"): there is nothing to
+        `what` ("install", "remove")."""
+        have = self.installed()
+        if have is not None and have.how == "part":
+            raise Refusal(f"{self.title or self.name} is part of this plugin: there is nothing to {what}")
 
     @staticmethod
     def _size(pkg: Package) -> str:
@@ -1156,17 +1178,19 @@ class AiPlugin(MachinePlugin):
             self._keep_version(have, lines.append)
         pkg = self.package()
         words = self._installed_words(have, pkg, self.runs_here())
-        return self._reply(f"read again: {self.title or self.name} {words}" if have else f"read again: {words}", True,
+        named = have is not None and have.how != "part"  # (a part's words name it already)
+        return self._reply(f"read again: {self.title or self.name} {words}" if named else f"read again: {words}", True,
                             lines)
 
     def install(self, accept_licence=False, log=None) -> dict:
         """Its software installed (or updated to the pinned version, or put back to it) into its own folder, for this
         user alone, as a job (`log`: the platform's panel, which also says whether the user cancelled it). Refused in
-        words before the job's first line: its library too old; nothing installed from here on this system
-        (`runs_here`, `package`); its folder on another system's drive; an install or an uninstall under way; the
-        user's own install found (used as it is, never replaced); the pinned install in use already (told by its pin);
-        a start of it under way, or something of it running; and its licence not accepted yet (a Refusal naming
-        accept_licence, asked as a second confirmation with the licence's words).
+        words before the job's first line: its library too old; its software part of the plugin (Installed.how
+        "part": nothing to install); nothing installed from here on this system (`runs_here`, `package`); its folder
+        on another system's drive; an install or an uninstall under way; the user's own install found (used as it is,
+        never replaced); the pinned install in use already (told by its pin); a start of it under way, or something
+        of it running; and its licence not accepted yet (a Refusal naming accept_licence, asked as a second
+        confirmation with the licence's words).
 
         Then `install_into` does the work, given the job's panel (or one of the base's when it was asked without a
         job: always callable, its cancel set by a detach, as a job's is by the page's Cancel). A cancel answers
@@ -1174,6 +1198,7 @@ class AiPlugin(MachinePlugin):
         each with the half-built folder removed and the one in use kept. Once the new pin is in use (`adopt`), a later
         failure or cancel is answered as installed, with what went wrong said (ok True)."""
         self._usable()
+        self._not_part("install")
         pkg = self.package()
         here = self.runs_here()
         if pkg is None or here:
@@ -1254,15 +1279,17 @@ class AiPlugin(MachinePlugin):
 
     def uninstall(self, accept_removal=False) -> dict:
         """Its software removed from its folder (`remove_from`), asked twice: refused in words while its library is
-        too old, while its folder is on another system's drive, while an install or an uninstall is under way, while
-        nothing of this plugin's is installed (the user's own install is never removed from here), while a start of
-        it is under way or something of it runs or starts at boot, and until it is accepted (a Refusal naming
-        accept_removal). Its instances and what Package.keeps names stay.
+        too old, for software that is part of the plugin (nothing to remove), while its folder is on another system's
+        drive, while an install or an uninstall is under way, while nothing of this plugin's is installed (the user's
+        own install is never removed from here), while a start of it is under way or something of it runs or starts
+        at boot, and until it is accepted (a Refusal naming accept_removal). Its instances and what Package.keeps names
+        stay.
 
         With nothing installed, what was downloaded for it (what a cancel kept in downloads/) is what it removes, at
         once: its form (Forget the download…) is confirmed once and carries no accept_removal, so should an install
         have come meanwhile, that form's ask is refused (accepting the removal is the uninstall form's alone)."""
         self._usable()
+        self._not_part("remove")
         with self._software_change():
             return self._uninstall(accept_removal)
 
@@ -1423,7 +1450,9 @@ class AiPlugin(MachinePlugin):
         trouble = self.home_problem()
         busy, changing = self.running() if running is None else running, self._rt.changing.locked()
         name = self.title or self.name
-        if have is not None:
+        if have is not None and have.how == "part":
+            out["summary"] = self._part_words(have)
+        elif have is not None:
             mine = "" if have.how == "plugin" else ": your own install"
             out["summary"] = f"{name} {self._version_of(have)}{mine}"
         else:
@@ -1449,7 +1478,7 @@ class AiPlugin(MachinePlugin):
                 back = update and _older(pkg.version, self._known_version(have))
                 title = f"Go back to {pkg.version}…" if back else f"Update to {pkg.version}…" if update else "Install…"
                 actions.append(self._button("ai-install", title, why=why))
-        elif pkg is not None and have is not None:
+        elif pkg is not None and have is not None and have.how == "found":
             actions.append(self._button("ai-install", "Install…", why=f"your own install at {have.path} is used as it "
                                                                       "is, never replaced from here"))
         if have is not None and have.how == "plugin":

@@ -7,7 +7,8 @@ repositories fit together; the naming: apps `liminal-<app>`, this library `limin
 - [liminal-charts](https://github.com/pcxmac-dev/liminal-charts): the charts app (its front, its pages, the data API and the command line);
 - [liminal-integrator](https://github.com/pcxmac-dev/liminal-integrator): the fetcher, which collects the data and serves it;
 - the plugins: `plugin-integrator-<name>`, one per data provider, and `plugin-platform-<name>`, the AI
-  assistants, on the contract here (`sources/plugin.py`: the classes; `sources/registry.py`: the registry).
+  assistants, the machine plugins and the AI plugins (model servers, coding harnesses and, from 1.66.0, protocol
+  plugins), on the contract here (`sources/plugin.py`: the classes; `sources/registry.py`: the registry).
 
 What is here (`src/liminal_libs`): the stores (`storage/`: SQLite, DuckDB and MongoDB by data type), the plugin
 contract and the registry (`sources/`), the data specs (`sources/data.py`: what each kind of data a plugin delivers
@@ -25,6 +26,14 @@ the base it is built on and so the standard interface it implements, its hooks a
 its code calls on its plugins and what it offers them, its routes) and drawn by `ui/static/internal.js`. Every app
 answers both at `GET /api/app/apis`, and an attached plugin's with `?plugin=NAME` (INTEGRATION.md says what a
 plugin and an app may declare for them).
+
+The platform's AI plugins (`machines/ai.py`, 1.62.0) come in groups: the model servers (`ModelServer`), the coding
+harnesses (`Harness`) and, from 1.66.0, the protocol plugins (`ProtocolPlugin`, `machines/protocol.py`: MCP's, which
+mediates the local AI agents' connections on the platform's own port). What they stand on is here too: a piped child
+(`machines/children.py`, `Piped`), a private Node.js and npm (`machines/node.py`), and Hugging Face's cache and its hf
+command (`machines/hub.py`). Who may ask a hook is a plugin's word too (1.66.0): `PLUGIN_ONLY_HOOKS`, asked only by
+another plugin, and `PAGE_ONLY_HOOKS`, asked only from its page (`apps/asking.py` says who asks; INTEGRATION.md says
+the rest).
 
 The workspace (`layout.py`): one folder holds `common/` (this library's checkout), `app/` (the chart app),
 `store/` (the integrator, the databases in `store/data/`) and `plugins/` (a checkout per plugin, loaded from

@@ -38,8 +38,14 @@ What is read and when (A.9, revisions S3 and S10):
 A subclass says how its server is started (`launch`: its command and environment, its bind address and port, its
 privacy switches, its key by environment, never on its command line), how it is recognised and its models listed
 (`look`), the words of its start and its sharing (`start_words`, `share_words`), its own model cells
-(`model_cells`, under MODEL_COLUMNS) and what it adds to its Main and Models pages (`main_more`, `more`), besides
-what every AI plugin says (package, installed, install_into, remove_from, runs_here)."""
+(`model_cells`, under MODEL_COLUMNS), what it adds to its Main and Models pages (`main_more`, `more`) and which
+families of OpenAI-compatible asks its server answers (SPEAKS, of FAMILIES; `speaks_of` narrows them for one
+instance), besides what every AI plugin says (package, installed, install_into, remove_from, runs_here).
+
+What a server speaks (1.66.0; the user, 2026-11-18: "top 4 inference engines, top 4 agentic harnesses (open
+source)"): each `serving` row says it ("speaks"), so a harness that asks one family alone (Codex CLI asks the
+Responses API and nothing else) can tell before it starts. It is the plugin's word, never asked of the server. The
+base's is chat alone: a plugin that says nothing more is told as speaking chat."""
 from __future__ import annotations
 
 import dataclasses
@@ -68,9 +74,9 @@ from .firewall import app_ports
 from .plugin import CommandError
 from .world import size_words
 
-__all__ = ["ACCEPT_PLAIN", "ACCEPT_SHARE", "BOOT_S", "Holder", "Instance", "Instances", "Kept", "MAX_INSTANCES",
-           "ModelServer", "PORTS", "RELAYS", "SEEN_S", "SERVING", "Seen", "ServerRun", "Setting", "TABLE_S", "WHERE",
-           "held_words", "holders", "reserved"]
+__all__ = ["ACCEPT_PLAIN", "ACCEPT_SHARE", "BOOT_S", "FAMILIES", "Holder", "Instance", "Instances", "Kept",
+           "MAX_INSTANCES", "ModelServer", "PORTS", "RELAYS", "SEEN_S", "SERVING", "Seen", "ServerRun", "Setting",
+           "TABLE_S", "WHERE", "held_words", "holders", "reserved", "spoken"]
 
 WHERE = ("local", "found", "remote")  # run here; found on this machine; another machine's
 MAX_INSTANCES = 16  # instances a plugin holds at most
@@ -95,6 +101,10 @@ YES = ("yes", "on", "true")
 NO = ("no", "off", "false")
 MIRRORED = ("WSL under mirrored networking, or another user's program")
 UNENCRYPTED = "Its key and everything sent to it travel unencrypted between the two machines."  # plain http's words
+# The families of OpenAI-compatible asks a server may answer (SPEAKS, and a serving row's "speaks"), in this order:
+# chat completions (/v1/chat/completions), the older completions (/v1/completions), OpenAI's Responses API
+# (/v1/responses), Anthropic's Messages API (/v1/messages) and embeddings (/v1/embeddings)
+FAMILIES = ("chat", "completions", "responses", "messages", "embeddings")
 
 
 def _words(e: BaseException) -> str:
@@ -441,6 +451,20 @@ def _served(models) -> list[dict]:
     return [{"id": m["id"], "context": m.get("context"), "tools": m.get("tools")} for m in models]
 
 
+def spoken(given) -> tuple[str, ...]:
+    """The families named in `given` (a plugin's SPEAKS, what its speaks_of answers, a serving row's "speaks"), each
+    once and in FAMILIES' order. Only FAMILIES' words count. A text is one word; a mapping, bytes, or anything that
+    holds no words names none."""
+    if isinstance(given, str):
+        words: tuple = (given,)
+    elif isinstance(given, Iterable) and not isinstance(given, (bytes, bytearray, Mapping)):
+        words = tuple(given)
+    else:
+        words = ()
+    named = {w.strip().lower() for w in words if isinstance(w, str)}
+    return tuple(f for f in FAMILIES if f in named)
+
+
 # -- the base ----------------------------------------------------------------------------------------------------------
 class ServerRun(Run):
     """A model server plugin's run state (ai.Run and more): its children by instance, those found by their pidfiles,
@@ -465,7 +489,8 @@ class ModelServer(AiPlugin):
     start at boot, their models and a prompt to try (the module's words). A subclass sets DEFAULT_PORT (the maker's
     port), NATIVE (its own API's name for the harnesses: "ollama", "llamacpp", "vllm"), KEYED (whether its server
     checks a key), SETTINGS (the tool's main settings, each a form's field named by its Setting.name), READY_S (how
-    long a start may take before it listens) and MODEL_COLUMNS (its own model cells' titles), and says `launch` and
+    long a start may take before it listens), MODEL_COLUMNS (its own model cells' titles) and SPEAKS (the families of
+    OpenAI-compatible asks its server answers, FAMILIES' words; the base's is chat alone), and says `launch` and
     `look` besides what every AI plugin says."""
 
     GROUP = "inference"
@@ -479,6 +504,9 @@ class ModelServer(AiPlugin):
     SETTINGS: tuple = ()  # Setting, each a field of ai-add and ai-change named by its name
     READY_S = 120.0  # seconds a start is "starting" before it listens
     MODEL_COLUMNS: tuple = ()  # the titles of model_cells' cells
+    # the families of OpenAI-compatible asks its server answers (FAMILIES' words), at the most: each serving row says
+    # them ("speaks"), narrowed for one instance by speaks_of. The base's: chat alone
+    SPEAKS: tuple = ("chat",)
     CHILD = None  # the class its servers are started and found again with; None: children.Child (a test's stand-in)
     # What it says of the interface it shares (the contract's words of liminal-libs 1.63.0, read by name by the Internal
     # API tab; nothing reads them before it): its reads beside its bases' (`choose` changes only which instance its
@@ -542,6 +570,13 @@ class ModelServer(AiPlugin):
     def main_more(self) -> dict:
         """{"tables", "forms", "actions"} added to Main, asked at every draw (files and kept readings only)."""
         return {}
+
+    def speaks_of(self, instance: Instance) -> tuple[str, ...]:
+        """The families of OpenAI-compatible asks `instance`'s server answers, as its serving row says them: SPEAKS by
+        default. A plugin narrows it for one instance, such as a found or a remote server whose version, as last read
+        (`seen`), is older than one of them. It is drawn for another plugin's ask, so it reads what is kept alone and
+        never asks the server. The row tells only what SPEAKS names too."""
+        return spoken(self.SPEAKS)
 
     # -- its files ----------------------------------------------------------------------------------------------------
     def log_path(self, name: str) -> Path:
@@ -1504,6 +1539,17 @@ class ModelServer(AiPlugin):
             f" ({tokens:,} tokens)" if isinstance(tokens, int) else "")
         return self._reply(said, True, lines)
 
+    def _speaks(self, instance: Instance) -> list[str]:
+        """What a row says `instance` speaks: what speaks_of answers, of what SPEAKS names. A speaks_of that fails
+        gives chat alone, where SPEAKS names it: the least any server here is asked for, so the row is still told and
+        never says more than the plugin could stand by."""
+        declared = spoken(self.SPEAKS)
+        try:
+            said = spoken(self.speaks_of(instance))
+        except Exception:  # noqa: BLE001 - a plugin's own narrowing that fails: the least it declares
+            said = spoken(ModelServer.SPEAKS)
+        return [f for f in said if f in declared]
+
     def _row(self, instance: Instance) -> dict:
         """An instance as another plugin is told it (serving): from what is kept alone, the boot registrations as last
         read (no command is run for another plugin's ask)."""
@@ -1522,14 +1568,16 @@ class ModelServer(AiPlugin):
                 "model": model if isinstance(model, str) else "",
                 "context": context if isinstance(context, int) and not isinstance(context, bool) else None,
                 "models": _served(seen.models) if seen is not None and seen.ok else [],
-                "asked": _iso(seen.at) if seen is not None else "", "port": self.port_of(instance)}
+                "asked": _iso(seen.at) if seen is not None else "", "port": self.port_of(instance),
+                "speaks": self._speaks(instance)}
 
     def serving(self, name: str = "") -> dict:
         """What this plugin offers the other AI plugins, asked through the platform: {"plugin", "title", "native",
         "instances": [{"name", "title", "where", "local", "base", "openai" (base + "/v1"), "plain", "state" (the word
         alone), "key" (its pair's variable, "" when none: never the key), "model", "context", "models": [{"id",
-        "context", "tools"}] as last listed, "asked", "port"}]}; with `name`, that one alone (LookupError for none). No
-        network, no process; `conflict` is never asked."""
+        "context", "tools"}] as last listed, "asked", "port", "speaks" (the families of OpenAI-compatible asks it
+        answers, FAMILIES' words: the plugin's word, speaks_of)}]}; with `name`, that one alone (LookupError for
+        none). No network, no process; `conflict` is never asked."""
         kept = self.kept_instances().instances
         if name:
             key = str(name).strip().lower()

@@ -265,3 +265,19 @@ def test_a_program_is_named_without_its_folder_or_arguments_and_each_end_drawn_a
     assert program_name(None, []) == "" and program_name(None, None) == ""
     assert node_of("process:wsl")["role"] == "outside" and node_of("host:updates.invalid")["icon"] == "globe"
     assert node_of("app:login")["icon"] == "lambda" and node_of("page")["role"] == "caller" and node_of("acme")["role"] == "plugin"
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_an_ai_agent_asking_through_the_mcp_plugin_is_drawn_as_a_caller_by_its_name():
+    """The MCP plugin notes each call of an AI agent as 'agent:<its client's name>' to itself. The picture draws that
+    end beside the page and the programs that call the app: a caller, named by the agent. Nothing is served here."""
+    assert node_of("agent:opencode") == {"id": "agent:opencode", "role": "caller", "title": "opencode",
+                                         "sub": "an AI agent, through the MCP plugin", "icon": "terminal"}
+    assert node_of("agent:")["role"] == "plugin"  # no name after it: an end like any other, a plugin's
+    app = TracingApp(log=lambda m: None, login=Pairs({}))
+    app.traffic.record("agent:aider", "mcp", "ask", "tools/call")
+    app.traffic.record("page", "demo", "read", "GET /api/tray")
+    nodes = {n["id"]: n for n in app.connections()["nodes"]}
+    assert nodes["agent:aider"] == node_of("agent:aider") and nodes["agent:aider"]["title"] == "aider"
+    assert {n["id"] for n in nodes.values() if n["role"] == "caller"} == {"agent:aider", "page"}
+    assert nodes["mcp"]["role"] == "plugin"  # the plugin it asked, not attached here: drawn by its name, as before

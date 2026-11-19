@@ -13,6 +13,15 @@ given a process group of its own, which would turn Ctrl+C off in it, and this pr
 before its first child is started, since a child inherits that too. On Linux it leads a session of its own and is
 asked with SIGTERM; its group is then ended with SIGKILL.
 
+`Piped` (1.66.0; the user, 2026-11-18: "an MCP plugin for platform, basically a protocol plugin that mediates MCP
+connections to resources by local AI agents") is a child its plugin talks to: an MCP server over stdio. Its standard
+input and output are pipes, and each message is one line. It is started as a Child is (windowless, in a job object on
+Windows, in a session of its own on Linux, its pidfile written), and what it prints as errors goes into its log.
+`send` writes a line to it; a thread hands each line it prints to its plugin; a line longer than LINE_MAX ends it. It
+is stopped in the order MCP's stdio transport gives (2026-07-28): its input is closed, it gets its grace, and then it
+is ended with what it started (its job on Windows; SIGTERM, then SIGKILL, to its group on Linux). One an earlier run
+left running is ended at its next start.
+
 `Launch` is what is started: the command, the variables laid over this process's environment, the names taken out of
 that environment first (`drop`: no pair of Liminal's, and no variable a tool reads by itself, reaches a child unless
 its plugin sets it), the folder, and which of the variables are secret. `environment` makes the child's environment
@@ -1058,6 +1067,328 @@ def stop_all(grace: float = GRACE_S) -> None:
     with _all_lock:
         kids = list(_all)
     stop_these(kids, grace)
+
+
+# -- a child spoken to through pipes -----------------------------------------------------------------------------------
+LINE_MAX = 4 * 1024 * 1024  # bytes: a line a piped child prints is this long at most (4 MiB); a longer one ends it
+TERM_S = 2.0  # what a piped child is given after SIGTERM, before SIGKILL (Linux), once its grace is over
+SEND_WAIT_S = 1.0  # what a stop waits for a line being sent: a child that does not read its input is not waited for
+
+
+def _close(pipe) -> None:
+    """A pipe of ours closed; one that is closed already, or cannot be, is left as it is."""
+    try:
+        if pipe is not None:
+            pipe.close()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _written(pipe, data: bytes) -> None:
+    """All of `data` written to a pipe, however many writes that takes (OSError when it takes none)."""
+    view = memoryview(data)
+    while view:
+        done = pipe.write(view)
+        if not done:
+            raise OSError("the pipe took nothing")
+        view = view[done:]
+    flush = getattr(pipe, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def _copied(pipe, out: _Log, lock) -> None:
+    """A piped child's error output appended to its log until it ends; then the log is closed, and the pipe."""
+    try:
+        for chunk in _chunks(pipe):
+            with lock:
+                out.write(chunk)
+    finally:
+        with lock:
+            out.close()
+        _close(pipe)
+
+
+class _Both:
+    """Threads waited for as one, within one timeout: what a piped child's watcher waits for before it cleans up (its
+    errors copied, its lines read)."""
+
+    def __init__(self, *threads: threading.Thread):
+        self.threads = threads
+
+    def join(self, timeout: float | None = None) -> None:
+        until = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        for thread in self.threads:
+            thread.join(None if until is None else max(0.0, until - time.monotonic()))
+
+
+class Piped(Child):
+    """A child its plugin talks to through pipes: an MCP server over stdio. Each message is one line.
+
+    It is started as a Child is: windowless, in a job object on Windows and in a session of its own on Linux, with
+    its pidfile written. Its standard input, output and errors are pipes. What it prints as errors goes into its log
+    (LOG_MAX, moved aside past it, its secrets masked). `send(line)` writes one line to it. A thread reads what it
+    prints and hands each line to `line(text)`, without its line end; a blank line is left out. A line longer than
+    LINE_MAX bytes ends it, and so does a `line` that fails: what it prints after that is read and dropped. Once its
+    output has ended, `ended(why)` is told once: "" when it just ended, else why it was ended (`why` says it too).
+
+    `stop(grace)` follows MCP's stdio transport (2026-07-28): its input is closed, and it gets `grace` seconds to end
+    by itself. Then it is ended with what it started: its job on Windows; SIGTERM, then SIGKILL after TERM_S, to its
+    group on Linux. `stop_all` stops it at exit with every other child.
+
+    Its pidfile works as a Child's. One an earlier run left running (a platform ended by force on Linux) is ended at
+    the next `start`, before the new one starts; `adopt` gives it too, to be stopped. An adopted one has no pipes:
+    it is ended as the second half of a stop."""
+
+    def __init__(self, name: str, launch: Launch, log: Path, pidfile: Path, *,
+                 line: Callable[[str], None] | None = None, ended: Callable[[str], None] | None = None, popen=None,
+                 interrupt=None, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep, system: str | None = None):
+        super().__init__(name, launch, log, pidfile, popen=popen, interrupt=interrupt, clock=clock, sleep=sleep,
+                         system=system)
+        self._on_line = line
+        self._on_end = ended
+        self._sending = threading.Lock()  # one line written at a time; a stop closes the input only between two
+        self._log_lock = threading.Lock()  # its log is written by its errors' thread and by its notes
+        self._input = None  # its standard input, while it is open
+        self._out: _Log | None = None  # its log, while it runs
+        self._hearer: threading.Thread | None = None  # reads what it prints, line by line
+        self.why = ""  # why this module ended it ("": it was not; it ended by itself, or was stopped)
+
+    # -- starting --------------------------------------------------------------------------------------------------
+    def start(self) -> int:
+        """It is started, its three pipes open: its number. One an earlier run left running is ended first.
+        ChildError, in words, when it runs already, or it cannot be started, or that earlier one cannot be ended."""
+        global _hooked
+        earlier = self._earlier()  # (outside the lock: ending it may take its grace)
+        with self._lock:
+            if self._look():
+                raise ChildError(f"{self.name} runs already (pid {self._pid})")
+            held = proc.holder(self.pidfile)
+            if held is not None:
+                raise ChildError(f"{self.name} runs already (pid {held})")
+            if not self.launch.argv:
+                raise ChildError(f"{self.name} has no command to start")
+            hide = _secrets(self.launch)
+            out = _Log(self.log, LOG_MAX, hide=hide)
+            try:
+                self.pidfile.parent.mkdir(parents=True, exist_ok=True)
+                out.open()
+            except OSError as e:
+                raise ChildError(f"{self.name} could not start: its log {self.log} cannot be written ({e})") from None
+            starter = self._popen or subprocess.Popen
+            try:
+                process = starter(
+                    list(self.launch.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    bufsize=0, env=environment(self.launch, system=self.system), cwd=self.launch.cwd or None,
+                    **_flags(self.system))
+            except (OSError, ValueError, TypeError) as e:  # (ValueError: a NUL in a word or a variable)
+                out.close()
+                why = f"{self.name} could not start ({program(self.launch.argv[0])}): {e}"
+                raise ChildError(masked(why, hide)) from None
+            self._process, self._pid, self._over, self.adopted, self.note = process, process.pid, False, False, ""
+            self._input, self._out, self.why = process.stdin, out, ""
+            self._since = time.time()
+            self._job = _held(process) if self.system == "windows" else None
+            stamp = datetime.now().isoformat(timespec="seconds")
+            if earlier:
+                out.write(f"{stamp} liminal: {earlier}\n".encode("utf-8", "replace"))
+            words = keep.words([masked(word, hide) for word in self.launch.argv])  # hidden, then quoted
+            out.write(f"{stamp} liminal: {self.name} started (pid {process.pid}), its input and output piped: "
+                      f"{words}\n".encode("utf-8", "replace"))
+            if self.system == "windows" and self._job is None:
+                out.write(f"{stamp} liminal: it could not be held in a job: what it starts is not ended with it\n"
+                          .encode("utf-8"))
+            self._note(process.pid)
+            self._reader = threading.Thread(target=_copied, args=(process.stderr, out, self._log_lock), daemon=True,
+                                            name=f"child-{self.name}")
+            self._hearer = threading.Thread(target=self._hear, args=(process.stdout,), daemon=True,
+                                            name=f"child-out-{self.name}")
+            self._gone = threading.Event()
+            self._watcher = threading.Thread(target=self._watch, args=(process, _Both(self._reader, self._hearer),
+                                                                       self._gone),
+                                             daemon=True, name=f"child-end-{self.name}")
+            self._reader.start()
+            self._hearer.start()
+            self._watcher.start()
+        with _all_lock:
+            if self not in _all:
+                _all.append(self)
+            if not _hooked:
+                atexit.register(stop_all)
+                _hooked = True
+        return process.pid
+
+    def _earlier(self) -> str:
+        """The child an earlier run left running, by its pidfile, ended: what is said of it ("": there is none).
+        ChildError when it is one this process runs, or when it cannot be ended."""
+        pid = proc.holder(self.pidfile)
+        if pid is None:
+            return ""
+        with _all_lock:
+            if any(mine._pid == pid and not mine._over for mine in _all):
+                raise ChildError(f"{self.name} runs already (pid {pid})")
+        earlier = type(self).adopt(self.name, self.log, self.pidfile, clock=self._clock, sleep=self._sleep,
+                                   system=self.system)
+        if earlier is None:  # gone meanwhile (or it names this very process: refused as running, below)
+            return ""
+        try:
+            said = earlier.stop()
+        except ChildError:
+            raise ChildError(f"{self.name} could not start: an earlier run's (pid {pid}) still runs and could not be "
+                             "ended") from None
+        return f"{self.name} of an earlier run (pid {pid}) was ended first: {said}"
+
+    # -- talking ---------------------------------------------------------------------------------------------------
+    def send(self, line) -> None:
+        """One message written to its standard input as one line, a line feed added: `line` is text (sent as UTF-8)
+        or bytes, without a line break. ValueError for a line break. ChildError in words when it does not run, or
+        its input is closed or broken. A child that does not read its input holds the send up until it does, or
+        until it is ended."""
+        data = line.encode("utf-8") if isinstance(line, str) else bytes(line)
+        if b"\n" in data or b"\r" in data:
+            raise ValueError(f"a line sent to {self.name} holds no line break: each message is one line")
+        with self._sending:
+            pipe, running = self._input, self._look()
+            if pipe is None or not running:
+                if pipe is not None:  # it has ended: its input goes too
+                    self._input = None
+                    _close(pipe)
+                if not running:
+                    raise ChildError(f"{self.name} does not run: nothing was sent to it")
+                raise ChildError(f"{self.name}'s input is closed: nothing was sent to it"
+                                 + (" (an earlier run started it)" if self.adopted else ""))
+            try:
+                _written(pipe, data + b"\n")
+            except (OSError, ValueError) as e:
+                raise ChildError(f"{self.name} did not take the line: its input is closed ({e})") from None
+
+    def _close_input(self, wait: float) -> bool:
+        """Its standard input closed, so that it reads its end: whether it is closed now (or was already). A send under
+        way is waited for `wait` seconds at most. Past that it is left open: closing a pipe that a write still waits
+        on would wait as long as the write (Windows), and a child that does not read its input will not end at its
+        end anyway."""
+        if not self._sending.acquire(timeout=max(0.0, wait)):
+            return False
+        try:
+            pipe, self._input = self._input, None
+        finally:
+            self._sending.release()
+        _close(pipe)
+        return True
+
+    def _hear(self, pipe) -> None:
+        """The reader's thread: what it prints cut into lines and handed to `line`, until its output ends. A line
+        longer than LINE_MAX, or one `line` cannot take, ends the child; what it prints after that is read and
+        dropped. At the end: the pipe closed, its input closed (unless a send is under way), and `ended` told."""
+        held = bytearray()
+        why = ""
+        try:
+            for chunk in _chunks(pipe):
+                if why:
+                    continue  # it is being ended: what it still prints is dropped
+                *whole, rest = chunk.split(b"\n")
+                for part in whole:
+                    held += part
+                    why = self._give(bytes(held))
+                    held.clear()
+                    if why:
+                        break
+                if not why:
+                    held += rest
+                    if len(held) > LINE_MAX:
+                        why = _too_long()
+                if why:
+                    held.clear()
+                    self._cut(why)
+            if held and not why:  # its last line, not ended by a line feed
+                why = self._give(bytes(held))
+                if why:
+                    self._cut(why)
+        finally:
+            _close(pipe)
+            self._close_input(0.0)
+            told = self._on_end
+            if told is not None:
+                try:
+                    told(why)
+                except Exception:  # noqa: BLE001 - its plugin's own fault: the child has ended all the same
+                    pass
+
+    def _give(self, data: bytes) -> str:
+        """One line handed to `line`, its line end taken off and read as UTF-8 (what is not, replaced): "" when it was,
+        or left out (a blank line; no `line` given), else why it cannot be."""
+        if data.endswith(b"\r"):
+            data = data[:-1]
+        if len(data) > LINE_MAX:
+            return _too_long()
+        text = data.decode("utf-8", "replace")
+        if not text.strip() or self._on_line is None:
+            return ""
+        try:
+            self._on_line(text)
+        except Exception as e:  # noqa: BLE001 - a line its plugin cannot take ends the talk
+            return f"its line could not be taken ({_word(f'{type(e).__name__}: {e}')})"
+        return ""
+
+    def _cut(self, why: str) -> None:
+        """Ended now, for `why`: said in its log, its input closed (unless a send is under way), and it is ended with
+        what it started at once (its job, or SIGKILL to its group). Its watcher cleans up after it."""
+        self.why = why
+        self._say(f"{self.name} was ended: {why}")
+        self._close_input(0.0)
+        try:
+            self._end()
+        except Exception:  # noqa: BLE001 - one that cannot be ended now is ended by its stop
+            pass
+
+    def _say(self, words: str) -> None:
+        """A line of this module's own in its log, while it is open."""
+        out = self._out
+        if out is None:
+            return
+        stamp = datetime.now().isoformat(timespec="seconds")
+        with self._log_lock:
+            out.write(f"{stamp} liminal: {words}\n".encode("utf-8", "replace"))
+
+    # -- ending ----------------------------------------------------------------------------------------------------
+    def stop(self, grace: float = GRACE_S) -> str:
+        """It is stopped as MCP's stdio transport says: its input is closed, and it gets `grace` seconds to end by
+        itself. Then it is ended with what it started: its job on Windows; on Linux SIGTERM to its group, and SIGKILL
+        after TERM_S. How it went, in words. When a line it does not read is still being sent, its input cannot be
+        closed, and it is ended without the grace. One that does not run is left alone: a second call does nothing.
+        ChildError when it cannot be ended."""
+        with self._stopping:
+            if not self._look():
+                return self._was_over()
+            pid, began = self._pid, self._clock()
+            if self._process is None:  # adopted: its input is not this process's to close
+                return self._finish(pid, "")
+            if not self._close_input(SEND_WAIT_S):
+                return self._finish(pid, "its input could not be closed (a line it does not read was being sent)")
+            if self._gone_within(grace):
+                return f"ended when its input was closed, after {max(0.0, self._clock() - began):.1f} s"
+            return self._finish(pid, f"did not end within {grace:g} s after its input was closed")
+
+    def _finish(self, pid: int | None, first: str) -> str:
+        """The second half of a stop: on Linux SIGTERM, TERM_S, then SIGKILL; on Windows ended at once. `first`: what
+        came before, in words ("": nothing, as for an adopted child)."""
+        if self.system != "windows":
+            if self._signal(TERM) and self._gone_within(TERM_S):
+                ended = "ended by SIGTERM, with what it started" if self._process is not None else "ended by SIGTERM"
+                return f"{first}: {ended}" if first else ended
+            first = f"{first}, nor within {TERM_S:g} s after SIGTERM" if first else (
+                f"did not end within {TERM_S:g} s after SIGTERM")
+        whole = self._end()
+        if not self._gone_within(END_S):
+            raise ChildError(f"{self.name} could not be ended: it still runs (pid {pid})")
+        ended = ("ended with what it started" if whole else
+                 "ended; what it started is not held with it and may still run")
+        return f"{first}: {ended}" if first else ended
+
+
+def _too_long() -> str:
+    return f"it printed a line longer than {LINE_MAX:,} bytes"
 
 
 # -- a command's lines -------------------------------------------------------------------------------------------------

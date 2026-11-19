@@ -9,6 +9,13 @@ in; the shown lines unsetting what `drop` names as a new terminal has it and nev
 key told apart from a folder's name, and a word PowerShell 5.1 would not pass refused; a curly quote in the folder;
 what it says it reads, asks and keeps; Ask…; Main; and no key in any answer.
 
+1.66.0: a window on Linux (a display and a terminal; neither; a boot service; shutil.which alone, and nothing started
+by a status; each terminal handed the command word by word, as its manual says; x-terminal-emulator only through a
+link to a known terminal; the display's variables kept). Liminal's MCP (off; on, with an offer; the MCP plugin absent
+or refusing; the wire chosen; a launch token for each Open… that opens a window and none for Command… or the lines;
+the token ended once its window is gone, or at once when the start goes no further; the token in no argument, file,
+answer or line). Values a harness would read as more than text (${, $(, {env:, {file:, ${{, a leading !) refused.
+
 Nothing is installed, downloaded, started or asked over the network here: stand-ins answer for the login, the platform,
 the window's process and the clock, and the shared guard (conftest.py) fails a test that starts a process or opens a
 connection."""
@@ -18,6 +25,7 @@ import copy
 import json
 import re
 import shlex
+import subprocess
 import threading
 from pathlib import Path
 
@@ -1071,3 +1079,631 @@ def test_the_module_and_its_test_name_no_host():
     for path in (Path(harness.__file__), Path(__file__)):
         found = [line for line in path.read_text(encoding="utf-8").splitlines() if written.search(line)]
         assert found == [], path.name
+
+
+# -- a window on Linux (1.66.0) ----------------------------------------------------------------------------------------
+DESKTOP = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/run/user/1000",
+           "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}  # as WSLg sets them
+# each terminal's words before the command, as its own manual gives them (read 2026-11-19); {folder}: the folder
+MANUALS = {
+    "gnome-terminal": ["--wait", "--working-directory={folder}", "--"],
+    "ptyxis": ["-d", "{folder}", "--"],
+    "xfce4-terminal": ["--disable-server", "--working-directory={folder}", "-x"],
+    "konsole": ["--separate", "--workdir", "{folder}", "-e"],
+    "kitty": ["--directory", "{folder}"],
+    "alacritty": ["--working-directory", "{folder}", "-e"],
+    "foot": ["--working-directory={folder}"],
+    "xterm": ["-e"],
+}
+
+
+class Which:
+    """shutil.which as a stand-in: the programs on PATH, each look noted (a look at files: never a process)."""
+
+    def __init__(self, found: dict):
+        self.found, self.looked = dict(found), []
+
+    def __call__(self, name, mode=None, path=None):
+        self.looked.append((name, path))
+        return self.found.get(name)
+
+
+@pytest.fixture
+def linux(tool, monkeypatch):
+    """The stand-in harness on Linux, with a display (as WSLg gives one) and xterm on the platform's PATH; no link is
+    read for real. A Linux machine of its own unless a test says it is WSL: whether this machine is WSL is never read
+    (inside WSL the words would differ)."""
+    tool.out.system = "linux"
+    tool.out.wsl = ""
+    tool.out.env = {**ENV, **DESKTOP}
+    tool.out.interactive = never("whether a window can be shown (not Windows)")
+    tool.out.which = Which({"xterm": "/usr/bin/xterm"})
+    monkeypatch.setattr(harness, "_link_target", never("a link read (no x-terminal-emulator here)"))
+    monkeypatch.setattr(ai.linux, "wsl", never("whether this machine is WSL, read for real"))
+    return tool
+
+
+def argv_of(p: Tool) -> list[str]:
+    return [p.program(), "--model", MODEL, "--base", HTTP + "127.0.0.1:9931/v1"]
+
+
+def test_on_linux_a_display_and_a_terminal_open_a_window(linux, project):
+    installed(linux)
+    chosen(linux)
+    answer = linux.open(str(project))
+    made = linux.out.popen.made[0]
+    assert made["argv"] == ["/usr/bin/xterm", "-e", *console.hold_command(argv_of(linux))]
+    assert made["start_new_session"] is True and "creationflags" not in made and made["cwd"] == str(project)
+    assert (made["stdin"], made["stdout"], made["stderr"]) == (subprocess.DEVNULL,) * 3
+    assert made["env"] == {"PATH": "/usr/bin", "HOME": "/home/someone", **DESKTOP,
+                           "TOOL_CONFIG_DIR": str(linux.home / "config"), "TOOL_SERVER_KEY": KEY}
+    assert answer == {"said": f"Tool opened in a window of its own in {project}, started against llama.cpp / gpu with "
+                              f"{MODEL}", "ok": True,
+                      "lines": ["its window's process: 4321", "closing the window ends it"]}
+    assert linux.running() == [f"the window open in {project}"] and linux.use_kept().folder == str(project)
+    status = linux.status()
+    assert status["opens"] == "in a terminal window of its own (xterm), in the folder you give"
+    words = form(status, "ai-open")["confirm"]["words"]
+    assert words.startswith("A terminal window (xterm) opens there with Tool started against llama.cpp / gpu. Closing")
+    linux.out.wsl = "Ubuntu"  # under WSLg the window shows on Windows' desktop, and the words say so
+    status = linux.status()
+    assert status["opens"] == ("in a terminal window of its own (xterm), on Windows' desktop (WSLg), in the folder "
+                               "you give")
+    words = form(status, "ai-open")["confirm"]["words"]
+    assert "It opens on Windows' desktop, through WSLg. Closing it ends it." in words
+    linux.out.popen.windows[0].code = 0  # closed
+    assert linux.running() == []
+
+
+def test_on_linux_the_terminal_keeps_the_displays_variables_whatever_the_launch_drops(linux, project):
+    installed(linux)
+    chosen(linux)
+    linux.instead = Launch(argv_of(linux), env={"TOOL_CONFIG_DIR": "c", "DISPLAY": ":1"}, drop=("*",))
+    linux.open(str(project))
+    env = linux.out.popen.made[0]["env"]
+    assert env == {"TOOL_CONFIG_DIR": "c", "DISPLAY": ":1", "WAYLAND_DISPLAY": "wayland-0",
+                   "XDG_RUNTIME_DIR": "/run/user/1000", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
+    assert harness.DESKTOP_KEEPS == ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+
+
+def test_on_linux_without_a_display_or_a_terminal_the_lines_are_shown(linux, project):
+    installed(linux)
+    chosen(linux)
+    linux.out.env = dict(ENV)  # no display: nothing is looked for
+    linux.out.which = never("a program looked for without a display")
+    assert linux.open(str(project)) == {"said": RUN_IT, "ok": True, "lines": sh_lines(linux, project)}
+    assert linux.status()["opens"] == OPENS[False]
+    # a boot service: its session's folder and its unit's mark, and no display: no window, xterm or not
+    linux.out.env = {**ENV, "XDG_RUNTIME_DIR": "/run/user/1000", "INVOCATION_ID": "0123abcd"}
+    assert linux.open(str(project))["said"] == RUN_IT and linux.status()["opens"] == OPENS[False]
+    # a display, and no terminal program installed (the user's Ubuntu, likely): the lines, and what to install
+    linux.out.env = {**ENV, **DESKTOP}
+    linux.out.which = Which({})
+    assert linux.open(str(project))["lines"] == sh_lines(linux, project)
+    status = linux.status()
+    names = ", ".join(MANUALS)
+    missing = (f"no terminal program to open a window with is installed here ({names}): installing one, such as xterm, "
+               "is a step for root")
+    assert status["opens"] == f"{OPENS[False]} ({missing})"
+    words = form(status, "ai-open")["confirm"]["words"]
+    assert f"the command is shown, to run in a terminal of yours. N{missing[1:]}." in words
+    assert linux.out.popen.made == []
+
+
+def test_a_linux_status_looks_at_files_alone_and_starts_nothing(linux):
+    for what in ("transport", "opener", "streamer", "runner", "listening", "powershell", "shell"):
+        setattr(linux.out, what, never(what))
+    linux.out.popen = never("popen")
+    status = linux.status()
+    assert status["valid"] is True and status["opens"].endswith("(xterm), in the folder you give")
+    # x-terminal-emulator first, then each terminal in its order until one is found: all on the platform's PATH
+    assert linux.out.which.looked == [(name, "/usr/bin") for name in ("x-terminal-emulator", *MANUALS)]
+    linux.out.which = Which({"x-terminal-emulator": None, "gnome-terminal": "/usr/bin/gnome-terminal"})
+    linux.status()
+    assert linux.out.which.looked == [("x-terminal-emulator", "/usr/bin"), ("gnome-terminal", "/usr/bin")]
+
+
+def test_a_terminal_is_looked_for_in_linuxs_own_folders_alone(linux, monkeypatch):
+    """WSL puts Windows' own folders on Linux's PATH (on its drives, under /mnt): no Linux terminal is there, and each
+    look in one crosses to Windows (about 170 ms a status for 38 of them, measured in the user's Ubuntu). So a status
+    looks in this system's own folders alone."""
+    linux.out.env = {**ENV, **DESKTOP,
+                     "PATH": "/usr/local/bin:/mnt/c/WINDOWS/system32:/usr/bin:/mnt/c/Program Files/Git/cmd:/bin"}
+    monkeypatch.setattr(mounts, "foreign", lambda path, *a, **k: str(path).startswith("/mnt/"))
+    assert linux.status()["opens"].endswith("(xterm), in the folder you give")
+    assert {path for _, path in linux.out.which.looked} == {"/usr/local/bin:/usr/bin:/bin"}
+    linux.out.env = {**ENV, **DESKTOP, "PATH": "/mnt/c/WINDOWS/system32"}  # none of its own: nothing is looked for
+    linux.out.which = Which({"xterm": "/mnt/c/WINDOWS/system32/xterm"})
+    assert linux.status()["opens"].startswith(OPENS[False]) and linux.out.which.looked == []
+
+
+def test_each_terminal_is_handed_the_command_word_by_word(linux, tmp_path):
+    folder = tmp_path / "my project; $(rm -rf ~)"
+    folder.mkdir()
+    installed(linux)
+    chosen(linux)
+    assert [t.name for t in harness.TERMINALS] == list(MANUALS) and set(harness.BY_NAME) == set(MANUALS)
+    words = [linux.program(), "--model", "qwen3 8b; reboot", "--note", "$HOME `id` 'one' \"two\"", "--empty", ""]
+    linux.instead = Launch(words)
+    for name, before in MANUALS.items():
+        linux.out.which = Which({name: f"/usr/bin/{name}"})
+        linux.open(str(folder))
+        made = linux.out.popen.made[-1]
+        expected = [f"/usr/bin/{name}", *(word.format(folder=str(folder)) for word in before)]
+        assert made["argv"] == [*expected, *console.hold_command(words)], name  # each word a word of its own
+        assert made["cwd"] == str(folder)
+    assert len(linux.out.popen.made) == len(MANUALS)
+
+
+def test_x_terminal_emulator_is_used_only_through_a_link_to_a_known_terminal(linux, project, monkeypatch):
+    installed(linux)
+    chosen(linux)
+    linux.out.which = Which({"x-terminal-emulator": "/usr/bin/x-terminal-emulator",
+                             "gnome-terminal": "/usr/bin/gnome-terminal", "kitty": "/usr/bin/kitty"})
+    links = {"/usr/bin/x-terminal-emulator": "/usr/bin/kitty"}  # its user chose kitty (update-alternatives)
+    monkeypatch.setattr(harness, "_link_target", lambda path: links[str(path)])
+    linux.open(str(project))
+    assert linux.out.popen.made[-1]["argv"][:3] == ["/usr/bin/kitty", "--directory", str(project)]
+    assert "(kitty)" in linux.status()["opens"]
+    for target in ("/usr/bin/gnome-terminal.wrapper", "/usr/bin/lxterm", "/usr/bin/x-terminal-emulator"):
+        links["/usr/bin/x-terminal-emulator"] = target  # a wrapper or another program: its flags are not known
+        linux.open(str(project))
+        assert linux.out.popen.made[-1]["argv"][:2] == ["/usr/bin/gnome-terminal", "--wait"], target
+
+    def unreadable(path):
+        raise OSError("a loop of links")
+    monkeypatch.setattr(harness, "_link_target", unreadable)
+    linux.open(str(project))
+    assert linux.out.popen.made[-1]["argv"][0] == "/usr/bin/gnome-terminal"
+
+
+def test_a_linux_window_that_cannot_open_is_said(linux, project):
+    installed(linux)
+    chosen(linux)
+    linux.out.popen.fails = FileNotFoundError(2, "No such file or directory", "/usr/bin/xterm")
+    with pytest.raises(children.ChildError) as caught:
+        linux.open(str(project))
+    assert str(caught.value) == ("Tool's window could not be opened: [Errno 2] No such file or directory: "
+                                 "'/usr/bin/xterm'")
+    assert linux.use_kept().folder == "" and linux.running() == []
+
+
+# -- Liminal's MCP (1.66.0) --------------------------------------------------------------------------------------------
+BRIDGE = ["C:\\Python\\python.exe", "-I", "-S", "C:\\plugins\\plugin-platform-mcp\\bridge.py", "--port", "8775"]
+ENDPOINT = HTTP + "127.0.0.1:8775/api/machines/mcp/rpc"
+TOKEN_VARIABLE = "LIMINAL_MCP_TOKEN"
+
+
+class McpApp(App):
+    """The platform with the MCP plugin attached beside the model servers: what it offers (its plugin's offer, and the
+    variable, hold and agent the protocol base adds: machines/protocol.py's client_offer), the tokens it minted and
+    those it was asked to end. Every ask is noted, as App's."""
+
+    def __init__(self):
+        super().__init__()
+        self.offer: object = {"wires": ["stdio", "http"], "bridge": list(BRIDGE), "endpoint": ENDPOINT,
+                              "headers": {"X-Liminal-Charts": "1"},
+                              "revisions": ["2026-07-28", "2025-11-25", "2025-06-18"],
+                              "variable": TOKEN_VARIABLE, "hold_s": 50, "agent": "tool"}
+        self.minted: list[str] = []
+        self.ended: list[str] = []
+        self.mcp_refusing: dict[str, BaseException] = {}  # by hook
+
+    def plugins(self) -> dict:
+        faces = super().plugins()
+        faces["mcp"] = {"name": "mcp", "hooks": {"present": "()", "status": "()", "client_offer": "()",
+                                                 "ensure_client": "(title)", "launch_token": "()",
+                                                 "end_launch": "(token)"}}
+        return faces
+
+    def ask(self, name: str, hook: str, args: list):
+        if name != "mcp":
+            return super().ask(name, hook, args)
+        self.asked.append((name, hook, list(args)))
+        if hook in self.mcp_refusing:
+            raise self.mcp_refusing[hook]
+        if hook == "client_offer":
+            return copy.deepcopy(self.offer)
+        if hook == "ensure_client":
+            return {"said": f"{args[0]}'s agent tool is kept, granted nothing yet", "ok": True, "agent": "tool"}
+        if hook == "launch_token":
+            self.minted.append(f"launch{len(self.minted):02d}-" + "Ab9_" * 10)
+            return {"token": self.minted[-1], "agent": "tool", "variable": TOKEN_VARIABLE, "hold_s": 50}
+        if hook == "end_launch":
+            self.ended.append(args[0])
+            return {"ok": True}
+        raise LookupError(f"mcp offers no {hook!r}")
+
+    def mcp_asks(self) -> list[tuple[str, list]]:
+        return [(hook, args) for name, hook, args in self.asked if name == "mcp"]
+
+
+class Wired(Tool):
+    """A stand-in harness wired to Liminal's MCP by the bridge: its launch asks `mcp_wiring` and writes the MCP part
+    of its configuration into a file of its folder, naming the token's variable and never the token. What it does
+    wrong is the test's to set."""
+
+    OPTIONS = (*Tool.OPTIONS, harness.MCP_OPTION)
+    MCP_WIRES = ("stdio",)
+    ASKS = (*Harness.ASKS, *harness.MCP_ASKS)
+    INTERNAL_NOTES = (*Harness.INTERNAL_NOTES, *harness.MCP_NOTES)
+
+    def __init__(self, outside=None):
+        super().__init__(outside)
+        self.wirings: list = []
+        self.slip = ""  # where its launch puts the token by mistake: "argv", "env"; "own": in its variable itself
+        self.leaves_out = False  # it forgets Liminal's MCP
+        self.after: BaseException | None = None  # what it raises once the wiring is asked
+
+    def config(self) -> Path:
+        return self.home / "config" / "mcp.json"
+
+    def launch(self, folder, use, at, key=""):
+        made = super().launch(folder, use, at, key)
+        if self.leaves_out or not isinstance(made, Launch):
+            return made
+        wiring = self.mcp_wiring(use)
+        self.wirings.append(wiring)
+        if self.after is not None:
+            raise self.after
+        if wiring is None:
+            return made
+        self.config().parent.mkdir(parents=True, exist_ok=True)
+        part = {"command": list(wiring.argv), "url": wiring.url, "headers": dict(wiring.headers),
+                "env": {wiring.token_variable: "${" + wiring.token_variable + "}"}, "timeout": wiring.timeout_s}
+        self.config().write_text(json.dumps(part), encoding="utf-8")
+        argv, env = list(made.argv), {**made.env, "TOOL_MCP_CONFIG": str(self.config())}
+        if wiring.token and self.slip == "argv":
+            argv += ["--mcp-token", wiring.token]
+        if wiring.token and self.slip == "env":
+            env["TOOL_MCP_HEADERS"] = "Authorization: Bearer " + wiring.token
+        if self.slip == "own":
+            env[wiring.token_variable] = wiring.token  # (as a plugin may write it; "" for the lines)
+        return Launch(argv, env=env, drop=made.drop, secret=made.secret)
+
+
+@pytest.fixture
+def wired(tmp_path):
+    out = Outside(env=dict(ENV), system="windows", home=tmp_path / "tool", clock=Clock(), interactive=lambda: True,
+                  popen=Popen(), variables=lambda: DECLARED)
+    p = Wired(out)
+    p.attach(McpApp(), Pairs())
+    p.login.kept[KEY_VARIABLE] = KEY
+    installed(p)
+    return p
+
+
+def test_a_harness_that_declares_nothing_asks_nothing_of_liminals_mcp(tool, project):
+    installed(tool)
+    on = Use("llamacpp/gpu", MODEL, "", {"mcp": "on"})  # (a choice that says on, as a plugin's own code may make one)
+    assert Harness.MCP_WIRES == () and harness.MCP_OPTION not in Tool.OPTIONS and not tool.mcp_on(on)
+    assert tool.mcp_wiring(on) is None
+    tool.use("llamacpp/gpu", MODEL, None, "no")
+    chosen(tool, mcp="on")  # a value kept for an option it does not have is dropped
+    assert tool.use_kept().options == {} and tool.mcp_wiring() is None
+    tool.open(str(project))
+    tool.command(str(project))
+    assert [name for name, _, _ in tool.app.asked if name == "mcp"] == []
+    assert harness.MCP_VARIABLE not in tool.out.popen.made[0]["env"] and tool.ASKS == Harness.ASKS
+
+
+def test_liminals_mcp_is_off_unless_use_turns_it_on(wired, project):
+    field = form(wired.status(), "ai-use")["fields"][-1]
+    assert field == {"name": "mcp", "label": "Liminal's MCP", "type": "choice", "value": "off",
+                     "note": harness.MCP_OPTION.note,
+                     "choices": [{"value": "off", "title": "off", "note": "it reaches no MCP server of Liminal's"},
+                                 {"value": "on", "title": "on", "note": "it reaches Liminal's MCP plugin, which "
+                                                                        "decides what it may list and call"}]}
+    for value in (None, "off"):
+        answer = wired.use("llamacpp/gpu", MODEL, None, None, value)
+        assert answer["lines"] == ["kept in the test's pairs"]
+    wired.open(str(project))
+    wired.command(str(project))
+    assert wired.app.mcp_asks() == [] and wired.wirings == [None, None]
+    assert TOKEN_VARIABLE not in wired.out.popen.made[0]["env"] and not wired.config().exists()
+
+
+def test_use_turning_it_on_asks_how_it_is_reached_and_for_its_agent_before_anything_is_kept(wired):
+    saved_before: list = []
+    real_ask = wired.app.ask
+
+    def ask(name, hook, args):
+        saved_before.append((hook, len(wired.login.saved)))
+        return real_ask(name, hook, args)
+    wired.app.ask = ask
+    answer = wired.use("llamacpp/gpu", MODEL, None, None, "on")
+    assert wired.app.mcp_asks() == [("client_offer", []), ("ensure_client", ["Tool"])]
+    assert [n for hook, n in saved_before if hook in ("client_offer", "ensure_client")] == [0, 0]  # asked first
+    assert answer["lines"] == [
+        "kept in the test's pairs", "Liminal's MCP: Tool's agent tool is kept, granted nothing yet",
+        "each window it opens reaches it by the MCP plugin's bridge (stdio), with a token of its own"]
+    assert wired.use_kept().options == {"mcp": "on"} and wired.app.minted == []  # no token at Use…
+
+
+def test_each_open_asks_a_token_for_its_window_alone_and_command_none(wired, project):
+    chosen(wired, mcp="on")
+    answer = wired.open(str(project))
+    assert wired.app.mcp_asks() == [("client_offer", []), ("launch_token", [])]
+    token = wired.app.minted[0]
+    made = wired.out.popen.made[0]
+    assert made["env"][TOKEN_VARIABLE] == token and made["env"]["TOOL_SERVER_KEY"] == KEY  # its variable alone
+    assert not any(token in word for word in made["argv"]) and token not in made["cwd"]
+    assert sum(token in value for value in made["env"].values()) == 1
+    written = wired.config().read_text("utf-8")
+    assert token not in written and "${LIMINAL_MCP_TOKEN}" in written  # the file names its variable, never the token
+    wiring = wired.wirings[0]
+    assert wiring.token == token and wiring.wire == "stdio" and wiring.argv == tuple(BRIDGE) and wiring.url == ""
+    assert wiring.token_variable == TOKEN_VARIABLE and wiring.timeout_s == 110 and token not in repr(wiring)
+    assert answer["lines"] == ["its window's process: 4321", "closing the window ends it",
+                               "Liminal's MCP: the window has a token of its own, ended once it is gone"]
+    assert token not in json.dumps(answer)
+    wired.open(str(project))  # each Open… its own
+    assert len(wired.app.minted) == 2 and wired.out.popen.made[1]["env"][TOKEN_VARIABLE] == wired.app.minted[1]
+    lines = wired.command(str(project))  # Command…: no token is asked, and its words say where one is given
+    assert len(wired.app.minted) == 2
+    assert lines["said"] == f"{RUN_IT} ({harness.MCP_LINES.format(variable=TOKEN_VARIABLE)})"
+    assert not any(TOKEN_VARIABLE in line for line in lines["lines"]) and wired.wirings[-1].token == ""
+    wired.out.interactive = lambda: False  # Open… without a desktop: the lines, and no token either
+    shown = wired.open(str(project))
+    assert len(wired.app.minted) == 2 and shown["said"] == lines["said"] and shown["lines"] == lines["lines"]
+    for minted in wired.app.minted:
+        assert not any(minted in line for line in [*lines["lines"], *shown["lines"]])
+
+
+def test_a_launch_that_writes_its_variable_itself_is_taken_as_it_is_and_an_empty_one_is_dropped(wired, project):
+    chosen(wired, mcp="on")
+    wired.slip = "own"
+    wired.open(str(project))
+    assert wired.out.popen.made[0]["env"][TOKEN_VARIABLE] == wired.app.minted[0]
+    lines = wired.command(str(project))["lines"]
+    assert not any(TOKEN_VARIABLE in line for line in lines)  # its "" is not written, and nothing unsets yours
+
+
+def test_a_windows_token_is_ended_once_the_window_is_gone(wired, project):
+    chosen(wired, mcp="on")
+    wired.open(str(project))
+    wired.open(str(project))
+    first, second = wired.app.minted
+    wired.status()
+    assert wired.app.ended == []  # both open
+    wired.out.popen.windows[0].code = 0
+    wired.status()  # seen at a status
+    assert wired.app.ended == [first]
+    wired.out.popen.windows[1].code = 1
+    wired.app_stopping()  # or at the platform's stop
+    assert wired.app.ended == [first, second]
+    wired.status()
+    wired.app_stopping()
+    assert wired.app.ended == [first, second]  # each once
+
+
+def test_a_window_no_longer_followed_still_has_its_token_ended_once_it_is_gone(wired, project):
+    """Past WINDOWS_KEPT windows the oldest is no longer followed for Install and Uninstall, but its token still is:
+    a token outlives no window."""
+    chosen(wired, mcp="on")
+    for _ in range(harness.WINDOWS_KEPT + 1):
+        wired.open(str(project))
+    assert len(wired.running()) == harness.WINDOWS_KEPT and wired.app.ended == []
+    wired.out.popen.windows[0].code = 0  # the first window, no longer among those followed, is closed
+    wired.status()
+    assert wired.app.ended == [wired.app.minted[0]]
+
+
+def test_past_tokens_kept_the_oldest_windows_token_is_ended_at_once(wired, project, monkeypatch):
+    monkeypatch.setattr(harness, "TOKENS_KEPT", 2)
+    chosen(wired, mcp="on")
+    for _ in range(3):
+        wired.open(str(project))
+    assert wired.app.ended == [wired.app.minted[0]]  # its window still open: its token ended all the same
+    for window in wired.out.popen.windows:
+        window.code = 0
+    wired.status()
+    assert wired.app.ended == wired.app.minted  # each once
+
+
+def test_the_windows_followed_are_each_its_process_and_its_folder(tool, project):
+    """What a harness follows of each window it opened is its process and its folder, as before Liminal's MCP: a
+    plugin's own tests read it so (plugin-platform-continue 0.1.0's test_install)."""
+    installed(tool)
+    chosen(tool)
+    tool.open(str(project))
+    assert tool._rt.windows == [(tool.out.popen.windows[0], str(project))]
+    for child, folder in tool._rt.windows:
+        assert child.poll() is None and folder == str(project)
+
+
+def test_a_token_goes_at_once_when_its_start_goes_no_further(wired, project):
+    chosen(wired, mcp="on")
+    wired.out.popen.fails = OSError("[WinError 2] The system cannot find the file specified")
+    with pytest.raises(children.ChildError, match="window could not be opened"):
+        wired.open(str(project))
+    assert wired.app.ended == wired.app.minted and len(wired.app.minted) == 1
+    wired.out.popen.fails = None
+    wired.slip = "argv"
+    words = ("Tool would put its token for Liminal's MCP on its command line, where every program here can read it: "
+             "it is not started")
+    assert str(refusal(lambda: wired.open(str(project)))) == words
+    wired.slip = "env"
+    assert str(refusal(lambda: wired.open(str(project)))) == ("Tool would hand its token for Liminal's MCP over in "
+                                                               "TOOL_MCP_HEADERS, and only LIMINAL_MCP_TOKEN carries "
+                                                               "it: it is not started")
+    wired.slip, wired.after = "", ValueError("its configuration could not be written")
+    assert str(refusal(lambda: wired.open(str(project)))) == "its configuration could not be written"
+    assert wired.app.ended == wired.app.minted and len(wired.app.minted) == 4 and wired.out.popen.made == []
+    assert wired.running() == []
+
+
+def test_mcp_on_with_its_plugin_absent_or_refusing_is_refused_in_words(wired, project):
+    lead = "Liminal's MCP is on for Tool (Use…), and the MCP plugin "
+    tail = ". Nothing was started: turn the MCP plugin on (AI plugins, Protocols), or turn Liminal's MCP off under Use…"
+    wired.app.mcp_refusing["client_offer"] = LookupError("no plugin 'mcp' is attached to platform")
+    e = refusal(lambda: wired.use("llamacpp/gpu", MODEL, None, None, "on"))
+    assert str(e) == f"{lead}did not say how it is reached: no plugin 'mcp' is attached to platform{tail}"
+    assert wired.variable("use") not in wired.login.kept  # nothing kept
+    chosen(wired, mcp="on")  # kept from before: Open… and Command… are refused the same way
+    for call in (lambda: wired.open(str(project)), lambda: wired.command(str(project))):
+        assert str(refusal(call)) == str(e)
+    wired.app.mcp_refusing = {"ensure_client": HookRefused(400, "ValueError", "16 agents at most")}
+    assert str(refusal(lambda: wired.use("llamacpp/gpu", MODEL, None, None, "on"))) == (
+        f"{lead}did not make Tool's agent: 16 agents at most{tail}")
+    wired.app.mcp_refusing = {"launch_token": HookRefused(400, "ValueError", "32 tokens at most")}
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        f"{lead}gave no token for the window: 32 tokens at most{tail}")
+    wired.app.mcp_refusing = {}
+    wired.app.offer = ["not", "an", "offer"]
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        f"{lead}answered something that is not how it is reached{tail}")
+    wired.app.offer = {"wires": ["http"], "endpoint": ENDPOINT, "headers": {}}  # the route alone, no bridge
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        f"{lead}serves the MCP plugin's address on the platform (HTTP) here, and Tool reaches it by the MCP plugin's "
+        f"bridge (stdio) alone{tail}")
+    wired.app.offer = {"wires": ["stdio"], "bridge": list(BRIDGE), "variable": "OPENAI_API_KEY"}  # not Liminal's
+    assert "answered something that is not how it is reached" in str(refusal(lambda: wired.open(str(project))))
+    wired.app.offer = {"problem": "its bridge is not found", "variable": TOKEN_VARIABLE, "hold_s": 50, "agent": ""}
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        f"{lead}could not say how it is reached: its bridge is not found{tail}")  # (the protocol base's own words)
+    wired.app.offer = McpApp().offer
+    real_ask = wired.app.ask
+    wired.app.ask = lambda name, hook, args: "short" if hook == "launch_token" else real_ask(name, hook, args)
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        f"{lead}gave nothing that can be a token for the window{tail}")
+    assert wired.out.popen.made == []
+    alone = Wired(Outside(env={}, system="windows", home=wired.home, variables=lambda: ()))
+    alone.login = Pairs()
+    assert str(refusal(lambda: alone.mcp_wiring(Use("llamacpp/gpu", MODEL, "", {"mcp": "on"})))) == (
+        f"{lead}cannot be asked: this plugin is not attached to the platform{tail}")
+
+
+def test_the_wire_is_the_first_of_its_own_the_mcp_plugin_serves(wired, project):
+    chosen(wired, mcp="on")
+    wired.MCP_WIRES = ("http", "stdio")  # (as Codex CLI: the route where it is served, the bridge otherwise)
+    wired.command(str(project))
+    wiring = wired.wirings[-1]
+    assert (wiring.wire, wiring.url, wiring.headers, wiring.argv) == ("http", ENDPOINT, {"X-Liminal-Charts": "1"}, ())
+    assert wiring.revisions == ("2026-07-28", "2025-11-25", "2025-06-18") and wiring.hold_s == 50
+    wired.app.offer = {**wired.app.offer, "wires": ["stdio"], "hold_s": 120}
+    wired.command(str(project))
+    assert wired.wirings[-1].wire == "stdio" and wired.wirings[-1].timeout_s == 180
+    wired.app.offer = {**wired.app.offer, "wires": ["stdio", "http"], "endpoint": "", "hold_s": True}
+    wired.command(str(project))
+    assert wired.wirings[-1].wire == "stdio" and wired.wirings[-1].hold_s == harness.HOLD_S  # no address: no route
+    wired.MCP_WIRES = ()  # a harness that cannot be wired: Use… says so, and nothing is asked
+    assert str(refusal(lambda: wired.use("llamacpp/gpu", MODEL, None, None, "on"))) == (
+        "Tool cannot reach Liminal's MCP from here: turn Liminal's MCP off under Use…")
+    assert wired.mcp_wiring() is None
+
+
+def test_a_launch_that_leaves_liminals_mcp_out_while_it_is_on_is_not_started(wired, project):
+    chosen(wired, mcp="on")
+    wired.leaves_out = True
+    for call in (lambda: wired.open(str(project)), lambda: wired.command(str(project))):
+        with pytest.raises(children.ChildError) as caught:
+            call()
+        assert str(caught.value) == ("Tool's launch leaves Liminal's MCP out, and it is on for it (Use…): it is not "
+                                     "started")
+    assert wired.app.minted == [] and wired.out.popen.made == []
+
+
+def test_the_offers_values_are_checked_as_every_written_value_is(wired, project):
+    chosen(wired, mcp="on")
+    wired.app.offer = {**wired.app.offer, "bridge": ["C:\\{env:USERPROFILE}\\python.exe", "bridge.py"]}
+    assert str(refusal(lambda: wired.open(str(project)))) == (
+        "the MCP plugin's bridge cannot be written into a harness's configuration as it is: it holds '{env:', which a "
+        "harness reads as a variable, a file or a command")
+    wired.app.offer = {**McpApp().offer, "headers": {"X-Liminal-Charts": "${{ secrets.X }}"}}
+    assert "it holds '${{'" in str(refusal(lambda: wired.open(str(project))))
+    wired.app.offer = {**McpApp().offer, "headers": {"X-Liminal-Charts": "1\r\nX-Other: 2"}}
+    assert "answered something that is not how it is reached" in str(refusal(lambda: wired.open(str(project))))
+    assert wired.app.minted == []
+
+
+def test_no_launch_token_in_any_answer_or_status(wired, project):
+    answers = [wired.use("llamacpp/gpu", MODEL, None, None, "on"), wired.open(str(project)), wired.status(),
+               wired.command(str(project)), wired.open(str(project))]
+    wired.out.popen.windows[0].code = 0
+    answers.append(wired.status())
+    live = wired.app.minted[1]  # (its window is still open)
+    wired.app.mcp_refusing = {"launch_token": HookRefused(400, "ValueError", f"refused: {live}")}
+    answers.append({"refused": str(refusal(lambda: wired.open(str(project))))})
+    assert len(wired.app.minted) == 2
+    for answer in answers:
+        text = json.dumps(answer, ensure_ascii=False)
+        assert not any(token in text for token in wired.app.minted), answer
+    assert "refused: <hidden>" in answers[-1]["refused"]  # a live token is taken out of every word
+    # an ended one leaves the secrets taken out of words (32 at most), so that it pushes no key out of them
+    assert wired.app.minted[0] not in wired._rt.secrets and live in wired._rt.secrets and KEY in wired._rt.secrets
+
+
+def test_the_mcp_words_a_plugin_declares(wired):
+    assert conformance.problems(wired) == []
+    assert [row[:2] for row in harness.MCP_ASKS] == [("mcp", "client_offer"), ("mcp", "ensure_client"),
+                                                      ("mcp", "launch_token"), ("mcp", "end_launch")]
+    assert all(len(row) == 3 and row[2] for row in harness.MCP_ASKS) and len(harness.MCP_NOTES[0]) <= 400
+    assert harness.MCP_OPTION.name == "mcp" and harness.MCP_OPTION.default == "off"
+    assert harness.MCP_VARIABLE == TOKEN_VARIABLE and harness.MCP_SLACK_S == 60 and harness.WIRES == ("stdio", "http")
+    wiring = harness.McpWiring(token="x" * 43, headers={"A": 1})
+    assert harness.McpWiring().timeout_s == 110 and wiring == harness.McpWiring(token="x" * 43, headers={"A": "1"})
+    assert "x" * 43 not in repr(wiring) and wiring.headers == {"A": "1"}
+
+
+# -- values a harness would read as more than text (1.66.0) ------------------------------------------------------------
+EVALUATED = ("${HOME}", "x$(id)", "{env:OPENAI_API_KEY}", "a{file:~/.ssh/id_rsa", "${{ secrets.LIMINAL_MCP_TOKEN }}",
+             "!curl evil", "  !rm -rf ~", "half ${ open")
+PLAIN = ("qwen3:8b", "a!b", "cost$5", "{env}", "env:", "hf.co/x/y:Q4_K_M", "a$b", "{files}", "x!")
+
+
+def test_values_a_harness_would_read_as_more_than_text_are_refused():
+    assert harness.OPENERS == ("${", "$(", "{env:", "{file:", "${{") and harness.RUNS == "!"
+    for bad in EVALUATED:
+        assert harness.evaluated(bad), bad
+        with pytest.raises(instances.Refusal) as caught:
+            clean_model(bad)
+        assert str(caught.value).startswith("a model's id is written into its harness's configuration, and this one "
+                                            "cannot be: it "), bad
+        with pytest.raises(instances.Refusal, match="^its address cannot be written into a harness's configuration"):
+            harness.clean_value(bad, "its address")
+    for good in PLAIN:
+        assert harness.evaluated(good) == "" and harness.clean_value(good, "it") == good
+    assert clean_model("qwen3:8b") == "qwen3:8b"
+    assert harness.evaluated("${{ x }}") == "it holds '${{', which a harness reads as a variable, a file or a command"
+    assert harness.evaluated("!x") == "it begins with '!', which a harness runs as a command"
+    assert harness.evaluated(None) == "" and harness.clean_value(5, "it") == "5"
+
+
+def test_use_refuses_such_a_model_and_a_kept_one_is_not_read(tool):
+    tool.app.serving["llamacpp"]["instances"][0]["models"].append({"id": "$(curl x)"})  # a server's list: anything
+    assert "cannot be: it holds '$('" in str(refusal(lambda: tool.use("llamacpp/gpu", "$(curl x)")))
+    chosen(tool, model="{env:OPENAI_API_KEY}")
+    assert tool.use_kept() is None
+    assert "could not be read (a model's id is written into its harness's configuration, and this one cannot be: it " \
+           "holds '{env:'" in tool.status()["problem"]
+
+
+def test_a_harness_adds_its_own_openers_and_text_options_are_checked(tmp_path, project):
+    class Secretive(Tool):
+        OPENERS = (*Harness.OPENERS, "{secret:")
+        OPTIONS = (*Tool.OPTIONS, Setting("agent", "Agent", "text"))
+
+    out = Outside(env=dict(ENV), system="windows", home=tmp_path / "secretive", clock=Clock(),
+                  interactive=lambda: True, popen=Popen(), variables=lambda: DECLARED)
+    p = Secretive(out)
+    p.attach(App(), Pairs())
+    assert "it holds '{secret:'" in str(refusal(lambda: p.use("llamacpp/cpu", "a{secret:b}")))
+    assert tool_accepts("a{secret:b}", tmp_path)  # (another harness's tool reads it as text)
+    assert "Agent cannot be written into a harness's configuration as it is: it holds '${'" in str(
+        refusal(lambda: p.use("llamacpp/cpu", "any.gguf", None, None, "${HOME}")))
+    assert p.use("llamacpp/cpu", "any.gguf", None, None, "build")["ok"] is True
+    assert p.use_kept().options == {"agent": "build"}
+    chosen(p, server="llamacpp/cpu", model="any.gguf", agent="!run")  # a text kept from before: dropped when read
+    assert p.use_kept().options == {}
+    chosen(p, server="llamacpp/cpu", model="x{secret:y}")
+    assert p.use_kept() is None
+    assert "it holds '{secret:'" in str(refusal(lambda: p.clean_value("x{secret:y}", "its folder")))
+
+
+def tool_accepts(model: str, tmp_path) -> bool:
+    out = Outside(env=dict(ENV), system="windows", home=tmp_path / "plain", clock=Clock(), interactive=lambda: True,
+                  popen=Popen(), variables=lambda: DECLARED)
+    p = Tool(out)
+    p.attach(App(), Pairs())
+    return p.use("llamacpp/cpu", model)["ok"] is True

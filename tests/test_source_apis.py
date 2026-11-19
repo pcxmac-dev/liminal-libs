@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
+from liminal_libs import apis as lifted
 from liminal_libs.machines.plugin import MachinePlugin
 from liminal_libs.sources import apis as A
 from liminal_libs.sources.conformance import problems
@@ -41,6 +44,18 @@ def test_a_sound_declaration_has_no_problems_and_reads_as_the_page_wants():
     assert api.link("status") == "https://status.example.org" and api.link("pricing") == ""
     assert A.urls((api,)) == [DOCS, "https://docs.example.org/limits", "https://status.example.org",
                               "https://docs.example.org/things"]
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_json_rpc_is_a_kind_of_its_own_said_in_its_own_words_from_either_place():
+    """'rpc': JSON-RPC, as the MCP plugin speaks it to AI agents, over HTTP or over a program's standard input and
+    output. The words are the same from liminal_libs.apis and from sources.apis (one dict), and a card of that kind is
+    as sound as any other."""
+    words = "JSON-RPC over HTTP or a program's standard input and output"
+    assert A.API_KINDS is lifted.API_KINDS and A.API_KINDS["rpc"] == words
+    api = an_api(kind="rpc", base="POST /api/machines/{name}/rpc, or the bridge's standard input and output")
+    assert A.problems((api,), today=date(2026, 11, 18)) == [] and api.as_dict()["kindWords"] == words
+    assert {"rest", "stream", "command", "socket", "file"} <= set(A.API_KINDS)  # the older kinds stay as they were
 
 
 def test_what_a_declaration_must_hold():

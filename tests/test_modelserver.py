@@ -7,7 +7,9 @@ unlisted); two changes at once, ordered by the test (a change beside a key and A
 Models tab asking once per SEEN_S; Try it's long answer; Start and Stop of a click's server, of one its start at boot
 runs and of its task while it waits to start the server again; a boot read that fails said; `app_stopping()` stopping
 a click's child and leaving a boot one; `lasting()` on both systems; two stand-in servers asking each other's
-`serving` from two threads at once; and no key in any answer.
+`serving` from two threads at once; no key in any answer; and (1.66.0) what each serving row says its server speaks:
+the base's chat alone, a plugin's SPEAKS cleaned, narrowed for an older version found elsewhere, never more than
+SPEAKS, chat alone when a narrowing fails, and nothing asked or run for it.
 
 Nothing is started, installed, downloaded or asked here: stand-ins answer for the login, the children, the socket
 table, the transport, the GPU's command, the boot registrations and the app, and the shared guard (conftest.py) fails a
@@ -26,7 +28,7 @@ from liminal_libs import instances, mounts
 from liminal_libs.apps.authorization import EnvironmentLogin, Login, Unauthorized, pair_name, variable_name
 from liminal_libs.machines import autostart, children, modelserver
 from liminal_libs.machines.admin import Startup
-from liminal_libs.machines.ai import LASTING, Installed, Outside, Setting
+from liminal_libs.machines.ai import LASTING, Installed, Outside, Setting, version_tuple
 from liminal_libs.machines.endpoint import Reply
 from liminal_libs.machines.modelserver import (ACCEPT_PLAIN, ACCEPT_SHARE, MAX_INSTANCES, SEEN_S, SERVING, TABLE_S,
                                                Holder, Instance, Kept, ModelServer, Seen, held_words, holders,
@@ -1285,7 +1287,7 @@ def test_serving_and_models_of(world):
     assert row == {"name": "default", "title": "", "where": "local", "local": True,
                    "base": "http:" + "//127.0.0.1:11434", "openai": "http:" + "//127.0.0.1:11434/v1", "plain": False,
                    "state": "stopped", "key": "LIMINAL_AI_TOOL_DEFAULT_KEY", "model": "", "context": 32768,
-                   "models": [], "asked": "", "port": PORT}
+                   "models": [], "asked": "", "port": PORT, "speaks": ["chat"]}  # (1.66.0: the base's word)
     assert served["instances"][1]["state"] == "unasked" and served["instances"][1]["local"] is False
     assert p.serving("gpu")["instances"][0]["name"] == "gpu"
     with pytest.raises(LookupError):
@@ -1403,4 +1405,118 @@ def test_a_stops_trouble_is_said_once_then_dropped_while_nothing_runs(world):
     assert "its last stop could not end everything" in str(first.get("problem") or "")
     second = server.status()
     assert "its last stop could not end everything" not in str(second.get("problem") or "")
+
+
+# -- what a server speaks (1.66.0) -------------------------------------------------------------------------------------
+class Speaker(Server):
+    """A server whose plugin says it speaks every family (in an order of its own, one twice, one in capitals and one
+    word that is no family's), and narrows them for one version found elsewhere that is older than the Responses API:
+    as Ollama's plugin does for an Ollama older than 0.13.3."""
+
+    name = "speaker"
+    title = "Speaker"
+    DEFAULT_PORT = 11500
+    SPEAKS = ("embeddings", "responses", "chat", "chat", "Messages", "completions", "rerank")
+
+    def __init__(self, outside=None):
+        super().__init__(outside)
+        self.narrowed: list[str] = []  # the instances speaks_of was asked of, in order
+        self.fails: Exception | None = None  # what speaks_of raises
+
+    def speaks_of(self, instance):
+        self.narrowed.append(instance.name)
+        if self.fails is not None:
+            raise self.fails
+        said = super().speaks_of(instance)
+        seen = self.seen(instance.name)
+        if instance.where != "local" and seen is not None and seen.version and version_tuple(seen.version) < (0, 13, 3):
+            return tuple(f for f in said if f != "responses")
+        return said
+
+
+EVERY_FAMILY = ["chat", "completions", "responses", "messages", "embeddings"]
+
+
+def speaks(p: ModelServer) -> dict:
+    """What each serving row says its server speaks, by instance."""
+    return {row["name"]: row["speaks"] for row in p.serving()["instances"]}
+
+
+def test_the_five_families_and_the_base_speaking_chat_alone(world):
+    assert modelserver.FAMILIES == tuple(EVERY_FAMILY)
+    assert ModelServer.SPEAKS == ("chat",) and set(ModelServer.SPEAKS) <= set(modelserver.FAMILIES)
+    p = world.server()  # a plugin that declares none of the new words
+    assert "SPEAKS" not in Server.__dict__ and "speaks_of" not in Server.__dict__
+    p.add_instance("default")
+    p.add_instance("gpu", "remote", HTTPS + "gpu-box:8443")
+    assert p.speaks_of(p.instance("default")) == ("chat",)
+    assert speaks(p) == {"default": ["chat"], "gpu": ["chat"]}
+    assert p.serving("gpu")["instances"][0]["speaks"] == ["chat"]
+
+
+@pytest.mark.parametrize("given, told", [
+    (("embeddings", "chat", "chat", " Responses "), ("chat", "responses", "embeddings")),
+    (["messages", "completions"], ("completions", "messages")),
+    ({"chat", "embeddings"}, ("chat", "embeddings")),
+    ("messages", ("messages",)),  # a text is one word, never its letters
+    ("chat completions", ()),  # (words of a page, not a family's)
+    (["rerank", "ollama", "v1"], ()),
+    (["chat", 3, None, b"messages"], ("chat",)),
+    (None, ()), (7, ()), ({"chat": True}, ()), ((), ()), (b"chat", ()),
+])
+def test_spoken_keeps_the_families_alone_once_each_in_their_order(given, told):
+    assert modelserver.spoken(given) == told
+    assert modelserver.spoken(x for x in ("embeddings", "chat")) == ("chat", "embeddings")  # (a narrowing's generator)
+
+
+def test_each_row_says_what_its_server_speaks_narrowed_for_an_older_version_found(world):
+    p = world.server(Speaker)
+    p.add_instance("here")
+    p.add_instance("wsl", "found", None, 11600)
+    p.add_instance("gpu", "remote", HTTPS + "gpu-box:8443")
+    p.add_instance("box", "remote", HTTPS + "box:8443")
+    with p._rt.lock:  # what each answered when it was last asked (its Models tab's look)
+        p._rt.seen["wsl"] = Seen(True, "it answers", version="0.12.6", at=NOW)
+        p._rt.seen["gpu"] = Seen(True, "it answers", version="0.13.5", at=NOW)
+    asked, ran, heard, reads = len(world.transport.asked), len(world.ran), len(world.heard), world.probe.reads
+    p.narrowed.clear()
+    told = speaks(p)
+    assert told == {"here": EVERY_FAMILY, "wsl": ["chat", "completions", "messages", "embeddings"],
+                    "gpu": EVERY_FAMILY, "box": EVERY_FAMILY}  # (box: not asked yet, so nothing narrows it)
+    assert p.narrowed == ["here", "wsl", "gpu", "box"]  # once for each row
+    # words alone: nothing is asked of a server, run or connected to for it, and the row's word is a list
+    assert (len(world.transport.asked), len(world.ran), len(world.heard)) == (asked, ran, heard)
+    assert world.probe.reads <= reads + 1  # (the socket table a found one's state reads, kept TABLE_S)
+    served = p.serving()
+    assert json.loads(json.dumps(served)) == served
+
+
+def test_a_row_says_no_more_than_speaks_names_and_a_narrowing_that_fails_says_chat_alone(world):
+    class Wider(Server):  # a narrowing that widens instead: the row keeps to what SPEAKS names
+        name = "wider"
+        SPEAKS = ("chat", "completions")
+
+        def speaks_of(self, instance):
+            return tuple(EVERY_FAMILY)
+
+    wide = world.server(Wider)
+    wide.add_instance("default")
+    assert speaks(wide) == {"default": ["chat", "completions"]}
+    p = world.server(Speaker)
+    p.add_instance("here")
+    p.add_instance("gpu", "remote", HTTPS + "gpu-box:8443")
+    p.fails = RuntimeError("its version could not be compared")
+    assert speaks(p) == {"here": ["chat"], "gpu": ["chat"]}  # the row is still told, every instance's
+    assert p.serving()["instances"][0]["state"] == "stopped"  # and the rest of it as it was
+
+    class Embedder(Speaker):  # a server that answers embeddings alone: no chat to fall back to
+        name = "embedder"
+        DEFAULT_PORT = 11700
+        SPEAKS = ("embeddings",)
+
+    e = world.server(Embedder)
+    e.add_instance("default")
+    assert speaks(e) == {"default": ["embeddings"]}
+    e.fails = ValueError("no")
+    assert speaks(e) == {"default": []}
 

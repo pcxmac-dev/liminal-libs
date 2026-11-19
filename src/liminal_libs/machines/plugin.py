@@ -54,9 +54,12 @@ class MachinePlugin(PlatformPlugin):
     #   Namecheap);
     #   "ai" (1.62.0; the user, 2026-11-16: "they will be classified as AI plugins"): an AI plugin's (machines/ai.py,
     #   AiPlugin), drawn under the AI heading in the group its GROUP names: "inference" for a model server's (llama.cpp,
-    #   Ollama, vLLM: ModelServer), "harness" for a harness's (OpenCode, Aider, Continue: Harness).
+    #   Ollama, vLLM: ModelServer), "harness" for a harness's (OpenCode, Aider, Continue: Harness), and "protocol"
+    #   (1.66.0; the user, 2026-11-18: "basically a protocol plugin that mediates MCP connections to resources by
+    #   local AI agents") for a protocol plugin's (MCP: ProtocolPlugin, machines/protocol.py).
     # liminal-platform 0.26.0 draws the first four, in that order (a platform before it knows "machine" and "cloud"
-    # only); 0.31.0 draws "ai" after the AI assistants, by GROUP, and one whose GROUP it does not draw as "machine".
+    # only); 0.31.0 draws "ai" after the AI assistants, by GROUP, and one whose GROUP it does not draw as "machine";
+    # 0.34.0 draws "protocol" after the harnesses, as Protocols.
     SECTION = "machine"
     # Its own tabs on its page, after Main, External API and Internal API (apps/tabs.py; the user, 2026-11-14:
     # "so for the firewall's both are going to get a 'world wide web view'"; "there needs to be a way to 'filter'

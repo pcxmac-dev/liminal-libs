@@ -18,7 +18,9 @@ ROOT = Path(liminal_libs.__file__).resolve().parent
 WRITTEN = re.compile(r"[a-z][a-z0-9+.-]*://[A-Za-z0-9\[]")  # a scheme, then a host (or an address in brackets)
 ADDED = ("instances.py", "console.py", "machines/children.py", "machines/endpoint.py", "machines/download.py",
          "machines/gpu.py", "machines/autostart.py", "machines/uv.py", "machines/ai.py", "machines/modelserver.py",
-         "machines/harness.py", "machines/launch.py")
+         "machines/harness.py", "machines/launch.py",
+         # the AI top-four and MCP release's (2026-11-18)
+         "machines/protocol.py", "machines/node.py", "machines/hub.py", "apps/asking.py")
 
 
 @pytest.mark.parametrize("name", ADDED)

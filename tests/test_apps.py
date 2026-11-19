@@ -98,6 +98,20 @@ def demo(tmp_path):
     app.stop()
 
 
+def test_a_write_nested_too_deep_is_answered_400_and_the_next_request_is_answered_too(demo):
+    """A body nested deeper than Python's JSON reader recurses makes json.loads raise RecursionError, not ValueError.
+    The frame caught ValueError alone, so such a write got no answer at all and its thread printed a traceback. It is
+    answered 400 as any body that is not JSON, and a request after it, on a new connection, is answered as before
+    (2026-11-19, found by the review of the platform's MCP route). The body is made here: 100,000 brackets each way."""
+    app, port, _ = demo
+    write = {"Content-Type": "application/json", web.WRITE_HEADER: "1"}
+    deep = b"[" * 100_000 + b"]" * 100_000
+    status, body, _ = _send(port, "POST", "/api/echo", deep, write)
+    assert status == 400 and json.loads(body) == {"error": "the body is not JSON"}
+    status, body, _ = _send(port, "POST", "/api/echo", {"a": 1}, write)
+    assert status == 201 and json.loads(body) == {"got": {"a": 1}}
+
+
 def test_a_refused_write_is_answered_and_never_lost_with_its_connection(demo):
     """A write the frame refuses (another site's page, another host's name, no write header, no such route) has a body
     it does not use. Answered and closed with that body unread, or still arriving, the connection is reset on Windows

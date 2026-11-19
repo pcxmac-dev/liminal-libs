@@ -1,5 +1,109 @@
 # Changelog
 
+## 1.66.0 (2026-11-19)
+
+The MCP plugin's base, and what the top four inference engines and harnesses stand on. The user, 2026-11-18: "now i
+need an MCP plugin for platform, basically a protocol plugin that mediates MCP connections to resources by local AI
+agents"; "top 4 inference engines, top 4 agentic harnesses (open source)"; "all platform"; "both linux and windows
+compatibility". The plugins themselves are packages of their own, built on this release. liminal-platform 0.34.0
+gives the protocol plugins their route and holds who may ask a hook. No plugin API number moves, and a plugin that
+says none of the new words is asked as before.
+
+- **Protocol plugins** (`machines/protocol.py`: `ProtocolPlugin`, under `AiPlugin`). The base of a plugin that speaks
+  a protocol to the local AI agents on the platform's own port, MCP's first. Its group is "protocol": the platform
+  draws it as Protocols, after the harnesses. Its software is its own code, so there is nothing to install. A
+  subclass says three things: its protocol (`serve`), how an agent is wired to it (`offer`) and what its grants can
+  name (`grantable`). The base gives the rest:
+  - The route's hook (`RPC_HOOK`, `rpc`). The platform hands it a request whole; it is never asked by name. The agent
+    is found by its bearer token: without a token it knows, the answer is 401. Each agent has a rate (60 a minute by
+    default): past it, 429. The token is never handed on to the subclass. A fault in the subclass is a 500 in words.
+  - Its agents: at most 16, each named by 1 to 24 lowercase letters and digits, kept through the login as one pair
+    (`LIMINAL_AI_<NAME>_CLIENTS`). Each agent's grants are a pair of its own, and a new agent is granted nothing. The
+    pairs are read once, when the plugin is attached, and used from memory. A pair changed outside the plugin is not
+    used, and its page says so.
+  - Tokens are never kept as text. A hand-wired token is shown once (`token_once`, asked twice): only its sha256 and
+    its expiry are kept (30 days by default). A launch token is made for the asking plugin's own agent and held in
+    memory alone (32 at most). It ends by `end_launch`, by a stop, or when newer ones push it out. Every digest is
+    compared with `hmac.compare_digest`.
+  - Calls held for your answer on its page (`hold`, `decide`): 4 for one agent and 16 in all. Each ends by your
+    answer, by its hold running out (50 s by default), by its request gone, by the agent's cancel or by a stop. A call
+    that ends unanswered never runs. A call to be asked twice is shown with its exact arguments, and is never allowed
+    for a whole session.
+  - The audit: the last 500 calls in memory, their arguments masked and cut; a line for each call in
+    `home/logs/calls.log`, with no argument text (moved aside past 1 MB); and a row of the platform's traffic
+    (`agent:<name>`). Every secret value the plugin knows is masked. Its Main tab has an Agents table and a Waiting
+    for you table, with their forms.
+- **Who may ask a hook** (`internal.py`, `apps/asking.py`, `App.present`). Two new words on a plugin's class:
+  `PLUGIN_ONLY_HOOKS`, asked only by another plugin through its app, never by a page or a program; and
+  `PAGE_ONLY_HOOKS`, asked only from its page, never by another plugin. `internal.plugin_only` and `page_only` read
+  them along the class line, and refuse when a word cannot be read. `problems()` names a hook that is not among
+  HOOKS, a hook in both words, a service only its page asks and a tab only other plugins ask. The Internal API tab
+  tags them: "asked only by other plugins", "asked only from its page". Who asks is handed over in so many words and
+  never taken from what a thread inherits: a route sets the page (`asking(PAGE)`), `App.ask` sets the plugin that
+  asks, and a job takes its asker where it is started (`handed`). A gated hook asked with no asker is refused in
+  words (`AskRefused`, a 403). `App.present(handler)` says whether the person at the browser is shown to be there:
+  the login's own proof when it has one, else a signed-in browser; None when the app holds no login.
+- **A piped child** (`machines/children.py`: `Piped`), for an MCP server over stdio. Its input and output are pipes,
+  and each message is one line (at most 4 MiB: a longer one ends it). What it prints as errors goes into its log,
+  the launch's secrets masked. It is started as a Child is: no window, a job object on Windows, a session of its own
+  on Linux, its pidfile written. It is stopped in the order MCP's stdio transport gives: its input closed, its grace,
+  then ended with what it started (its job on Windows; SIGTERM, then SIGKILL, to its group on Linux). One an earlier
+  run left running is ended at its next start. `Child` itself is unchanged.
+- **Harnesses** (`machines/harness.py`):
+  - A window on Linux too, where the platform has a display (DISPLAY or WAYLAND_DISPLAY; under WSLg the window opens
+    on Windows' desktop) and one of TERMINALS is found. They are looked for as files, in this system's own folders
+    alone: nothing is started for a status. Each terminal is one whose flag hands the rest of the line over as
+    separate words; x-terminal-emulator only when its link leads to one of them. Without them, Open… gives the lines
+    to paste, as before.
+  - Liminal's MCP, for a harness that offers it (`MCP_OPTION`, `MCP_WIRES`), off unless Use… turns it on. Then the
+    MCP plugin is asked how it is reached and for this harness's agent. Each Open… that opens a window asks a token
+    for that window alone, and ends it once the window is gone. The token reaches the tool in `LIMINAL_MCP_TOKEN`
+    alone, a secret of its launch: never on its command line, in a file or in the lines to paste. Command… gives none.
+  - Values a harness would read as more than text are refused: a model's id, an option's text and every value a
+    plugin writes into its tool's configuration (`clean_value`) may hold none of `${`, `$(`, `{env:`, `{file:` and
+    `${{`, and may not begin with `!`. A plugin adds its tool's own (`Harness.OPENERS`).
+  - Two of these reach every harness, as the plan chose: on Linux with a display and a terminal, Open… opens a window
+    where it gave lines to paste; and a value holding one of those openers is refused.
+- **What a server speaks** (`machines/modelserver.py`). Each `serving` row says which families of OpenAI-compatible
+  asks its server answers (`speaks`, of `FAMILIES`: chat, completions, responses, messages, embeddings), so a harness
+  that asks one family alone can tell before it starts. It is the plugin's word (`SPEAKS`, chat by default;
+  `speaks_of` narrows one instance), never asked of the server.
+- **A private Node.js and npm** (`machines/node.py`, lifted from plugin-platform-continue 0.1.0), for Pi, Cline, the
+  MCP catalogue's Node.js servers and Continue. Each plugin brings its own Node.js (its line, 24, from the archive it
+  pins). npm is run by its whole path, always with `--ignore-scripts --no-audit --no-fund --no-update-notifier`, and
+  with none of the user's npm or Node.js settings. The top package's sha512 is checked against the plugin's pin
+  before anything is put in use; its dependencies are checked against the registry's own sums alone, and the page
+  says so. The lock npm wrote is kept, so a repair installs the same tree again with `npm ci`.
+- **Hugging Face's cache and its hf command** (`machines/hub.py`, lifted from plugin-platform-vllm 0.1.0), for vLLM and
+  LMDeploy: the cache read from its folders, a download's progress, a delete inside the plugin's own folder, what the
+  Hub says of a model (its licence, whether it is gated, its files and its size) and hf's dry run. The Hub's address
+  is each plugin's.
+- **The frame**:
+  - `web.Server`, the apps' server, whose port is its own on every system. On Windows it sets SO_EXCLUSIVEADDRUSE
+    before its bind, so a second server can no longer share a port an app serves; elsewhere it keeps SO_REUSEADDR,
+    and it never sets SO_REUSEPORT. `App.start` uses it.
+  - `web.send_json` sends a 202 or a 204 whose data is None with no body: MCP's "202 Accepted with no body".
+  - Connections draws an AI agent that asks through the MCP plugin as a caller (`agent:<name>`).
+  - `API_KINDS` gains "rpc": JSON-RPC over HTTP or a program's standard input and output.
+  - Six makers' marks in `ui/static/icons.js`, drawn anew in the set's line: lmdeploy, codexcli (Codex's own mark,
+    not the OpenAI knot), pi, cline, goose, mcp.
+- `machines/ai.py`: `Installed.how` "part", said as "{title} {version}: part of this plugin, nothing to install";
+  Install… and Uninstall… refuse it in words. `machines/plugin.py`: the group "protocol".
+- Not in this release: the frame headers that stop another site framing a page (frame-ancestors, X-Frame-Options).
+  They change every answer of every app, so they are put to you first.
+- **Tests**: test_protocol, test_asking, test_internal_words, test_node, test_hub, test_web and test_ai_release (the
+  real protocol base, a harness and the frame on one app, with no stand-in between them); new tests in
+  test_children, test_harness, test_modelserver, test_traffic, test_source_apis and test_icons. All are on stand-ins
+  under the shared `no_outside` guard. The one real socket is test_web's: a server on 127.0.0.1, port 0, on a thread.
+  Each piece was reviewed, and then the whole: every finding was reproduced first and fixed with a test that fails
+  without the fix.
+- **A write nested too deep is answered** (every app's frame, `App`'s write handler): a body nested deeper than
+  Python's JSON reader recurses (100,000 brackets each way, 200 KB) raised RecursionError, which the frame did not
+  catch, so the write got no answer at all and its thread printed a traceback. It is answered 400, "the body is not
+  JSON", like any body that is not JSON, and the next request is answered as before. Only a page or program on this
+  machine with the app's write header could send one. Found by the platform's review of the MCP route; test_apps
+  holds it, with the body made in the test.
+
 ## 1.65.1 (2026-11-19)
 
 The globe zooms to 96x, and draws backbone networks. The user, 2026-11-19: "i need to zoom in a few more times maybe

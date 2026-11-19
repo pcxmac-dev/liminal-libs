@@ -11,9 +11,11 @@
 // how it is called, then the standard hooks layer by layer, the nearest first (each answered by its own code, by a
 // library class's, or left to the contract's default), then its own hooks; each hook with its call, its line, its
 // whole docstring folded under it, whether it reads or changes, and who uses it (the app's code, other plugins, both,
-// whoever asks it by name, or nothing here). Then what else the app's code takes from it, what it asks of other
-// plugins, the settings it reads and keeps through the login, its steps and its notes. An app's own tab says what its
-// code calls on its plugins and what it offers them, then its routes, what it includes and links, and its plugins.
+// whoever asks it by name, or nothing here); a hook that only other plugins may ask, or only its page, says so (its
+// PLUGIN_ONLY_HOOKS and PAGE_ONLY_HOOKS: internal.py's pluginOnly and pageOnly). Then what else the app's code takes
+// from it, what it asks of other plugins, the settings it reads and keeps through the login, its steps and its notes.
+// An app's own tab says what its code calls on its plugins and what it offers them, then its routes, what it includes
+// and links, and its plugins.
 //
 //   LiminalInternal.html(d, opts)  ->  the tab's HTML. `d`: a plugin's `internal` (internal.internal_of), a list of
 //     them (a plugin of several feeds: each a line that opens), an app's (`d.of === 'app'`: internal.app_internal), or
@@ -43,6 +45,8 @@
   const CALL_WORDS = [['plugins', 'From another plugin', true], ['clients', 'From a client', true],
     ['jobs', 'As a job', true], ['terms', 'Its terms', false]];
   const WHO = { page: 'its page', client: 'a client', plugin: 'a plugin', app: 'another app', login: 'its login' };
+  // what an ask of another plugin finds there that will not answer it (internal.py's `here`), drawn as a warning
+  const WARN_HERE = /^no plugin offers|offers no |not installed|not said to be a service|only from its page/;
   // the attributes a page may ask for on a plugin's button (opts.pick): data-*, aria-* and title, each quoted
   const SAFE_ATTRS = /^\s*(?:(?:data|aria)-[\w-]+|title)="[^"<>]*"(?:\s+(?:(?:data|aria)-[\w-]+|title)="[^"<>]*")*\s*$/;
 
@@ -251,7 +255,7 @@
   // 6. what it asks of other plugins (its ASKS) and what each finds here (internal.py's `here`)
   function asksHtml(d, c) {
     const rows = rowsOf(d.asks).filter((a) => str(a.hook));
-    const hereCls = (w) => (/^no plugin offers|offers no |not installed|not said to be a service/.test(w) ? 'in-warn'
+    const hereCls = (w) => (WARN_HERE.test(w) ? 'in-warn'
       : /^offered|^\d+ plugins? offers? it here/.test(w) ? 'in-ok' : 'in-muted');
     const cells = rows.map((a) => [
       str(a.plugin) ? codeHtml(a.plugin) : '<span class="in-muted">whichever answers it</span>', codeHtml(a.hook),
@@ -319,8 +323,8 @@
     return `<li class="in-hook${esc(isLeft(h) ? ' in-left' : '')}"><div class="in-sig">`
       + `<code class="in-call">${esc(call)}</code>${tagsHtml(h, c)}</div>${lineHtml}${metaHtml}${docHtml(h, c)}</li>`;
   }
-  // whether it reads or changes, a job (and whether it can be cancelled), a tab's page, asked twice, its page asks
-  // it, a property
+  // whether it reads or changes, a job (and whether it can be cancelled), a tab's page, asked twice, who alone may
+  // ask it (other plugins, or its page), its page asks it, a property
   function tagsHtml(h, c) {
     const tags = [];
     if (h.reads === true) tags.push(['a read', 'in-read']);
@@ -331,6 +335,8 @@
     if (tab) tags.push([tab, '']);
     const twice = names(h.twice);
     if (twice.length) tags.push(['asked twice: ' + twice.join(', '), 'in-twice']);
+    if (h.pluginOnly === true) tags.push(['asked only by other plugins', 'in-only']);
+    if (h.pageOnly === true) tags.push(['asked only from its page', 'in-only']);
     if (c.pageAsks.has(h.name)) tags.push(['its page asks it', '']);
     if (h.property) tags.push(['a property', '']);
     return tags.map(([w, cls]) => `<span class="in-tag${esc(cls ? ' ' + cls : '')}">${esc(w)}</span>`).join('');
@@ -348,6 +354,12 @@
   function whoHtml(h, c) {
     if (typeof h.users !== 'string') return '';
     const how = text(h.how), by = names(h.askedBy);
+    // asked by name, yet only from its page (PAGE_ONLY_HOOKS): never another plugin, those that say they ask it too
+    if (h.pageOnly === true && h.users === 'named') {
+      const pageLines = ['asked by name: from its page alone, never by another plugin'];
+      if (by.length) pageLines.push('other plugins here say they ask it, and are refused: ' + and(by));
+      return pageLines.map((w) => `<span class="in-who">${esc(w)}</span>`).join('');
+    }
     const app = 'used by ' + c.app + "'s code" + (how ? ': ' + how : '');
     const plugins = 'for other plugins: ' + (by.length ? and(by) : 'none known here');
     const named = c.clients ? 'asked by name: its page, a client or another plugin'
@@ -602,6 +614,7 @@
   border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 .in-tag.in-read{border-color:var(--up);color:var(--up)}
 .in-tag.in-twice{border-color:var(--down);color:var(--down)}
+.in-tag.in-only{border-color:var(--accent);color:var(--accent)}
 details.in-doc{border:0;border-radius:0;background:none;margin-top:2px}
 details.in-doc>summary{padding:2px 0;gap:6px;font-size:12px;color:var(--accent)}
 details.in-doc>summary>.in-pm{width:16px;height:16px;font-size:12px}

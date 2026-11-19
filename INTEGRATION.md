@@ -93,6 +93,16 @@ The sweep (`auditing.Sweep`) goes over every watched series in turn for session 
 and do not, and for what cut-off pulls left. Findings are the main file's `audit_findings`.
 `LIMINAL_FETCH_CACHE=off` writes as before 1.64.0.
 
+The platform's own plugins are machine plugins (`liminal_libs/machines/plugin.py`, `MachinePlugin`, a
+`PlatformPlugin`): each a part of this machine or of what it reaches, drawn under its `SECTION` (machine,
+virtualization, os, cloud, ai). The AI section's are `AiPlugin`s (`machines/ai.py`, 1.62.0), each in a `GROUP`:
+"inference" for a model server (`ModelServer`), "harness" for a coding harness (`Harness`) and, from 1.66.0,
+"protocol" for a protocol plugin (`ProtocolPlugin`, `machines/protocol.py`), MCP's first. The user, 2026-11-18: "now
+i need an MCP plugin for platform, basically a protocol plugin that mediates MCP connections to resources by local AI
+agents". A protocol plugin answers the local AI agents on the platform's own port: liminal-platform 0.34.0 hands each
+request whole to the hook its `RPC_HOOK` names (`rpc`), at `/api/machines/<name>/rpc`, and the plugin finds the
+agent by its token. Its software is its own code, so there is nothing to install (`Installed.how` "part").
+
 ## How the programs talk at run time
 
 - Everything shares the databases in `store/data/`; one process at a time owns a writer, through the
@@ -193,6 +203,18 @@ listed as a change.
 - `KEEPS`: what it keeps through its login beside its keys, rows `(variable, about)`; a property where the variable
   is named after the plugin (a firewall's groups, a model server's instances).
 - `INTERNAL_NOTES`: a few lines more, each at most 400 characters (the first 40 are read).
+- `PLUGIN_ONLY_HOOKS` (1.66.0): its hooks only another plugin asks, through the app (`self.app.ask(...)`): never its
+  page, never a program. liminal-platform 0.34.0 refuses them over HTTP (403) and leaves them out of its page.
+- `PAGE_ONLY_HOOKS` (1.66.0): its hooks only its page asks, never another plugin (403). Over HTTP the platform asks
+  one when its login says you are there, or when it holds no login (`App.present`), and refuses it (401) when the
+  login says you are not.
+
+Who asks is handed over in so many words (1.66.0, `liminal_libs.apps.asking`), never taken from what a thread
+inherits: an app's route for its page sets the page (`asking(PAGE)`), `App.ask` sets the plugin that asks for that
+call, and a job takes its asker where it is started and sets it in its own thread (`handed`). A hook reads it with
+`asker()`, never from an argument. A gated hook asked with no asker is refused in words (`refusal`, `check`,
+`AskRefused`). `internal.plugin_only` and `page_only` read the two words along the class line, and refuse when a word
+cannot be read. A plugin that says neither word is asked exactly as before.
 
 Each package's own test holds it to them:
 

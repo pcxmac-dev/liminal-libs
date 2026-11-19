@@ -74,13 +74,17 @@ def _loopback(host: str) -> bool:
 
 
 def node_of(end: str) -> dict:
-    """What the page draws for one end of a link it has no better word for: the page, a program calling the app, a
-    program started, a host reached, another app of the framework, else a plugin by its name."""
+    """What the page draws for one end of a link it has no better word for: the page, a program calling the app, an AI
+    agent asking through the MCP plugin, a program started, a host reached, another app of the framework, else a plugin
+    by its name."""
     kind, _, rest = end.partition(":")
     if end == "page":
         return {"id": end, "role": "caller", "title": "This page", "sub": "the app's own page in a browser", "icon": "eye"}
     if end == "client":
         return {"id": end, "role": "caller", "title": "Programs", "sub": "a client of the app's API (no browser)", "icon": "terminal"}
+    if kind == "agent" and rest:  # 'agent:<its client's name>': how the MCP plugin notes each call an agent makes
+        return {"id": end, "role": "caller", "title": rest, "sub": "an AI agent, through the MCP plugin",
+                "icon": "terminal"}
     if kind == "process" and rest:
         return {"id": end, "role": "outside", "kind": "process", "title": rest, "sub": "a program", "icon": "terminal"}
     if kind == "host" and rest:

@@ -6,13 +6,18 @@ to this machine from their own pages, serve their page's files from their own fo
 library's (ui.STATIC: the icons, the theme), and send bodies the same way. Moved here from the
 charts app's gui/web.py (liminal-libs 1.7.0); the apps' frame on top of it is apps/app.py.
 
+The server class is here too (`Server`): the standard library's, but holding its port alone on
+Windows as well, where the standard one lets a second server share it.
+
 Nothing here opens a database."""
 from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import socket
 from http import HTTPStatus
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 MAX_BODY = 5 * 1024 * 1024
@@ -23,12 +28,15 @@ PROFILE_COOKIE = "mc_profile"  # the chart app's profile this browser signed in 
 PROFILE_HEADER = "X-Liminal-Profile"
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 ALWAYS = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"))
+NO_BODY = (HTTPStatus.ACCEPTED, HTTPStatus.NO_CONTENT)  # send_json sends these with no body when their data is None
 
 
 def listening(port: int) -> bool:
-    """Whether something answers on 127.0.0.1:`port` already. A server's own bind cannot tell on
-    Windows: HTTPServer binds with SO_REUSEADDR, which there lets a second server take a port in
-    use (the fetcher's page took the integrator's front's port and the front proxied to itself)."""
+    """Whether something answers on 127.0.0.1:`port` already. The standard HTTPServer's own bind
+    cannot tell on Windows: it binds with SO_REUSEADDR, which there lets a second server take a port
+    in use (the fetcher's page took the integrator's front's port and the front proxied to itself).
+    `Server` binds its port alone, so there its bind is refused too. This check stays: it is asked
+    before the bind, and the app says in words that the port is taken."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         try:
@@ -38,24 +46,69 @@ def listening(port: int) -> bool:
     return True
 
 
-def send(handler, status: int, body: bytes, ctype: str, headers=None) -> None:
-    """An answer with `body`: its type and length, no caching and no sniffing unless `headers`
-    (pairs, or a dict) say otherwise, and whatever else they carry (a cookie, say)."""
+def _windows() -> bool:
+    """Whether this is Windows. Asked each time a server binds, so a test can stand in for the other system."""
+    return os.name == "nt"
+
+
+class Server(ThreadingHTTPServer):
+    """The server an app answers on: the standard library's ThreadingHTTPServer, but its port is its own.
+
+    The standard one sets SO_REUSEADDR on every system. On Windows that lets a later socket bind a port an app already
+    serves, and Windows then hands each connection to either of them. So on Windows this one sets SO_EXCLUSIVEADDRUSE
+    before its bind, and not SO_REUSEADDR: while it is open, every other bind of its port is refused.
+
+    Elsewhere it keeps SO_REUSEADDR. There it never lets two servers share a port someone listens on, and a restart
+    needs it: these servers close each connection first (HTTP/1.0), so the last ones wait in TIME_WAIT on the app's
+    port, and a restart within a minute would be refused ("address already in use"). It never sets SO_REUSEPORT, which
+    would let a second server share the port on Linux.
+
+    Microsoft documents one cost on Windows: a port bound this way may not be bound again at once while a connection
+    the closed server accepted is still winding down. tests/test_web.py says what was seen when it was tried."""
+
+    allow_reuse_address = not _windows()  # this system's; server_bind decides again from _windows(), when it binds
+    allow_reuse_port = False
+
+    def server_bind(self) -> None:
+        """The socket's options, then the standard bind: on Windows SO_EXCLUSIVEADDRUSE, set before the bind as
+        Windows asks; elsewhere SO_REUSEADDR, which the standard bind sets from allow_reuse_address."""
+        windows = _windows()
+        self.allow_reuse_address = not windows
+        if windows:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _head(handler, status: int, framing, headers) -> None:
+    """An answer's status and headers: `framing` first (the body's type and length, as pairs), then no
+    caching and no sniffing unless `headers` (pairs, or a dict) say otherwise, then whatever they carry."""
     given = list(headers.items()) if isinstance(headers, dict) else list(headers or [])
     names = {name.lower() for name, _ in given}
     handler.send_response(status)
-    handler.send_header("Content-Type", ctype)
-    handler.send_header("Content-Length", str(len(body)))
+    for name, value in framing:
+        handler.send_header(name, value)
     for name, value in ALWAYS:
         if name.lower() not in names:
             handler.send_header(name, value)
     for name, value in given:
         handler.send_header(name, value)
     handler.end_headers()
+
+
+def send(handler, status: int, body: bytes, ctype: str, headers=None) -> None:
+    """An answer with `body`: its type and length, no caching and no sniffing unless `headers`
+    (pairs, or a dict) say otherwise, and whatever else they carry (a cookie, say)."""
+    _head(handler, status, (("Content-Type", ctype), ("Content-Length", str(len(body)))), headers)
     handler.wfile.write(body)
 
 
 def send_json(handler, data, status: int = 200, headers=None) -> None:
+    """An answer in JSON. A 202 or a 204 whose data is None has no body at all, and no Content-Type. The 202 says
+    Content-Length 0; the 204 says no length, as RFC 9110 (8.6) asks. That is MCP's "202 Accepted with no body".
+    Every other answer is JSON, a None among them ("null")."""
+    if data is None and status in NO_BODY:
+        framing = () if status == HTTPStatus.NO_CONTENT else (("Content-Length", "0"),)
+        return _head(handler, status, framing, headers)
     send(handler, status, json.dumps(data, allow_nan=False).encode(), "application/json", headers)
 
 
