@@ -25,6 +25,7 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 
+from .. import spool
 from . import history
 from .common import (BUSY_TIMEOUT_S, Behind, _date_ms, _distinct, _feed_name, _now, add_column, own_files, owners_layout, seal,
                      write_transaction)
@@ -667,12 +668,32 @@ class FeedStore:
         ticker = ticker.upper()
         stored = _stored_ms()
         rows = _ascending([_bar_row(ticker, timespan, multiplier, b, stored) for b in bars])
+        rows, cached = self._through_cache(source, rows, stored)
         conn = self._feed(source, create=True).conn
         with conn:
             conn.executemany(_UPSERT_BAR, rows)
+        self._cache_loaded(cached)
         self._wrote()
         self.rows_saved += len(rows)
         return len(rows)
+
+    @staticmethod
+    def _through_cache(source: str, rows: list[tuple], stored: int) -> tuple[list[tuple], tuple | None]:
+        """Bar rows about to be written, through the pull that is open (1.64.0; spool.py, storage/pulls.py): written
+        to a rows file in its folder and read back, so that what is written to the database is what the cache
+        holds. With no pull open (the live recorder's writes, a test's), the rows as given. Returns the rows to
+        write and what to say once they are in (_cache_loaded)."""
+        pull = spool.current()
+        if pull is None or not rows:
+            return rows, None
+        rows, seq = pull.rows(source, rows, stored)
+        return rows, (pull, seq)
+
+    @staticmethod
+    def _cache_loaded(cached: tuple | None) -> None:
+        """The rows of a rows file are in the database: its pull is told (the copy audit checks only what was loaded)."""
+        if cached is not None:
+            cached[0].loaded(cached[1])
 
     def upsert_built_bars(self, source: str, ticker: str, timespan: str, multiplier: int, bars: Iterable[dict],
                           derivation: int) -> int:
@@ -969,9 +990,11 @@ class FeedStore:
         stored = _stored_ms()
         rows = [_bar_row(b["T"].upper(), "day", 1, b, stored) for b in bars if b.get("T")]
         if rows:
+            rows, cached = self._through_cache(source, rows, stored)
             conn = self._feed(source, create=True).conn
             with conn:
                 conn.executemany(_UPSERT_BAR, rows)
+            self._cache_loaded(cached)
         with self.conn:  # marked after the bars are in: a failure between means fetching the day again
             self._mark_day(source, day, "ok" if rows else "empty", len(rows))
         self._wrote()
@@ -984,9 +1007,11 @@ class FeedStore:
         stored = _stored_ms()
         rows = [_bar_row(b["T"].upper(), "day", 1, b, stored) for b in bars if b.get("T")]
         if rows:
+            rows, cached = self._through_cache(source, rows, stored)
             conn = self._feed(source, create=True).conn
             with conn:
                 conn.executemany(_UPSERT_BAR, rows)
+            self._cache_loaded(cached)
             self.rows_saved += len(rows)
         with write_transaction(self.conn):  # marked after the bars are in: a failure between means asking again
             for r in rows:

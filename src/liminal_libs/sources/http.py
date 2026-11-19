@@ -3,7 +3,9 @@ to whoever the provider is (its window, the request cap, the machine's daily cap
 with the server's Retry-After, a key never sent to another host), and its keyless form for the public
 feeds (PublicClient, which identifies itself). 2.0: POST too (the AI assistants' answers: never sent
 again after a transport failure, since a timed-out answer may have been billed), a subclass's own
-error mapping (`_refusal`) and what is final (`_final`), and rate-limit headers kept by prefix."""
+error mapping (`_refusal`) and what is final (`_final`), and rate-limit headers kept by prefix.
+1.64.0: while a pull is open (spool.py), a good answer's body goes to the pull's folder as it arrives
+and is read back from there before anything parses it (`_to_cache`)."""
 from __future__ import annotations
 
 import email.utils
@@ -15,6 +17,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from .. import spool
 from ..errors import BudgetExhausted, NotEntitled, Paused, RateLimited, SourceError, Unauthorized
 from ..ratelimit import RateLimiter
 
@@ -151,11 +154,20 @@ class HttpClient:
             self.requests_made += 1  # counted before it goes: one that times out may have reached the server
             if self.on_request:
                 self.on_request(self.requests_made)
+            # A pull is open (1.64.0; spool.py): the answer goes to its folder and is read from there. From a real
+            # session it is taken off the wire in pieces; a stand-in session (a test's) is asked as it always was.
+            pull = spool.current()
+            caching = pull is not None and getattr(pull, "spools", False) and not getattr(pull, "closed", False)
+            streamed = caching and method == "GET" and isinstance(self._session, requests.Session)
             try:
                 if method == "POST":
                     resp = self._session.post(url, params=params, json=json, headers=self._headers, timeout=self._timeout)
+                elif streamed:
+                    resp = self._session.get(url, params=params, headers=self._headers, timeout=self._timeout, stream=True)
                 else:
                     resp = self._session.get(url, params=params, headers=self._headers, timeout=self._timeout)
+                if caching and 200 <= resp.status_code < 300:
+                    self._to_cache(pull, url, resp, streamed)  # (a body cut off on its way: no answer, tried again)
             except (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL):
                 # A key with a space or a line break in it: nothing can be sent, ever, and the error
                 # repeats the header (the key) word for word, which went to the log and the kill's
@@ -183,10 +195,14 @@ class HttpClient:
                 break
             if self.on_retry:
                 self.on_retry(delay, resp.status_code)
+            if streamed:
+                _let_go(resp)  # its body is not read: the connection goes back before the wait
             self._wait(delay)
 
         if 300 <= resp.status_code < 400:  # a redirect to another host (SameHostSession): not followed
             where = urlparse(resp.headers.get("Location") or "").netloc or "elsewhere"
+            if streamed:
+                _let_go(resp)
             raise SourceError(resp.status_code, f"redirected to {where}; not followed (the key stays on {host})")
         if resp.status_code >= 400:
             message = error_message(resp)
@@ -205,6 +221,34 @@ class HttpClient:
                                   retry_delay(resp, 0) if resp.headers.get("Retry-After") else None)
             raise SourceError(resp.status_code, message)
         return resp
+
+    @staticmethod
+    def _to_cache(pull, url: str, resp, streamed: bool) -> None:
+        """A good answer's body into the pull that is open (1.64.0; spool.py, storage/pulls.py) and back out of
+        its file: what is parsed afterwards is what the cache holds. From a real session the body comes off the
+        wire in pieces and goes to disk as it comes (`streamed`); a stand-in's answer gives the body it holds, and
+        one with no body to keep is left as it is. The request is kept by its path alone, never its query: a key
+        may be in it. spool.CacheFailed when the disk refuses; a body cut off on its way is the transport's error,
+        as it always was (the answer is then asked for again)."""
+        writer = pull.payload(urlparse(url).path, resp.status_code)
+        if writer is None:
+            return
+        try:
+            if streamed:
+                for piece in resp.iter_content(spool.CHUNK):
+                    writer.write(piece)
+            else:
+                body = getattr(resp, "content", None)
+                if not isinstance(body, (bytes, bytearray)):
+                    writer.abandon()
+                    return
+                writer.write(bytes(body))
+            body = writer.keep()
+        except BaseException:
+            writer.abandon()
+            raise
+        if streamed:  # what .json(), .text and .content give from here on: the file's bytes
+            resp._content, resp._content_consumed = body, True
 
     def _unauthorized(self, host: str, message: str) -> SourceError:
         """The error a 401 from `host` is (and stays for the rest of the run)."""
@@ -247,6 +291,16 @@ class PublicClient(HttpClient):
     def text(self, path_or_url: str, params: dict[str, Any] | None = None) -> str:
         return self._request(path_or_url, params).text
 
+
+
+def _let_go(resp) -> None:
+    """An answer asked for in pieces whose body will not be read: closed, so its connection is free again."""
+    close = getattr(resp, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - the answer is dropped either way
+            pass
 
 
 def retry_delay(resp: requests.Response | None, attempt: int, now: datetime | None = None) -> float:

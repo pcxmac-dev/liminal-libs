@@ -413,6 +413,72 @@ CREATE INDEX IF NOT EXISTS evaluations_by_argument ON evaluations (argument_id);
 """
 SCHEMA += CLAIMS
 
+# The fetch cache's ledger (storage/pulls.py, 1.64.0): what was asked of a feed and written to disk before it reached
+# a database, the files of each pull, and what the auditors (auditing.py) found.
+CACHE = """
+CREATE TABLE IF NOT EXISTS pulls (        -- one thing asked of a feed; its files are in cache/<feed>/<id>/
+    id          TEXT PRIMARY KEY,         -- when it was opened (UTC) and eight random characters: its folder's name
+    feed        TEXT NOT NULL,
+    kind        TEXT NOT NULL,            -- bars | future | market_day | grouped_day | download | recheck
+    ticker      TEXT,                     -- the series asked (NULL: a whole market's day)
+    asset       TEXT,
+    timespan    TEXT,
+    start_ms    INTEGER,                  -- the span asked: [start_ms, end_ms)
+    end_ms      INTEGER,
+    state       TEXT NOT NULL,            -- open | complete (its pages ended) | cut (a stop, an error, a crash)
+    audit       TEXT,                     -- NULL: not audited yet | ok | repaired | mismatch
+    opened_at   TEXT NOT NULL,
+    closed_at   TEXT,
+    audited_at  TEXT,
+    instance    TEXT,                     -- the installation that opened it (claims.instance)
+    pid         INTEGER,
+    note        TEXT                      -- why it was cut, what its audit found, in words
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS pulls_waiting ON pulls (audit, state, feed);
+CREATE INDEX IF NOT EXISTS pulls_series ON pulls (feed, ticker, timespan);
+CREATE TABLE IF NOT EXISTS pull_files (   -- a pull's files, in the order they were written
+    pull        TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    kind        TEXT NOT NULL,            -- payload (an answer as received) | rows (what one write loads)
+    name        TEXT NOT NULL,            -- the file, in the pull's folder
+    bytes       INTEGER NOT NULL,         -- on disk
+    sha256      TEXT NOT NULL,            -- of the body as received, or of the rows' text as written (before gzip)
+    written_at  TEXT NOT NULL,
+    path        TEXT,                     -- a payload: the request's path, never its query (a key may be in it)
+    status      INTEGER,                  -- a payload: the answer's status
+    feed        TEXT,                     -- a rows file: the feed whose bars they are (feeds/<feed>.db)
+    rows        INTEGER,
+    lo_ms       INTEGER,                  -- a rows file: its first and its last bar time
+    hi_ms       INTEGER,
+    stored_at   INTEGER,                  -- a rows file: the moment its rows were stored under (ms)
+    loaded_at   TEXT,                     -- when its rows were in the database (NULL: written, not loaded yet)
+    audited_at  TEXT,
+    result      TEXT,                     -- ok | repaired | mismatch | damaged (the file is not what was written)
+    missing     INTEGER,                  -- what its audit found: bars not stored
+    differing   INTEGER,                  -- and bars stored with other values
+    removed_at  TEXT,                     -- when the file was removed (audited, and its keeping time over)
+    PRIMARY KEY (pull, seq)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS audit_findings (  -- what an auditor found and could not put right, or put right and says
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    kind        TEXT NOT NULL,            -- copy-missing | copy-differs | cache-file | cut-pull | hole | empty-span | integrity
+    feed        TEXT NOT NULL,
+    ticker      TEXT,
+    timespan    TEXT,
+    start_ms    INTEGER,
+    end_ms      INTEGER,
+    pull        TEXT,
+    count       INTEGER NOT NULL DEFAULT 1,  -- how many (bars, slots) it is about
+    detail      TEXT,                     -- JSON: what was compared, the first of them
+    state       TEXT NOT NULL,            -- open | repaired | asked (asked of the feed again) | absent | closed
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_findings_state ON audit_findings (state, feed, ticker);
+CREATE INDEX IF NOT EXISTS audit_findings_what ON audit_findings (kind, feed, ticker, timespan, start_ms);
+"""
+SCHEMA += CACHE
+
 # Columns added after the first release: (table, column, type). Applied to older databases on open.
 MIGRATIONS = [
     # Which installation took a request or a queued job (claims.instance, 1.56.0): one of two on a database

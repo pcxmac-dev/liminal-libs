@@ -10,7 +10,9 @@ part-way loses nothing and the stored data always stays contiguous.
 """
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import MutableMapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from .config import UNLIMITED_BACKFILL_YEARS, Tier, asset_tier
 from .errors import BudgetExhausted, NotEntitled, Paused, RateLimited, SourceError
-from . import claims, freshness
+from . import auditing, claims, freshness, spool
 from .futures import candidate_contracts, roll_schedule
 from .coverage import (STEP_MS, FeedProfile, Planner, day_start_ms, frame_parts, frontier_ms, has_open_time, ms,
                        same_market, second_floor)
@@ -97,6 +99,22 @@ def _guard(pages: Iterator[list[dict]]) -> Iterator[list[dict]]:
         raise StopRun(f"request cap reached ({e})") from e
     except RateLimited as e:
         raise StopRun(f"rate limited ({e.message}); stopping until the next run", strike=True) from e
+
+
+CACHE_SETTLE_S = 60.0  # a run's start: what earlier runs left in the fetch cache is audited for this long at most
+
+
+@contextmanager
+def _pull(store, feed: str, kind: str, log: Log | None = None, **facts):
+    """One thing asked of a feed, as a pull of the fetch cache (1.64.0; auditing.pull, storage/pulls.py): while the
+    block runs, every answer the source receives and every write of bars goes to the pull's folder first and is
+    taken from there; as it ends, the pull is audited (the auditor's policy). A cache that cannot be written, or
+    is full of what no audit has freed, stops the run without a strike: the fault is this machine's, not the feed's."""
+    try:
+        with auditing.pull(store, feed, kind, log=log, **facts) as one:
+            yield one
+    except spool.CacheFailed as e:
+        raise StopRun(str(e)) from e
 
 
 # -- resolution --------------------------------------------------------------
@@ -301,19 +319,21 @@ def _fill(source: DataSource, store: Store, ticker: str, timespan: str, a: int, 
 
     lo, hi = datetime.fromtimestamp(a / 1000, ET), datetime.fromtimestamp(b / 1000, ET)
     span, mult = frame_parts(timespan)
-    for page in _guard(source.bar_pages(fetch, lo, hi, span, mult, descending=True, asset=asset)):
-        window = getattr(page, "window", None)
-        page = [x for x in page if a <= int(x["t"]) < b]
-        if not page:
-            if window and not frontier and max(a, window[0]) < min(b, window[1]):
-                # asked, and the feed has nothing there: recorded now, so a capped run resumes past it
-                store.add_coverage(source.name, ticker, timespan, max(a, window[0]), min(b, window[1]), origin="none")
-            continue
-        saved += _store_bars(store, source, ticker, timespan, page, invert)
-        times = [int(x["t"]) for x in page]
-        oldest = min(times) if oldest is None else min(oldest, min(times))
-        newest = max(times) if newest is None else max(newest, max(times))
-        store.add_coverage(source.name, ticker, timespan, oldest, top())
+    # one pull of the fetch cache for the gap (1.64.0): its answers and its rows on disk before the database has them
+    with _pull(store, source.name, "bars", ticker=ticker, asset=asset, timespan=timespan, start_ms=a, end_ms=b):
+        for page in _guard(source.bar_pages(fetch, lo, hi, span, mult, descending=True, asset=asset)):
+            window = getattr(page, "window", None)
+            page = [x for x in page if a <= int(x["t"]) < b]
+            if not page:
+                if window and not frontier and max(a, window[0]) < min(b, window[1]):
+                    # asked, and the feed has nothing there: recorded now, so a capped run resumes past it
+                    store.add_coverage(source.name, ticker, timespan, max(a, window[0]), min(b, window[1]), origin="none")
+                continue
+            saved += _store_bars(store, source, ticker, timespan, page, invert)
+            times = [int(x["t"]) for x in page]
+            oldest = min(times) if oldest is None else min(oldest, min(times))
+            newest = max(times) if newest is None else max(newest, max(times))
+            store.add_coverage(source.name, ticker, timespan, oldest, top())
     _close_head(store, source.name, ticker, timespan, a, top(), oldest, frontier)
     return saved, newest
 
@@ -422,18 +442,23 @@ def verify_fetched(source: DataSource, store: Store, ticker: str, asset: str, fe
             a = int(row.ts)
             b = a + (86_400_000 if timespan == "day" else 60_000)
             out["asked"] += 1
-            try:
-                page = [x for p in _guard(source.bar_pages(fetch, datetime.fromtimestamp(a / 1000, ET),
-                                                           datetime.fromtimestamp(b / 1000, ET), *frame_parts(timespan),
-                                                           asset=asset))
-                        for x in p if int(x["t"]) == a]
-            except SourceError as e:  # no second answer: the check prunes it as it stands
-                log(f"{ticker} {timespan}: could not ask {source.name} again ({e})")
-                page = []
-            again = page[0] if page else None
-            seen = (invert_bars([again])[0] if invert else again) if again is not None else None
-            if seen is not None and (seen["h"], seen["l"]) != (row.high, row.low):
-                _store_bars(store, source, ticker, timespan, [again], invert)  # a correction: the first is kept
+            asked = _pull(store, source.name, "recheck", log, ticker=ticker, asset=asset, timespan=timespan,
+                          start_ms=a, end_ms=b)
+            with asked:  # the second answer is a pull of the fetch cache like the first (1.64.0)
+                try:
+                    page = [x for p in _guard(source.bar_pages(fetch, datetime.fromtimestamp(a / 1000, ET),
+                                                               datetime.fromtimestamp(b / 1000, ET), *frame_parts(timespan),
+                                                               asset=asset))
+                            for x in p if int(x["t"]) == a]
+                except SourceError as e:  # no second answer: the check prunes it as it stands
+                    log(f"{ticker} {timespan}: could not ask {source.name} again ({e})")
+                    page = []
+                again = page[0] if page else None
+                seen = (invert_bars([again])[0] if invert else again) if again is not None else None
+                corrected = seen is not None and (seen["h"], seen["l"]) != (row.high, row.low)
+                if corrected:
+                    _store_bars(store, source, ticker, timespan, [again], invert)  # a correction: the first is kept
+            if corrected:
                 out["corrected"] += 1
                 log(f"{ticker} {timespan} {datetime.fromtimestamp(a / 1000, ET):%Y-%m-%d %H:%M}: {source.name} answered "
                     f"high {row.high} low {row.low}, its {ev['finer']} bars {ev['finer_low']}-{ev['finer_high']}; asked "
@@ -556,8 +581,9 @@ def sync_future(
             if start > end:
                 store.set_contract(source.name, product, t, month, "pending", None, today)
                 break
-            for page in _guard(source.bar_pages(t, start, end, "day", asset="future")):
-                saved += store.upsert_bars(source.name, t, "day", 1, page)
+            with _pull(store, source.name, "future", log, ticker=t, asset="future", timespan="day"):
+                for page in _guard(source.bar_pages(t, start, end, "day", asset="future")):
+                    saved += store.upsert_bars(source.name, t, "day", 1, page)
             stored = store.bar_range(source.name, t, "day")
             if stored is None:
                 store.set_contract(source.name, product, t, month, "missing" if month < today else "pending", None, today)
@@ -601,8 +627,9 @@ def sync_future(
             pages = source.bar_pages(contract, _ms_to_date(stored[1]), end, resolution, asset="future")
         else:
             continue
-        for page in _guard(pages):
-            saved += store.upsert_bars(source.name, contract, resolution, 1, page)
+        with _pull(store, source.name, "future", log, ticker=contract, asset="future", timespan=resolution):
+            for page in _guard(pages):
+                saved += store.upsert_bars(source.name, contract, resolution, 1, page)
     return saved
 
 
@@ -820,6 +847,8 @@ def _guard_call(fn: Callable, *args, **kwargs):
         raise StopRun(f"request cap reached ({e})") from e
     except RateLimited as e:
         raise StopRun(f"rate limited ({e.message}); stopping until the next run", strike=True) from e
+    except spool.CacheFailed as e:  # the fetch cache could not take the answer (1.64.0): this machine's fault
+        raise StopRun(str(e)) from e
 
 
 class Refusals:
@@ -1578,6 +1607,7 @@ class Collector:
         whole-market file (one request a trading day), then the market moves from the same file."""
         source, store, me, feeds, now, proxies, log = (self.source, self.store, self.me, self.feeds, self.now,
                                                         self.proxies, self.log)
+        self._settle_cache()  # what an earlier run left in the fetch cache (1.64.0), before anything is asked
         if self.archival or self.only is not None:
             return
         sync_exchanges(source, store, log)
@@ -1586,6 +1616,20 @@ class Collector:
         if source.serves("stock") and gives_days(source, me):  # every watched stock's day: a request a day
             market_days(source, store, me, feeds, store.watchlist(source.name), now, proxies or [], log)
         fetch_market_moves(source, store, now, proxies or [], log)
+
+    def _settle_cache(self) -> None:
+        """What earlier runs left in the fetch cache, before this one asks anything (1.64.0; auditing.py): a pull
+        left open by a run that is gone is closed, its cache files loaded without asking the feed again; then what
+        waits for its audit is audited, for CACHE_SETTLE_S at most (the sweep takes what is left). A database busy
+        just then puts it off to the next run; a cache that cannot be written stops this one."""
+        try:
+            auditing.recover(self.store, self.source.name, self.log)
+            if auditing.policy().on_update:
+                auditing.audit_pulls(self.store, feed=self.source.name, log=self.log, budget_s=CACHE_SETTLE_S)
+        except spool.CacheFailed as e:
+            raise StopRun(str(e)) from e
+        except (sqlite3.Error, OSError) as e:
+            self.log(f"{self.source.name}: the fetch cache is settled later ({type(e).__name__}: {e})")
 
     def backfilling(self, w: dict) -> bool:
         """Whether a symbol still fills its history: its bars to its floor, or, once no stock is
@@ -1851,6 +1895,7 @@ class Collector:
                   detail=f"{resolution}: {n:,} rows" + (f", daily: {n_day:,}" if n_day else ""))
         store.set_synced(source.name, ticker, at)  # when its fetch began: anything later is asked next time
         verify_fetched(source, store, ticker, asset, fetch, invert, began, me, feeds, log, exchange)
+        self._audit_symbol(ticker)  # the symbol still claimed: whatever of it waits in the fetch cache (1.64.0)
         _derive_symbol(store, source.name, ticker, asset, log)  # bad data checked first (baddata.py)
         if archival:
             spans = [resolution] if resolution == "day" else [resolution, "day"]
@@ -1863,6 +1908,18 @@ class Collector:
         elif asset == "stock":
             fetch_icon(source, store, ticker, log)
         return True
+
+    def _audit_symbol(self, ticker: str) -> None:
+        """After a symbol's fetch, its claim still held (the user: "auditors should run if a symbol is updated"):
+        every pull of it that is closed and not audited yet is held against what is stored (auditing.audit_pulls).
+        Each pull was audited as it closed already; this takes what an earlier, interrupted run left of the
+        symbol. Put off when the database is busy; nothing with the policy's `Audit when a symbol is updated` off."""
+        if not auditing.policy().on_update:
+            return
+        try:
+            auditing.audit_pulls(self.store, feed=self.source.name, ticker=ticker, log=self.log)
+        except (sqlite3.Error, OSError) as e:
+            self.log(f"{ticker}: its audit is left for later ({type(e).__name__}: {e})")
 
     def _step_failed(self, item: dict, e: SourceError) -> None:
         """A symbol's own error (404, 5xx after retries, an unexpected answer): skipped this run, the
@@ -2061,42 +2118,44 @@ def market_days(source: DataSource, store: Store, me: FeedProfile, feeds: dict[s
 
     used = 0
     for day in todo:
-        try:
-            bars = _guard_call(source.market_daily, day)
-        except NotEntitled as e:
-            used += 1
-            if "end of day" in str(e).lower():  # not out yet: asked again next run
-                log(f"market days: {day} not out yet")
-                continue
-            store.mark_grouped_day(source.name, day, "denied")
-            log(f"market days: {day} not covered by your plan ({e.message}); not going further back")
-            break
-        except NotImplementedError:
-            return used
-        except SourceError as e:
-            log(f"market days: {day} not available ({e}); left to each stock's own pass")
-            break
-        used += 1
-        if not bars:
-            if (today - day).days > SETTLE_DAYS:
-                store.mark_grouped_day(source.name, day, "empty")
-            continue
-        store.save_market_snapshot(source.name, day, bars)  # the market moves read the same file
-        closes = {b["T"]: b["c"] for b in bars if b.get("T") in proxies and b.get("c")}
-        if closes:
-            store.save_proxy_closes(source.name, day, closes)
         a, b = day_start_ms(day), day_start_ms(day + timedelta(days=1))
-        keep = []
-        for bar in bars:
-            w = stocks.get(str(bar.get("T") or "").upper())
-            if w is None or bar.get("c") is None:
+        # the day's file and the bars kept of it: one pull of the fetch cache (1.64.0)
+        with _pull(store, source.name, "market_day", log, asset="stock", timespan="day", start_ms=a, end_ms=b):
+            try:
+                bars = _guard_call(source.market_daily, day)
+            except NotEntitled as e:
+                used += 1
+                if "end of day" in str(e).lower():  # not out yet: asked again next run
+                    log(f"market days: {day} not out yet")
+                    continue
+                store.mark_grouped_day(source.name, day, "denied")
+                log(f"market days: {day} not covered by your plan ({e.message}); not going further back")
+                break
+            except NotImplementedError:
+                return used
+            except SourceError as e:
+                log(f"market days: {day} not available ({e}); left to each stock's own pass")
+                break
+            used += 1
+            if not bars:
+                if (today - day).days > SETTLE_DAYS:
+                    store.mark_grouped_day(source.name, day, "empty")
                 continue
-            listed, retired = w.get("listed_from"), w.get("retired_on")
-            if (listed and day < listed) or (retired and day > retired) or holds(w["ticker"].upper(), a, b):
-                continue
-            keep.append({**bar, "T": w["ticker"], "t": a})
-        n = store.save_market_day(source.name, day, keep, a, b)
-        log(f"market days: {day}: {n:,} watched stocks' daily bars from the whole-market file ({len(bars):,} in it)")
+            store.save_market_snapshot(source.name, day, bars)  # the market moves read the same file
+            closes = {b["T"]: b["c"] for b in bars if b.get("T") in proxies and b.get("c")}
+            if closes:
+                store.save_proxy_closes(source.name, day, closes)
+            keep = []
+            for bar in bars:
+                w = stocks.get(str(bar.get("T") or "").upper())
+                if w is None or bar.get("c") is None:
+                    continue
+                listed, retired = w.get("listed_from"), w.get("retired_on")
+                if (listed and day < listed) or (retired and day > retired) or holds(w["ticker"].upper(), a, b):
+                    continue
+                keep.append({**bar, "T": w["ticker"], "t": a})
+            n = store.save_market_day(source.name, day, keep, a, b)
+            log(f"market days: {day}: {n:,} watched stocks' daily bars from the whole-market file ({len(bars):,} in it)")
     return used
 
 
@@ -2414,8 +2473,10 @@ def download_bars(
         log(f"{ticker}: {symbol_holder(store, asset, ticker)} is working on it; try again in a moment")
         return 0
     try:
-        for page in _guard(source.bar_pages(ticker, start, end, timespan, multiplier)):
-            saved += store.upsert_bars(source.name, ticker, timespan, multiplier, page)
+        frame = timespan if multiplier == 1 else f"{timespan}:{multiplier}"
+        with _pull(store, source.name, "download", log, ticker=ticker, asset=asset, timespan=frame):
+            for page in _guard(source.bar_pages(ticker, start, end, timespan, multiplier)):
+                saved += store.upsert_bars(source.name, ticker, timespan, multiplier, page)
     finally:
         give_symbol(store, claim)
     log(f"{ticker} {multiplier}/{timespan}: {saved} bars ({start} to {end})")
@@ -2440,22 +2501,25 @@ def sync_market_daily(
     try:
         while day >= floor:
             if day.weekday() < 5 and day not in known:
-                try:
-                    bars = _guard_call(source.market_daily, day)
-                except NotEntitled as e:
-                    if "end of day" in str(e).lower():  # not released yet (the free plan, the evening): later
-                        log(f"{day}: not out yet ({e.message})")
-                        day -= timedelta(days=1)
-                        continue
-                    store.mark_grouped_day(source.name, day, "denied")
-                    log(f"{day}: not covered by your plan ({e.message}); not going further back")
-                    break
-                if bars:
-                    n = store.save_grouped_day(source.name, day, bars)
-                    result.rows += n
-                    log(f"{day}: {n} tickers")
-                elif (today - day).days > SETTLE_DAYS:
-                    store.mark_grouped_day(source.name, day, "empty")
+                asked = _pull(store, source.name, "grouped_day", log, asset="stock", timespan="day",
+                              start_ms=day_start_ms(day), end_ms=day_start_ms(day + timedelta(days=1)))
+                with asked:  # the day's file and its bars: one pull of the fetch cache (1.64.0)
+                    try:
+                        bars = _guard_call(source.market_daily, day)
+                    except NotEntitled as e:
+                        if "end of day" in str(e).lower():  # not released yet (the free plan, the evening): later
+                            log(f"{day}: not out yet ({e.message})")
+                            day -= timedelta(days=1)
+                            continue
+                        store.mark_grouped_day(source.name, day, "denied")
+                        log(f"{day}: not covered by your plan ({e.message}); not going further back")
+                        break
+                    if bars:
+                        n = store.save_grouped_day(source.name, day, bars)
+                        result.rows += n
+                        log(f"{day}: {n} tickers")
+                    elif (today - day).days > SETTLE_DAYS:
+                        store.mark_grouped_day(source.name, day, "empty")
             day -= timedelta(days=1)
     except StopRun as e:
         result.stopped = str(e)
