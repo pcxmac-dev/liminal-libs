@@ -104,6 +104,35 @@ def test_a_listener_notes_each_connection_that_arrives_then_lets_the_port_go():
     again.stop()
 
 
+def test_a_port_is_listened_on_again_while_its_last_connections_linger():
+    """The listener closes each connection it accepts at once, most often before the other side does, and the
+    listener's side of it then lingers on the port for a while (TIME_WAIT: a minute on Linux). A listener started on
+    the port meanwhile must start: on Linux, bind() refused it ("Address already in use") until every listener
+    allowed a lingering port, so a second check of a port within a minute could not listen on it. The order is forced
+    here, not left to chance: the client sees the listener's close before it closes its own side."""
+    lis = ports.Listener(0, host="127.0.0.1")
+    lis.start()
+    try:
+        port = lis._sock.getsockname()[1]
+        with socket.socket() as c:
+            c.settimeout(5.0)  # before connect: a connect or a read that never completes fails the test
+            c.connect(("127.0.0.1", port))
+            assert c.recv(1) == b""  # the listener closed its side first
+        # the client closed second: the listener's side of the connection now lingers on the port
+    finally:
+        got = lis.stop()  # it waits out the 0.2 s accept timeout: time for the client's close to reach the listener
+    assert len(got) == 1
+    again = ports.Listener(port, host="127.0.0.1")
+    again.start()  # Linux: OSError, errno 98, before the fix
+    taken = ports.Listener(port, host="127.0.0.1")
+    try:
+        with pytest.raises(OSError):
+            taken.start()  # a lingering port may be listened on again, never one another listener holds
+    finally:
+        taken.stop()
+        again.stop()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows probe")
 def test_the_windows_probe_names_a_process():
     from liminal_libs.resources import WindowsProbe

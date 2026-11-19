@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -155,7 +156,9 @@ class Listener:
     """A port listened on for a while, so a connection has somewhere to arrive (the user, 2026-11-08: "listen on the
     port in order to validate the traffic"): every connection is accepted, noted (its address, when) and closed;
     nothing is read or sent. On every address of this machine by default (Windows may ask once whether Python may
-    accept connections: the answer is the firewall's rule for it). OSError from start() when the port is taken."""
+    accept connections: the answer is the firewall's rule for it). OSError from start() when the port is taken. On
+    Windows and Linux a port is not taken while connections an earlier listener closed first still linger on it
+    (TIME_WAIT, about a minute): it is listened on again at once."""
 
     def __init__(self, port: int, host: str = "0.0.0.0", clock=time.time, most: int = 200):
         self.port, self.host, self.clock, self.most = int(port), host, clock, most
@@ -170,6 +173,13 @@ class Listener:
         try:
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: never shares a port another program holds
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            elif sys.platform.startswith("linux"):
+                # Linux refuses a port while connections a listener closed first linger on it (TIME_WAIT, about a
+                # minute), unless that listener and this one both set this: each connection keeps its listener's
+                # setting, and every Listener sets it. A port another socket listens on is still refused. Windows'
+                # SO_REUSEADDR would take a port another program holds, and BSD's would share one held on another
+                # address: set on Linux alone.
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((self.host, self.port))
             s.listen(16)
             s.settimeout(0.2)
