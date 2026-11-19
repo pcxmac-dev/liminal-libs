@@ -180,6 +180,25 @@ def test_a_pull_that_was_cut_off_is_a_finding_until_the_span_it_asked_is_held(st
     assert store.pulls() == []  # what it asked is held: nothing more to judge it by, and it is forgotten
 
 
+def test_a_cut_pulls_finding_is_closed_by_its_own_span_once_its_pull_is_forgotten(store):
+    from datetime import timedelta, timezone
+
+    store.watch("fake", ["AAA"], "minute")
+    store.upsert_bars("fake", "AAA", "minute", 1, [_minute(d) for d in (MON, TUE, THU, FRI)])
+    store.add_coverage("fake", "AAA", "minute", MON, WED)
+    store.add_coverage("fake", "AAA", "minute", WED + DAY, SAT)
+    _cut(store, MON, SAT)
+    row = store.watchlist("fake", "AAA")[0]
+    assert _sweep(store).series(row).pulls == 1 and [f["state"] for f in store.findings(kind="cut-pull")] == ["open"]
+    later = datetime.now(timezone.utc) + timedelta(days=auditing.FORGET_DAYS + 1)
+    assert auditing.tidy(store, now=later)["forgotten"] == 1 and store.pulls() == []  # the ledger forgot the pull
+    visit = _sweep(store).series(row)  # its finding still stands, and is still evidence: Wednesday is not held
+    assert visit.closed == 0 and [f["state"] for f in store.findings(kind="cut-pull")] == ["open"]
+    store.add_coverage("fake", "AAA", "minute", WED, WED + DAY, origin="none")
+    visit = _sweep(store).series(row)
+    assert visit.closed == 1 and [f["state"] for f in store.findings(kind="cut-pull")] == ["closed"]
+
+
 def test_a_pull_that_was_cut_off_is_evidence_for_a_day_missing_inside_what_is_held(store):
     store.watch("fake", ["AAA"], "minute")
     store.upsert_bars("fake", "AAA", "minute", 1, [_minute(d) for d in (MON, TUE, THU, FRI)])

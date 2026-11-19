@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -186,7 +187,7 @@ _LATE = ("INSERT INTO bars (" + ", ".join((*_KEY, *_VALUES)) + ", stored_at) SEL
          + " WHERE (" + " OR ".join(f"bars.{c} IS NOT excluded.{c}" for c in _VALUES)
          + ") AND COALESCE(bars.stored_at, 0) <= excluded.stored_at")
 _NOT_MOVED = " AND NOT EXISTS (SELECT 1 FROM archived_bars a WHERE " + _ON.format(o="a") + ")"
-FAILURES = 3  # so many pulls in a row whose audit raised: the pass ends (a database that is busy fails them all)
+FAILURES = 3  # so many pulls whose audit raised are said one by one in a pass; the rest are counted
 
 
 def cache_on() -> bool:
@@ -196,28 +197,95 @@ def cache_on() -> bool:
     return pulls.enabled() and not read_only()
 
 
+# A feed's cache is one thread's at a time, in one process at a time. The claim (claims.py) keeps processes apart
+# and is the same claim to every thread of the process that holds it, so the threads of one process are kept apart
+# here: the keys this process's threads hold now, and the claims a release could not give back (a database busy
+# just then), which are given back at the next chance instead of staying held for as long as the process lives.
+_held_here: set[tuple[str, str]] = set()
+_owed: set[tuple[str, str]] = set()
+_here = threading.Lock()
+
+
 def _hold(store, feed: str):
-    """This process's claim on a feed's cache (claims.py: `cache:<feed>`), for as long as it audits or recovers a
-    pull of it. Returns the claim; None where there is nothing to claim on (a store without a file); False while
-    another process holds it."""
+    """This thread's hold on a feed's cache, for as long as it audits or recovers a pull of it: this process's
+    claim (claims.py: `cache:<feed>`), and the feed's place among this process's own threads. Returns what
+    `_let_go` takes back; None where there is nothing to claim on (a store without a file); False while another
+    process, or another thread of this one, holds it."""
     from . import claims, collector
 
     path = collector._claimable(store)
     if path is None:
         return None
-    conn = getattr(store, "conn", None)
-    if conn is not None and conn.in_transaction:
-        conn.commit()  # the claim is written over a connection of its own: nothing of the store's is left open under it
-    claim = claims.take(path, f"cache:{feed}", what="auditing its fetch cache")
-    return claim if claim is not None else False
+    key = (os.path.normcase(os.path.abspath(str(path))), f"cache:{feed}")
+    with _here:
+        if key in _held_here:
+            return False
+        _held_here.add(key)
+    try:
+        _settle_owed(path)
+        conn = getattr(store, "conn", None)
+        if conn is not None and conn.in_transaction:
+            conn.commit()  # the claim is written over a connection of its own: nothing of the store's is left open under it
+        claim = claims.take(path, key[1], what="auditing its fetch cache")
+    except BaseException:
+        with _here:
+            _held_here.discard(key)
+        raise
+    if claim is None:
+        with _here:
+            _held_here.discard(key)
+        return False
+    return (key, claim)
 
 
 def _let_go(store, held) -> None:
-    """A feed's cache given back (None or False: nothing was held)."""
-    if held:
-        from . import claims
+    """A feed's cache given back (None or False: nothing was held). It never raises: what the audit found, or what
+    went wrong in it, is what its caller hears. A claim the database would not take back just now is owed, and
+    given back when a feed's cache is next asked for (`_settle_owed`)."""
+    if not held:
+        return
+    from . import claims
 
-        claims.release(store.path, held)
+    key, claim = held
+    try:
+        claims.release(store.path, claim)
+    except (sqlite3.Error, OSError):
+        with _here:
+            _owed.add(key)
+    else:
+        with _here:
+            _owed.discard(key)
+    finally:
+        with _here:
+            _held_here.discard(key)
+
+
+def _settle_owed(path) -> None:
+    """The claims a release could not give back, given back now: those on this database that no thread holds (one
+    a thread holds again is that thread's to give back). Each is taken once more, which is the same claim to the
+    process whose row it still is, and released: a release by itself has nothing to work with once the process
+    held nothing else and its claims were closed."""
+    from . import claims
+
+    where = os.path.normcase(os.path.abspath(str(path)))
+    with _here:
+        owed = [k for k in _owed if k[0] == where]
+    for key in owed:
+        with _here:
+            if key in _held_here:
+                continue
+            _held_here.add(key)
+        try:
+            claim = claims.take(path, key[1], what="auditing its fetch cache")
+            if claim is not None:
+                claims.release(path, claim)
+            with _here:
+                _owed.discard(key)
+        except (sqlite3.Error, OSError):
+            pass  # still owed
+        finally:
+            with _here:
+                _held_here.discard(key)
 
 
 @dataclass
@@ -517,9 +585,10 @@ def _find(store, row: dict, out: PullAudit) -> None:
 def audit_pulls(store, feed: str | None = None, ticker: str | None = None, policy_: Policy | None = None,
                 log: Log | None = None, budget_s: float | None = None) -> list[PullAudit]:
     """Every closed pull not audited yet (of a feed, of a symbol), the oldest first, for at most `budget_s`. A pull
-    whose audit raises (a feed's file that cannot be read, a database busy past its wait) is said and left for a
-    later pass, and the ones after it are audited all the same: one pull never holds up the rest, which would fill
-    the cache to its cap behind it. FAILURES in a row end the pass."""
+    whose audit raises (a feed's file that cannot be read, rows that will not be taken) is said and left for a
+    later pass, and the ones after it are audited all the same, however many fail: no pull holds up the rest,
+    which would fill the cache to its cap behind it. A database that is busy fails them all, each after its wait:
+    that ends the pass. The first FAILURES are said one by one, the rest counted."""
     began = time.monotonic()
     out: list[PullAudit] = []
     if read_only() or pulls.cache_dir(store) is None or not hasattr(store, "pulls"):
@@ -533,16 +602,22 @@ def audit_pulls(store, feed: str | None = None, ticker: str | None = None, polic
             got = audit_pull(store, row, policy_, log)
         except (sqlite3.Error, OSError, ValueError, TypeError) as e:
             failed += 1
-            if log is not None:
+            if log is not None and failed <= FAILURES:
                 who = f"{row['feed']}:{row['ticker']}" if row["ticker"] else row["feed"]
                 log(f"audit {who}: a pull's audit is left for later ({type(e).__name__}: {e})"[:300])
-            if failed >= FAILURES:
-                break
+            if _busy(e):
+                break  # not this pull's trouble: the next would wait as long, and fail the same
             continue
-        failed = 0
         if got is not None:
             out.append(got)
+    if log is not None and failed > FAILURES:
+        log(f"audit: {failed - FAILURES} more pulls' audits are left for later")
     return out
+
+
+def _busy(e: BaseException) -> bool:
+    """Whether an error is the database being busy (locked past its wait), not one pull's own trouble."""
+    return isinstance(e, sqlite3.OperationalError) and any(w in str(e).lower() for w in ("locked", "busy"))
 
 
 def recover(store, feed: str | None = None, log: Log | None = None) -> int:
@@ -822,9 +897,22 @@ class Sweep:
 
     def _cut_pulls(self, feed: str, ticker: str, visit: Visit) -> list[dict]:
         """The series' pulls that were cut off: each a finding while the span it asked is not held (by bars, or by
-        the feed having nothing there). Returns those still so: evidence for a hole."""
+        the feed having nothing there). Returns those still so: evidence for a hole. A finding whose pull the
+        ledger has forgotten since (FORGET_DAYS after its audit) is judged by the span kept with the finding
+        itself, so it is closed when that span is held and does not stay open for good."""
         store, still = self.store, []
-        for p in store.pulls(feed=feed, ticker=ticker, state="cut", limit=500):
+        cut = store.pulls(feed=feed, ticker=ticker, state="cut", limit=500)
+        known = {p["id"] for p in cut}
+        for f in store.findings(feed=feed, ticker=ticker, kind="cut-pull"):
+            if f["state"] == "closed" or f["pull"] in known or f["start_ms"] is None or f["end_ms"] is None or not f["timespan"]:
+                continue
+            held = _joined(store.coverage(ticker, f["timespan"], source=feed, include_none=True).get(feed, []))
+            if any(a <= f["start_ms"] and b >= f["end_ms"] for a, b in held):
+                store.finding_set(f["id"], "closed")
+                visit.closed += 1
+            else:
+                still.append({"id": f["pull"], "timespan": f["timespan"], "start_ms": f["start_ms"], "end_ms": f["end_ms"]})
+        for p in cut:
             if p["start_ms"] is None or p["end_ms"] is None or not p["timespan"]:
                 continue
             # what it holds and what it was asked and has nothing for, joined: the spans of each kind are kept apart

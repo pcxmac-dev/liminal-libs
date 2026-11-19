@@ -935,9 +935,29 @@ def test_one_pull_whose_audit_fails_holds_up_no_other(store, monkeypatch):
     assert said == ["audit fake:AAA: a pull's audit is left for later (DatabaseError: file is not a database)"]
     assert len(_cache_files(store)) == 1  # the one that failed keeps its file; it is tried again by the next pass
     more = [_pull_of(store, _minutes(2, OPEN + (i + 4) * 3_600_000), ticker=f"D{i}") for i in range(5)]
-    broken.update(more)  # every one of them failing (a database that is busy): the pass ends, it does not wait on each
+    broken.update(more)  # many failing, each for itself: none of them ends the pass, and the one after them is audited
+    last = _pull_of(store, _minutes(2, OPEN + 10 * 3_600_000), ticker="EEE")
     asked.clear()
-    assert auditing.audit_pulls(store) == [] and len(asked) == auditing.FAILURES
+    said.clear()
+    assert [a.pull for a in auditing.audit_pulls(store, log=said.append)] == [last] and len(asked) == 7
+    assert len(said) == auditing.FAILURES + 1 and said[-1] == "audit: 3 more pulls' audits are left for later"
+
+
+def test_a_database_that_is_busy_ends_the_pass_at_once(store, monkeypatch):
+    import sqlite3
+
+    for i in range(4):
+        _pull_of(store, _minutes(2, OPEN + i * 3_600_000), ticker=f"B{i}")
+    asked: list[str] = []
+
+    def audit(store_, row, with_, log):
+        asked.append(row["id"])
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auditing, "_audit", audit)
+    said: list[str] = []
+    assert auditing.audit_pulls(store, log=said.append) == [] and len(asked) == 1  # the others would wait as long
+    assert len(said) == 1 and "database is locked" in said[0]
 
 
 def test_a_pull_that_grows_to_the_cap_ends_there_and_what_it_loaded_is_audited(store, monkeypatch):
@@ -1049,6 +1069,91 @@ def test_a_run_tidies_the_cache_so_kept_files_go_with_the_sweep_off(store, monke
     c.only = {"ZZZ"}
     c._before_symbols()
     assert tidied == [store]
+
+
+def test_a_feeds_cache_is_one_threads_at_a_time_in_one_process(store):
+    import threading
+
+    pull = _pull_of(store, _minutes(10))
+    mine = auditing._hold(store, "fake")  # this thread is auditing the feed's cache
+    assert mine not in (None, False)
+    got: dict = {}
+
+    def other():
+        with Store(store.path) as theirs:
+            got["audit"] = auditing.audit_pull(theirs, pull)
+            got["recovered"] = auditing.recover(theirs, "fake")
+
+    left = _left_open(store, _minutes(3, OPEN + 3_600_000), loaded=False)
+    thread = threading.Thread(target=other)
+    thread.start()
+    thread.join(30)
+    # the claim is this process's, and so the same claim to its other thread: it is kept apart all the same
+    assert got == {"audit": None, "recovered": 0}
+    assert store.pull(pull)["audit"] is None and store.pull(left.id)["state"] == "open" and len(_cache_files(store)) == 2
+    assert [h.key for h in claims.held(store.path, "cache:")] == ["cache:fake"]  # and it did not give this thread's back
+    auditing._let_go(store, mine)
+    assert claims.held(store.path, "cache:") == [] and auditing.audit_pull(store, pull).result == "ok"
+
+
+def test_a_claim_the_database_would_not_take_back_is_owed_not_lost_and_the_audit_stands(store, monkeypatch):
+    import sqlite3
+
+    pull = _pull_of(store, _minutes(10))
+    real, calls = claims.release, []
+
+    def release(path, claim):
+        calls.append(claim)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(path, claim)
+
+    monkeypatch.setattr(claims, "release", release)
+    got = auditing.audit_pull(store, pull)
+    assert got.result == "ok"  # what the audit found is what its caller hears
+    assert [h.key for h in claims.held(store.path, "cache:")] == ["cache:fake"]  # not given back: owed
+    other = _pull_of(store, _minutes(5, OPEN + 3_600_000), feed="second", ticker="BBB")
+    assert auditing.audit_pull(store, other).result == "ok"  # the next time a feed's cache is asked for, it is settled
+    assert claims.held(store.path, "cache:") == [] and auditing._owed == set() and auditing._held_here == set()
+
+
+def test_a_pull_is_live_until_its_ledger_says_how_it_ended(store, monkeypatch):
+    import threading
+
+    closing = store._pull_closed
+    seen: dict = {}
+
+    def closed(pull_id, state, note=""):
+        # as the ledger is about to be told: another thread of this process looks for what dead runs left
+        def look():
+            with Store(store.path) as theirs:
+                seen["recovered"] = auditing.recover(theirs, "fake")
+
+        thread = threading.Thread(target=look)
+        thread.start()
+        thread.join(30)
+        return closing(pull_id, state, note)
+
+    monkeypatch.setattr(store, "_pull_closed", closed)
+    with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+        store.upsert_bars("fake", "AAA", "minute", 1, _minutes(3))
+    assert seen == {"recovered": 0} and store.pull(p.id)["state"] == "complete" and pulls.live() == set()
+
+
+def test_a_ledger_made_before_the_late_column_is_given_it(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "data" / "liminal.db"
+    with Store(path) as s:
+        s.conn.execute("ALTER TABLE pull_files DROP COLUMN late")  # as a build of 1.64.0 before the column made it
+        s.conn.commit()
+    conn = sqlite3.connect(path)
+    assert "late" not in {r[1] for r in conn.execute("PRAGMA table_info(pull_files)")}
+    conn.close()
+    with Store(path) as s:
+        assert "late" in {r[1] for r in s.conn.execute("PRAGMA table_info(pull_files)")}
+        p = _left_open(s, _minutes(3), loaded=False)
+        assert auditing.recover(s, "fake") == 1 and s.pull_files(p.id)[0]["late"] == 1
 
 
 # -- the policy --------------------------------------------------------------------------------------------------------

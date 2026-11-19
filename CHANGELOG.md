@@ -38,10 +38,13 @@ their options, and the charts' Plugins view draws the page.
 - **The ledger is no history.** A pull that passed and of which nothing is kept is counted (`cache_verified`: pulls,
   files, bars and bytes verified, today and in all) and forgotten at once: a feed updated all day makes tens of
   thousands of pulls a day, and the main file holds only what is on disk and what is still to be judged. One that was
-  cut off stays until the sweep has seen its span held, or a week.
-- **One process at a time audits or recovers a feed's cache** (the claim `cache:<feed>`): a feed's run auditing the
-  pull it just closed, the auditors' process and a run at the cap never read and remove the same files at once. A
-  pull whose feed is being audited elsewhere is left to that process, and one audited meanwhile is not audited twice.
+  cut off stays until the sweep has seen its span held, or a week; its finding is then judged by the span kept with
+  the finding itself.
+- **One thread of one process at a time audits or recovers a feed's cache** (the claim `cache:<feed>`, and among a
+  process's own threads its place in `auditing._held_here`): a feed's run auditing the pull it just closed, the
+  auditors' process and a run at the cap never read and remove the same files at once. A pull whose feed is being
+  audited elsewhere is left to that process, and one audited meanwhile is not audited twice. A claim the database
+  would not take back just then is owed and given back at the next chance; what the audit found stands either way.
 - **When**: as each pull closes and after a symbol's fetch, the symbol still claimed (`Audit when a symbol is
   updated`); before a run asks anything, for what earlier runs left (`Collector._settle_cache`, a minute at most); and
   in the sweep.
@@ -50,7 +53,8 @@ their options, and the charts' Plugins view draws the page.
   loaded late is the answer of the moment it was written: it puts in what is not stored and replaces only what was
   stored before it; a bar stored since (the live recorder's, a later run's) stays, a bar moved out as another
   instrument's is not brought back, and its audit takes a bar stored since for the newer word, not for a difference.
-  A pull open in this process, on whatever thread, is never taken for a dead run's (`pulls.live`).
+  A pull open in this process, on whatever thread, is never taken for a dead run's (`pulls.live`): it is live until
+  its ledger says how it ended.
 - **The cap** (`auditing.room`, `Pull.room`): unverified cache at its cap makes a new pull wait: what waits is audited
   at once, and if that frees too little the run stops without a strike against the feed (`spool.CacheFull`). It is
   looked at inside a pull too, each time the pull has written 64 MB more, before a page is written and before the
@@ -64,7 +68,8 @@ their options, and the charts' Plugins view draws the page.
   address (the HTTP library's errors repeat the whole address, and a key may be in a query).
 - **Files that cannot be removed** (on Windows, one another program holds open) are not said to be: the pull stays in
   the ledger with them, and `auditing.tidy` tries again. A feed's run tidies the cache before it asks anything, so
-  kept files go when their days are over with the sweep off, too. One pull whose audit fails holds up no other.
+  kept files go when their days are over with the sweep off, too. A pull whose audit fails holds up no other,
+  however many fail; a database that is busy ends the pass at once.
 - **The sweep** (`auditing.Sweep`): every watched series of every feed in turn, from where the last run stopped, for
   the minutes the policy gives a run, each under its symbol's claim. A series' visit audits what waits of it in the
   cache; keeps a cut-off pull as a finding until the span it asked is held; and, for each frame the feed sends
@@ -98,10 +103,11 @@ their options, and the charts' Plugins view draws the page.
 - What "a later write" is rests on the moment each write was stored under, this machine's clock: a clock set back
   between a write and the one that rightly replaced it can make the replacement look like a difference. The cost is
   a finding and one more ask of the feed, never a change to what is stored.
-- An independent review of the write path (2026-11-18) found the late load replacing newer bars, two processes able
-  to audit one pull at once, the cap kept with the cache off and not kept inside a pull, a ledger's failure taken
-  for a crash, and files said removed that were not: each is fixed above, with a test that fails without its fix.
-- 96 new tests (`tests/test_fetch_cache.py`, `tests/test_auditors.py`): no process started and no network.
+- An independent review of the write path (2026-11-18, in two passes) found the late load replacing newer bars, two
+  processes, then two threads of one, able to audit one pull at once, the cap kept with the cache off and not kept
+  inside a pull, a ledger's failure taken for a crash, and files said removed that were not: each is fixed above,
+  with a test that fails without its fix.
+- 102 new tests (`tests/test_fetch_cache.py`, `tests/test_auditors.py`): no process started and no network.
 
 ## 1.63.0 (2026-11-18)
 

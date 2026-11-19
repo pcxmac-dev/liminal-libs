@@ -483,6 +483,9 @@ SCHEMA += CACHE
 
 # Columns added after the first release: (table, column, type). Applied to older databases on open.
 MIGRATIONS = [
+    # A rows file loaded after its run had ended (auditing._load, 1.64.0): for a file whose cache ledger was made by
+    # a build of 1.64.0 from before the column was there.
+    ("pull_files", "late", "INTEGER"),
     # Which installation took a request or a queued job (claims.instance, 1.56.0): one of two on a database
     # resets and takes back only its own.
     ("fetch_requests", "instance", "TEXT"),

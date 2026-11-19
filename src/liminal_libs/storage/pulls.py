@@ -243,15 +243,19 @@ class Pull:
         if self.closed:
             return
         self.closed = True
-        with _live_lock:
-            _live.discard(self.id)
-        if not self.made:
-            return
-        words = "; ".join(w for w in (note, *self._notes) if w)[:400]
-        if state == "complete" and not self.rows_files and not self.unspooled:
-            self.store.pull_drop(self.id)
-            return
-        self.store._pull_closed(self.id, state, words)
+        try:
+            if not self.made:
+                return
+            words = "; ".join(w for w in (note, *self._notes) if w)[:400]
+            if state == "complete" and not self.rows_files and not self.unspooled:
+                self.store.pull_drop(self.id)
+                return
+            self.store._pull_closed(self.id, state, words)
+        finally:
+            # live until its ledger says how it ended (or could not be told): a recover on another thread of this
+            # process never finds it open in the ledger and not open here
+            with _live_lock:
+                _live.discard(self.id)
 
 
 class PullStore:
