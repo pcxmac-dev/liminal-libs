@@ -33,6 +33,7 @@ PUBLISHER_HOOKS = ("moments", "calendar", "read", "scan", "settings")
 ASSISTANT_HOOKS = ("build", "scan", "settings")
 MACHINE_HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
 DATABASE_HOOKS = ("builtin", "open", "probe", "make", "own_port", "scan", "settings")
+AUDITOR_HOOKS = ("scan", "settings")
 
 
 def problems(p: object) -> list[str]:
@@ -57,8 +58,8 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: SYSTEM {p.SYSTEM!r} is none of {sorted(SYSTEMS)}")
     expected = _kind_of(p)
     if expected is None:
-        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin, a MachinePlugin nor a "
-                   "DatabasePlugin")
+        out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin, a MachinePlugin, a "
+                   "DatabasePlugin nor an AuditorPlugin")
     elif p.KIND != expected:
         out.append(f"{tag}: KIND {p.KIND!r} for a {expected} plugin")
     refused = p.refusal()
@@ -77,7 +78,8 @@ def problems(p: object) -> list[str]:
     if p.fetcher is not None and not isinstance(p.fetcher, Fetcher):
         out.append(f"{tag}: fetcher is not a sources.fetching.Fetcher")
     hooks = (FEED_HOOKS if expected == "feed" else PUBLISHER_HOOKS if expected == "publisher"
-             else MACHINE_HOOKS if expected == "machine" else DATABASE_HOOKS if expected == "database" else ASSISTANT_HOOKS)
+             else MACHINE_HOOKS if expected == "machine" else DATABASE_HOOKS if expected == "database"
+             else AUDITOR_HOOKS if expected == "auditor" else ASSISTANT_HOOKS)
     for hook in hooks:
         if p.gives(hook) and not callable(getattr(p, hook, None)):
             out.append(f"{tag}: gives {hook} but it is not callable")
@@ -98,6 +100,8 @@ def problems(p: object) -> list[str]:
         out += _assistant(tag, p)
     elif expected == "database":
         out += _database(tag, p)
+    elif expected == "auditor":
+        out += _auditor(tag, p)
     return out
 
 
@@ -133,10 +137,11 @@ def _kind_of(p: Plugin) -> str | None:
         return "publisher"
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import
     from ..machines.plugin import MachinePlugin
+    from ..auditing import AuditorPlugin
     from ..storage.databases import DatabasePlugin
 
     return ("assistant" if isinstance(p, AssistantPlugin) else "machine" if isinstance(p, MachinePlugin)
-            else "database" if isinstance(p, DatabasePlugin) else None)
+            else "database" if isinstance(p, DatabasePlugin) else "auditor" if isinstance(p, AuditorPlugin) else None)
 
 
 def _variables(tag: str, p: Plugin) -> list[str]:
@@ -428,8 +433,39 @@ def _database(tag: str, p) -> list[str]:
     return out
 
 
+def _auditor(tag: str, p) -> list[str]:
+    """The auditors' plugin (2.4; auditing.py): written for 2.4, declaring every one of the auditors' options with
+    the library's choices for it, and answering `settings` with the Policy they make."""
+    from .. import auditing
+    from .registry import api_version
+
+    out: list[str] = []
+    try:
+        if api_version(p.api) < (2, 4):
+            out.append(f"{tag}: the auditors' plugin is written for plugin API 2.4, not {p.api}")
+    except ValueError:
+        pass  # said already: not a contract version
+    lacks = [name for name in auditing.CHOICES if name not in p.options]
+    if lacks:
+        out.append(f"{tag}: its options lack {', '.join(lacks)}")
+    for name, choices in auditing.CHOICES.items():
+        if tuple(p.plan_choices.get(name, ())) != choices:
+            out.append(f"{tag}: {name}'s choices are {', '.join(choices)} (auditing.CHOICES), the default first")
+    if not p.gives("settings"):
+        out.append(f"{tag}: the auditors' plugin must give settings(): the Policy its options make")
+    else:
+        try:
+            made = p.settings({})
+        except Exception as e:  # noqa: BLE001 - said, whatever it is
+            made = e
+        if not isinstance(made, auditing.Policy):
+            out.append(f"{tag}: settings({{}}) must give an auditing.Policy (the defaults), not {made!r}")
+    return out
+
+
 def plugins_of(module: ModuleType) -> list[Plugin]:
-    """A module's plugins as the registry reads them (PLUGIN(S), PUBLISHER(S), ASSISTANT(S), MACHINE(S), DATABASE(S))."""
+    """A module's plugins as the registry reads them (PLUGIN(S), PUBLISHER(S), ASSISTANT(S), MACHINE(S), DATABASE(S),
+    AUDITOR(S))."""
     from .registry import _plugins_in
 
     return _plugins_in(module, module.__name__)

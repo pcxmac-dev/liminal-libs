@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterator, Mapping
 
 from . import spool
+from .sources.plugin import IntegratorPlugin
 from .storage import pulls
 from .storage.common import own_files, read_only
 
@@ -118,6 +119,33 @@ def policy_of(settings) -> Policy:
     """The policy of an app's settings: the auditor plugin's own (Settings.plugin), the defaults without it."""
     own = settings.plugin("auditor") if settings is not None and hasattr(settings, "plugin") else None
     return own if isinstance(own, Policy) else Policy()
+
+
+class AuditorPlugin(IntegratorPlugin):
+    """The auditors' plugin (plugin API 2.4): the integrator's, one an app. It holds the auditors' options and
+    nothing else (the user, 2026-11-15: "there needs to be a plugin called auditor and it will manage the
+    configuration of auditing data"). `options` are the variables and `plan_choices` each one's choices, its default
+    first: a page draws them as it draws any plugin's. Its `settings` hook answers the Policy they make (`policy`
+    is the contract's reading of them; a value that is none of the choices is a ConfigError, as any setting's is).
+
+    The auditors themselves are the library's (this module) and run whether or not such a plugin is installed:
+    without one they keep to the defaults, so auditing is never off because a package is missing."""
+
+    CONTRACT = True
+    KIND = "auditor"
+    HOOKS = ("scan", "settings")
+    ICON = "scales"  # its icon on a page (icons.js)
+    options = tuple(CHOICES)
+    plan_choices = CHOICES
+
+    def policy(self, variables: Mapping[str, str]) -> Policy:
+        """The Policy the variables make (what a plugin's `settings` answers)."""
+        from .config import ConfigError
+
+        try:
+            return Policy.of(variables)
+        except ValueError as e:
+            raise ConfigError(str(e)) from e
 
 
 class CacheFull(spool.CacheFailed):
@@ -497,3 +525,348 @@ def tidy(store, policy_: Policy | None = None, now: datetime | None = None) -> d
         if files:
             removed += _remove(store, row, files, store.pull_folder(row))
     return {"removed": removed, "forgotten": store.pulls_forget(at - timedelta(days=FORGET_DAYS))}
+
+
+# -- the sweep -----------------------------------------------------------------------------------------------------------
+CURSOR_KEY = "audit:sweep:cursor"  # where the round stands: the series gone over last ("feed\tTICKER")
+ROUND_KEY = "audit:sweep:round"  # how many times every series has been gone over
+LAST_KEY = "audit:sweep:last"  # the last run, as JSON, for the auditor's page
+DAY_MS = 86_400_000
+SETTLE_MS = 3 * DAY_MS  # a day this recent is not judged: its bars may still be on their way
+MONTH_MS = 31 * DAY_MS
+MONTH_ROWS = 60_000  # a month is read whole for its rules only below this many bars (a month of seconds is not)
+BASES = ("second", "minute", "day")  # the frames a feed sends; the others are built here
+STORAGE_RULES = ("duplicate", "malformed", "missing", "out_of_session")  # of data.py's rules, those kept as findings
+HOLE_KINDS = ("hole", "empty-span")
+
+
+@dataclass
+class Visit:
+    """One series gone over by the sweep."""
+
+    feed: str
+    ticker: str
+    pulls: int = 0  # of its pulls, audited now
+    days: int = 0  # session days looked at
+    holes: int = 0  # holes found now (with evidence that bars should be there)
+    absent: int = 0  # holes the feed was asked for again and has nothing for: remembered, not asked again
+    closed: int = 0  # findings that are no longer so
+    rules: int = 0  # bars a storage rule caught in the month read
+    skipped: str = ""
+
+
+class Sweep:
+    """Every watched series of every feed in turn, a time budget a run, each under its symbol's claim (the user:
+    "make sure that auditing goes over all symbols to look for consistency issues or broken connections that
+    fragmented data").
+
+    A series' visit: its pulls not audited yet are audited; a pull that was cut off is kept as a finding until the
+    span it asked is held; for each frame the feed sends (second, minute, day), every session day inside a span the
+    coverage ledger says the feed holds is looked for in its bars, and the month the round has come to is read whole
+    and put to data.py's rules (assess, integrity).
+
+    A day without a single bar is a **hole** only with evidence that bars should be there: the feed's own daily bar
+    of that day shows it traded (or its own finer bars do, for a missing daily bar), another feed of the same market
+    holds bars that day, the feed's ticks do, or a pull that was cut off covers it. A thin stock's quiet days and a
+    market's closed hours are no holes. A span said to be held that holds no bar at all is an **empty span**. Both
+    are asked of the feed again by its next run, a few a run (the collector's re-pulls: `repulls`); one asked again
+    and still empty is **absent**, remembered and not asked a third time. Nothing is ever deleted or overwritten
+    here, and coverage is never withdrawn."""
+
+    def __init__(self, store, feeds: Mapping | None = None, policy_: Policy | None = None, log: Log | None = None,
+                 now_ms: int | None = None, data_for: Callable | None = None, clock: Callable[[], float] = time.monotonic):
+        self.store, self.feeds, self.policy = store, dict(feeds or {}), policy_ or policy()
+        self.log = log or (lambda _line: None)
+        self.now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        self._data_for = data_for or _data_for
+        self.clock = clock
+
+    # -- a run ---------------------------------------------------------------------------------------------------
+    def run(self, budget_s: float | None = None, only: set | None = None) -> dict:
+        """One run: what waits in the cache first, then the series in turn from where the last run stopped, for
+        `budget_s` (the policy's minutes). `only`: these (feed, ticker) alone, out of turn (an audit asked for a
+        symbol). Returns the run in numbers, kept for the page too (LAST_KEY)."""
+        import json
+
+        store, began = self.store, self.clock()
+        budget = self.policy.sweep_minutes * 60.0 if budget_s is None else float(budget_s)
+        out = {"at": datetime.fromtimestamp(self.now_ms / 1000, timezone.utc).isoformat(timespec="seconds"),
+               "series": 0, "pulls": 0, "days": 0, "holes": 0, "absent": 0, "closed": 0, "rules": 0, "skipped": 0,
+               "complete": False, "only": sorted(f"{f}:{t}" for f, t in only) if only else None}
+        if read_only():
+            out["note"] = "this copy reads only: nothing is audited from here"
+            return out
+        recover(store, None, self.log)
+        out["pulls"] += len(audit_pulls(store, policy_=self.policy, log=self.log, budget_s=budget / 4))
+        rows = [r for r in store.watchlist() if only is None or (r["source"], r["ticker"]) in only]
+        last = (rows[-1]["source"], rows[-1]["ticker"]) if rows else None  # the end of the line, in its order
+        if only is None and rows:
+            cursor = tuple((store.kv_get(CURSOR_KEY) or "\t").split("\t", 1))
+            start = next((i for i, r in enumerate(rows) if (r["source"], r["ticker"]) > cursor), 0)
+            rows = rows[start:] + rows[:start]
+        done = 0
+        for row in rows:
+            if self.clock() - began >= budget:
+                break
+            visit = self.series(row)
+            done += 1
+            for name in ("pulls", "days", "holes", "absent", "closed", "rules"):
+                out[name] += getattr(visit, name)
+            out["skipped"] += 1 if visit.skipped else 0
+            if only is None:
+                store.kv_set(CURSOR_KEY, f"{row['source']}\t{row['ticker']}")
+                if (row["source"], row["ticker"]) == last:  # every series has had its turn: the round is whole,
+                    store.kv_set(ROUND_KEY, str(self.round() + 1))  # however many runs it took
+        out["series"] = done
+        out["complete"] = done == len(rows)  # this run went over everything it was to
+        kept = tidy(store, self.policy, datetime.fromtimestamp(self.now_ms / 1000, timezone.utc))
+        out.update(seconds=round(self.clock() - began, 1), round=self.round(), removed=kept["removed"],
+                   forgotten=kept["forgotten"], watched=len(rows) if only is None else None)
+        if only is None:
+            store.kv_set(LAST_KEY, json.dumps(out))
+        return out
+
+    def round(self) -> int:
+        try:
+            return int(self.store.kv_get(ROUND_KEY) or 0)
+        except ValueError:
+            return 0
+
+    # -- a series ------------------------------------------------------------------------------------------------
+    def series(self, row: dict) -> Visit:
+        """One series gone over, its symbol claimed meanwhile (held by another installation: left for the next run)."""
+        from . import collector
+
+        store, feed, ticker, asset = self.store, row["source"], row["ticker"], row.get("asset") or "stock"
+        visit = Visit(feed, ticker)
+        claim = collector.take_symbol(store, asset, ticker, "the auditors")
+        if claim is collector.ELSEWHERE:
+            visit.skipped = "another installation is working on it"
+            return visit
+        try:
+            visit.pulls = len(audit_pulls(store, feed=feed, ticker=ticker, policy_=self.policy, log=self.log))
+            cut = self._cut_pulls(feed, ticker, visit)
+            data = self._data_for(feed, asset)
+            conn = store._bars(feed)
+            if data is None or conn is None or asset == "future":  # (a future's days are its contracts': not judged here)
+                return visit
+            exchange = row.get("exchange") if asset == "stock" else None
+            for timespan in BASES:
+                spans = store.coverage(ticker, timespan, source=feed, received_only=True).get(feed, [])
+                if not spans:
+                    continue
+                self._days(conn, row, timespan, spans, data, exchange, cut, visit)
+                self._month(conn, row, timespan, spans, data, exchange, visit)
+        except (sqlite3.Error, OSError, ValueError) as e:  # this series' own trouble: said, and the round goes on
+            visit.skipped = f"{type(e).__name__}: {e}"[:200]
+            self.log(f"audit {feed}:{ticker}: left for the next round ({visit.skipped})")
+        finally:
+            collector.give_symbol(store, claim)
+        return visit
+
+    def _cut_pulls(self, feed: str, ticker: str, visit: Visit) -> list[dict]:
+        """The series' pulls that were cut off: each a finding while the span it asked is not held (by bars, or by
+        the feed having nothing there). Returns those still so: evidence for a hole."""
+        store, still = self.store, []
+        for p in store.pulls(feed=feed, ticker=ticker, state="cut", limit=500):
+            if p["start_ms"] is None or p["end_ms"] is None or not p["timespan"]:
+                continue
+            # what it holds and what it was asked and has nothing for, joined: the spans of each kind are kept apart
+            held = _joined(store.coverage(ticker, p["timespan"], source=feed, include_none=True).get(feed, []))
+            whole = any(a <= p["start_ms"] and b >= p["end_ms"] for a, b in held)
+            was = [f for f in store.findings(feed=feed, ticker=ticker, kind="cut-pull") if f["pull"] == p["id"]]
+            if whole:
+                for f in was:
+                    if f["state"] != "closed":
+                        store.finding_set(f["id"], "closed")
+                        visit.closed += 1
+            else:
+                still.append(p)
+                if not was:
+                    store.finding_put("cut-pull", feed, ticker, p["timespan"], p["start_ms"], p["end_ms"], pull=p["id"],
+                                      detail={"why": p["note"], "kind": p["kind"]})
+        return still
+
+    @staticmethod
+    def _has_bar(conn, ticker: str, timespan: str, lo: int, hi: int, traded: bool = False) -> bool:
+        sql = "SELECT 1 FROM bars WHERE ticker=? AND timespan=? AND multiplier=1 AND ts >= ? AND ts < ?"
+        return conn.execute(sql + (" AND volume > 0" if traded else "") + " LIMIT 1",
+                            (ticker, timespan, int(lo), int(hi))).fetchone() is not None
+
+    def _evidence(self, conn, row: dict, timespan: str, lo: int, hi: int, cut: list[dict]) -> str:
+        """Why bars should be in [lo, hi) of the series, in a few words; "" when nothing says so."""
+        feed, ticker, asset = row["source"], row["ticker"], row.get("asset") or "stock"
+        if timespan == "day":
+            if any(self._has_bar(conn, ticker, finer, lo, hi) for finer in ("minute", "second")):
+                return "its own finer bars are there"
+        elif self._has_bar(conn, ticker, "day", lo, hi, traded=True):
+            return "its own daily bar shows it traded"
+        if any(p["timespan"] == timespan and p["start_ms"] < hi and p["end_ms"] > lo for p in cut):
+            return "a pull that was cut off"
+        from .coverage import same_market
+
+        for other in self.feeds:
+            if other != feed and same_market(self.feeds, other, feed, asset):
+                theirs = self.store._bars(other)
+                if theirs is not None and theirs.execute(
+                        "SELECT 1 FROM bars WHERE ticker=? AND ts >= ? AND ts < ? LIMIT 1", (ticker, lo, hi)).fetchone():
+                    return f"{other} holds bars there"
+        held = self.store._feed(feed)
+        if held is not None and held.has_ticks() and conn.execute(
+                "SELECT 1 FROM ticks.trades WHERE ticker=? AND ts_ns >= ? AND ts_ns < ? LIMIT 1",
+                (ticker, lo * 1_000_000, hi * 1_000_000)).fetchone():
+            return "its own ticks are there"
+        return ""
+
+    def _days(self, conn, row: dict, timespan: str, spans: list, data, exchange, cut: list[dict], visit: Visit) -> None:
+        """Every session day inside the spans the feed is said to hold, looked for in its bars; the holes and the
+        empty spans kept as findings, and the findings of before brought up to date."""
+        store, feed, ticker = self.store, row["source"], row["ticker"]
+        horizon = self.now_ms - SETTLE_MS
+        runs: list[tuple[int, int, int, str]] = []  # (from, to, days, kind)
+        for a, b in spans:
+            b = min(b, horizon)
+            days = [int(d) for d in data.slots("day", a, b, exchange=exchange) if a <= d and d + DAY_MS <= b]
+            if not days:
+                continue
+            visit.days += len(days)
+            missing = [d for d in days if not self._has_bar(conn, ticker, timespan, d, d + DAY_MS)]
+            if len(missing) == len(days):
+                runs.append((days[0], days[-1] + DAY_MS, len(days), "empty-span"))
+                continue
+            place = {d: i for i, d in enumerate(days)}
+            run: list[int] = []
+            for d in [*missing, None]:
+                if run and (d is None or place[d] != place[run[-1]] + 1):  # the run of days next to each other ends
+                    runs.append((run[0], run[-1] + DAY_MS, len(run), "hole"))
+                    run = []
+                if d is not None:
+                    run.append(d)
+        known = [f for kind in HOLE_KINDS for f in store.findings(feed=feed, ticker=ticker, kind=kind)
+                 if f["timespan"] == timespan and f["state"] != "closed"]
+        for f in known:  # a finding of before: filled since, or asked again and still empty
+            empty = [d for d in data.slots("day", f["start_ms"], f["end_ms"], exchange=exchange)
+                     if not self._has_bar(conn, ticker, timespan, int(d), int(d) + DAY_MS)]
+            if not empty:
+                store.finding_set(f["id"], "closed")
+                visit.closed += 1
+            elif f["state"] == "asked":
+                store.finding_set(f["id"], "absent")
+                visit.absent += 1
+        for lo, hi, n, kind in runs:
+            if any(f["start_ms"] < hi and f["end_ms"] > lo for f in known):
+                continue  # known already: open, asked or absent
+            why = "the ledger says it is held" if kind == "empty-span" else self._evidence(conn, row, timespan, lo, hi, cut)
+            if not why:
+                continue  # nothing says bars should be there: a quiet day, not a hole
+            store.finding_put(kind, feed, ticker, timespan, lo, hi, count=n, detail={"days": n, "evidence": why})
+            visit.holes += 1
+
+    def _month(self, conn, row: dict, timespan: str, spans: list, data, exchange, visit: Visit) -> None:
+        """The month the round has come to, of this series, read whole and put to data.py's rules. The newest month
+        on the first round, one further back each round after. What a storage rule catches (STORAGE_RULES) is kept
+        as a finding; a month that comes back clean closes the one kept for it before."""
+        store, feed, ticker = self.store, row["source"], row["ticker"]
+        newest = min(max(b for _, b in spans), self.now_ms - SETTLE_MS)
+        oldest = min(a for a, _ in spans)
+        months = max(1, int((newest - oldest) // MONTH_MS) + 1)
+        hi = newest - (self.round() % months) * MONTH_MS
+        lo = max(oldest, hi - MONTH_MS)
+        if hi <= lo:
+            return
+        n = conn.execute("SELECT COUNT(*) FROM bars WHERE ticker=? AND timespan=? AND multiplier=1 AND ts >= ? AND ts < ?",
+                         (ticker, timespan, lo, hi)).fetchone()[0]
+        if not n or n > MONTH_ROWS:
+            return
+        import pandas as pd
+
+        frame = pd.DataFrame(store.bar_rows(feed, ticker, timespan, lo, hi),
+                             columns=["ts", "open", "high", "low", "close", "volume", "vwap", "transactions"])
+        found = data.integrity(frame, timespan=timespan, exchange=exchange)
+        caught = {rule: count for rule, count in found.by_rule().items() if rule in STORAGE_RULES}
+        was = [f for f in store.findings(feed=feed, ticker=ticker, kind="integrity")
+               if f["timespan"] == timespan and f["start_ms"] == lo and f["end_ms"] == hi]
+        if caught:
+            state = data.assess(frame, lo, hi, timespan=timespan, exchange=exchange)
+            store.finding_put("integrity", feed, ticker, timespan, lo, hi, count=sum(caught.values()), detail={
+                "rules": caught, "first": [f.as_dict() for f in found.findings if f.rule in STORAGE_RULES][:SHOWN],
+                "completeness": state.completeness, "rows": int(n)})
+            visit.rules += sum(caught.values())
+        else:
+            for f in was:
+                if f["state"] != "closed":
+                    store.finding_set(f["id"], "closed")
+                    visit.closed += 1
+
+
+def _joined(spans) -> list[tuple[int, int]]:
+    """Spans [start, end) joined where they touch or overlap, in order."""
+    out: list[list[int]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _data_for(feed: str, asset: str):
+    """A feed's data class for an asset class (its plugin's own, else the contract's for the class); None for a
+    class the library has none for."""
+    from .sources.data import default_series
+    from .sources.registry import providers
+
+    plugin = providers().get(feed)
+    try:
+        if plugin is not None:
+            return plugin.data_for(asset)
+        cls = default_series(asset)
+        return cls(feed=feed) if cls is not None else None
+    except ValueError:
+        return None
+
+
+def repulls(store, feed: str, ticker: str, limit: int) -> list[dict]:
+    """What a feed's run is to ask it again for a symbol, the oldest finding first, at most `limit` spans: each
+    {"finding", "timespan", "start_ms", "end_ms"}. A hole or an empty span as it was found; a bar stored with other
+    values than its cache file's, by the bars kept with the finding. (The collector asks, stores what comes as any
+    answer is stored, and marks the findings asked: mark_asked.)"""
+    out: list[dict] = []
+    if limit <= 0 or not hasattr(store, "findings"):
+        return out
+    for f in reversed(store.findings(state="open", feed=feed, ticker=ticker, limit=200)):
+        if len(out) >= limit:
+            break
+        if f["kind"] in HOLE_KINDS and f["timespan"] and f["start_ms"] is not None:
+            out.append({"finding": f["id"], "timespan": f["timespan"], "start_ms": f["start_ms"], "end_ms": f["end_ms"]})
+        elif f["kind"] == "copy-differs" and f["timespan"] in _STEP:
+            for bar in ((f.get("detail") or {}).get("first") or [])[:max(0, limit - len(out))]:
+                out.append({"finding": f["id"], "timespan": f["timespan"], "start_ms": int(bar["ts"]),
+                            "end_ms": int(bar["ts"]) + _STEP[f["timespan"]]})
+    return out
+
+
+def mark_asked(store, finding_ids) -> None:
+    """Findings whose spans a feed was asked for again: `asked` (the next sweep says what became of them)."""
+    for finding_id in dict.fromkeys(finding_ids):
+        store.finding_set(finding_id, "asked")
+
+
+def overview(store, policy_: Policy | None = None, findings: int = 100) -> dict:
+    """The auditors for their page: the policy, the cache by state and size, the last sweep, where the round
+    stands, and the latest findings."""
+    import json
+
+    with_ = policy_ or policy()
+    try:
+        last = json.loads(store.kv_get(LAST_KEY) or "null")
+    except ValueError:
+        last = None
+    cursor = (store.kv_get(CURSOR_KEY) or "").replace("\t", ":")
+    counts = store.finding_counts()
+    return {"policy": with_.as_dict(),
+            "cache": {"folder": str(pulls.cache_dir(store) or ""), "on": pulls.enabled(), "states": store.cache_summary(),
+                      "unverifiedBytes": store.cache_bytes(), "keptBytes": store.cache_bytes(unverified_only=False),
+                      "capBytes": with_.cap_gb * 2**30},
+            "sweep": {"last": last, "cursor": cursor, "round": Sweep(store, policy_=with_).round()},
+            "findings": {"counts": counts, "open": counts.get("open", 0), "latest": store.findings(limit=findings)}}

@@ -201,14 +201,15 @@ class Settings:
         for name in RENAMED:  # the app's settings under their old names
             if name not in merged and (old := renamed(merged, name)) is not None:
                 merged[name] = old
-        from .sources.registry import assistants, leave_out, providers, publishers  # when called, not on import: the registry imports the plugins
+        # when called, not on import: the registry imports the plugins
+        from .sources.registry import assistants, auditors, leave_out, providers, publishers
         from .sources.registry import variables as plugin_variables
 
         if login is not None:
             merged.update(login.variables(plugin_variables()))
 
         plugins = {}  # the plugins' own settings (API 1.11; 2.0: every kind's), by plugin
-        for name, p in [*providers().items(), *publishers().items(), *assistants().items()]:
+        for name, p in [*providers().items(), *publishers().items(), *assistants().items(), *auditors().items()]:
             if not p.has_settings:
                 continue
             try:

@@ -1514,6 +1514,7 @@ class Collector:
         self.picked: set[str] = set()
         self.on_lists: set[str] = set()
         self.server_fails = 0
+        self.repulls_left = 0  # spans the auditors found that this run may still ask the feed for again (run)
 
     def clock(self) -> datetime:
         """The time now: a run lasts hours, and `now` is when it began."""
@@ -1535,6 +1536,7 @@ class Collector:
         saved_before = store.rows_saved
         self.waiting = {}
         self.closed = self.capped = self.unlisted = 0
+        self.repulls_left = auditing.policy().repulls  # the auditor's `Re-pulls per sweep`, read when the run begins
         self._one_offs()
         try:
             self._before_symbols()
@@ -1894,6 +1896,7 @@ class Collector:
         queue.end(ticker, rows=n + n_day, requests=source.requests_made - spent,
                   detail=f"{resolution}: {n:,} rows" + (f", daily: {n_day:,}" if n_day else ""))
         store.set_synced(source.name, ticker, at)  # when its fetch began: anything later is asked next time
+        result.rows += self._repull(ticker, fetch, invert, asset)  # what the auditors found missing of it (1.64.0)
         verify_fetched(source, store, ticker, asset, fetch, invert, began, me, feeds, log, exchange)
         self._audit_symbol(ticker)  # the symbol still claimed: whatever of it waits in the fetch cache (1.64.0)
         _derive_symbol(store, source.name, ticker, asset, log)  # bad data checked first (baddata.py)
@@ -1908,6 +1911,41 @@ class Collector:
         elif asset == "stock":
             fetch_icon(source, store, ticker, log)
         return True
+
+    def _repull(self, ticker: str, fetch: str, invert: bool, asset: str) -> int:
+        """What the auditors found missing of this symbol, with evidence that it should be there (auditing.repulls:
+        a hole, an empty span, a bar stored with other values than its cache file's), asked of the feed again: at
+        most the policy's `Re-pulls per sweep` spans in a run. Each is a pull of the fetch cache like any other, and
+        what comes is stored as any answer is (a bar that differs replaces the stored one, the old one kept in
+        bar_revisions). The findings are marked asked: the next sweep says what became of them (filled, or absent
+        at the feed, which is then remembered). A span the plan refuses counts as asked; one the feed fails on is
+        left for the next run. Returns the bars stored."""
+        source, store, log = self.source, self.store, self.log
+        asked: list[int] = []
+        saved = 0
+        for want in auditing.repulls(store, source.name, ticker, self.repulls_left):
+            a, b, timespan = int(want["start_ms"]), int(want["end_ms"]), want["timespan"]
+            self.repulls_left -= 1
+            try:
+                with _pull(store, source.name, "recheck", log, ticker=ticker, asset=asset, timespan=timespan,
+                           start_ms=a, end_ms=b):
+                    for page in _guard(source.bar_pages(fetch, datetime.fromtimestamp(a / 1000, ET),
+                                                        datetime.fromtimestamp(b / 1000, ET), *frame_parts(timespan),
+                                                        asset=asset)):
+                        page = [x for x in page if a <= int(x["t"]) < b]
+                        if page:
+                            saved += _store_bars(store, source, ticker, timespan, page, invert)
+            except NotEntitled:
+                pass  # outside the plan: asked, and not to be had (the sweep then remembers it as absent)
+            except SourceError as e:
+                log(f"{ticker} {timespan}: {source.name} could not be asked again for {_ms_to_date(a)} ({e}); next run")
+                continue
+            asked.append(want["finding"])
+        if asked:
+            auditing.mark_asked(store, asked)
+            log(f"{ticker}: {source.name} asked again for {len(asked)} spans the auditors found missing or differing: "
+                f"{saved} bars stored")
+        return saved
 
     def _audit_symbol(self, ticker: str) -> None:
         """After a symbol's fetch, its claim still held (the user: "auditors should run if a symbol is updated"):

@@ -19,7 +19,9 @@ from datetime import datetime, timezone
 from .common import _now, own_files, write_transaction
 
 OPEN = ("waiting", "assessing", "collecting")
-KINDS = ("bars", "live")  # what a request can ask about a symbol today (the contract's verbs bring the rest)
+KINDS = ("bars", "live", "audit")  # what a request can ask about a symbol today (the contract's verbs bring the rest)
+AUDIT = "audit"  # an audit asked for (1.64.0; auditing.py): of a symbol, or of every series in turn (EVERYTHING)
+EVERYTHING = "*"  # the symbol of an audit of everything: a sweep run now
 STATUS_KEY = "fetcher:status:v1"  # the fetcher's status, as it last wrote it (every page reads it here)
 STATES = OPEN + ("done", "failed", "cancelled")
 STANDING = "fetcher"  # `by` of the fetcher's own standing work: a queue behind the asks (a stack)
@@ -55,7 +57,9 @@ class RequestStore:
     def request_put(self, symbol: str, kinds=("bars",), by: str = "chart", priority: int = 0, span: str | None = None,
                     now: datetime | None = None) -> dict:
         """Ask for a symbol: a new request, or the symbol's open one asked anew (its kinds joined,
-        asked now, by this asker; a request being collected goes on). Returns the request."""
+        asked now, by this asker; a request being collected goes on). Returns the request. An audit
+        asked for (kinds: audit alone) is the auditors' to take, not a feed's run's: it is a request of
+        its own beside the symbol's fetch, joined only with another audit of that symbol."""
         symbol = symbol.strip().upper()
         if not 0 < len(symbol) <= 32:
             raise ValueError(f"not a symbol: {symbol!r}")
@@ -65,8 +69,8 @@ class RequestStore:
         # symbol and each made one
         with write_transaction(self.conn):
             open_row = self.conn.execute(
-                f"SELECT {', '.join(_COLS)} FROM fetch_requests WHERE symbol=? AND {_IS_OPEN} ORDER BY id LIMIT 1",
-                (symbol,)).fetchone()
+                f"SELECT {', '.join(_COLS)} FROM fetch_requests WHERE symbol=? AND {_IS_OPEN} AND (kinds = '{AUDIT}') = ? "
+                "ORDER BY id LIMIT 1", (symbol, int(wanted == (AUDIT,)))).fetchone()
             if open_row is not None:
                 r = _row(open_row)
                 joined = ",".join(dict.fromkeys(r["kinds"] + wanted))
