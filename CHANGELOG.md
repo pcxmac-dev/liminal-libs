@@ -111,7 +111,7 @@ The globe zooms to 96x, and draws backbone networks. The user, 2026-11-19: "i ne
 and major network 'bones' need to be displayed on the map"; "also underwater lines". And, 2026-11-16: "the firewall
 globe should instead of exchanges, have all the backbones,ibones, major internet infrastructure, (as many as possible)
 datacenter locations." plugin-platform-firewall-windows 0.7.1 and plugin-platform-firewall-linux 0.9.1 name the new
-data set and need this release. liminal-platform 0.33.0 draws the new layers as it is. The plugin API stays 2.3.
+data set and need this release. liminal-platform 0.33.0 draws the new layers as it is. The plugin API stays 2.4.
 
 - **The globe zooms to 96x** (`ui/static/liminal-globe.js`: MAX_ZOOM 96, was 12). The wheel, a pinch, two fingers,
   + and − all stop there, and the words say "96×". Past 12x it draws Natural Earth's 1:10m map. Past 24x it draws
@@ -178,7 +178,7 @@ globe, or ports talking to all hosts. The globe should have the same kind of geo
 globe, but the firewall globe should instead of exchanges, have all the backbones,ibones, major internet
 infrastructure, (as many as possible) datacenter locations." All of it is the Firewall base's, so both firewall plugins
 have it: plugin-platform-firewall-windows 0.7.0 and plugin-platform-firewall-linux 0.9.0 name the data sets the globe
-draws, and liminal-platform 0.33.0 gives the globe its way to load them. The plugin API stays 2.3.
+draws, and liminal-platform 0.33.0 gives the globe its way to load them. The plugin API stays 2.4.
 
 - **The socket table** (`sockets.py`). `read` is this system's own socket table with the program behind each socket,
   asked of the system itself: no capture, no administrator and no password, no process started, no window, no name
