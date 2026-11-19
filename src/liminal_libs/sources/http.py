@@ -143,6 +143,13 @@ class HttpClient:
             reason = self.should_stop() if self.should_stop else None
             if reason:
                 raise Paused(reason)
+            # A pull is open (1.64.0; spool.py): the answer goes to its folder and is read from there. From a real
+            # session it is taken off the wire in pieces; a stand-in session (a test's) is asked as it always was.
+            pull = spool.current()
+            caching = pull is not None and getattr(pull, "spools", False) and not getattr(pull, "closed", False)
+            streamed = caching and method == "GET" and isinstance(self._session, requests.Session)
+            if caching and callable(getattr(pull, "room", None)):
+                pull.room()  # the cache at its cap (spool.CacheFull): nothing is asked that it could not take
             if self.request_budget is not None and self.requests_made >= self.request_budget:
                 raise BudgetExhausted(f"request cap of {self.request_budget} reached")
             (self.class_limiters.get(self.class_of(url), self._limiter) if self.class_of else self._limiter).acquire()
@@ -154,11 +161,6 @@ class HttpClient:
             self.requests_made += 1  # counted before it goes: one that times out may have reached the server
             if self.on_request:
                 self.on_request(self.requests_made)
-            # A pull is open (1.64.0; spool.py): the answer goes to its folder and is read from there. From a real
-            # session it is taken off the wire in pieces; a stand-in session (a test's) is asked as it always was.
-            pull = spool.current()
-            caching = pull is not None and getattr(pull, "spools", False) and not getattr(pull, "closed", False)
-            streamed = caching and method == "GET" and isinstance(self._session, requests.Session)
             try:
                 if method == "POST":
                     resp = self._session.post(url, params=params, json=json, headers=self._headers, timeout=self._timeout)
@@ -228,12 +230,14 @@ class HttpClient:
         its file: what is parsed afterwards is what the cache holds. From a real session the body comes off the
         wire in pieces and goes to disk as it comes (`streamed`); a stand-in's answer gives the body it holds, and
         one with no body to keep is left as it is. The request is kept by its path alone, never its query: a key
-        may be in it. spool.CacheFailed when the disk refuses; a body cut off on its way is the transport's error,
-        as it always was (the answer is then asked for again)."""
-        writer = pull.payload(urlparse(url).path, resp.status_code)
-        if writer is None:
-            return
+        may be in it. spool.CacheFailed when the disk or the cache's ledger refuses; a body cut off on its way is
+        the transport's error, as it always was (the answer is then asked for again). Whatever goes wrong, an
+        answer still on the wire is let go: its connection is not left out of the pool."""
+        writer = None
         try:
+            writer = pull.payload(urlparse(url).path, resp.status_code)
+            if writer is None:
+                return
             if streamed:
                 for piece in resp.iter_content(spool.CHUNK):
                     writer.write(piece)
@@ -245,7 +249,10 @@ class HttpClient:
                 writer.write(bytes(body))
             body = writer.keep()
         except BaseException:
-            writer.abandon()
+            if writer is not None:
+                writer.abandon()
+            if streamed:
+                _let_go(resp)
             raise
         if streamed:  # what .json(), .text and .content give from here on: the file's bytes
             resp._content, resp._content_consumed = body, True

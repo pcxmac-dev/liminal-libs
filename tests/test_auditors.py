@@ -171,10 +171,13 @@ def test_a_pull_that_was_cut_off_is_a_finding_until_the_span_it_asked_is_held(st
     (cut,) = store.findings(kind="cut-pull")
     assert cut["detail"] == {"why": "RuntimeError: the connection broke", "kind": "bars"} and cut["state"] == "open"
     assert _sweep(store).series(store.watchlist("fake", "AAA")[0]).closed == 0 and len(store.findings()) == 1
+    (kept,) = store.pulls()  # its audit passed and its files are gone, and it stays: the sweep still judges its span
+    assert (kept["state"], kept["audit"]) == ("cut", "ok") and store.cache_verified()["pulls"] == 1
     # a later run asked for the rest, and the feed has nothing there: the span the pull asked is whole
     store.add_coverage("fake", "AAA", "minute", WED, WED + DAY, origin="none")
     visit = _sweep(store).series(store.watchlist("fake", "AAA")[0])
     assert (visit.closed, visit.holes) == (1, 0) and _findings(store)[0][-1] == "closed"
+    assert store.pulls() == []  # what it asked is held: nothing more to judge it by, and it is forgotten
 
 
 def test_a_pull_that_was_cut_off_is_evidence_for_a_day_missing_inside_what_is_held(store):
@@ -235,8 +238,7 @@ def test_a_hole_is_asked_of_the_feed_again_and_filled(store):
     assert c._repull("AAA", "AAA", False, "stock") == 1 and feed.asked == [("AAA", "minute", WED, THU)]
     assert c.repulls_left == 4 and _findings(store) == [("hole", "minute", WED, THU, 1, "asked")]
     assert said == ["AAA: fake asked again for 1 spans the auditors found missing or differing: 1 bars stored"]
-    (pull,) = store.pulls()
-    assert (pull["kind"], pull["audit"]) == ("recheck", "ok")  # the second answer went through the cache too
+    assert store.pulls() == [] and store.cache_verified()["pulls"] == 1  # the second answer went through the cache too
     visit = _sweep(store).series(store.watchlist("fake", "AAA")[0])
     assert visit.closed == 1 and _findings(store) == [("hole", "minute", WED, THU, 1, "closed")]
     assert auditing.repulls(store, "fake", "AAA", 5) == []
@@ -346,7 +348,7 @@ def test_a_run_audits_what_waits_in_the_cache_first(store):
     with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute", start_ms=MON, end_ms=SAT) as p:
         store.upsert_bars("fake", "AAA", "minute", 1, [_minute(MON, hour=12)])
     out = _sweep(store).run()
-    assert out["pulls"] == 1 and store.pull(p.id)["audit"] == "ok"
+    assert out["pulls"] == 1 and store.pull(p.id) is None and store.cache_verified()["rows"] == 1
 
 
 def test_a_symbol_another_installation_is_working_on_is_left_for_the_next_round(store, monkeypatch):

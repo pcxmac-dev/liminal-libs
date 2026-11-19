@@ -436,6 +436,7 @@ CREATE TABLE IF NOT EXISTS pulls (        -- one thing asked of a feed; its file
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS pulls_waiting ON pulls (audit, state, feed);
 CREATE INDEX IF NOT EXISTS pulls_series ON pulls (feed, ticker, timespan);
+CREATE INDEX IF NOT EXISTS pulls_audited ON pulls (audited_at);
 CREATE TABLE IF NOT EXISTS pull_files (   -- a pull's files, in the order they were written
     pull        TEXT NOT NULL,
     seq         INTEGER NOT NULL,
@@ -452,6 +453,7 @@ CREATE TABLE IF NOT EXISTS pull_files (   -- a pull's files, in the order they w
     hi_ms       INTEGER,
     stored_at   INTEGER,                  -- a rows file: the moment its rows were stored under (ms)
     loaded_at   TEXT,                     -- when its rows were in the database (NULL: written, not loaded yet)
+    late        INTEGER,                  -- 1: loaded after its run had ended, by an auditor (what was stored since stays)
     audited_at  TEXT,
     result      TEXT,                     -- ok | repaired | mismatch | damaged (the file is not what was written)
     missing     INTEGER,                  -- what its audit found: bars not stored

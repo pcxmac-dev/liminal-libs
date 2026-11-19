@@ -435,10 +435,12 @@ def test_a_pull_that_was_copied_exactly_passes_and_its_files_go(store):
     got = auditing.audit_pull(store, pull, log=said.append)
     assert (got.result, got.rows, got.missing, got.differing, got.removed) == ("ok", 120, 0, 0, 3)
     assert [f.result for f in got.files] == ["ok"] * 3 and said == []  # a pass says nothing in the log
-    row = store.pull(pull)
-    assert row["audit"] == "ok" and row["audited_at"] and row["note"] is None
-    assert all(f["result"] == "ok" and f["audited_at"] and f["removed_at"] for f in store.pull_files(pull))
-    assert _cache_files(store) == [] and not store.pull_folder(pull).exists()
+    assert _cache_files(store) == [] and not (pulls.cache_dir(store) / "fake" / pull).exists()
+    # it passed and nothing of it is kept: counted, and forgotten (the ledger is no history)
+    assert store.pull(pull) is None and store.pull_files(pull) == [] and store.pulls() == []
+    counted = store.cache_verified()
+    assert (counted["pulls"], counted["files"], counted["rows"], counted["repaired"]) == (1, 3, 120, 0)
+    assert counted["bytes"] > 0 and counted["today"]["pulls"] == 1 and counted["since"]
     assert store.findings() == [] and store.cache_bytes() == 0 == store.cache_bytes(unverified_only=False)
     assert auditing.audit_pull(store, pull) is None  # audited already
     assert got.words() == "audit fake:AAA: 120 bars of 3 cache files match what is stored"
@@ -543,11 +545,25 @@ def test_a_verified_pulls_files_are_kept_the_days_the_policy_says(store):
     assert got.result == "ok" and got.removed == 0 and len(_cache_files(store)) == 1
     assert store.cache_bytes() == 0 and store.cache_bytes(unverified_only=False) > 0  # verified: not the cap's to count
     now = datetime.now(timezone.utc)
+    assert store.pull(pull)["audit"] == "ok" and store.cache_verified()["pulls"] == 1  # kept, in the ledger, counted
     assert auditing.tidy(store, keep, now + timedelta(hours=12)) == {"removed": 0, "forgotten": 0}
-    assert auditing.tidy(store, keep, now + timedelta(days=2)) == {"removed": 1, "forgotten": 0} and _cache_files(store) == []
-    assert store.pull(pull)["audit"] == "ok" and not store.pull_folder(pull).exists()  # in the ledger still, for its page
-    assert auditing.tidy(store, keep, now + timedelta(days=1 + auditing.FORGET_DAYS)) == {"removed": 0, "forgotten": 1}
-    assert store.pull(pull) is None and store.pull_files(pull) == []
+    assert auditing.tidy(store, keep, now + timedelta(days=2)) == {"removed": 1, "forgotten": 1} and _cache_files(store) == []
+    assert store.pull(pull) is None and store.pull_files(pull) == []  # its keeping time over: gone from both
+    assert store.cache_verified()["pulls"] == 1  # (counted once, when it passed)
+
+
+def test_a_cut_pull_that_passed_stays_for_the_sweep_and_is_forgotten_after_a_while(store):
+    p = store.pull_open("fake", "bars", ticker="AAA", asset="stock", timespan="minute", start_ms=OPEN, end_ms=CLOSE)
+    with spool.opened(p):
+        store.upsert_bars("fake", "AAA", "minute", 1, _minutes(5))
+    p.close("cut", "a stop")
+    assert auditing.audit_pull(store, p.id).result == "ok" and _cache_files(store) == []
+    row = store.pull(p.id)
+    assert (row["state"], row["audit"]) == ("cut", "ok")  # the sweep says when the span it asked is held
+    now = datetime.now(timezone.utc)
+    assert auditing.tidy(store, now=now + timedelta(days=auditing.FORGET_DAYS - 1))["forgotten"] == 0
+    assert auditing.tidy(store, now=now + timedelta(days=auditing.FORGET_DAYS + 1))["forgotten"] == 1
+    assert store.pull(p.id) is None
 
 
 def test_an_open_pull_is_not_audited_and_a_process_that_reads_only_audits_nothing(store):
@@ -584,6 +600,8 @@ def _left_open(store, bars, loaded: bool) -> pulls.Pull:
         with conn:
             conn.executemany(feeds._UPSERT_BAR, back)
         p.loaded(seq)
+    with pulls._live_lock:
+        pulls._live.discard(p.id)  # (its process is gone: no thread of this one is in it)
     return p
 
 
@@ -665,11 +683,18 @@ def test_a_gap_filled_is_one_pull_audited_as_it_closes(store):
     pages = [_minutes(40, OPEN + 80 * 60_000), _minutes(40, OPEN + 40 * 60_000), _minutes(40)]  # newest first
     saved, newest = _fill(store, Feed(pages))
     assert (saved, newest) == (120, OPEN + 119 * 60_000) and len(_stored(store)) == 120
-    (row,) = store.pulls()
-    assert (row["kind"], row["state"], row["audit"], row["ticker"], row["timespan"]) == ("bars", "complete", "ok", "AAA", "minute")
-    assert (row["start_ms"], row["end_ms"]) == (OPEN, CLOSE)
-    assert [f["result"] for f in store.pull_files(row["id"])] == ["ok"] * 3 and _cache_files(store) == []
+    counted = store.cache_verified()  # one pull, its three pages audited as it closed, counted and forgotten
+    assert (counted["pulls"], counted["files"], counted["rows"]) == (1, 3, 120)
+    assert store.pulls() == [] and _cache_files(store) == []
     assert store.coverage("AAA", "minute")["fake"] == [(OPEN, CLOSE)] and store.findings() == []
+
+
+def test_a_gap_is_a_pull_of_its_series_and_its_span(store):
+    auditing.set_policy(auditing.Policy(on_update=False))  # (left for its auditor: still in the ledger to be read)
+    _fill(store, Feed([_minutes(40)]))
+    (row,) = store.pulls()
+    assert (row["kind"], row["state"], row["audit"], row["ticker"], row["timespan"]) == ("bars", "complete", None, "AAA", "minute")
+    assert (row["start_ms"], row["end_ms"]) == (OPEN, CLOSE) and row["id"] not in pulls.live()
 
 
 def test_a_gap_cut_off_by_the_cap_is_known_to_be_a_fragment_and_what_it_loaded_is_audited(store):
@@ -704,7 +729,7 @@ def test_at_its_cap_the_cache_is_audited_at_once_and_fetching_waits_if_that_free
     sizes = iter([6 * 2**30, 0])  # over the cap; then, what waited audited, under it
     monkeypatch.setattr(store, "cache_bytes", lambda unverified_only=True: next(sizes))
     _fill(store, Feed([_minutes(5)]))
-    assert store.pull(waiting)["audit"] == "ok"  # audited at once, to make room
+    assert store.pull(waiting) is None and store.cache_verified()["pulls"] == 1  # audited at once, to make room
     monkeypatch.setattr(store, "cache_bytes", lambda unverified_only=True: 6 * 2**30)
     with pytest.raises(StopRun, match=r"6\.0 GB not audited yet \(its cap: 5 GB\): fetching waits for the auditors") as full:
         _fill(store, Feed([_minutes(5)]))
@@ -722,6 +747,308 @@ def test_a_run_settles_what_earlier_runs_left_before_it_asks_anything(store):
     c._before_symbols()
     assert len(_stored(store)) == 8 and store.pull(p.id)["audit"] == "ok" and _cache_files(store) == []
     assert any("left open by a run that is gone" in line for line in said)
+
+
+# -- what the review of 2026-11-18 found: each of these fails without its fix ------------------------------------------
+def _ticking(monkeypatch, start: int = 1_000_000):
+    """Every write stored a second after the one before (the order of the writes is the test's, not the clock's)."""
+    clock = iter(range(start, start + 10_000_000, 1000))
+    monkeypatch.setattr(feeds, "_stored_ms", lambda: next(clock))
+
+
+def test_a_file_loaded_late_never_replaces_what_was_stored_since(store, monkeypatch):
+    _ticking(monkeypatch)
+    store.upsert_bars("fake", "AAA", "minute", 1, _minutes(2, price=5.0))  # stored before the file was written
+    p = _left_open(store, _minutes(6, price=10.0), loaded=False)  # the file: six bars, never loaded (its run died)
+    newer = _minutes(2, OPEN + 2 * 60_000, price=20.0)
+    store.upsert_bars("fake", "AAA", "minute", 1, newer)  # stored since: the live recorder's, a later run's
+    assert auditing.recover(store, "fake") == 1
+    file_opens = [b["o"] for b in _minutes(6, price=10.0)]
+    # bars 0 and 1 were stored before the file: replaced, as its run would have; 2 and 3 were stored since: they
+    # stay; 4 and 5 were not stored: put in
+    assert [r[1] for r in _stored(store)] == [*file_opens[:2], newer[0]["o"], newer[1]["o"], *file_opens[4:]]
+    conn = store._bars("fake")
+    assert [r[0] for r in conn.execute("SELECT open FROM bar_revisions ORDER BY ts")] == [5.0, 5.01]  # the two it replaced
+    (f,) = store.pull_files(p.id)
+    assert f["late"] == 1 and f["loaded_at"]
+    got = auditing.audit_pull(store, p.id)  # what was stored since is the newer word, not a difference
+    assert (got.result, got.differing, got.missing, sum(x.replaced for x in got.files)) == ("ok", 0, 0, 2)
+    assert store.findings() == [] and [r[1] for r in _stored(store)][2:4] == [newer[0]["o"], newer[1]["o"]]
+
+
+def test_a_file_loaded_late_brings_back_no_bar_that_was_moved_out(store, monkeypatch):
+    _ticking(monkeypatch)
+    store.upsert_bars("fake", "AAA", "minute", 1, _minutes(3))
+    p = _left_open(store, _minutes(6), loaded=False)
+    assert store.archive_before("fake", "AAA", reason="another company's") == 3  # moved out meanwhile
+    assert auditing.recover(store, "fake") == 1
+    assert [r[0] for r in _stored(store)] == [OPEN + i * 60_000 for i in (3, 4, 5)]  # the three it was never told of
+    assert auditing.audit_pull(store, p.id).result == "ok" and store.findings() == []
+
+
+def test_a_file_whose_run_stored_it_and_could_not_say_so_is_loaded_again_without_a_change(store, monkeypatch):
+    _ticking(monkeypatch)
+    p = _left_open(store, _minutes(4), loaded=True)
+    with store.conn:  # the bars were committed, the ledger was not told (the database busy just then)
+        store.conn.execute("UPDATE pull_files SET loaded_at=NULL WHERE pull=?", (p.id,))
+    before = _stored(store)
+    assert auditing.recover(store, "fake") == 1 and _stored(store) == before
+    assert store._bars("fake").execute("SELECT COUNT(*) FROM bar_revisions").fetchone()[0] == 0
+    assert store.coverage("AAA", "minute")["fake"] == [(OPEN, OPEN + 4 * 60_000)]  # its span recorded now
+    assert auditing.audit_pull(store, p.id).result == "ok"
+
+
+def test_a_pull_open_on_another_thread_of_this_process_is_not_taken_for_a_dead_runs(store):
+    import threading
+
+    opened, go_on, seen = threading.Event(), threading.Event(), {}
+
+    def run():
+        with Store(store.path) as mine:
+            with pulls.pulling(mine, "fake", "bars", ticker="AAA", asset="stock", timespan="minute", start_ms=OPEN,
+                               end_ms=CLOSE) as p:
+                mine.upsert_bars("fake", "AAA", "minute", 1, _minutes(5))
+                seen["id"] = p.id
+                opened.set()
+                go_on.wait(20)
+                mine.upsert_bars("fake", "AAA", "minute", 1, _minutes(5, OPEN + 5 * 60_000))
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert opened.wait(20) and seen["id"] in pulls.live()
+        assert auditing.recover(store, "fake") == 0 and auditing.recover(store) == 0  # at work: its own to close
+        assert store.pull(seen["id"])["state"] == "open"
+    finally:
+        go_on.set()
+        thread.join(20)
+    assert store.pull(seen["id"])["state"] == "complete" and len(_stored(store)) == 10 and pulls.live() == set()
+
+
+def test_one_process_at_a_time_audits_or_recovers_a_feeds_cache(store):
+    waiting = _pull_of(store, _minutes(10))
+    left = _left_open(store, _minutes(3, OPEN + 3_600_000), loaded=False)
+    other = claims.Claims.open(store.path, me="linux::Elsewhere", pid=4242, alive=lambda pid, started: True)
+    try:
+        assert other.take("cache:fake", what="auditing its fetch cache") is not None
+        assert auditing.audit_pull(store, waiting) is None and auditing.audit_pulls(store) == []
+        assert store.pull(waiting)["audit"] is None and len(_cache_files(store)) == 2  # as they were: the other's to take
+        assert auditing.recover(store, "fake") == 0 and store.pull(left.id)["state"] == "open"
+        other.release("cache:fake")
+        assert auditing.audit_pull(store, waiting).result == "ok" and auditing.recover(store, "fake") == 1
+    finally:
+        other.close()
+    assert claims.mine(store.path) == {}  # (nothing of the feed's cache is held on once the audit is done)
+
+
+def test_a_pull_another_process_audited_meanwhile_is_not_audited_again(store):
+    pull = _pull_of(store, _minutes(10))
+    listed = store.pull(pull)  # as a process listed it a moment before another audited it
+    assert auditing.audit_pull(store, pull).result == "ok"
+    assert auditing.audit_pull(store, listed) is None and store.cache_verified()["pulls"] == 1
+    kept = _pull_of(store, _minutes(10, OPEN + 3_600_000), ticker="BBB")
+    listed = store.pull(kept)
+    assert auditing.audit_pull(store, kept, auditing.Policy(keep_days=7)).result == "ok"
+    assert auditing.audit_pull(store, listed) is None and len(_cache_files(store)) == 1  # its kept file not read again
+
+
+def test_where_nothing_is_cached_the_cap_stops_no_fetch_and_a_run_settles_nothing(store, monkeypatch):
+    from liminal_libs.collector import Collector
+    from liminal_libs.config import Tier
+
+    left = _left_open(store, _minutes(4), loaded=False)  # what an earlier run left, before the switch
+    monkeypatch.setenv(pulls.SWITCH, "off")
+    monkeypatch.setattr(store, "cache_bytes", lambda unverified_only=True: 99 * 2**30)  # far over any cap
+    saved, _ = _fill(store, Feed([_minutes(5, OPEN + 3_600_000)]))
+    assert saved == 5 and len(_stored(store)) == 5  # fetched and written as before the cache was there
+    c = Collector(Feed([]), store, Tier("free", requests_per_minute=5, history_years=2), log=QUIET)
+    c.only = {"ZZZ"}
+    c._before_symbols()
+    c._audit_symbol("AAA")
+    assert store.pull(left.id)["state"] == "open" and len(_stored(store)) == 5  # the auditors' own process's to take
+    assert auditing.room(store) is None and auditing.cache_on() is False
+
+
+def test_a_ledger_that_cannot_be_written_stops_the_run_as_the_caches_failure(store, monkeypatch):
+    import sqlite3
+
+    def busy(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "_pull_file", busy)
+    with pytest.raises(StopRun, match="ledger could not be written") as stopped:
+        _fill(store, Feed([_minutes(10)]))
+    assert stopped.value.strike is False and _stored(store) == []  # nothing stored that the cache does not know of
+    assert pulls.live() == set()
+
+
+def test_what_ended_a_pull_is_what_its_caller_hears_whatever_the_ledger_says(store, monkeypatch):
+    import sqlite3
+
+    def busy(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    closed = store._pull_closed
+    with pytest.raises(StopRun, match="rate limited") as stopped:
+        with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+            store.upsert_bars("fake", "AAA", "minute", 1, _minutes(3))
+            monkeypatch.setattr(store, "_pull_closed", busy)
+            raise StopRun("rate limited (429); stopping until the next run", strike=True)
+    assert stopped.value.strike is True  # the feed's strike is not lost to the ledger's trouble
+    assert store.pull(p.id)["state"] == "open" and p.id not in pulls.live()
+    with pulls.pulling(store, "fake", "bars", ticker="BBB", asset="stock", timespan="minute") as q:  # a good end, too
+        store.upsert_bars("fake", "BBB", "minute", 1, _minutes(3))
+    assert store.pull(q.id)["state"] == "open" and len(_stored(store, ticker="BBB")) == 3
+    monkeypatch.setattr(store, "_pull_closed", closed)
+    assert auditing.recover(store, "fake") == 2  # closed as cut by a later pass: nothing of them is loaded twice
+    assert {store.pull(x)["state"] for x in (p.id, q.id)} == {"cut"} and len(_stored(store)) == 3
+
+
+def test_why_a_pull_was_cut_is_kept_without_the_query_of_any_address(store):
+    with pytest.raises(SourceError):
+        with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+            store.upsert_bars("fake", "AAA", "minute", 1, _minutes(3))
+            raise SourceError(0, "no answer: ConnectionError: Max retries exceeded with url: /query?function=X&apikey=SECRET "
+                                 "(Caused by NewConnectionError('https://api.feed.test/a?apikey=SECRET&b=1'))")
+    note = store.pull(p.id)["note"]
+    assert "SECRET" not in note and "apikey" not in note and "/query?..." in note and "ConnectionError" in note
+
+
+def test_one_pull_whose_audit_fails_holds_up_no_other(store, monkeypatch):
+    import sqlite3
+
+    bad = _pull_of(store, _minutes(5))
+    good = [_pull_of(store, _minutes(5, OPEN + (i + 1) * 3_600_000), ticker=t) for i, t in enumerate(("BBB", "CCC"))]
+    real, asked = auditing._audit, []
+
+    def audit(store_, row, with_, log):
+        asked.append(row["id"])
+        if row["id"] == bad or row["id"] in broken:
+            raise sqlite3.DatabaseError("file is not a database")
+        return real(store_, row, with_, log)
+
+    broken: set[str] = set()
+    monkeypatch.setattr(auditing, "_audit", audit)
+    said: list[str] = []
+    got = auditing.audit_pulls(store, log=said.append)
+    assert sorted(a.pull for a in got) == sorted(good) and store.pull(bad)["audit"] is None
+    assert said == ["audit fake:AAA: a pull's audit is left for later (DatabaseError: file is not a database)"]
+    assert len(_cache_files(store)) == 1  # the one that failed keeps its file; it is tried again by the next pass
+    more = [_pull_of(store, _minutes(2, OPEN + (i + 4) * 3_600_000), ticker=f"D{i}") for i in range(5)]
+    broken.update(more)  # every one of them failing (a database that is busy): the pass ends, it does not wait on each
+    asked.clear()
+    assert auditing.audit_pulls(store) == [] and len(asked) == auditing.FAILURES
+
+
+def test_a_pull_that_grows_to_the_cap_ends_there_and_what_it_loaded_is_audited(store, monkeypatch):
+    auditing.set_policy(auditing.Policy(cap_gb=5))
+    monkeypatch.setattr(pulls, "CHECK_BYTES", 1)  # (the cap looked at after every file)
+    looks: list[int] = []
+
+    def size(unverified_only=True):  # under the cap as the pull opens; over it once its first page is on disk
+        looks.append(1)
+        return 0 if len(looks) == 1 else 6 * 2**30
+
+    monkeypatch.setattr(store, "cache_bytes", size)
+    pages = [_minutes(40, OPEN + 80 * 60_000), _minutes(40, OPEN + 40 * 60_000), _minutes(40)]  # newest first
+    source = Feed(pages)
+    with pytest.raises(StopRun, match=r"6\.0 GB not audited yet \(its cap: 5 GB\)") as full:
+        _fill(store, source)
+    assert full.value.strike is False and len(looks) == 2
+    assert len(_stored(store)) == 40  # the page that was in, and nothing of the page the cap refused
+    (row,) = store.pulls()
+    assert (row["state"], row["audit"]) == ("cut", "ok") and _cache_files(store) == []  # audited as it ended: room again
+    assert store.coverage("AAA", "minute")["fake"] == [(OPEN + 80 * 60_000, CLOSE)]  # the next run goes on from there
+
+
+def test_at_the_cap_nothing_more_is_asked_of_the_feed_into_a_pull(store, monkeypatch):
+    monkeypatch.setattr(pulls, "CHECK_BYTES", 1)
+    client, wire = _client([(200, b'{"ok": 1}'), (200, b'{"ok": 2}')])
+    with pytest.raises(spool.CacheFull, match="fetching waits"):
+        with pulls.pulling(store, "fake", "bars", ticker="AAA", timespan="minute") as p:
+            p.limit = lambda: "the fetch cache is at its cap: fetching waits for the auditors"
+            assert client.get("/a") == {"ok": 1}  # its first answer: nothing was written yet to look at the cap for
+            client.get("/b")
+    assert len(wire.sent) == 1 and client.requests_made == 1  # the second was never sent, nor counted
+
+
+def test_an_answer_the_cache_cannot_take_is_let_go(store, monkeypatch):
+    from liminal_libs.sources import http
+
+    client, wire = _client([(200, b'{"ok": true}')])
+    let_go: list = []
+    monkeypatch.setattr(http, "_let_go", lambda resp: let_go.append(resp.status_code))
+
+    def full(self, piece):
+        raise spool.CacheFailed("the fetch cache could not be written (the disk is full)")
+
+    monkeypatch.setattr(spool.PayloadWriter, "write", full)
+    with pytest.raises(spool.CacheFailed):
+        with pulls.pulling(store, "fake", "bars", ticker="AAA", timespan="minute"):
+            client.get("/a")
+    assert let_go == [200]  # its connection is not left out of the pool
+
+
+def test_a_file_that_cannot_be_removed_is_not_said_to_be_and_is_tried_again(store, monkeypatch):
+    import os
+
+    pull = _pull_of(store, _minutes(120))
+    names = [f["name"] for f in store.pull_files(pull)]
+    real = os.unlink
+    held = {names[1]}  # another program holds one of them open (a scanner's look at it)
+
+    def unlink(path, *a, **k):
+        if Path(path).name in held:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(auditing.os, "unlink", unlink)
+    got = auditing.audit_pull(store, pull)
+    assert (got.result, got.removed) == ("ok", 2) and _cache_files(store) == [names[1]]
+    row = store.pull(pull)  # passed, counted, and still in the ledger: a file of it is on disk
+    assert row["audit"] == "ok" and [bool(f["removed_at"]) for f in store.pull_files(pull)] == [True, False, True]
+    assert store.cache_verified()["pulls"] == 1 and store.cache_bytes(unverified_only=False) > 0 == store.cache_bytes()
+    assert auditing.tidy(store) == {"removed": 0, "forgotten": 0} and store.pull(pull) is not None  # held still
+    held.clear()
+    assert auditing.tidy(store) == {"removed": 1, "forgotten": 1}
+    assert store.pull(pull) is None and _cache_files(store) == [] and store.cache_verified()["pulls"] == 1
+
+
+def test_a_folder_that_cannot_be_taken_away_keeps_its_row_until_it_can(store, monkeypatch):
+    client, _ = _client([(200, b'{"results": []}')])
+    monkeypatch.setattr(pulls, "_emptied", lambda folder: False)  # a file of it held open
+    with pulls.pulling(store, "fake", "bars", ticker="AAA", timespan="minute") as p:
+        client.get("/a")  # an answer, and no rows of it: nothing to check, its files go at once
+    row = store.pull(p.id)
+    assert (row["state"], row["audit"], row["note"]) == ("complete", "ok", "files of it could not be removed yet")
+    assert len(_cache_files(store)) == 1  # on disk, and the ledger knows where
+    monkeypatch.undo()
+    assert auditing.tidy(store)["forgotten"] == 1 and store.pull(p.id) is None and _cache_files(store) == []
+
+
+def test_the_verified_are_counted_in_all_and_by_the_day(store):
+    from datetime import date
+
+    assert store.cache_verified() == {"since": None, "day": date.today().isoformat(), "pulls": 0, "files": 0, "rows": 0,
+                                      "bytes": 0, "repaired": 0,
+                                      "today": {"pulls": 0, "files": 0, "rows": 0, "bytes": 0, "repaired": 0}}
+    store.cache_verified(pulls=1, files=2, rows=30, size=400, today=date(2026, 11, 18))
+    got = store.cache_verified(pulls=1, files=1, rows=5, size=100, repaired=2, today=date(2026, 11, 19))
+    assert (got["pulls"], got["files"], got["rows"], got["bytes"], got["repaired"]) == (2, 3, 35, 500, 2)
+    assert got["today"] == {"pulls": 1, "files": 1, "rows": 5, "bytes": 100, "repaired": 2} and got["day"] == "2026-11-19"
+    assert store.cache_verified(today=date(2026, 11, 20))["today"]["pulls"] == 0  # a new day: its own count
+
+
+def test_a_run_tidies_the_cache_so_kept_files_go_with_the_sweep_off(store, monkeypatch):
+    from liminal_libs.collector import Collector
+    from liminal_libs.config import Tier
+
+    tidied: list = []
+    monkeypatch.setattr(auditing, "tidy", lambda store_, *a, **k: tidied.append(store_) or {"removed": 0, "forgotten": 0})
+    c = Collector(Feed([]), store, Tier("free", requests_per_minute=5, history_years=2), log=QUIET)
+    c.only = {"ZZZ"}
+    c._before_symbols()
+    assert tidied == [store]
 
 
 # -- the policy --------------------------------------------------------------------------------------------------------

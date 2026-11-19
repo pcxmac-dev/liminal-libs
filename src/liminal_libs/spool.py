@@ -44,6 +44,11 @@ class CacheFailed(OSError):
     rows was handed on. A run stops on it without a strike against the feed: the fault is this machine's."""
 
 
+class CacheFull(CacheFailed):
+    """The cache holds as much unverified data as its cap allows: nothing more is asked into it until an audit has
+    freed some. Fetching waits for the auditors (auditing.py)."""
+
+
 class Unspoolable(TypeError):
     """Rows that cannot be written to a rows file exactly: a value that is no number, text, true, false or null."""
 

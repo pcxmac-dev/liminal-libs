@@ -23,7 +23,8 @@ their options, and the charts' Plugins view draws the page.
   a crash). Its ledger is three new tables of the main file, made when it is opened: `pulls`, `pull_files`,
   `audit_findings`. A pull that asked and got nothing to store leaves nothing behind.
 - **Where nothing changes**: outside a pull (the live recorder's writes), in a store in memory, in a process that
-  reads only, and with `LIMINAL_FETCH_CACHE=off`, everything is written as before.
+  reads only, and with `LIMINAL_FETCH_CACHE=off`, everything is written as before; with the switch off a feed's run
+  neither settles nor audits what an earlier one left (the auditors' own process takes it).
 - **The copy audit, bit by bit** (`auditing.audit_pull`, `audit_pulls`). A closed pull's rows files are read back, each
   held against the sha256 kept when it was written, and their rows compared with the feed's `bars` inside SQLite,
   every key and every value, by the comparison the write itself uses (`IS`). A bar stored as the file has it passes.
@@ -34,15 +35,36 @@ their options, and the charts' Plugins view draws the page.
   asked for it again. A pull that passes has its files removed, or kept the days the policy says; one with a finding
   keeps them as its evidence. What it proves is that the load from the cache was exact, not that the feed's data is
   right: the second-feed audit (`audit.py`) and the sweep look at that.
+- **The ledger is no history.** A pull that passed and of which nothing is kept is counted (`cache_verified`: pulls,
+  files, bars and bytes verified, today and in all) and forgotten at once: a feed updated all day makes tens of
+  thousands of pulls a day, and the main file holds only what is on disk and what is still to be judged. One that was
+  cut off stays until the sweep has seen its span held, or a week.
+- **One process at a time audits or recovers a feed's cache** (the claim `cache:<feed>`): a feed's run auditing the
+  pull it just closed, the auditors' process and a run at the cap never read and remove the same files at once. A
+  pull whose feed is being audited elsewhere is left to that process, and one audited meanwhile is not audited twice.
 - **When**: as each pull closes and after a symbol's fetch, the symbol still claimed (`Audit when a symbol is
   updated`); before a run asks anything, for what earlier runs left (`Collector._settle_cache`, a minute at most); and
   in the sweep.
 - **What a crash left** (`auditing.recover`): a pull left open by a process that is gone is closed as cut; a rows file
-  written and never loaded is loaded then, without asking the feed again, and its span recorded as held.
-- **The cap** (`auditing.room`): unverified cache at its cap makes a new pull wait: what waits is audited at once, and
-  if that frees too little the run stops without a strike against the feed (`CacheFull`). Unverified data is never
-  deleted; files kept as a finding's evidence do not count toward the cap. A cache that cannot be written
-  (`spool.CacheFailed`: the disk, a path) stops the run the same way: this machine's fault, not the feed's.
+  written and never loaded is loaded then, without asking the feed again, and its span recorded as held. A file
+  loaded late is the answer of the moment it was written: it puts in what is not stored and replaces only what was
+  stored before it; a bar stored since (the live recorder's, a later run's) stays, a bar moved out as another
+  instrument's is not brought back, and its audit takes a bar stored since for the newer word, not for a difference.
+  A pull open in this process, on whatever thread, is never taken for a dead run's (`pulls.live`).
+- **The cap** (`auditing.room`, `Pull.room`): unverified cache at its cap makes a new pull wait: what waits is audited
+  at once, and if that frees too little the run stops without a strike against the feed (`spool.CacheFull`). It is
+  looked at inside a pull too, each time the pull has written 64 MB more, before a page is written and before the
+  HTTP client asks for the next: a long gap ends at the cap as a cut pull, what it loaded is audited and its files
+  go, and the next run goes on from there. Unverified data is never deleted; files kept as a finding's evidence do
+  not count toward the cap. A process that caches nothing keeps no cap, whatever an earlier run left on disk.
+- **When the cache itself fails** (`spool.CacheFailed`: the disk, a path, or its ledger in a database busy past its
+  wait): the run stops without a strike, this machine's fault and not the feed's; nothing is stored that the cache
+  does not know of, and an answer still on the wire is let go. What ended a pull is what its caller hears: a rate
+  limit's strike is never replaced by the ledger's own trouble. Why a pull was cut is kept without the query of any
+  address (the HTTP library's errors repeat the whole address, and a key may be in a query).
+- **Files that cannot be removed** (on Windows, one another program holds open) are not said to be: the pull stays in
+  the ledger with them, and `auditing.tidy` tries again. A feed's run tidies the cache before it asks anything, so
+  kept files go when their days are over with the sweep off, too. One pull whose audit fails holds up no other.
 - **The sweep** (`auditing.Sweep`): every watched series of every feed in turn, from where the last run stopped, for
   the minutes the policy gives a run, each under its symbol's claim. A series' visit audits what waits of it in the
   cache; keeps a cut-off pull as a finding until the span it asked is held; and, for each frame the feed sends
@@ -73,7 +95,13 @@ their options, and the charts' Plugins view draws the page.
   moves. A feed's source is unchanged too: the cache sits in the HTTP client and in the store's write functions.
 - The open pull is each thread's own (`spool.current`, a `threading.local`): a feed's run on another thread does not
   write into it.
-- 76 new tests (`tests/test_fetch_cache.py`, `tests/test_auditors.py`): no process started and no network.
+- What "a later write" is rests on the moment each write was stored under, this machine's clock: a clock set back
+  between a write and the one that rightly replaced it can make the replacement look like a difference. The cost is
+  a finding and one more ask of the feed, never a change to what is stored.
+- An independent review of the write path (2026-11-18) found the late load replacing newer bars, two processes able
+  to audit one pull at once, the cap kept with the cache off and not kept inside a pull, a ledger's failure taken
+  for a crash, and files said removed that were not: each is fixed above, with a test that fails without its fix.
+- 96 new tests (`tests/test_fetch_cache.py`, `tests/test_auditors.py`): no process started and no network.
 
 ## 1.63.0 (2026-11-18)
 

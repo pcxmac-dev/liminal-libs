@@ -25,7 +25,20 @@ that).
 symbol's claim.
 
 A bar's values are compared as numbers in their stored form: a float against the float the file's text reads back
-to, which is the same float bit for bit but for a negative zero."""
+to, which is the same float bit for bit but for a negative zero.
+
+**A rows file loaded late** (its run ended between the file and the database: `_load`) is the answer of its own
+moment. It puts in what is not stored and replaces only what was stored before it was written; a bar stored since
+(the live recorder's, a later run's) is the newer word and stays, and one moved out as another instrument's stays
+out. Its audit then takes a bar stored since for what it is, not for a difference.
+
+**One process at a time** audits or recovers a feed's cache (the claim `cache:<feed>`): a feed's run auditing the
+pull it just closed, the auditors' process and a run at the cap never read and remove the same files at once. A
+pull whose feed is being audited elsewhere is left to that process, or to the next pass.
+
+What "a later write" is rests on the moment each write was stored under, which is this machine's clock. A clock set
+back between a write and the one that rightly replaced it can make the replacement look like a difference: the
+cost is a finding and one more ask of the feed, never a change to what is stored."""
 from __future__ import annotations
 
 import os
@@ -67,7 +80,8 @@ ABOUT: dict[str, str] = {
     REPULLS: "Re-pulls per sweep",
 }
 _HOURS = {"24h": 24.0, "6h": 6.0, "7d": 168.0, "off": None}
-FORGET_DAYS = 7  # an audited pull whose files are gone stays in the ledger this long, for its page
+FORGET_DAYS = 7  # a pull kept past its audit for the sweep (one that was cut off) is forgotten this long after it
+TIDY_PULLS = 2000  # pulls whose files `tidy` removes in one call
 SHOWN = 5  # of a finding's bars, the first few are kept with it
 
 
@@ -148,9 +162,7 @@ class AuditorPlugin(IntegratorPlugin):
             raise ConfigError(str(e)) from e
 
 
-class CacheFull(spool.CacheFailed):
-    """The cache holds as much unverified data as its cap allows, and auditing what waits freed too little: fetching
-    waits for the auditors."""
+CacheFull = spool.CacheFull  # the cache at its cap (the policy's `Cache cap`): fetching waits for the auditors
 
 
 # -- the copy audit ----------------------------------------------------------------------------------------------------
@@ -165,6 +177,47 @@ _IS_NOT = " OR ".join(f"b.{c} IS NOT t.{c}" for c in _VALUES)
 _T = ", ".join(f"t.{c}" for c in (*_KEY, *_VALUES))
 _B = ", ".join(f"b.{c}" for c in _VALUES)
 _STEP = {"second": 1_000, "minute": 60_000, "hour": 3_600_000, "day": 86_400_000}
+_FILL = "INSERT OR REPLACE INTO temp.pull_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+# A rows file loaded late: what is not stored is put in, what was stored before the file was written is replaced
+# (as its run would have), what was stored since stays. `{moved}`: nor is a bar brought back that was moved out.
+_LATE = ("INSERT INTO bars (" + ", ".join((*_KEY, *_VALUES)) + ", stored_at) SELECT " + _T + ", ? FROM temp.pull_rows t "
+         "WHERE true{moved} ON CONFLICT (ticker, timespan, multiplier, ts) DO UPDATE SET "
+         + ", ".join(f"{c}=excluded.{c}" for c in (*_VALUES, "stored_at"))
+         + " WHERE (" + " OR ".join(f"bars.{c} IS NOT excluded.{c}" for c in _VALUES)
+         + ") AND COALESCE(bars.stored_at, 0) <= excluded.stored_at")
+_NOT_MOVED = " AND NOT EXISTS (SELECT 1 FROM archived_bars a WHERE " + _ON.format(o="a") + ")"
+FAILURES = 3  # so many pulls in a row whose audit raised: the pass ends (a database that is busy fails them all)
+
+
+def cache_on() -> bool:
+    """Whether this process keeps a fetch cache at all: not one that reads only, nor with LIMINAL_FETCH_CACHE=off.
+    Where it does not, a feed's run neither settles nor audits what an earlier one left: it writes as before 1.64.0,
+    and the auditors' own process takes what waits."""
+    return pulls.enabled() and not read_only()
+
+
+def _hold(store, feed: str):
+    """This process's claim on a feed's cache (claims.py: `cache:<feed>`), for as long as it audits or recovers a
+    pull of it. Returns the claim; None where there is nothing to claim on (a store without a file); False while
+    another process holds it."""
+    from . import claims, collector
+
+    path = collector._claimable(store)
+    if path is None:
+        return None
+    conn = getattr(store, "conn", None)
+    if conn is not None and conn.in_transaction:
+        conn.commit()  # the claim is written over a connection of its own: nothing of the store's is left open under it
+    claim = claims.take(path, f"cache:{feed}", what="auditing its fetch cache")
+    return claim if claim is not None else False
+
+
+def _let_go(store, held) -> None:
+    """A feed's cache given back (None or False: nothing was held)."""
+    if held:
+        from . import claims
+
+        claims.release(store.path, held)
 
 
 @dataclass
@@ -229,15 +282,17 @@ def _has(conn, table: str) -> bool:
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
-def compare(conn, rows: list, stored_at: int | None = None, repair: bool = True, now_ms: int | None = None) -> FileAudit:
+def compare(conn, rows: list, stored_at: int | None = None, repair: bool = True, now_ms: int | None = None,
+            late: bool = False) -> FileAudit:
     """Bar rows (as a rows file holds them: the key, then the values) held against `bars` on `conn`, a feed's own
-    connection: what is missing, what differs, what a later write replaced. With `repair`, the missing are put in."""
+    connection: what is missing, what differs, what a later write replaced. With `repair`, the missing are put in.
+    `late`: the file was loaded after its run had ended, and left alone whatever was stored since it was written."""
     out = FileAudit(seq=0, rows=len(rows))
     conn.execute(_TEMP)
     with conn:
         conn.execute("DELETE FROM temp.pull_rows")
         # (a key twice in one file: the later row is the one a write stored, and the one kept here)
-        conn.executemany("INSERT OR REPLACE INTO temp.pull_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.executemany(_FILL, rows)
     out.rows = conn.execute("SELECT COUNT(*) FROM temp.pull_rows").fetchone()[0]
     # A bar stored with other values is a later write's when it was stored after this file was (stored_at) and the
     # version the file holds is kept as the one replaced then (bar_revisions). One stored under this file's own
@@ -245,16 +300,21 @@ def compare(conn, rows: list, stored_at: int | None = None, repair: bool = True,
     revised = _has(conn, "bar_revisions")
     kept = ("EXISTS (SELECT 1 FROM bar_revisions r WHERE " + _ON.format(o="r") + " AND r.derivation IS NULL AND "
             + _IS.format(o="r") + "{when})")
-    if revised and stored_at is not None:
+    args: tuple
+    if late and stored_at is not None:
+        # loaded late: a bar stored since the file was written was never this file's to replace (no version of the
+        # file's was ever stored there to be kept as replaced), and is the newer word
+        later, args = " AND NOT (COALESCE(b.stored_at, 0) > ?)", (int(stored_at),)
+    elif revised and stored_at is not None:
         later = " AND NOT (COALESCE(b.stored_at, 0) > ? AND " + kept.format(when=" AND r.replaced_at >= ?") + ")"
-        args: tuple = (int(stored_at), int(stored_at))
+        args = (int(stored_at), int(stored_at))
     elif revised:
         later, args = " AND NOT " + kept.format(when=""), ()
     else:
         later, args = "", ()
     differs = f"FROM temp.pull_rows t JOIN bars b ON {_ON.format(o='b')} WHERE ({_IS_NOT})"
     out.differing = conn.execute(f"SELECT COUNT(*) {differs}{later}", args).fetchone()[0]
-    if revised:
+    if later:
         out.replaced = conn.execute(f"SELECT COUNT(*) {differs}", ()).fetchone()[0] - out.differing
     if out.differing:
         for r in conn.execute(f"SELECT {_T}, {_B}, b.stored_at {differs}{later} ORDER BY t.ts LIMIT {SHOWN}", args):
@@ -287,26 +347,31 @@ def compare(conn, rows: list, stored_at: int | None = None, repair: bool = True,
 
 def _load(store, pull: dict, files: list[dict], folder) -> int:
     """Rows files written and never loaded (their run ended, or failed, between the file and the database): loaded
-    now, as the run would have, and for a series' own pull recorded as held in the coverage ledger from their first
-    bar to their last. Returns the files loaded."""
-    from .storage.feeds import _UPSERT_BAR
-
+    now, and for a series' own pull recorded as held in the coverage ledger from their first bar to their last.
+    A file loaded so is the answer of the moment it was written: it puts in what is not stored and replaces what was
+    stored before it, as its run would have; what was stored since stays as it is (the live recorder's bar, a
+    later run's corrected one), and a bar moved out as another instrument's is not brought back. Returns the files
+    loaded."""
     done = 0
     for f in files:
         if f["kind"] != "rows" or f["loaded_at"] or f["removed_at"]:
             continue
         try:
             header, rows, digest = spool.read_rows(folder / f["name"])
-        except (OSError, ValueError):
+        except (OSError, EOFError, ValueError):
             continue  # not readable: its audit says so
         if digest != f["sha256"] or not rows:
             continue
         feed = f["feed"] or header.get("feed") or pull["feed"]
         stored = int(f["stored_at"] or header.get("stored_at") or time.time() * 1000)
         conn = store._feed(feed, create=True).conn
+        conn.execute(_TEMP)
         with conn:
-            conn.executemany(_UPSERT_BAR, [(*r, stored) for r in rows])
-        store.pull_file_loaded(pull["id"], f["seq"])
+            conn.execute("DELETE FROM temp.pull_rows")
+            conn.executemany(_FILL, rows)
+            conn.execute(_LATE.format(moved=_NOT_MOVED if _has(conn, "archived_bars") else ""), (stored,))
+            conn.execute("DELETE FROM temp.pull_rows")
+        store.pull_file_loaded(pull["id"], f["seq"], late=True)
         store._wrote()
         step = _STEP.get(pull.get("timespan") or "")
         if pull["kind"] in ("bars", "download", "recheck") and pull.get("ticker") and step and f["lo_ms"] is not None:
@@ -316,27 +381,48 @@ def _load(store, pull: dict, files: list[dict], folder) -> int:
 
 
 def _remove(store, pull: dict, files: list[dict], folder) -> int:
-    """A pull's files removed from disk (those still there), its folder with them."""
-    seqs = [f["seq"] for f in files if not f["removed_at"]]
-    for f in files:
-        if not f["removed_at"]:
-            try:
-                os.unlink(folder / f["name"])
-            except OSError:
-                pass
-    shutil.rmtree(folder, ignore_errors=True)
-    if seqs:
-        store.pull_files_removed(pull["id"], seqs)
-    return len(seqs)
+    """A pull's files removed from disk (those still there), its folder with them. Only what is really gone is
+    said to be: a file that cannot be removed now (on Windows, one another program holds open) stays in the ledger
+    as a file on disk, and `tidy` tries again. Returns the files removed."""
+    there = [f for f in files if not f["removed_at"]]
+    gone: list[int] = []
+    for f in there:
+        try:
+            os.unlink(folder / f["name"])
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        gone.append(f["seq"])
+    if gone:
+        store.pull_files_removed(pull["id"], gone)
+    if len(gone) == len(there):
+        shutil.rmtree(folder, ignore_errors=True)  # (with whatever else is in it: a write's unfinished file)
+    return len(gone)
 
 
 def audit_pull(store, pull, policy_: Policy | None = None, log: Log | None = None) -> PullAudit | None:
     """One pull audited (see the module's words): a closed pull not audited yet, by its id or its row. None for one
-    that is not there, still open, audited already, or in a process that reads only."""
+    that is not there, still open, audited already, in a process that reads only, or while another process audits
+    its feed's cache (it is that process's to take, or the next pass's)."""
     with_ = policy_ or policy()
     row = store.pull(pull) if isinstance(pull, str) else pull
     if row is None or row["state"] == "open" or row["audit"] is not None or read_only():
         return None
+    held = _hold(store, row["feed"])
+    if held is False:
+        return None
+    try:
+        row = store.pull(row["id"])  # as it stands now: the process that just let go may have audited it
+        if row is None or row["state"] == "open" or row["audit"] is not None:
+            return None
+        return _audit(store, row, with_, log)
+    finally:
+        _let_go(store, held)
+
+
+def _audit(store, row: dict, with_: Policy, log: Log | None) -> PullAudit | None:
+    """audit_pull's work, the feed's cache held."""
     folder = store.pull_folder(row)
     if folder is None:
         return None
@@ -374,7 +460,7 @@ def audit_pull(store, pull, policy_: Policy | None = None, log: Log | None = Non
             if conn is None:
                 one.result, one.why, one.rows, one.missing = "mismatch", "its feed has no file", len(rows), len(rows)
             else:
-                got = compare(conn, rows, stored_at=f["stored_at"], repair=with_.repair)
+                got = compare(conn, rows, stored_at=f["stored_at"], repair=with_.repair, late=bool(f["late"]))
                 got.seq = f["seq"]
                 one = got
                 if one.repaired:
@@ -385,11 +471,25 @@ def audit_pull(store, pull, policy_: Policy | None = None, log: Log | None = Non
     out.result = "mismatch" if bad or out.damaged_payloads else "repaired" if any(f.repaired for f in out.files) else "ok"
     _find(store, row, out)
     store.pull_audited(row["id"], out.result, "" if out.result == "ok" else out.words()[:400])
-    if out.result != "mismatch" and with_.keep_days <= 0:
-        out.removed = _remove(store, row, files, folder)
+    if out.result != "mismatch":
+        store.cache_verified(pulls=1, files=sum(1 for f in files if not f["removed_at"]), rows=out.rows,
+                             size=sum(int(f["bytes"] or 0) for f in files if not f["removed_at"]),
+                             repaired=sum(f.repaired for f in out.files))
+        if with_.keep_days <= 0:
+            out.removed = _remove(store, row, files, folder)
+            _forget(store, row)
     if log is not None and (out.result != "ok" or out.loaded_late):
         log(out.words() + (f"; {out.loaded_late} cache files were loaded late" if out.loaded_late else ""))
     return out
+
+
+def _forget(store, row: dict) -> bool:
+    """A pull whose audit passed and of which no file is left, forgotten: the ledger holds what is on disk and what
+    is still to be judged, and the pull was counted when it passed. One that was cut off stays: the sweep says when
+    the span it asked is held (Sweep._cut_pulls), and it is forgotten then, or FORGET_DAYS after its audit."""
+    if row["state"] != "complete" or any(not f["removed_at"] for f in store.pull_files(row["id"])):
+        return False
+    return bool(store.pull_drop(row["id"]))
 
 
 def _find(store, row: dict, out: PullAudit) -> None:
@@ -416,16 +516,30 @@ def _find(store, row: dict, out: PullAudit) -> None:
 
 def audit_pulls(store, feed: str | None = None, ticker: str | None = None, policy_: Policy | None = None,
                 log: Log | None = None, budget_s: float | None = None) -> list[PullAudit]:
-    """Every closed pull not audited yet (of a feed, of a symbol), the oldest first, for at most `budget_s`."""
+    """Every closed pull not audited yet (of a feed, of a symbol), the oldest first, for at most `budget_s`. A pull
+    whose audit raises (a feed's file that cannot be read, a database busy past its wait) is said and left for a
+    later pass, and the ones after it are audited all the same: one pull never holds up the rest, which would fill
+    the cache to its cap behind it. FAILURES in a row end the pass."""
     began = time.monotonic()
     out: list[PullAudit] = []
     if read_only() or pulls.cache_dir(store) is None or not hasattr(store, "pulls"):
         return out  # (a store in memory, or a stand-in for one, keeps no pulls)
     waiting = [p for p in reversed(store.pulls(feed=feed, ticker=ticker, audited=False, limit=5000)) if p["state"] != "open"]
+    failed = 0
     for row in waiting:
         if budget_s is not None and time.monotonic() - began >= budget_s:
             break
-        got = audit_pull(store, row, policy_, log)
+        try:
+            got = audit_pull(store, row, policy_, log)
+        except (sqlite3.Error, OSError, ValueError, TypeError) as e:
+            failed += 1
+            if log is not None:
+                who = f"{row['feed']}:{row['ticker']}" if row["ticker"] else row["feed"]
+                log(f"audit {who}: a pull's audit is left for later ({type(e).__name__}: {e})"[:300])
+            if failed >= FAILURES:
+                break
+            continue
+        failed = 0
         if got is not None:
             out.append(got)
     return out
@@ -433,8 +547,10 @@ def audit_pulls(store, feed: str | None = None, ticker: str | None = None, polic
 
 def recover(store, feed: str | None = None, log: Log | None = None) -> int:
     """The pulls left open by a run that is gone (a crash, a machine switched off): each rows file in its folder is
-    entered in the ledger if it is not, its rows loaded if they were not (without asking the feed again), and the
-    pull closed as cut. One whose process is still at work is left to it. Returns the pulls closed."""
+    entered in the ledger if it is not, its rows loaded if they were not (without asking the feed again: `_load`),
+    and the pull closed as cut. One whose process is still at work is left to it, and so is every pull open in this
+    process, on whatever thread (pulls.live): only what an earlier pass of this process left is its own to close.
+    A feed whose cache another process is on is left to that process. Returns the pulls closed."""
     from . import claims
 
     if read_only() or pulls.cache_dir(store) is None or not hasattr(store, "pulls"):
@@ -442,67 +558,106 @@ def recover(store, feed: str | None = None, log: Log | None = None) -> int:
     held = store.pulls(feed=feed, state="open", limit=5000)
     if not held:
         return 0
-    mine = spool.current()
+    live = pulls.live()
     gone = claims.gone(store.conn, {(p["instance"], p["pid"]) for p in held}, own_files=own_files(store.path))
     closed = 0
-    for row in held:
-        if (row["instance"], row["pid"]) not in gone or (mine is not None and getattr(mine, "id", None) == row["id"]):
-            continue
-        folder = store.pull_folder(row)
-        entered = store.pull_files(row["id"])
-        known = {f["name"] for f in entered}
-        last = max([f["seq"] for f in entered] or [0])
-        for path in sorted(folder.glob("*" + spool.ROWS_SUFFIX)) if folder.is_dir() else ():
-            if path.name in known:
+    holds: dict[str, object] = {}
+    try:
+        for row in held:
+            if (row["instance"], row["pid"]) not in gone or row["id"] in live:
                 continue
-            try:
-                header, rows, digest = spool.read_rows(path)
-            except (OSError, EOFError, ValueError):
+            if row["feed"] not in holds:
+                holds[row["feed"]] = _hold(store, row["feed"])
+            if holds[row["feed"]] is False:
                 continue
-            if not rows:
+            row = store.pull(row["id"])  # as it stands now
+            if row is None or row["state"] != "open":
                 continue
-            number = int(header.get("seq") or 0)  # (a rows file says which of its pull's files it is)
-            if not number:
-                last += 1
-                number = last
-            times = [r[3] for r in rows]
-            store.pull_file_known(row["id"], number, spool.Written(path.name, path.stat().st_size, digest, len(rows)),
-                                  header, (min(times), max(times)))
-        loaded = _load(store, row, store.pull_files(row["id"]), folder)
-        since = f"; {loaded} cache files loaded since" if loaded else ""
-        store.pull_cut(row["id"], "its run ended without closing it" + since)
-        closed += 1
-        if log is not None:
-            who = f"{row['feed']}:{row['ticker']}" if row["ticker"] else row["feed"]
-            log(f"cache {who}: a pull left open by a run that is gone was closed" + (
-                f", {loaded} of its cache files loaded without asking the feed again" if loaded else ""))
+            closed += _recover(store, row, log)
+    finally:
+        for one in holds.values():
+            _let_go(store, one)
     return closed
+
+
+def _recover(store, row: dict, log: Log | None) -> int:
+    """recover's work on one pull, its feed's cache held. Returns 1."""
+    folder = store.pull_folder(row)
+    entered = store.pull_files(row["id"])
+    known = {f["name"] for f in entered}
+    last = max([f["seq"] for f in entered] or [0])
+    for path in sorted(folder.glob("*" + spool.ROWS_SUFFIX)) if folder.is_dir() else ():
+        if path.name in known:
+            continue
+        try:
+            header, rows, digest = spool.read_rows(path)
+        except (OSError, EOFError, ValueError):
+            continue
+        if not rows:
+            continue
+        number = int(header.get("seq") or 0)  # (a rows file says which of its pull's files it is)
+        if not number:
+            last += 1
+            number = last
+        times = [r[3] for r in rows]
+        store.pull_file_known(row["id"], number, spool.Written(path.name, path.stat().st_size, digest, len(rows)),
+                              header, (min(times), max(times)))
+    loaded = _load(store, row, store.pull_files(row["id"]), folder)
+    since = f"; {loaded} cache files loaded since" if loaded else ""
+    store.pull_cut(row["id"], "its run ended without closing it" + since)
+    if log is not None:
+        who = f"{row['feed']}:{row['ticker']}" if row["ticker"] else row["feed"]
+        log(f"cache {who}: a pull left open by a run that is gone was closed" + (
+            f", {loaded} of its cache files loaded without asking the feed again" if loaded else ""))
+    return 1
 
 
 def room(store, policy_: Policy | None = None, log: Log | None = None) -> None:
     """Before a new pull: the unverified cache is under its cap. At the cap, what waits is audited at once; still at
-    the cap after that (pulls open elsewhere, or findings that are not files' to settle): CacheFull."""
+    the cap after that (pulls open elsewhere, or findings that are not files' to settle): CacheFull. A process that
+    caches nothing (LIMINAL_FETCH_CACHE=off, a copy that reads only, a store in memory) keeps no cap: what an
+    earlier run left on disk never stops its fetching."""
     with_ = policy_ or policy()
-    cap = with_.cap_gb * 2**30
-    counted = getattr(store, "cache_bytes", None)
-    if not callable(counted) or counted() < cap:
+    if not cache_on() or pulls.cache_dir(store) is None or not _over(store, with_):
         return
-    audit_pulls(store, policy_=with_, log=log)
-    held = counted()
-    if held >= cap:
-        raise CacheFull(f"the fetch cache holds {held / 2**30:.1f} GB not audited yet (its cap: {with_.cap_gb} GB): "
-                        "fetching waits for the auditors")
+    try:
+        audit_pulls(store, policy_=with_, log=log)
+    except (sqlite3.Error, OSError):
+        pass  # (what could not be audited just now is counted below all the same)
+    why = _over(store, with_)
+    if why:
+        raise CacheFull(why)
+
+
+def _over(store, with_: Policy) -> str:
+    """Why nothing more may be asked into the cache: its unverified bytes are at the cap. "" while there is room,
+    and when the ledger cannot be read just now (a read that fails never stops a fetch)."""
+    counted = getattr(store, "cache_bytes", None)
+    if not callable(counted):
+        return ""
+    try:
+        held = counted()
+    except sqlite3.Error:
+        return ""
+    if held < with_.cap_gb * 2**30:
+        return ""
+    return (f"the fetch cache holds {held / 2**30:.1f} GB not audited yet (its cap: {with_.cap_gb} GB): "
+            "fetching waits for the auditors")
 
 
 @contextmanager
 def pull(store, feed: str, kind: str, log: Log | None = None, **facts) -> Iterator[pulls.Pull]:
     """A pull open for the block (storage/pulls.py: pulling), audited as it closes when the policy says so (`Audit
-    when a symbol is updated`). An audit that cannot run then (a database busy) is left to the next one."""
+    when a symbol is updated`). An audit that cannot run then (a database busy) is left to the next one. The cap is
+    looked at before it opens and again as it grows (Pull.room): at the cap it ends there, cut, and what it loaded
+    is audited like any pull's."""
     with_ = policy()
     room(store, with_, log)
     one = None
     try:
         with pulls.pulling(store, feed, kind, **facts) as one:
+            if getattr(one, "spools", False):
+                one.limit = lambda: _over(store, with_)
             yield one
     finally:
         if one is not None and one.made and with_.on_update:
@@ -514,19 +669,18 @@ def pull(store, feed: str, kind: str, log: Log | None = None, **facts) -> Iterat
 
 
 def tidy(store, policy_: Policy | None = None, now: datetime | None = None) -> dict:
-    """The cache kept in order: the files of verified pulls whose keeping time is over removed, and the pulls long
-    audited forgotten. Returns {"removed", "forgotten"}."""
+    """The cache kept in order: the files of verified pulls whose keeping time is over removed (and those a
+    removal could not take the first time), the pulls then forgotten, and the ones kept for the sweep forgotten
+    FORGET_DAYS after their audit. At most TIDY_PULLS pulls a call, the oldest first. Returns {"removed",
+    "forgotten"}."""
     with_ = policy_ or policy()
     at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    removed = 0
-    before = (at - timedelta(days=with_.keep_days)).isoformat(timespec="seconds")
-    for row in store.pulls(audited=True, limit=5000):
-        if row["audit"] == "mismatch" or (row["audited_at"] or "") > before:
-            continue
+    removed = forgotten = 0
+    for row in store.pulls_kept_before(at - timedelta(days=with_.keep_days), TIDY_PULLS):
         files = [f for f in store.pull_files(row["id"]) if not f["removed_at"]]
-        if files:
-            removed += _remove(store, row, files, store.pull_folder(row))
-    return {"removed": removed, "forgotten": store.pulls_forget(at - timedelta(days=FORGET_DAYS))}
+        removed += _remove(store, row, files, store.pull_folder(row))
+        forgotten += _forget(store, row)
+    return {"removed": removed, "forgotten": forgotten + store.pulls_forget(at - timedelta(days=FORGET_DAYS))}
 
 
 # -- the sweep -----------------------------------------------------------------------------------------------------------
@@ -682,6 +836,10 @@ class Sweep:
                     if f["state"] != "closed":
                         store.finding_set(f["id"], "closed")
                         visit.closed += 1
+                # what it asked is held: there is nothing more to judge it by, and once its audit has passed and its
+                # files are gone it is forgotten (it was counted when it passed)
+                if p["audit"] in ("ok", "repaired") and not any(not f["removed_at"] for f in store.pull_files(p["id"])):
+                    store.pull_drop(p["id"])
             else:
                 still.append(p)
                 if not was:
@@ -855,8 +1013,9 @@ def mark_asked(store, finding_ids) -> None:
 
 
 def overview(store, policy_: Policy | None = None, findings: int = 100) -> dict:
-    """The auditors for their page: the policy, the cache by state and size, the last sweep, where the round
-    stands, and the latest findings."""
+    """The auditors for their page: the policy, the cache by state and size (what is on disk and what is still to
+    be judged), the pulls verified so far (counted, not kept), the last sweep, where the round stands, and the
+    latest findings."""
     import json
 
     with_ = policy_ or policy()
@@ -869,6 +1028,6 @@ def overview(store, policy_: Policy | None = None, findings: int = 100) -> dict:
     return {"policy": with_.as_dict(),
             "cache": {"folder": str(pulls.cache_dir(store) or ""), "on": pulls.enabled(), "states": store.cache_summary(),
                       "unverifiedBytes": store.cache_bytes(), "keptBytes": store.cache_bytes(unverified_only=False),
-                      "capBytes": with_.cap_gb * 2**30},
+                      "capBytes": with_.cap_gb * 2**30, "verified": store.cache_verified()},
             "sweep": {"last": last, "cursor": cursor, "round": Sweep(store, policy_=with_).round()},
             "findings": {"counts": counts, "open": counts.get("open", 0), "latest": store.findings(limit=findings)}}

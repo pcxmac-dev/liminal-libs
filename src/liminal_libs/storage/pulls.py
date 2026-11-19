@@ -18,15 +18,23 @@ with LIMINAL_FETCH_CACHE=off, a pull is open in name only and everything is writ
 
 The tables (schema.py: `pulls`, `pull_files`, `audit_findings`) are the main file's. A finding is what an auditor
 could not put right by itself, or put right and says so: kept with what it is about, and its state (open, repaired,
-asked again, absent at the feed, closed)."""
+asked again, absent at the feed, closed).
+
+The ledger holds what is on disk and what is still to be judged, not a history: a pull whose audit passed and whose
+files are gone is forgotten at once and counted (`cache_verified`: so many pulls and bars verified, today and in
+all); one that was cut stays until the sweep has seen its span held. A feed that is updated all day makes tens of
+thousands of pulls a day, and the main file is not the place to keep them."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
+import sqlite3
+import threading
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -42,9 +50,45 @@ FINDING_STATES = ("open", "repaired", "asked", "absent", "closed")
 _PULL = ("id", "feed", "kind", "ticker", "asset", "timespan", "start_ms", "end_ms", "state", "audit", "opened_at",
          "closed_at", "audited_at", "instance", "pid", "note")
 _FILE = ("pull", "seq", "kind", "name", "bytes", "sha256", "written_at", "path", "status", "feed", "rows", "lo_ms",
-         "hi_ms", "stored_at", "loaded_at", "audited_at", "result", "missing", "differing", "removed_at")
+         "hi_ms", "stored_at", "loaded_at", "late", "audited_at", "result", "missing", "differing", "removed_at")
 _FINDING = ("id", "at", "kind", "feed", "ticker", "timespan", "start_ms", "end_ms", "pull", "count", "detail", "state",
             "updated_at")
+VERIFIED_KEY = "audit:verified"  # kv: the pulls whose audit passed and that were forgotten, counted (cache_verified)
+CHECK_BYTES = 64 << 20  # a pull looks at the cache's cap again each time it has written this much (Pull.room)
+
+# The pulls open in this process, on any thread (their ids): what `auditing.recover` must not take for an earlier
+# pass's leftovers (claims.gone counts this process's own rows as gone, which they are when no thread is in them).
+_live: set[str] = set()
+_live_lock = threading.Lock()
+_QUERY = re.compile(r"""\?[^\s'"<>)]*""")
+
+
+def live() -> set[str]:
+    """The ids of the pulls open in this process now, whatever thread opened them."""
+    with _live_lock:
+        return set(_live)
+
+
+def _plain(e: BaseException) -> str:
+    """An error in a few words for the ledger, without the query of any address in it: a key may be in a query, and
+    the HTTP library's own errors repeat the whole address."""
+    return _QUERY.sub("?...", f"{type(e).__name__}: {e}")[:300]
+
+
+def _ledger(write, *args, **kw):
+    """A write of the cache's own ledger. One the database refuses (busy past its wait, a full disk) is the cache's
+    failure, spool.CacheFailed: the run stops on it without a strike, as on a cache file that cannot be written."""
+    try:
+        return write(*args, **kw)
+    except sqlite3.Error as e:
+        raise spool.CacheFailed(f"the fetch cache's ledger could not be written ({type(e).__name__}: {e})") from e
+
+
+def _emptied(folder: Path) -> bool:
+    """A pull's folder taken away, with whatever is in it. False while something of it cannot be removed (on
+    Windows: a file another program holds open, a scanner's or an indexer's look at it)."""
+    shutil.rmtree(folder, ignore_errors=True)
+    return not folder.exists()
 
 
 def enabled() -> bool:
@@ -103,6 +147,8 @@ class Pull:
         self.closed = False
         self.unspooled = 0  # writes made without a rows file: values a rows file cannot hold
         self.rows_files = 0
+        self.limit = None  # a callable saying why nothing more may be asked into the cache ("" or None: it may)
+        self._since = 0  # bytes written since the cap was last looked at
         self._seq = 0
         self._notes: list[str] = []
 
@@ -113,11 +159,31 @@ class Pull:
             self.folder.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise spool.CacheFailed(f"the fetch cache's folder could not be made ({self.folder}: {e})") from e
-        self.store._pull_made(self)
+        with _live_lock:
+            _live.add(self.id)  # before its row is there: a recover in this process never sees the row without it
+        try:
+            _ledger(self.store._pull_made, self)
+        except BaseException:
+            with _live_lock:
+                _live.discard(self.id)
+            raise
         self.made = True
 
     def _record(self, seq: int, kind: str, written: spool.Written, **facts) -> None:
-        self.store._pull_file(self.id, seq, kind, written, **facts)
+        _ledger(self.store._pull_file, self.id, seq, kind, written, **facts)
+        self._since += written.bytes
+
+    def room(self) -> None:
+        """Before more is asked into this pull: the cache is under its cap. `limit` is whoever opened it's to set
+        (the auditors' policy: auditing.pull); it is asked each time the pull has written CHECK_BYTES more, so one
+        long gap cannot outgrow the cap by itself. spool.CacheFull at the cap: the pull ends there as cut, what it
+        loaded is audited and its files go, and the next run goes on from where it stopped."""
+        if self.limit is None or self.closed or self._since < CHECK_BYTES:
+            return
+        self._since = 0
+        why = self.limit()
+        if why:
+            raise spool.CacheFull(why)
 
     def _name(self, suffix: str) -> tuple[int, str]:
         self._seq += 1
@@ -140,6 +206,7 @@ class Pull:
         file was made, and the rows are the ones given)."""
         if not self.spools or self.closed or not rows:
             return rows, None
+        self.room()  # (before anything of this write is on disk: at the cap nothing of it is written or stored)
         self._make()
         seq, name = self._name(spool.ROWS_SUFFIX)
         header = {"pull": self.id, "seq": seq, "feed": feed, "table": "bars", "columns": list(ROW_COLUMNS),
@@ -163,9 +230,11 @@ class Pull:
         return [(*r, stored_at) for r in back], seq
 
     def loaded(self, seq: int | None) -> None:
-        """The rows of file `seq` are in the database (committed)."""
+        """The rows of file `seq` are in the database (committed). A ledger that cannot be told so just then is
+        the cache's failure: the run stops before the page is recorded as held, and the file, still marked as not
+        loaded, is loaded again by the next run (the same bars: nothing changes) and its span recorded then."""
         if seq is not None:
-            self.store._pull_loaded(self.id, seq)
+            _ledger(self.store._pull_loaded, self.id, seq)
 
     # -- its end -------------------------------------------------------------------------------------------------
     def close(self, state: str = "complete", note: str = "") -> None:
@@ -174,6 +243,8 @@ class Pull:
         if self.closed:
             return
         self.closed = True
+        with _live_lock:
+            _live.discard(self.id)
         if not self.made:
             return
         words = "; ".join(w for w in (note, *self._notes) if w)[:400]
@@ -218,9 +289,10 @@ class PullStore:
                 (pull_id, seq, kind, written.name, written.bytes, written.sha256, _now(), path, status, feed, rows, lo_ms,
                  hi_ms, stored_at))
 
-    def _pull_loaded(self, pull_id: str, seq: int) -> None:
+    def _pull_loaded(self, pull_id: str, seq: int, late: bool = False) -> None:
         with self.conn:
-            self.conn.execute("UPDATE pull_files SET loaded_at=? WHERE pull=? AND seq=?", (_now(), pull_id, seq))
+            self.conn.execute("UPDATE pull_files SET loaded_at=?, late=? WHERE pull=? AND seq=?",
+                              (_now(), 1 if late else None, pull_id, seq))
 
     def _pull_closed(self, pull_id: str, state: str, note: str = "") -> None:
         with self.conn:
@@ -273,8 +345,10 @@ class PullStore:
         """An open pull whose run is gone, closed as cut."""
         self._pull_closed(pull_id, "cut", note[:400])
 
-    def pull_file_loaded(self, pull_id: str, seq: int) -> None:
-        self._pull_loaded(pull_id, seq)
+    def pull_file_loaded(self, pull_id: str, seq: int, late: bool = True) -> None:
+        """A rows file's rows are in the database, put there after its run had ended (`late`: by an auditor, which
+        left alone whatever was stored since the file was written)."""
+        self._pull_loaded(pull_id, seq, late)
 
     def pull_file_known(self, pull_id: str, seq: int, written: spool.Written, header: dict, times: tuple[int, int]) -> None:
         """A rows file found in a pull's folder that the ledger did not have (its run ended between the file and
@@ -303,30 +377,72 @@ class PullStore:
             self.conn.executemany("UPDATE pull_files SET removed_at=? WHERE pull=? AND seq=?",
                                   [(_now(), pull_id, s) for s in seqs])
 
-    def pull_drop(self, pull_id: str) -> None:
-        """A pull forgotten, its files with it (one that had nothing to check, or one long audited)."""
+    def pull_drop(self, pull_id: str) -> bool:
+        """A pull forgotten, its files with it: one that had nothing to check, or one whose audit passed and of
+        which nothing is kept. Its folder goes first. While something of it cannot be removed (another program
+        holds a file of it open) its row stays, as a pull that passed and still has files, and `tidy` tries again:
+        a folder is never left on disk with nothing in the ledger to find it by. Returns whether it is forgotten."""
         folder = self.pull_folder(pull_id)
+        if folder is not None and not _emptied(folder):
+            at = _now()
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE pulls SET state=CASE WHEN state='open' THEN 'complete' ELSE state END, "
+                    "closed_at=COALESCE(closed_at, ?), audit=COALESCE(audit, 'ok'), audited_at=COALESCE(audited_at, ?), "
+                    "note='files of it could not be removed yet' WHERE id=?", (at, at, pull_id))
+            return False
         with write_transaction(self.conn):
             self.conn.execute("DELETE FROM pull_files WHERE pull=?", (pull_id,))
             self.conn.execute("DELETE FROM pulls WHERE id=?", (pull_id,))
-        if folder is not None:
-            shutil.rmtree(folder, ignore_errors=True)
+        return True
 
     def pulls_forget(self, before: datetime) -> int:
         """The pulls audited before `before` whose files are all gone, forgotten (the ledger does not grow without
-        end). One with a file still kept (a mismatch's evidence, a payload kept some days) stays."""
+        end): the ones kept past their audit for the sweep to judge (cut off) or for their kept files. One with a
+        file still on disk (a mismatch's evidence, a payload kept some days) stays."""
         at = before.astimezone(timezone.utc).isoformat(timespec="seconds")
+        gone = self.conn.execute(
+            "SELECT p.id FROM pulls p WHERE p.audit IS NOT NULL AND p.audited_at < ? AND NOT EXISTS "
+            "(SELECT 1 FROM pull_files f WHERE f.pull=p.id AND f.removed_at IS NULL)", (at,)).fetchall()
+        return sum(1 for (pull_id,) in gone if self.pull_drop(pull_id))
+
+    def pulls_kept_before(self, before: datetime, limit: int = 500) -> list[dict]:
+        """The pulls whose audit passed at or before `before` and that still have files on disk, the oldest first:
+        those whose keeping time is over."""
+        at = before.astimezone(timezone.utc).isoformat(timespec="seconds")
+        sql = (f"SELECT {', '.join('p.' + c for c in _PULL)} FROM pulls p WHERE p.audit IS NOT NULL AND "
+               "p.audit != 'mismatch' AND p.audited_at <= ? AND EXISTS (SELECT 1 FROM pull_files f WHERE f.pull=p.id AND "
+               "f.removed_at IS NULL) ORDER BY p.audited_at, p.id LIMIT ?")
+        return [dict(zip(_PULL, r)) for r in self.conn.execute(sql, (at, int(limit)))]
+
+    def cache_verified(self, pulls: int = 0, files: int = 0, rows: int = 0, size: int = 0, repaired: int = 0,
+                       today: date | None = None) -> dict:
+        """The pulls whose audit passed, counted (they are not kept): in all, and today. With numbers, they are added
+        first, in one write transaction (several processes count). Returns the count as it stands."""
+        day = (today or date.today()).isoformat()
+        adds = {"pulls": int(pulls), "files": int(files), "rows": int(rows), "bytes": int(size), "repaired": int(repaired)}
+
+        def read() -> dict:
+            row = self.conn.execute("SELECT value FROM kv WHERE key=?", (VERIFIED_KEY,)).fetchone()
+            try:
+                got = json.loads(row[0]) if row and row[0] else {}
+            except ValueError:
+                got = {}
+            got = got if isinstance(got, dict) else {}
+            same_day = got.get("day") == day
+            return {"since": got.get("since"), "day": day, **{k: int(got.get(k) or 0) for k in adds},
+                    "today": {k: int((got.get("today") or {}).get(k) or 0) if same_day else 0 for k in adds}}
+
+        if not any(adds.values()):
+            return read()
         with write_transaction(self.conn):
-            gone = self.conn.execute(
-                "SELECT p.id, p.feed FROM pulls p WHERE p.audit IS NOT NULL AND p.audited_at < ? AND NOT EXISTS "
-                "(SELECT 1 FROM pull_files f WHERE f.pull=p.id AND f.removed_at IS NULL)", (at,)).fetchall()
-            self.conn.executemany("DELETE FROM pull_files WHERE pull=?", [(i,) for i, _ in gone])
-            self.conn.executemany("DELETE FROM pulls WHERE id=?", [(i,) for i, _ in gone])
-        folder = cache_dir(self)
-        if folder is not None:
-            for pull_id, feed in gone:  # (an emptied folder may be left behind by a file's removal: taken away here)
-                shutil.rmtree(folder / feed / pull_id, ignore_errors=True)
-        return len(gone)
+            out = read()
+            out["since"] = out["since"] or _now()
+            for k, n in adds.items():
+                out[k] += n
+                out["today"][k] += n
+            self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (VERIFIED_KEY, json.dumps(out)))
+        return out
 
     def cache_bytes(self, unverified_only: bool = True) -> int:
         """Bytes of the cache's files on disk: those of the pulls not audited yet (what the cap counts: a
@@ -411,7 +527,18 @@ def pulling(store, feed: str, kind: str, **facts) -> Iterator[Pull]:
         with spool.opened(pull):
             yield pull
     except BaseException as e:
-        pull.close("cut", f"{type(e).__name__}: {e}")
+        _close(pull, "cut", _plain(e))
         raise
     else:
-        pull.close("complete")
+        _close(pull, "complete")
+
+
+def _close(pull: Pull, state: str, note: str = "") -> None:
+    """A pull closed, whatever its ledger says to that. What ended the block is what its caller hears: a stop, a
+    rate limit or a good end is never replaced by the ledger's own trouble (a database busy past its wait). A pull
+    the ledger could not be told of stays open there and is closed as cut by a later run (auditing.recover), which
+    loads nothing twice."""
+    try:
+        pull.close(state, note)
+    except (sqlite3.Error, OSError):
+        pass

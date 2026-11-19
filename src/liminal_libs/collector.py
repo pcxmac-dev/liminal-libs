@@ -1622,12 +1622,19 @@ class Collector:
     def _settle_cache(self) -> None:
         """What earlier runs left in the fetch cache, before this one asks anything (1.64.0; auditing.py): a pull
         left open by a run that is gone is closed, its cache files loaded without asking the feed again; then what
-        waits for its audit is audited, for CACHE_SETTLE_S at most (the sweep takes what is left). A database busy
-        just then puts it off to the next run; a cache that cannot be written stops this one."""
+        waits for its audit is audited, for CACHE_SETTLE_S at most (the sweep takes what is left), and the files
+        whose keeping time is over go (auditing.tidy: so they do with the sweep off, too). A database busy just then
+        puts it off to the next run; a cache that cannot be written stops this one. Nothing where this process keeps
+        no cache (LIMINAL_FETCH_CACHE=off, a copy that reads only): it writes as before 1.64.0 and leaves what
+        waits to the auditors' own process."""
+        if not auditing.cache_on():
+            return
         try:
             auditing.recover(self.store, self.source.name, self.log)
             if auditing.policy().on_update:
                 auditing.audit_pulls(self.store, feed=self.source.name, log=self.log, budget_s=CACHE_SETTLE_S)
+            if hasattr(self.store, "pulls_kept_before"):
+                auditing.tidy(self.store)
         except spool.CacheFailed as e:
             raise StopRun(str(e)) from e
         except (sqlite3.Error, OSError) as e:
@@ -1951,8 +1958,9 @@ class Collector:
         """After a symbol's fetch, its claim still held (the user: "auditors should run if a symbol is updated"):
         every pull of it that is closed and not audited yet is held against what is stored (auditing.audit_pulls).
         Each pull was audited as it closed already; this takes what an earlier, interrupted run left of the
-        symbol. Put off when the database is busy; nothing with the policy's `Audit when a symbol is updated` off."""
-        if not auditing.policy().on_update:
+        symbol. Put off when the database is busy; nothing with the policy's `Audit when a symbol is updated` off,
+        or where this process keeps no cache."""
+        if not auditing.policy().on_update or not auditing.cache_on():
             return
         try:
             auditing.audit_pulls(self.store, feed=self.source.name, ticker=ticker, log=self.log)
