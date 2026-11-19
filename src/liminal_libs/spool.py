@@ -22,11 +22,11 @@ write functions (storage/feeds.py) ask it. It is plain on purpose, the standard 
 plugin's, the AI assistants' and the platform's too, and loads nothing of the storage to ask."""
 from __future__ import annotations
 
-import contextvars
 import gzip
 import hashlib
 import json
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,22 +60,25 @@ class Written:
 
 
 # -- the pull that is open ---------------------------------------------------------------------------------------------
-_open: contextvars.ContextVar = contextvars.ContextVar("liminal_libs_pull", default=None)
+# A thread's own (threading.local): a thread started while a pull is open has none, whatever the interpreter does with
+# a thread's context (from Python 3.14 a thread may be made to inherit its starter's context variables).
+_open = threading.local()
 
 
 def current():
-    """The pull open where this is asked (storage/pulls.py: Pull), or None: nothing is written to the cache."""
-    return _open.get()
+    """The pull open in this thread (storage/pulls.py: Pull), or None: nothing is written to the cache."""
+    return getattr(_open, "pull", None)
 
 
 @contextmanager
 def opened(pull) -> Iterator:
-    """`pull` is the one open inside the block (a thread started inside it has none: a pull is one line of work's)."""
-    token = _open.set(pull)
+    """`pull` is the one open in this thread inside the block (one inside another: the outer one again after)."""
+    before = current()
+    _open.pull = pull
     try:
         yield pull
     finally:
-        _open.reset(token)
+        _open.pull = before
 
 
 # -- the files ---------------------------------------------------------------------------------------------------------

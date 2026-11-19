@@ -140,7 +140,7 @@ def test_a_disk_that_refuses_is_the_caches_own_failure(tmp_path):
     assert issubclass(spool.CacheFailed, OSError) and not issubclass(spool.CacheFailed, requests.RequestException)
 
 
-def test_the_pull_that_is_open_is_this_line_of_works_alone():
+def test_the_pull_that_is_open_is_this_threads_alone():
     assert spool.current() is None
     with spool.opened("outer") as outer:
         assert spool.current() == "outer" == outer

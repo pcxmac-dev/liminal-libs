@@ -398,13 +398,14 @@ def _find(store, row: dict, out: PullAudit) -> None:
     span = (row.get("start_ms"), row.get("end_ms"))
     missing, differing = out.missing, out.differing
     repaired = sum(f.repaired for f in out.files)
+    shown = [s for f in out.files for s in f.shown]
     if missing:
-        store.finding_put("copy-missing", row["feed"], row["ticker"], row["timespan"], *span, pull=row["id"], count=missing,
-                          state="repaired" if repaired >= missing else "open",
-                          detail={"repaired": repaired, "first": [s for f in out.files for s in f.shown if s["stored"] is None][:SHOWN]})
+        store.finding_put("copy-missing", row["feed"], row["ticker"], row["timespan"], *span, pull=row["id"],
+                          count=missing, state="repaired" if repaired >= missing else "open",
+                          detail={"repaired": repaired, "first": [s for s in shown if s["stored"] is None][:SHOWN]})
     if differing:
-        store.finding_put("copy-differs", row["feed"], row["ticker"], row["timespan"], *span, pull=row["id"], count=differing,
-                          detail={"first": [s for f in out.files for s in f.shown if s["stored"] is not None][:SHOWN]})
+        store.finding_put("copy-differs", row["feed"], row["ticker"], row["timespan"], *span, pull=row["id"],
+                          count=differing, detail={"first": [s for s in shown if s["stored"] is not None][:SHOWN]})
     damaged = [f for f in out.files if f.result == "damaged"]
     if damaged or out.damaged_payloads:
         store.finding_put("cache-file", row["feed"], row["ticker"], row["timespan"], *span, pull=row["id"],
@@ -468,7 +469,8 @@ def recover(store, feed: str | None = None, log: Log | None = None) -> int:
             store.pull_file_known(row["id"], number, spool.Written(path.name, path.stat().st_size, digest, len(rows)),
                                   header, (min(times), max(times)))
         loaded = _load(store, row, store.pull_files(row["id"]), folder)
-        store.pull_cut(row["id"], "its run ended without closing it" + (f"; {loaded} cache files loaded since" if loaded else ""))
+        since = f"; {loaded} cache files loaded since" if loaded else ""
+        store.pull_cut(row["id"], "its run ended without closing it" + since)
         closed += 1
         if log is not None:
             who = f"{row['feed']}:{row['ticker']}" if row["ticker"] else row["feed"]

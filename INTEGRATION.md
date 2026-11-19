@@ -82,6 +82,17 @@ method it is reached by (`file`, `helper`, `socket`, `tcp`), its port, who else 
 server the role used there. What you add is kept through the plugin's login (one value under
 `<ENGINE>_INSTANCES`, a sign-in as two more pairs), never in a file.
 
+The auditors' options are a plugin's too (plugin API 2.4, liminal-libs 1.64.0: `liminal_libs/auditing.py`,
+`AuditorPlugin`, an `IntegratorPlugin`; `plugin-integrator-auditor`, one for an app). The auditors themselves
+are the library's and run without it, on the same defaults. What a feed is asked for is a pull: its answers
+and the rows made of them are written beside the main file first (`cache/<feed>/<pull>/`: `spool.py`,
+`storage/pulls.py`) and the database is loaded from those files. A pull's files go only once the copy audit
+held every bar of them against what was stored (`auditing.audit_pull`): a bar missing is put in from the
+cache, a bar stored with other values is a finding and is asked for again, and nothing stored is overwritten.
+The sweep (`auditing.Sweep`) goes over every watched series in turn for session days that should hold bars
+and do not, and for what cut-off pulls left. Findings are the main file's `audit_findings`.
+`LIMINAL_FETCH_CACHE=off` writes as before 1.64.0.
+
 ## How the programs talk at run time
 
 - Everything shares the databases in `store/data/`; one process at a time owns a writer, through the
@@ -106,6 +117,9 @@ server the role used there. What you add is kept through the plugin's login (one
   on the system that holds them (`liminal_libs.storage.link`: a private pipe, no port). It says who it
   is, and the helper opens each file as the share set on its instance says: reading and writing,
   reading alone, or not at all; with no share set, as before (1.61.0).
+- An audit asked for is a request of the kind `audit` in the requests' ledger (1.64.0). The fetcher hands it
+  to a short-lived auditors' process (`liminal-integrator audit run`), one at a time for a database (the claim
+  `audit`), which it also starts when the sweep is due; a feed's own run audits each pull as it closes.
 
 ## The apps and their trays (liminal-libs 1.7.0)
 

@@ -22,6 +22,7 @@ OPEN = ("waiting", "assessing", "collecting")
 KINDS = ("bars", "live", "audit")  # what a request can ask about a symbol today (the contract's verbs bring the rest)
 AUDIT = "audit"  # an audit asked for (1.64.0; auditing.py): of a symbol, or of every series in turn (EVERYTHING)
 EVERYTHING = "*"  # the symbol of an audit of everything: a sweep run now
+WAITING = "*CACHE"  # the symbol of an audit of what waits in the fetch cache, and no more
 STATUS_KEY = "fetcher:status:v1"  # the fetcher's status, as it last wrote it (every page reads it here)
 STATES = OPEN + ("done", "failed", "cancelled")
 STANDING = "fetcher"  # `by` of the fetcher's own standing work: a queue behind the asks (a stack)

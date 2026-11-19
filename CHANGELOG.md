@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.64.0 (2026-11-18)
+
+The fetch cache, the auditors, and the auditors' plugin (plugin API 2.4). The user, 2026-11-15: "when the integrator
+goes to a source and pulls the data, make sure that the data is stored in a temporary cache (not on ram), until it can
+be read in to the symbol database. leave the data in cache until an auditor goes over the symbol and checks the data
+bit by bit to ensure it was copied successfully, auditors should run if a symbol is updated, or periodically"; "make
+sure that auditing goes over all symbols to look for consistency issues or broken connections that fragmented data";
+"For the integrator, there needs to be a plugin called auditor and it will manage the configuration of auditing data";
+and 2026-11-18: "an auditor plugin, for auditing sources and maintaining the integrity of the feeds; for the
+integrator". liminal-integrator 1.13.0 runs the auditors and answers their page, plugin-integrator-auditor 0.1.0 holds
+their options, and the charts' Plugins view draws the page.
+
+- **What a feed is asked for is on disk before the database has it** (`spool.py`, `storage/pulls.py`). One thing asked
+  of a feed is a pull (its kinds: bars, future, market_day, grouped_day, download, recheck), with a folder of its own
+  beside the main file, `cache/<feed>/<pull>/`. While one is open, every good answer of the feed's HTTP client goes
+  into it as it arrives (gzip, with the sha256 of the body as received; a real `requests` session is read in pieces,
+  never whole in memory first) and is read back from there; and every bar write (`upsert_bars`, `save_grouped_day`,
+  `save_market_day`) writes its rows to a rows file first and loads the database from that file read back. What
+  reaches the database is what the cache holds. Only 2xx bodies are kept, and an answer is recorded by its path, never
+  its query (a key can be a query parameter). A pull knows whether its pages ended or were cut off (a stop, an error,
+  a crash). Its ledger is three new tables of the main file, made when it is opened: `pulls`, `pull_files`,
+  `audit_findings`. A pull that asked and got nothing to store leaves nothing behind.
+- **Where nothing changes**: outside a pull (the live recorder's writes), in a store in memory, in a process that
+  reads only, and with `LIMINAL_FETCH_CACHE=off`, everything is written as before.
+- **The copy audit, bit by bit** (`auditing.audit_pull`, `audit_pulls`). A closed pull's rows files are read back, each
+  held against the sha256 kept when it was written, and their rows compared with the feed's `bars` inside SQLite,
+  every key and every value, by the comparison the write itself uses (`IS`). A bar stored as the file has it passes.
+  One a later write replaced passes only when the version the file holds is the one kept as replaced
+  (`bar_revisions`, replaced at or after the file was stored). A bar of the file that is not stored is put in from
+  the file (never one moved out as another instrument's: `archived_bars`), unless the policy says to flag only. A bar
+  stored with other values is a finding: nothing stored is overwritten, coverage is never withdrawn, and the feed is
+  asked for it again. A pull that passes has its files removed, or kept the days the policy says; one with a finding
+  keeps them as its evidence. What it proves is that the load from the cache was exact, not that the feed's data is
+  right: the second-feed audit (`audit.py`) and the sweep look at that.
+- **When**: as each pull closes and after a symbol's fetch, the symbol still claimed (`Audit when a symbol is
+  updated`); before a run asks anything, for what earlier runs left (`Collector._settle_cache`, a minute at most); and
+  in the sweep.
+- **What a crash left** (`auditing.recover`): a pull left open by a process that is gone is closed as cut; a rows file
+  written and never loaded is loaded then, without asking the feed again, and its span recorded as held.
+- **The cap** (`auditing.room`): unverified cache at its cap makes a new pull wait: what waits is audited at once, and
+  if that frees too little the run stops without a strike against the feed (`CacheFull`). Unverified data is never
+  deleted; files kept as a finding's evidence do not count toward the cap. A cache that cannot be written
+  (`spool.CacheFailed`: the disk, a path) stops the run the same way: this machine's fault, not the feed's.
+- **The sweep** (`auditing.Sweep`): every watched series of every feed in turn, from where the last run stopped, for
+  the minutes the policy gives a run, each under its symbol's claim. A series' visit audits what waits of it in the
+  cache; keeps a cut-off pull as a finding until the span it asked is held; and, for each frame the feed sends
+  (second, minute, day), looks for every session day older than three days inside the spans the coverage ledger says
+  were downloaded. A day without bars is a hole only with evidence that bars should be there: the series' own daily
+  bar with volume, its own finer bars, another feed of the same market, its ticks, or a cut-off pull over it. A held
+  span with no bars at all is an empty span. Each round also reads one month of each series whole and puts it to
+  `sources/data.py`'s rules (`integrity`, `assess`: called from here for the first time); what a storage rule catches
+  (duplicate, malformed, missing, out of session) is a finding. A finding's life: open, asked, then closed (the bars
+  came) or absent (asked for and confirmed not there: remembered, not asked again).
+- **Re-pulls** (`auditing.repulls`, `Collector._repull`): a feed's run asks again for what the auditors found missing
+  or differing of the symbol it is on, a few spans a run (the policy's `Re-pulls per sweep`), inside its request
+  budget like any other ask.
+- **An audit asked for** (`storage/requests.py`): a request of the new kind `audit` (`AUDIT`), for a symbol, for every
+  series in turn (`EVERYTHING`, "*") or for what waits in the cache (`WAITING`). It never merges with a symbol's fetch
+  request.
+- **The auditors' plugin** (`auditing.AuditorPlugin`, an `IntegratorPlugin`; `AUDITOR` in its module;
+  `registry.auditors()` and `auditor()`, one for an app; plugin API 2.4). It holds the options and nothing else:
+  audit when a symbol is updated (on, off), sweep every (24h, 6h, 7d, off), minutes per sweep run (10, 5, 30, 60), on
+  a mismatch (repair, flag), keep verified payloads (0, 1, 7, 30 days), cache cap (20, 5, 50, 100 GB), re-pulls per
+  sweep (5, 0, 20). Its `settings` are the auditors' `Policy` (`Settings.plugin("auditor")`); a value that is none of
+  an option's choices is a `ConfigError` naming them. The auditors are the library's and run without the plugin, on
+  the same defaults, so auditing is never off because a package is missing. A command sets its process's policy once
+  it knows its settings (`auditing.set_policy(auditing.policy_of(settings))`).
+- **For the page** (`auditing.overview`): the policy, the cache by state and size against its cap, the last sweep and
+  where the round stands, and the findings.
+- **For a plugin, nothing has to change.** A plugin written for 2.0 to 2.3 loads unchanged and no plugin's floor
+  moves. A feed's source is unchanged too: the cache sits in the HTTP client and in the store's write functions.
+- The open pull is each thread's own (`spool.current`, a `threading.local`): a feed's run on another thread does not
+  write into it.
+- 76 new tests (`tests/test_fetch_cache.py`, `tests/test_auditors.py`): no process started and no network.
+
 ## 1.63.0 (2026-11-18)
 
 An External API tab and an Internal API tab for every plugin and every app. The user, 2026-11-16: "for all apps, and
