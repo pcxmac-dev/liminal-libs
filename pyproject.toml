@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liminal-libs"
-version = "1.65.0"  # the library's own release (CHANGELOG.md)
+version = "1.65.1"  # the library's own release (CHANGELOG.md)
 description = "The Liminal library: the stores, the plugin contract, the collector and the scheme every Liminal program builds on (the chart app, the integrator, the plugins)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,9 +31,10 @@ geo = ["maxminddb>=3.2"]  # geo.py: places for the firewalls' World Wide Web tab
 where = ["src"]
 
 [tool.setuptools.package-data]
-# the icons and the theme every app serves beside its page; vendor/world: the globe's land and borders (liminal-globe.js);
+# the icons and the theme every app serves beside its page; vendor/world: the globe's land and borders
+# (liminal-globe.js), and vendor/world/coast-h its coast tiles past 24x (a glob takes no folder's files);
 # ebpf/scripts: the bpftrace programs the Linux watch runs
-liminal_libs = ["ui/static/*", "ui/static/vendor/world/*", "ebpf/scripts/*.bt"]
+liminal_libs = ["ui/static/*", "ui/static/vendor/world/*", "ui/static/vendor/world/coast-h/*", "ebpf/scripts/*.bt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

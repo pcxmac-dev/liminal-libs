@@ -966,7 +966,7 @@ def test_a_firewalls_data_sets_make_its_index_and_those_that_do_not_read_are_sai
     assert netstat.agent_of("firewall-windows", "0.7.0") == "firewall-windows/0.7.0"
     assert (netstat.agent_of("firewall linux\n", ""), netstat.agent_of("", "1.0"), netstat.agent_of("-x", "1")) == (
         "firewalllinux", "", "")
-    assert view.refused == ("the data set broken's format is overpass, sparql or geojson, not None",
+    assert view.refused == ("the data set broken's format is overpass, sparql, geojson or gml, not None",
                             "the data set osm-datacentres is named twice: its first is kept")
     infra = fw.world()["tables"][-1]
     assert "Left out, not read as data sets: the data set broken's format" in infra["note"]

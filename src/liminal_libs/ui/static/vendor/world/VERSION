@@ -1,6 +1,26 @@
-world-atlas 2.0.2 (ISC), countries-110m.json and countries-50m.json: https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/
+world-atlas 2.0.2 (ISC), countries-110m.json, countries-50m.json and countries-10m.json:
+https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/
 Data: Natural Earth (public domain), https://www.naturalearthdata.com/
-Copied on 2026-11-14 from liminal-charts' gui/static/vendor/world, byte for byte (the charts app keeps its own copy), for
-ui/static/liminal-globe.js. LICENSE is world-atlas's, copied with them.
+Copied from liminal-charts' gui/static/vendor/world, byte for byte (the charts app keeps its own copy), for
+ui/static/liminal-globe.js: the 1:110m and 1:50m maps on 2026-11-14, the 1:10m map and coast-h/ on 2026-11-19 (from
+this PC's disk, not downloaded). LICENSE is world-atlas's, copied with them.
 countries-110m.json: 107,761 bytes, sha256 2516c915867c7baf18ddec727aec46c315541a07cfb3d79a6559b05d5e94eee8
 countries-50m.json: 756,420 bytes, sha256 04342cdc1e3016bcd7db1630de95684d67b79fe3c8c460321e87aef469502394
+countries-10m.json: 3,661,071 bytes, sha256 3bc6f1d367a9bcec479841bae0e76092f512838411d0cef124e92eec4db45f79
+
+coast-h/: GSHHG 2.3.7 (Wessel and Smith), its high resolution (about 200 m): the shorelines of gshhs_h.b (land, lakes,
+the Antarctic ice front and grounding line) and the national borders of wdb_borders_h.b (WDBII), in 433 tiles of 10
+degrees (index.json and <lat0>_<lon0>.bin), built by liminal-charts' tools/build_coastlines.py (they are changed from
+GSHHG's own files: cut into tiles, their points rounded to 1/65,535 of a tile and its margins) from
+https://www.soest.hawaii.edu/pwessel/gshhg/gshhg-bin-2.3.7.zip, the source, kept on GSHHG's site (119 MB, not here).
+Licence: the GNU Lesser General Public License, version 3 or later (LGPL-3.0). coast-h/LICENSE.TXT is GSHHG's notice
+and coast-h/COPYING.LESSERv3 the licence's words, both copied with the tiles. coast-h/COPYINGv3 is the GNU General
+Public License version 3's words, which the LGPL-3.0 builds on and GSHHG's notice names beside it: the Free Software
+Foundation's text, verbatim, copied on 2026-11-19 from this PC's disk (Git for Windows ships it with xz and libtasn1,
+the same bytes). The globe credits GSHHG while it draws them (past 24x).
+coast-h/index.json: 25,542 bytes, sha256 528b1f2dcc6a6cb8527192d8966cd84c712bc563f8354d3e0bd9bec6bbdd2f74
+coast-h/LICENSE.TXT: 1,352 bytes, sha256 cb89465097221875b094c331039aacababe7c68dfe4da6b8fc155593dbce06f5
+coast-h/COPYING.LESSERv3: 7,651 bytes, sha256 da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768
+coast-h/COPYINGv3: 35,149 bytes, sha256 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+coast-h/*.bin: 433 files, 8,730,088 bytes; each one's name and sha256 a line ("<name> <sha256>\n", in the order of
+their names), sha256 e71b8d71f6941fdc5230efebacb3ac8583d861e3b424c2fdf3f7dad09e2622f8

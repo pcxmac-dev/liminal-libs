@@ -21,7 +21,15 @@ layers' paint kept apart from the places' updates and their names drawn with the
 kept in their cells, every line a cell is crossed by found by the pointer, the focus kept on a credit or a button
 when another leaves, a layer the page does not answer for not waited on for good, and the `globe` line of
 apps/tabs.py naming what the script reads. Where the page's own work is ported (the cells' marks, the lines' lists),
-the port is checked as the page has it."""
+the port is checked as the page has it.
+
+The 96x zoom (the user, 2026-11-19: "i need to zoom in a few more times maybe 96x") the same way: MAX_ZOOM 96 by the
+wheel, two fingers and the keys; the 1:10m map past 12x and GSHHG's coast tiles past 24x, read as their builder wrote
+them, only those on the canvas asked for, the nearest first and no more than are kept, each once and TILE_LOADS at a
+time, none while the globe glides, MAX_TILES kept and every one let go with the last globe; GSHHG credited while it is
+drawn, with its notice and both licences it names beside the tiles; and what keeps 96x smooth and right:
+the pieces skipped out of sight (their reach holds every point), the runs off the canvas cut short (nothing on the
+canvas changes, filled or stroked: checked point by point), the view's key and the 4-byte points far under a pixel."""
 from __future__ import annotations
 
 import bisect
@@ -32,6 +40,8 @@ import math
 import os
 import random
 import re
+import struct
+from array import array
 from pathlib import Path
 
 import pytest
@@ -39,7 +49,8 @@ import pytest
 from liminal_libs.ui import STATIC
 
 WORLD = STATIC / "vendor" / "world"
-MAPS = ("countries-110m.json", "countries-50m.json")
+MAPS = ("countries-110m.json", "countries-50m.json", "countries-10m.json")
+COAST = WORLD / "coast-h"  # GSHHG 2.3.7's coasts and borders in tiles (liminal-charts' tools/build_coastlines.py)
 ROOT = Path(__file__).resolve().parents[1]  # the checkout: its pyproject.toml and src/
 
 
@@ -74,8 +85,11 @@ def test_one_global_draws_a_globe_and_hands_back_update_and_destroy(js):
                  "unlisten(motion, onMotion)", "unlisten(scheme, recolour)", "unlisten(dpr, onRatio)",
                  "document.removeEventListener('visibilitychange', onVisibility)",
                  "document.removeEventListener('scroll', onScroll, { capture: true })", "tip.remove()", "root.remove()",
-                 "globes.delete(self)", "if (!globes.size) maps.fine = null;"):
-        assert gone in destroy, gone  # nothing runs, listens or holds the 1:50m map once the last globe is destroyed
+                 "globes.delete(self)"):
+        assert gone in destroy, gone  # nothing runs or listens once the last globe is destroyed
+    # nor holds the 1:50m and 1:10m maps or a coast tile (the 1:110m are small)
+    last = destroy.split("if (!globes.size) {", 1)[1].split("}", 1)[0]
+    assert all(step in last for step in ("maps.fine = null;", "maps.finest = null;", "forgetCoast();"))
     assert _body(js, "function update(next, more) {").split("\n")[1].strip() == "if (destroyed) return;"
 
 
@@ -86,6 +100,11 @@ def test_decode_topo_reads_quantized_and_plain_arcs(js):
     assert "const quantized = !!t.transform;" in decode
     assert "if (quantized) { x += dx; y += dy; } else { x = dx; y = dy; }" in decode
     assert "return [x * sx + tx, y * sy + ty];" in decode
+    # the page's own maps are read alike, straight into unit vectors (the 1:10m's 477,000 points not made pairs first)
+    prepare = _body(js, "function prepare(t) {")
+    assert "const quantized = !!t.transform;" in prepare and "decodeTopo(" not in prepare
+    assert "if (quantized) { x += dx; y += dy; } else { x = dx; y = dy; }" in prepare
+    assert "const lon = x * sx + tx, lat = y * sy + ty, c = Math.cos(lat * rad);" in prepare
     for name in MAPS:
         topo = json.loads((WORLD / name).read_text(encoding="utf-8"))
         assert topo["type"] == "Topology" and {"countries", "land"} <= set(topo["objects"])
@@ -130,19 +149,43 @@ def test_the_land_is_cut_at_the_horizon_and_closed_its_own_way_round(js):
     """The land is filled as the map has it from any side: each ring cut where it goes behind the globe and closed
     along the rim the way round its own outline goes (turnOf, worked out from the ring, not taken on trust). The map's
     rings close on themselves, as the cut needs, and go round as turnOf expects: the outer ones clockwise seen from
-    outside the globe, the holes (the Caspian Sea's) the other way."""
-    assert "for (const ring of map.land) ringPath(b, ring, g, fr);" in js and "b.fill('evenodd');" in js
+    outside the globe, the holes (the Caspian Sea's) the other way. The 1:10m map's are so but for 14 atolls of a few
+    points, flat as they are rounded (the Maldives' and others, 0.04 km² at most, under a pixel at 96x): turnOf works
+    out their own way round, and where the 1:10m map is drawn (past 12x) the horizon is off the canvas and a ring that
+    does not reach the canvas's sight is skipped, so none of them is ever closed along it."""
+    land = "for (const ring of map.land) if (inSight(ring.cap, 0, fr.C, sight)) ringPath(pen, ring, g, fr);"
+    assert land in js and "b.fill('evenodd');" in js
     clip = _body(js, "function ringPath(c, ring, g, fr) {")
     assert "c.arc(g.cx, g.cy, g.r, to, to + turn * best, turn < 0);" in clip  # along the rim, the ring's way round
     assert "return d > TAU - 1e-9 ? 0 : d;" in clip  # the two sides of a cut meeting on the rim are one point
     assert "return area < 0 ? 1 : -1;" in _body(js, "function turnOf(v) {")
+    assert "return { v: kept, turn: turnOf(v), cap: capOf(kept) };" in _body(js, "function landRing(ring, arcs) {")
     for name in MAPS:
         topo = json.loads((WORLD / name).read_text(encoding="utf-8"))
         rings = _rings(topo, _decode(topo))
         assert rings and all(points[0] == points[-1] for _, points in rings)
-        outer = [_turn(points) for k, points in rings if k == 0]
-        holes = [_turn(points) for k, points in rings if k > 0]
-        assert outer and all(t == 1 for t in outer) and all(t == -1 for t in holes), name
+        against = [(k, points) for k, points in rings if _turn(points) != (1 if k == 0 else -1)]
+        if name != "countries-10m.json":
+            assert not against, name
+            continue
+        assert len(against) == 14 and all(k == 0 and len(points) <= 5 for k, points in against)
+        assert max(abs(_area(points)) * 2 * 6371.0 ** 2 for _, points in against) < 0.05  # km²: under a pixel at 96x
+
+
+def _area(points: list[tuple[float, float]]) -> float:
+    """The signed area turnOf sums for a ring (steradians, as the page's atan2 terms add up to half of it)."""
+    rad = math.pi / 180
+    v = [(math.cos(lat * rad) * math.cos(lon * rad), math.cos(lat * rad) * math.sin(lon * rad), math.sin(lat * rad))
+         for lon, lat in points[:-1]]
+    m = [sum(p[k] for p in v) for k in range(3)]
+    norm = math.sqrt(sum(c * c for c in m)) or 1
+    mx, my, mz = (c / norm for c in m)
+    area = 0.0
+    for (ax, ay, az), (bx, by, bz) in zip(v, v[1:] + v[:1]):
+        cx, cy, cz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        area += math.atan2(mx * cx + my * cy + mz * cz,
+                           1 + mx * ax + my * ay + mz * az + ax * bx + ay * by + az * bz + bx * mx + by * my + bz * mz)
+    return area
 
 
 def _turn(points: list[tuple[float, float]]) -> int:
@@ -249,10 +292,10 @@ def test_the_kinds_their_routes_and_the_legend(js):
 def test_the_fine_map_only_past_two_and_a_half_times(js):
     assert "const FINE_ZOOM = 2.5;" in js
     assert "if (zoom > FINE_ZOOM && !maps.fine) loadFine();" in _body(js, "function render(now) {")
-    assert "const map = zoom > FINE_ZOOM && maps.fine ? maps.fine : maps.coarse;" in js
+    assert "zoom > FINE_ZOOM && maps.fine ? maps.fine" in js.split("const mapNow = () => (", 1)[1].split(";", 1)[0]
     assert "const loadCoarse = mapLoader('countries-110m.json', 'coarse');" in js
     assert "const loadFine = mapLoader('countries-50m.json', 'fine');" in js
-    assert "if (key === 'fine' && !globes.size) return true;" in js  # every globe went meanwhile: not kept
+    assert "if (key !== 'coarse' && !globes.size) return true;" in js  # every globe went meanwhile: not kept
     assert "if (busy || Date.now() < next) return;" in _body(js, "function loader(fn) {")  # globe.js's loader
 
 
@@ -283,9 +326,12 @@ def test_the_attribution_the_table_and_no_markup_from_a_plugin(js):
 
 
 def test_the_map_is_vendored_with_its_licence_and_version():
-    """world-atlas 2.0.2's countries-110m.json and countries-50m.json, as the charts app has them, with world-atlas's
-    ISC licence and a VERSION naming the release, the data's source and each file's size and sha256 (counted with
-    LF line ends, as a checkout that turns them to CRLF would otherwise differ)."""
+    """world-atlas 2.0.2's countries-110m.json, countries-50m.json and countries-10m.json, as the charts app has them,
+    with world-atlas's ISC licence and a VERSION naming the release, the data's source and each file's size and sha256
+    (counted with LF line ends, as a checkout that turns them to CRLF would otherwise differ). And coast-h/, the
+    charts' GSHHG tiles: GSHHG 2.3.7's notice and the words of the two licences it names beside them (the LGPL-3.0's,
+    and the GPL-3.0's it builds on: the Free Software Foundation's text, verbatim), and VERSION naming GSHHG, its
+    licence, its source and its builder, each text file's size and sha256 and a sha256 over the tiles."""
     licence = (WORLD / "LICENSE").read_text(encoding="utf-8")
     assert "Copyright 2013-2019 Michael Bostock" in licence
     assert "Permission to use, copy, modify, and/or distribute this software for any purpose" in licence
@@ -294,7 +340,34 @@ def test_the_map_is_vendored_with_its_licence_and_version():
     for name in MAPS:
         data = (WORLD / name).read_bytes().replace(b"\r\n", b"\n")
         assert f"{name}: {len(data):,} bytes, sha256 {hashlib.sha256(data).hexdigest()}" in version, name
-    assert sorted(p.name for p in WORLD.iterdir()) == ["LICENSE", "VERSION", *MAPS]
+    assert sorted(p.name for p in WORLD.iterdir()) == sorted(["LICENSE", "VERSION", "coast-h", *MAPS])
+    # GSHHG's tiles: its notice, the licence's words, and VERSION's words for them
+    notice = (COAST / "LICENSE.TXT").read_text(encoding="utf-8")
+    assert "GSHHG is distributed under the GNU Lesser General Public" in notice and "version 3 or later" in notice
+    lgpl = (COAST / "COPYING.LESSERv3").read_text(encoding="utf-8")
+    assert lgpl.lstrip().startswith("GNU LESSER GENERAL PUBLIC LICENSE") and "Version 3, 29 June 2007" in lgpl
+    assert "Refer to the files COPYINGv3 and COPYING.LESSERv3." in " ".join(notice.split())  # the two it names
+    gpl = (COAST / "COPYINGv3").read_bytes().replace(b"\r\n", b"\n")
+    assert gpl.lstrip().startswith(b"GNU GENERAL PUBLIC LICENSE") and b"Version 3, 29 June 2007" in gpl
+    # the FSF's text as it publishes it (gpl-3.0.txt), byte for byte: a licence's words are never changed
+    assert hashlib.sha256(gpl).hexdigest() == "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    for words in ("GSHHG 2.3.7 (Wessel and Smith)", "LGPL-3.0", "tools/build_coastlines.py", "gshhg-bin-2.3.7.zip",
+                  "coast-h/LICENSE.TXT is GSHHG's notice", "coast-h/COPYING.LESSERv3 the licence's words",
+                  "coast-h/COPYINGv3 is the GNU General Public License version 3's words"):
+        assert words in " ".join(version.split()), words
+    for name in ("index.json", "LICENSE.TXT", "COPYING.LESSERv3", "COPYINGv3"):
+        data = (COAST / name).read_bytes().replace(b"\r\n", b"\n")
+        assert f"coast-h/{name}: {len(data):,} bytes, sha256 {hashlib.sha256(data).hexdigest()}" in version, name
+    tiles = sorted(p.name for p in COAST.iterdir() if p.suffix == ".bin")
+    digest = hashlib.sha256("".join(f"{n} {hashlib.sha256((COAST / n).read_bytes()).hexdigest()}\n" for n in tiles)
+                            .encode()).hexdigest()
+    total = sum((COAST / n).stat().st_size for n in tiles)
+    assert f"coast-h/*.bin: {len(tiles)} files, {total:,} bytes;" in version and f"sha256 {digest}" in version
+    index = json.loads((COAST / "index.json").read_text(encoding="utf-8"))
+    assert sorted(f"{n}.bin" for n in index["tiles"]) == tiles and len(tiles) == 433
+    assert index["source"].startswith("GSHHG 2.3.7 high resolution (LGPL-3.0)")
+    assert sorted(p.name for p in COAST.iterdir() if p.suffix != ".bin") == ["COPYING.LESSERv3", "COPYINGv3",
+                                                                              "LICENSE.TXT", "index.json"]
 
 
 # -- the phase-1 review's fixes (2026-11-15) ------------------------------------------------------------------------------
@@ -323,10 +396,14 @@ def test_every_file_beside_the_page_is_in_the_package_data():
     files = {p.relative_to(package).as_posix() for p in (package / "ui" / "static").rglob("*")
              if p.is_file() and "__pycache__" not in p.parts and not p.name.startswith(".")}
     world = {f"ui/static/vendor/world/{name}" for name in ("LICENSE", "VERSION", *MAPS)}
-    assert world <= files
+    coast = {f"ui/static/vendor/world/coast-h/{name}" for name in ("index.json", "LICENSE.TXT", "COPYING.LESSERv3",
+                                                                   "COPYINGv3", "50_10.bin")}
+    assert world | coast <= files
     assert files - _shipped(package, patterns) == set(), "not shipped: add a glob for them to [tool.setuptools.package-data]"
     # the one glob 1.53.0 had takes ui/static's own files and none of the map's (setuptools drops the folders it matches)
     assert "ui/static/liminal-globe.js" in _shipped(package, ["ui/static/*"]) and not world & _shipped(package, ["ui/static/*"])
+    # and vendor/world's glob none of the coast tiles: they need theirs
+    assert not coast & _shipped(package, ["ui/static/vendor/world/*"])
 
 
 def test_an_update_changes_the_words_in_place(js):
@@ -572,8 +649,12 @@ def test_the_page_storage_is_touched_only_inside_try(js):
 
 
 def test_nothing_is_fetched_but_the_map(js):
-    """The globe asks for nothing itself but the map beside it: a layer's geometry comes through the page's `load`."""
+    """The globe asks for nothing itself but the map beside it (its maps, the coast tiles' index and a tile, all
+    through `world`): a layer's geometry comes through the page's `load`."""
     assert len(re.findall(r"\bfetch\(", js)) == 1
+    assert "const world = (name) => fetch(`${HERE}vendor/world/${name}`, { credentials: 'same-origin' });" in js
+    asked = re.findall(r"\bworld\(([^)]*)\)", js.split("const world = ", 1)[1])
+    assert asked == ["name", "'coast-h/index.json'", "`coast-h/${t.name}.bin`"], asked
     for other in ("XMLHttpRequest", "WebSocket", "EventSource", "sendBeacon", "importScripts", "new Worker"):
         assert other not in js, other
 
@@ -623,7 +704,7 @@ def test_the_layers_paint_is_kept_apart_from_the_places_updates(js):
     names = _body(js, "function nameLayers(c, g, boxes, shown) {")
     assert "boxes.push({ x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r });" in names  # a place's dot is kept clear
     render = _body(js, "function render(now) {")
-    steps = ("baseLayer(g, fr, ratio, W, H)", "infraLayer(g, fr, ratio, W, H)", "drawRoutes(g, fr, now);",
+    steps = ("baseLayer(g, fr, ratio, W, H, tiles)", "infraLayer(g, fr, ratio, W, H)", "drawRoutes(g, fr, now);",
              "placesLayer(g, ratio, W, H)")
     assert [render.index(s) for s in steps] == sorted(render.index(s) for s in steps)
 
@@ -639,8 +720,8 @@ def test_no_day_and_night_and_the_equator_stressed(js):
         assert not re.search(word, code, re.IGNORECASE), word
     assert "...Array.from({ length: 24 }, (_, m) =>" in js and "[-180 + i * 2, -75 + p * 15]" in js
     assert "const EQUATOR = 24 + 5;" in js and -75 + (29 - 24) * 15 == 0
-    base = _body(js, "function baseLayer(g, fr, ratio, W, H) {")
-    assert "b.beginPath(); polyline(b, graticuleLines()[EQUATOR], g);" in base
+    base = _body(js, "function baseLayer(g, fr, ratio, W, H, tiles) {")
+    assert "b.beginPath(); polyline(pen, graticuleLines()[EQUATOR], g); pen.done();" in base
     assert base.index("graticuleLines()[EQUATOR]") < base.index("b.strokeStyle = css(k.muted, 0.3); b.stroke();")
 
 
@@ -834,6 +915,652 @@ def test_the_layers_code_keeps_lines_within_120_characters(js):
     comment and the functions of the layers (the lines elsewhere it did not touch are 1.63.0's)."""
     head = js.split("(() => {", 1)[0]
     assert max(len(line) for line in head.split("\n")) <= 120
-    for name in LAYERS_CODE:
+    for name in LAYERS_CODE + ZOOM_CODE:
         long = [line for line in _body(js, name).split("\n") if len(line) > 120]
         assert not long, (name, long)
+    # and every line naming what the zoom added
+    words = ("FINEST_ZOOM", "COAST_ZOOM", "MAX_TILE", "TILE_LOADS", "TILE_REACH", "PIECE", "PEN_MARGIN", "COAST_CREDIT",
+             "coast.", "inSight", "facing", "mapNow", "loadFinest", "const world")
+    long = [line for line in js.split("\n") if any(w in line for w in words) and len(line) > 120]
+    assert not long, long
+
+
+# -- the 96x zoom (2026-11-19) ----------------------------------------------------------------------------------------
+ZOOM_CODE = ("function capOf(v, from = 0, to = v.length) {", "function piecesOf(lines) {", "function sightOf(g) {",
+             "function trimmed(c, w, h) {", "function landRing(ring, arcs) {", "function prepare(t) {",
+             "function coastIndex(d) {", "function prepareTile(buf, t, index) {", "function keepTiles() {",
+             "function askTiles(want) {", "function forgetCoast() {", "function strokePieces(c, P, g, fr, sight) {",
+             "function baseLayer(g, fr, ratio, W, H, tiles) {", "function coastTiles(g, fr, ask) {",
+             "function render(now) {", "function destroy() {")
+
+
+def _radius(zoom: float, w: float = 1240, h: float = 520) -> float:
+    """geometry()'s radius of the globe, as the page has it (a canvas 520 px high at most: .lg-canvas's clamp)."""
+    return max(40, (min(w, h) / 2 - 12) * 0.88) * zoom
+
+
+def _unit(lon: float, lat: float) -> tuple[float, float, float]:
+    rad = math.pi / 180
+    return (math.cos(lat * rad) * math.cos(lon * rad), math.cos(lat * rad) * math.sin(lon * rad), math.sin(lat * rad))
+
+
+def _angle(a, b) -> float:
+    """Degrees between two unit vectors."""
+    return math.degrees(math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))))
+
+
+def _f32(values) -> list[float]:
+    """Numbers as a Float32Array keeps them (4-byte floats)."""
+    return array("f", values).tolist()
+
+
+def test_it_zooms_to_96x_by_the_wheel_two_fingers_and_the_keys(js):
+    """The user, 2026-11-19: "i need to zoom in a few more times maybe 96x". MAX_ZOOM is 96, and every way in goes
+    through zoomAt, which holds it there: the wheel and a trackpad's pinch, two fingers, + and − and their buttons
+    (ten presses of + from the whole globe). Its words say "96×"; at its nearest a wheel's notch scrolls the page."""
+    assert "  const MAX_ZOOM = 96;  // " in js and "const MAX_ZOOM = 12;" not in js
+    assert "i need to zoom in a few more times maybe 96x" in js.split("(() => {", 1)[0]
+    assert "const next = clamp(want, 1, MAX_ZOOM);" in _body(js, "function zoomAt(clientX, clientY, want) {")
+    assert "zoomAt(r.left + r.width / 2, r.top + r.height / 2, zoom * f);" in _body(js, "function zoomBy(f) {")
+    assert "zoomAt(x, y, zoom * (d / pinch.d));" in _body(js, "function pinchMove() {")
+    wheel = _body(js, "canvas.addEventListener('wheel', (e) => {")
+    assert "if (zoomAt(e.clientX, e.clientY, zoom * Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015))) || e.ctrlKey)" in wheel
+    keys = _body(js, "canvas.addEventListener('keydown', (e) => {")
+    assert "{ zoomBy(1.6); sayZoom(); }" in keys and "{ zoomBy(1 / 1.6); sayZoom(); }" in keys
+    assert "button('+', 'Zoom in', () => { zoomBy(1.6); sayZoom(); });" in js
+    assert 1.6 ** 9 < 96 < 1.6 ** 10  # ten presses
+    assert "zoom >= 10 ? zoom.toFixed(0) : zoom.toFixed(1)" in _body(js, "function zoomText() {")
+    assert f"{96:.0f}×" == "96×" and 20_900 < _radius(96) < 21_000  # some 300 m a pixel (the Earth's 6,371 km)
+    assert 6371e3 / _radius(96) < 310
+
+
+def test_the_finest_map_only_past_twelve_times(js):
+    """The 1:10m outlines (3.7 MB) are asked for only once a globe is zoomed past 12x and drawn from then on; one copy
+    for every globe on the page, not kept when every globe went while it came, let go with the last globe."""
+    assert "  const FINEST_ZOOM = 12;  // " in js
+    assert "if (zoom > FINEST_ZOOM && !maps.finest) loadFinest();" in _body(js, "function render(now) {")
+    assert "const loadFinest = mapLoader('countries-10m.json', 'finest');" in js
+    assert js.split("const mapNow = () => (", 1)[1].startswith("zoom > FINEST_ZOOM && maps.finest ? maps.finest")
+    base = _body(js, "function baseLayer(g, fr, ratio, W, H, tiles) {")
+    assert "const map = mapNow();" in base and "map === maps.finest ? 'finest'" in base  # its paint keyed by its map
+    assert "const maps = { coarse: null, fine: null, finest: null };" in js
+
+
+class _Tiles:
+    """askTiles, keepTiles and forgetCoast as the page has them, run on names: `tiles` in the Map's order (the least
+    lately drawn first), a token (an object) while a tile is on its way, else its points; `asked` what was sent for."""
+
+    def __init__(self, most: int = 120, points: int = 1_000_000, loads: int = 4, retry: float = 60.0):
+        self.tiles: dict[str, object] = {}
+        self.failed: dict[str, float] = {}
+        self.loading = self.points = 0
+        self.most, self.most_points, self.loads, self.retry = most, points, loads, retry
+        self.asked: list[tuple[str, object]] = []
+
+    def ask(self, want: list[str], now: float) -> None:
+        for name in want:
+            had = self.tiles.get(name)
+            if had is not None:  # here, or on its way: put last, the latest drawn
+                del self.tiles[name]
+                self.tiles[name] = had
+                continue
+            if self.loading >= self.loads or now < self.failed.get(name, 0):
+                continue
+            token = object()
+            self.tiles[name] = token
+            self.loading += 1
+            self.asked.append((name, token))
+
+    def settle(self, name: str, token: object, points: int | None, now: float) -> None:
+        """Its answer, a tile of `points` points or None (it could not be had); then `.finally`."""
+        if self.tiles.get(name) is token:
+            if points is not None:
+                self.tiles[name] = points
+                self.points += points
+                self.keep()
+            else:
+                del self.tiles[name]
+                self.failed[name] = now + self.retry
+        self.loading -= 1
+
+    def keep(self) -> None:
+        for name, t in list(self.tiles.items()):
+            if len(self.tiles) <= self.most and self.points <= self.most_points:
+                return
+            if not isinstance(t, int):  # on its way
+                continue
+            del self.tiles[name]
+            self.points -= t
+
+    def forget(self) -> None:
+        self.tiles.clear()
+        self.failed.clear()
+        self.points = 0
+
+    def token(self, name: str) -> object:
+        return next(t for n, t in reversed(self.asked) if n == name)
+
+
+def test_the_coast_tiles_are_asked_for_once_a_few_at_a_time_and_kept_within_bounds(js):
+    """Past COAST_ZOOM a globe asks for the tiles on its canvas and draws those here, the map's own coasts and borders
+    under them until every one is in: a tile on its way is not asked for again, TILE_LOADS at most are on their way
+    from every globe, one that could not be had is not asked for again before RETRY_MS, MAX_TILES (and MAX_TILE_POINTS
+    of their points) are kept, the least lately drawn let go first and never one on its way, and none is asked for at
+    24x or nearer, or while the globe glides. All go with the last globe, and an answer that comes after is not kept.
+    Checked by the page's statements and by their port, run."""
+    for line in ("const COAST_ZOOM = 24;", "const MAX_TILES = 120;", "const MAX_TILE_POINTS = 1_000_000;",
+                 "const TILE_LOADS = 4;"):
+        assert f"  {line}  // " in js, line
+    tiles = _body(js, "function coastTiles(g, fr, ask) {")
+    assert tiles.split("\n")[1].strip() == "if (zoom <= COAST_ZOOM) return null;"
+    assert "if (!coast.index) { if (ask) loadCoast(); return null; }" in tiles and "if (ask) askTiles(want);" in tiles
+    # whole: every tile on the canvas here, not only those picked (the map's lines stay under the ones left out)
+    assert "return { drawn, whole: drawn.length === round.length, key: names.join(' ') };" in tiles
+    assert "const tiles = coastTiles(g, fr, !glide);" in _body(js, "function render(now) {")  # not while it glides
+    base = _body(js, "function baseLayer(g, fr, ratio, W, H, tiles) {")
+    assert "under = !!map && !(tiles && tiles.whole)" in base and "if (under) strokePieces(pen, map[kind], g," in base
+    assert "for (const tile of tiles ? tiles.drawn : []) strokePieces(pen, tile[kind], g, fr, sight);" in base
+    assert "|${which}|${tiles ? `${tiles.whole} ${tiles.key}` : ''}`;" in base  # painted again as tiles come
+    ask = _body(js, "function askTiles(want) {")
+    for step in ("if (had) { coast.tiles.delete(t.name); coast.tiles.set(t.name, had); continue; }",
+                 "if (coast.loading >= TILE_LOADS || Date.now() < (coast.failed.get(t.name) || 0)) continue;",
+                 "coast.tiles.set(t.name, token);", "coast.loading++;", "coast.points += tile.points;",
+                 "if (coast.tiles.get(t.name) !== token) return;  // let go meanwhile, with the last globe",
+                 "coast.failed.set(t.name, Date.now() + RETRY_MS);", ".finally(() => { coast.loading--; });"):
+        assert step in ask, step
+    keep = _body(js, "function keepTiles() {")
+    for step in ("if (coast.tiles.size <= MAX_TILES && coast.points <= MAX_TILE_POINTS) return;",
+                 "if (t.loading) continue;", "coast.tiles.delete(name);", "coast.points -= t.points;"):
+        assert step in keep, step
+    forget = _body(js, "function forgetCoast() {")
+    assert all(s in forget for s in ("coast.index = null;", "coast.tiles.clear();", "coast.failed.clear();"))
+    # the port, run: each once, a few at a time
+    c = _Tiles()
+    c.ask(["a"], 0)
+    c.ask(["a", "a"], 0)  # drawn again (and by another globe) while it is on its way, below TILE_LOADS
+    assert [n for n, _ in c.asked] == ["a"] and c.loading == 1
+    c = _Tiles()
+    c.ask(list("abcdef"), 0)
+    assert [n for n, _ in c.asked] == list("abcd") and c.loading == 4
+    c.ask(list("abcdef"), 1)  # drawn again while they are on their way: none asked twice, none more
+    assert len(c.asked) == 4
+    c.settle("a", c.token("a"), 1000, 2)
+    c.settle("b", c.token("b"), None, 2)  # it could not be had
+    c.ask(list("abef"), 3)
+    assert [n for n, _ in c.asked][4:] == ["e", "f"] and "b" not in c.tiles  # b not asked again yet...
+    c.ask(["b"], 2 + 59)
+    assert len(c.asked) == 6
+    c.settle("c", c.token("c"), 10, 62)
+    c.ask(["b"], 2 + 60)
+    assert [n for n, _ in c.asked][-1] == "b"  # ...but RETRY_MS later
+    # bounded: the least lately drawn go first
+    c = _Tiles(most=3)
+    for k, name in enumerate("pqrst"):
+        c.ask([name], k)
+        c.settle(name, c.token(name), 10, k)
+    assert list(c.tiles) == ["r", "s", "t"]
+    c.ask(["r"], 9)  # r drawn again: the latest
+    c.ask(["u"], 9)
+    c.settle("u", c.token("u"), 10, 9)
+    assert list(c.tiles) == ["t", "r", "u"] and c.points == 30
+    c = _Tiles(points=25)  # and by their points
+    for k, name in enumerate("vwx"):
+        c.ask([name], k)
+        c.settle(name, c.token(name), 10, k)
+    assert list(c.tiles) == ["w", "x"] and c.points == 20
+    c = _Tiles(most=1)  # never one on its way
+    c.ask(["y", "z"], 0)
+    c.settle("y", c.token("y"), 10, 0)
+    assert list(c.tiles) == ["z"] and c.points == 0
+    # the last globe goes while a tile is on its way: its answer is not kept, and the count of those on their way holds
+    c.forget()
+    c.settle("z", c.token("z"), 10, 1)
+    assert c.tiles == {} and c.loading == 0 and c.points == 0
+
+
+def _sight(w: float, h: float, zoom: float) -> float:
+    """sightOf(): how far round from the middle of the view a canvas w by h shows, in radians and a little more."""
+    r, half = _radius(zoom, w, h), math.hypot(w / 2, h / 2)
+    return (math.asin(half / r) if r > half else math.pi / 2) + 0.01
+
+
+def _pick(middles: list[tuple[str, tuple, int]], c, sight: float, most: int = 120, most_points: int = 1_000_000):
+    """coastTiles' choice, as the page has it: the tiles (name, middle, the index's count of points) whose middle is
+    within the sight and 0.85 of a tile (10 degrees) of the view's middle `c`, the nearest first (a stable sort, by
+    the angle only); then as many of them as the cache keeps, MAX_TILES and MAX_TILE_POINTS by those counts."""
+    near = sight + math.radians(8.5)
+    round_ = []
+    for name, middle, points in middles:
+        d = math.acos(max(-1.0, min(1.0, middle[0] * c[0] + middle[1] * c[1] + middle[2] * c[2])))
+        if d <= near:
+            round_.append((d, name, points))
+    round_.sort(key=lambda t: t[0])
+    want, total = [], 0
+    for _, name, points in round_:
+        if len(want) >= most or total + points > most_points:
+            break
+        want.append((name, points))
+        total += points
+    return round_, want
+
+
+def test_the_coast_tiles_on_the_canvas_are_picked_nearest_first_and_no_more_than_are_kept(js):
+    """coastTiles asks for the tiles on the canvas nearest the middle of the view first, and only as many as the cache
+    keeps (MAX_TILES, and MAX_TILE_POINTS by the index's counts, which are each tile's own: prepareTile counts its
+    points so): a tile coming in then never lets go of another one on the canvas. Without it a canvas wide enough
+    (or a view by a pole) wants more than is kept, and each tile in pushes out one wanted, asked for again, without
+    end. Checked by the page's statements and by their port, run: on any screen up to 3,840 px wide (the canvas 520 px
+    high) every tile on the canvas is picked, at 24x and nearer, from any view; on a canvas 9,000 px wide by the North
+    Pole they are more than the cache keeps, the nearest are picked within its bounds and, drawn again and again, are
+    each asked for once and kept, where all of them would be asked for again without end."""
+    tiles = _body(js, "function coastTiles(g, fr, ask) {")
+    for step in ("round.sort((a, b) => a.d - b.d);", "for (const { t } of round) {",
+                 "if (want.length >= MAX_TILES || points + t.points > MAX_TILE_POINTS) break;",
+                 "want.push(t);", "points += t.points;"):
+        assert step in tiles, step
+    assert tiles.index("round.sort(") < tiles.index("if (ask) askTiles(want);")
+    index_js = _body(js, "function coastIndex(d) {")
+    assert "points: count(said.shore) + count(said.borders) });" in index_js
+    assert "count = (v) => Math.max(0, num(v) || 0);" in index_js
+    prepare = _body(js, "function prepareTile(buf, t, index) {")
+    assert "points += n;" in prepare and "return { coasts, borders, points };" in prepare
+    assert "coast.points += tile.points;" in _body(js, "function askTiles(want) {")
+    index = json.loads((COAST / "index.json").read_text(encoding="utf-8"))
+    middles = []
+    for name, counts in index["tiles"].items():
+        lat0, lon0 = map(int, name.split("_"))
+        middles.append((name, _unit(lon0 + 5, lat0 + 5), counts["shore"] + counts["borders"]))
+    # the page's own screens: never cut (the widest canvas, at the furthest the tiles are drawn: the most on it)
+    sight, most = _sight(3840, 520, 24.0001), 0
+    for lat in range(-88, 89, 4):
+        for lon in range(-180, 180, 6):
+            round_, want = _pick(middles, _unit(lon, lat), sight)
+            assert len(want) == len(round_), (lon, lat)
+            most = max(most, len(round_))
+    assert 60 < most <= 120
+    # a canvas wider than any screen, by the North Pole: more tiles on it than are kept
+    view = _unit(-40, 88)
+    round_, want = _pick(middles, view, _sight(9000, 520, 24.0001))
+    assert len(round_) > 120 or sum(p for *_, p in round_) > 1_000_000
+    assert 0 < len(want) <= 120 and sum(p for _, p in want) <= 1_000_000
+    picked = {name for name, _ in want}
+    assert max(d for d, name, _ in round_ if name in picked) <= min(d for d, name, _ in round_ if name not in picked)
+
+    def drawn(names: list[str], points: dict[str, int], times: int) -> _Tiles:
+        """A globe drawn `times` times on one view: each draw asks, then what is on its way comes in."""
+        c, now = _Tiles(), 0.0
+        for _ in range(times):
+            before = len(c.asked)
+            c.ask(names, now)
+            for name, token in c.asked[before:]:
+                c.settle(name, token, points[name], now)
+            now += 0.016
+        return c
+
+    points = {name: p for _, name, p in round_}
+    kept = drawn([name for name, _ in want], points, 60)
+    asked = len(kept.asked)
+    assert asked == len(want) and all(isinstance(kept.tiles[name], int) for name, _ in want)
+    kept.ask([name for name, _ in want], 99.0)
+    assert len(kept.asked) == asked  # settled: nothing asked again
+    every = drawn([name for _, name, _ in round_], points, 200)  # all of them: asked again and again, without end
+    asked = len(every.asked)
+    every.ask([name for _, name, _ in round_], 99.0)
+    assert asked > 2 * len(round_) and len(every.asked) > asked
+
+
+def _read_tile(data: bytes) -> tuple[list[list[array]], int] | None:
+    """prepareTile's reading, as the page has it: "GSH1", then two sections, each a uint32 count of lines and each line
+    a uint32 count of points and as many uint16 pairs (lon, lat), little-endian; None for what is not a tile. Each
+    line's steps, and where the reading ended."""
+    end = len(data)
+    if end < 12 or data[:4] != b"GSH1":
+        return None
+    off, sections = 4, []
+    for _ in range(2):
+        if off + 4 > end:
+            return None
+        (count,), lines = struct.unpack_from("<I", data, off), []
+        off += 4
+        for _ in range(count):
+            if off + 4 > end:
+                return None
+            (n,) = struct.unpack_from("<I", data, off)
+            if off + 4 + n * 4 > end:
+                return None
+            off += 4
+            steps = array("H")
+            steps.frombytes(data[off:off + n * 4])
+            if struct.pack("=H", 1) != struct.pack("<H", 1):
+                steps.byteswap()
+            lines.append(steps)
+            off += n * 4
+        sections.append(lines)
+    return sections, off
+
+
+def test_the_coast_tiles_read_whole_and_reach_no_further_than_the_page_looks(js):
+    """Every vendored tile reads whole as prepareTile reads it (its two sections end where the file does), and every
+    point of it is within TILE_REACH of a tile from its middle, which is how far coastTiles looks when it picks the
+    tiles that can be on the canvas: GSHHG's lines run on past a tile's edge into its neighbour's margin (some 2
+    degrees at most), so a tile's own box (7.07 degrees from its middle at most) is not enough; 0.85 of a tile is (the
+    furthest point is 0.796 of one away). Every name in the index is one coastIndex keeps; what is not a tile reads as
+    none."""
+    prepare = _body(js, "function prepareTile(buf, t, index) {")
+    for step in ('if (end < 12 || dv.getUint32(0) !== 0x47534831) return null;  // "GSH1"',
+                 "step = (index.tile + 2 * index.margin) / 65535;",
+                 "const count = dv.getUint32(off, true), lines = [];",
+                 "const lon0 = t.lon0 - index.margin, lat0 = t.lat0 - index.margin;",
+                 "if (off + 4 + n * 4 > end) return null;",
+                 "const lon = (lon0 + dv.getUint16(off, true) * step) * rad;",
+                 "const lat = (lat0 + dv.getUint16(off + 2, true) * step) * rad, c = Math.cos(lat);",
+                 "for (let s = 0; s < 2; s++) {", "sections.push(piecesOf(lines));", "points += n;"):
+        assert step in prepare, step
+    index_js = _body(js, "function coastIndex(d) {")
+    assert "/^(-?\\d{1,2})_(-?\\d{1,3})$/.exec(name)" in index_js
+    assert "const whole = lat0 >= -90 && lat0 + tile <= 90 && lon0 >= -180 && lon0 + tile <= 180;" in index_js
+    assert "if (!whole || lat0 % tile || lon0 % tile) continue;" in index_js
+    assert "const TILE_REACH = 0.85;" in js and "reach: TILE_REACH * tile * rad" in index_js
+    tiles = _body(js, "function coastTiles(g, fr, ask) {")
+    assert "const d = Math.acos(clamp(t.c[0] * C[0] + t.c[1] * C[1] + t.c[2] * C[2], -1, 1));" in tiles
+    assert "if (d <= near) round.push({ t, d });" in tiles
+    assert "const C = fr.C, near = sightOf(g) + coast.index.reach, round = [];" in tiles
+    index = json.loads((COAST / "index.json").read_text(encoding="utf-8"))
+    tile, margin = index["tile"], index["margin"]
+    assert (tile, margin) == (10, 5)
+    step, reach = (tile + 2 * margin) / 65535, 0.85 * tile
+    lo, hi = margin / step, (margin + tile) / step  # the steps within a tile's own box
+    furthest, points = 0.0, 0
+    for name, counts in index["tiles"].items():
+        assert re.fullmatch(r"(-?\d{1,2})_(-?\d{1,3})", name)
+        lat0, lon0 = map(int, name.split("_"))
+        assert -90 <= lat0 and lat0 + tile <= 90 and -180 <= lon0 and lon0 + tile <= 180
+        assert lat0 % tile == 0 and lon0 % tile == 0
+        data = (COAST / f"{name}.bin").read_bytes()
+        read = _read_tile(data)
+        assert read is not None and read[1] == len(data), name  # whole, to its last byte
+        (shores, borders), _ = read
+        assert sum(len(q) // 2 for q in shores) == counts["shore"]  # the index's counts
+        assert sum(len(q) // 2 for q in borders) == counts["borders"]
+        middle = _unit(lon0 + tile / 2, lat0 + tile / 2)
+        box = max(_angle(middle, _unit(lon0 + dx, min(90, lat0 + dy))) for dx in (0, tile / 2, tile)
+                  for dy in (0, tile / 2, tile))
+        furthest = max(furthest, box)
+        for q in shores + borders:
+            points += len(q) // 2
+            for k in range(0, len(q), 2):
+                if lo <= q[k] <= hi and lo <= q[k + 1] <= hi:
+                    continue  # in its own box: no further than its corners
+                lon, lat = lon0 - margin + q[k] * step, lat0 - margin + q[k + 1] * step
+                furthest = max(furthest, _angle(middle, _unit(lon, lat)))
+    assert points == 2_025_667 and 7.9 < furthest <= reach, furthest
+    assert _read_tile(b"GSH2" + bytes(8)) is None and _read_tile(b"GSH1" + struct.pack("<II", 1, 5)) is None
+    # an app serves them beside the page as it serves the maps (web.static_file: its own folder, then ui/static)
+    from liminal_libs import web
+
+    for rel in ("vendor/world/coast-h/index.json", "vendor/world/coast-h/50_10.bin", "vendor/world/countries-10m.json"):
+        assert web.static_target(rel, (None, STATIC)) == (STATIC / rel).resolve(), rel
+
+
+def _cap(v: list[float], start: int, end: int) -> list[float]:
+    """capOf, as the page has it: the mean of the points (unit vectors) made a unit vector, and the angle (radians) to
+    the point furthest from it; a line with no middle reaches everywhere. Kept in 4-byte floats, as caps are."""
+    mx, my, mz = sum(v[start:end:3]), sum(v[start + 1:end:3]), sum(v[start + 2:end:3])
+    length, reach = math.sqrt(mx * mx + my * my + mz * mz), math.pi
+    if length > 1e-6:
+        least = min((mx * v[i] + my * v[i + 1] + mz * v[i + 2]) / length for i in range(start, end, 3))
+        reach = math.acos(max(-1.0, min(1.0, least)))
+    return _f32([mx / (length or 1), my / (length or 1), mz / (length or 1), reach])
+
+
+def _pieces(lines: list[list[float]], piece: int = 128) -> tuple[list[float], list[int], list[list[float]]]:
+    """piecesOf, as the page has it: the points of every line of two or more in one array of 4-byte floats, cut into
+    pieces of `piece` points at most, each starting where the one before it ended, with its cap."""
+    v: list[float] = []
+    starts: list[int] = []
+    caps: list[list[float]] = []
+    for line in lines:
+        m = len(line) // 3
+        if m < 2:
+            continue
+        for s in range(0, m - 1, piece - 1):
+            e = min(m, s + piece)
+            starts.append(len(v) // 3)
+            v.extend(_f32(line[s * 3:e * 3]))
+            caps.append(_cap(v, starts[-1] * 3, len(v)))
+    starts.append(len(v) // 3)
+    return v, starts, caps
+
+
+def test_a_piece_out_of_sight_has_no_point_on_the_canvas(js):
+    """The map's lines and the tiles' are kept in pieces of PIECE points with their middle and their reach, and so is
+    each ring of the land; a piece (or a ring) is skipped while its middle is further from the middle of the view than
+    the canvas's sight and its reach (inSight). The sight is how far round the canvas shows: asin(its half-diagonal /
+    the globe's radius), the whole half in front while the globe is smaller. Run on the 1:110m map's coasts, borders
+    and rings as the page cuts them and on views at random: no point of a skipped piece is within the sight, a point
+    within it is never skipped, and the pieces of a line join end to end, no gap."""
+    assert "  const PIECE = 128;  // " in js
+    pieces = _body(js, "function piecesOf(lines) {")
+    for step in ("for (let s = 0; s < m - 1; s += PIECE - 1, j++) {", "const e = Math.min(m, s + PIECE);",
+                 "v.set(l.subarray(s * 3, e * 3), at * 3);", "caps.set(capOf(v, at * 3, (at + e - s) * 3), j * 4);",
+                 "const v = new Float32Array(points * 3), starts = new Uint32Array(n + 1),"):
+        assert step in pieces, step
+    cap = _body(js, "function capOf(v, from = 0, to = v.length) {")
+    assert "least = Math.min(least, (mx * v[i] + my * v[i + 1] + mz * v[i + 2]) / len);" in cap
+    assert "reach = Math.acos(clamp(least, -1, 1));" in cap and "let mx = 0, my = 0, mz = 0, reach = Math.PI;" in cap
+    sight = _body(js, "function sightOf(g) {")
+    assert "return (g.r > half ? Math.asin(half / g.r) : Math.PI / 2) + 0.01;" in sight
+    in_sight = js.split("const inSight = (caps, q, C, sight) => ", 1)[1].split(";", 1)[0]
+    assert " ".join(in_sight.split()) == ("Math.acos(clamp(caps[q] * C[0] + caps[q + 1] * C[1] + caps[q + 2] * C[2], "
+                                          "-1, 1)) <= sight + caps[q + 3]")
+    strokes = _body(js, "function strokePieces(c, P, g, fr, sight) {")
+    assert "if (inSight(P.caps, j * 4, fr.C, sight)) strokeUnits(" in strokes
+    prepare = _body(js, "function prepare(t) {")
+    assert "return { land, coasts: piecesOf(coasts), borders: piecesOf(borders) };" in prepare
+    assert "const [coasts, borders] = sections;" in _body(js, "function prepareTile(buf, t, index) {")
+    topo = json.loads((WORLD / "countries-110m.json").read_text(encoding="utf-8"))
+    lines = [[c for lon, lat in line for c in _unit(lon, lat)] for line in _decode(topo)]
+    rnd = random.Random(20261119)
+    for _ in range(40):  # wandering lines of every length, some longer than a piece
+        lon, lat, line = rnd.uniform(-180, 180), rnd.uniform(-80, 80), []
+        for _ in range(rnd.choice([1, 2, 3, 127, 128, 129, 255, 256, 400])):
+            line.extend(_unit(lon, lat))
+            lon, lat = lon + rnd.uniform(-0.3, 0.3), max(-89.0, min(89.0, lat + rnd.uniform(-0.2, 0.2)))
+        lines.append(line)
+    v, starts, caps = _pieces(lines)
+    assert all(starts[j + 1] - starts[j] <= 128 for j in range(len(caps)))
+    joined = 0
+    for line in lines:  # each line is its pieces, end to end
+        m = len(line) // 3
+        joined += m + max(0, math.ceil((m - 1) / 127)) - 1 if m >= 2 else 0
+    assert len(v) // 3 == joined
+    rings = [[c for lon, lat in points[:-1] for c in _unit(lon, lat)] for _, points in _rings(topo, _decode(topo))]
+    caps += [_cap(_f32(ring), 0, len(ring)) for ring in rings]
+    spans = [(v, starts[j] * 3, starts[j + 1] * 3) for j in range(len(starts) - 1)]
+    spans += [(_f32(ring), 0, len(ring)) for ring in rings]
+    for k in range(60):
+        lon0, lat0, zoom = rnd.uniform(-180, 180), rnd.uniform(-85, 85), rnd.choice([1, 2, 3, 12, 24, 40, 96])
+        c, r, half = _unit(lon0, lat0), _radius(zoom), math.hypot(620, 260)
+        sight = (math.asin(half / r) if r > half else math.pi / 2) + 0.01
+        for (pts, start, end), (mx, my, mz, reach) in zip(spans, caps):
+            skipped = math.acos(max(-1.0, min(1.0, mx * c[0] + my * c[1] + mz * c[2]))) > sight + reach
+            if not skipped:
+                continue
+            for i in range(start, end, 3):  # every point of a skipped piece is out of sight
+                d = pts[i] * c[0] + pts[i + 1] * c[1] + pts[i + 2] * c[2]
+                assert math.acos(max(-1.0, min(1.0, d))) > sight - 0.01 + 1e-9, (k, lon0, lat0, zoom)
+
+
+def _trim(steps: list[tuple], w: float, h: float, m: float = 16) -> list[list[tuple[float, float]]]:
+    """trimmed(), as the page has it, on a path's steps: ("M", x, y), ("L", x, y), ("A", [points]) (an arc, as the
+    canvas draws it: a line to its start, then along it, never cut) and ("Z",). The subpaths it puts on the canvas."""
+    def side(x: float, y: float) -> int:
+        return (1 if x < -m else 2 if x > w + m else 0) | (4 if y < -m else 8 if y > h + m else 0)
+
+    out: list[list[tuple[float, float]]] = []
+    held: tuple[float, float, int] | None = None
+    last = 0  # the side of the last point put
+
+    def put() -> None:
+        nonlocal held, last
+        if held is not None:
+            out[-1].append(held[:2])
+            last, held = held[2], None
+
+    for step in steps:
+        if step[0] == "M":
+            put()
+            out.append([step[1:]])
+            last = side(*step[1:])
+        elif step[0] == "L":
+            s = side(*step[1:])
+            if not (held is not None and last & held[2] & s):
+                put()
+            held = (step[1], step[2], s)
+        elif step[0] == "A":
+            put()
+            out[-1].extend(step[1])
+            last = side(*step[1][-1])
+        else:
+            put()
+    put()
+    return out
+
+
+def _windings(subpaths: list[list[tuple[float, float]]], xs: list[float], ys: list[float]) -> list[list[int]]:
+    """How many times the subpaths (each closed, as a fill closes it) wind round each point of the grid xs by ys (both
+    rising): of a ray from the point to the right, a line crossing it going down (y rising) counts one and going up
+    minus one. Row by row, each line adding its count to the points left of where it crosses the row."""
+    rows = [[0] * (len(xs) + 1) for _ in ys]
+    for sub in subpaths:
+        for (x1, y1), (x2, y2) in zip(sub, sub[1:] + sub[:1]):
+            if y1 == y2:
+                continue
+            s, lo, hi = (1, y1, y2) if y1 < y2 else (-1, y2, y1)
+            for j in range(bisect.bisect_left(ys, lo), bisect.bisect_left(ys, hi)):
+                at = x1 + (x2 - x1) * (ys[j] - y1) / (y2 - y1)
+                rows[j][0] += s
+                rows[j][bisect.bisect_left(xs, at)] -= s
+    out = []
+    for row in rows:
+        n, line = 0, []
+        for k in range(len(xs)):
+            n += row[k]
+            line.append(n)
+        out.append(line)
+    return out
+
+
+def test_a_run_off_the_canvas_is_cut_short_and_nothing_on_it_changes(js):
+    """trimmed() puts a path on the canvas with its runs beyond an edge cut short: of three points in a row beyond the
+    same edge (PEN_MARGIN px out), the middle one is left out, so a coast running on for thousands of points off a
+    globe zoomed 96x is a few points. Nothing on the canvas changes: what is left out and the line put for it lie
+    beyond that edge, so every point of the canvas is wound round as often (the land's fill, even-odd or not), and
+    every line put that the path did not have lies beyond an edge (a stroke). Checked on paths at random that wander
+    far off the canvas and back, round its corners and round it, with arcs of a rim far larger than it."""
+    assert "  const PEN_MARGIN = 16;  // " in js
+    pen = _body(js, "function trimmed(c, w, h) {")
+    for step in ("const m = PEN_MARGIN, side = (x, y) => (x < -m ? 1 : x > w + m ? 2 : 0) | (y < -m ? 4 : y > h + m",
+                 "const put = () => { if (held) { c.lineTo(hx, hy); ls = hs; held = false; } };",
+                 "moveTo(x, y) { put(); c.moveTo(x, y); ls = side(x, y); },",
+                 "if (!(held && (ls & hs & s))) put();", "held = true; hx = x; hy = y; hs = s;",
+                 "c.arc(x, y, r, a, b, ccw);", "ls = side(x + r * Math.cos(b), y + r * Math.sin(b));",
+                 "closePath() { put(); c.closePath(); },", "done: put,"):
+        assert step in pen, step
+    base = _body(js, "function baseLayer(g, fr, ratio, W, H, tiles) {")
+    assert "const pen = trimmed(b, g.w, g.h), sight = sightOf(g)" in base
+    assert base.index("pen.done();") < base.index("b.fill('evenodd');")  # its last point put before the fill
+    lines = _body(js, "function paintLines(c, g, fr, l, geo, names) {")
+    assert "pen = trimmed(c, g.w, g.h);" in lines and "strokeUnits(pen, L.v," in lines
+    assert lines.index("pen.done();") < lines.index("c.stroke();")
+    w, h, rnd = 800, 500, random.Random(20261119)
+    xs = [0.31 + 4.01 * i for i in range(200)]  # the canvas, every 4 px, to its edges
+    ys = [0.17 + 3.97 * j for j in range(126)]
+    kept = total = 0
+    for case in range(300):
+        steps: list[tuple] = []
+        for _ in range(rnd.randint(1, 3)):
+            x, y = rnd.uniform(-3000, 3800), rnd.uniform(-3000, 3500)
+            steps.append(("M", x, y))
+            for _ in range(rnd.randint(3, 400)):
+                pick = rnd.random()
+                if pick < 0.03:  # an arc of a rim far larger than the canvas, from where it is
+                    cx, cy, r = w / 2, h / 2, rnd.uniform(900, 6000)
+                    a = rnd.uniform(0, 2 * math.pi)
+                    arc = [(cx + r * math.cos(a + t / 12), cy + r * math.sin(a + t / 12)) for t in range(13)]
+                    steps.append(("A", arc))
+                    x, y = arc[-1]
+                    continue
+                if pick < 0.08:  # back into the canvas
+                    x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+                else:  # on, along wherever it is
+                    x, y = x + rnd.gauss(0, 250), y + rnd.gauss(0, 250)
+                steps.append(("L", x, y))
+            steps.append(("Z",))
+        whole = []
+        for step in steps:
+            if step[0] == "M":
+                whole.append([step[1:]])
+            elif step[0] == "L":
+                whole[-1].append(step[1:])
+            elif step[0] == "A":
+                whole[-1].extend(step[1])
+        cut = _trim(steps, w, h)
+        assert [sub[0] for sub in cut] == [sub[0] for sub in whole]
+        assert _windings(cut, xs, ys) == _windings(whole, xs, ys), case
+        had = {(a, b) for sub in whole for a, b in zip(sub, sub[1:])}
+
+        def side(x: float, y: float) -> int:
+            return (1 if x < -16 else 2 if x > w + 16 else 0) | (4 if y < -16 else 8 if y > h + 16 else 0)
+        for sub in cut:
+            for a, b in zip(sub, sub[1:]):
+                assert (a, b) in had or side(*a) & side(*b), (case, a, b)
+        kept += sum(len(sub) for sub in cut)
+        total += sum(len(sub) for sub in whole)
+    assert kept < total * 0.8  # a good part of these paths is cut
+    # a coast that runs on for 10,000 points along beyond one edge: a few points
+    run = [("M", 400.0, 250.0)] + [("L", -100.0 - k * 0.37, 250.0 + 2000 * math.sin(k / 900)) for k in range(10000)]
+    assert len(_trim(run + [("L", 400.0, 300.0), ("Z",)], w, h)[0]) < 12
+
+
+def test_the_layers_and_the_places_stay_right_at_96x(js):
+    """At 96x the globe's radius is some 21,000 px (a canvas 520 px high). The view a layer was painted for is keyed to
+    1e-5 degrees (facing), at most 0.004 px off the routes and home, drawn every frame (to 1e-3 degrees, as before, it
+    was 0.37 px); a 4-byte unit vector (the map's and the tiles' pieces, a layer's points and lines) is within 0.002 px
+    of its point, and a layer's point packed to 1e-5 degrees within 0.004 px; a layer's line, a chord between points
+    FILL degrees apart at most, strays from its great circle on the canvas by its sagitta times the sine of how far
+    from the middle of the view it is: under half a pixel on a canvas 2,560 px wide, at any zoom. Its marks, lines and
+    the places' dots are projected from those points as at 1x, and found by the pointer as they are drawn."""
+    r = _radius(96)
+    assert "const facing = () => `${view.lon.toFixed(5)},${view.lat.toFixed(5)}`;" in js
+    assert "facing(), stamp].join('|');" in js.split("const viewKey = ", 1)[1].split("\n", 1)[0]
+    assert r * math.radians(1e-5) < 0.004 < 0.3 < r * math.radians(1e-3)
+    rnd = random.Random(96)
+    worst = 0.0
+    for _ in range(20000):
+        p = _unit(rnd.uniform(-180, 180), rnd.uniform(-90, 90))
+        q = _f32(p)
+        worst = max(worst, math.dist(p, q))
+    assert worst * r < 0.002
+    assert "pv.push(...unit(lon, lat));" in js and "points.v = Float32Array.from(pv);" in js  # a layer's points
+    fill = float(re.search(r"const FILL = ([\d.]+);", js).group(1))
+    assert fill == 3
+    half = math.hypot(2560 / 2, 520 / 2)
+    assert half * (1 - math.cos(math.radians(fill / 2))) < 0.5
+    # the marks and the dots: the same projection at every zoom (the canvas's own px), clipped to the canvas
+    points = _body(js, "function paintPoints(c, g, fr, l, geo, names) {")
+    assert "const px = g.cx + g.r * (x * E[0] + y * E[1] + z * E[2]), py = g.cy - g.r * (x * N[0]" in points
+    assert "if (px < 0 || py < 0 || px >= g.w || py >= g.h) continue;" in points
+    assert "const p = project(o.lon, o.lat, g);" in _body(js, "function drawPlaces(c, g) {")
+
+
+def test_gshhg_is_credited_while_its_coasts_are_drawn(js):
+    """The project's rule, a data set's credit drawn wherever its features are: while any coast tile is drawn, GSHHG
+    2.3.7 and its licence are named with the other credits over the map (in words: no outside host in the script); at
+    24x or nearer, or before a tile is here, not."""
+    assert "const COAST_CREDIT = { text: 'Coasts and borders: GSHHG 2.3.7 (LGPL-3.0)', url: '' };" in js
+    render = _body(js, "function render(now) {")
+    assert "const credited = !!(tiles && tiles.drawn.length);" in render
+    assert "if (credited !== coastCredited) { coastCredited = credited; renderAttribution(); }" in render
+    assert "if (coastCredited) list.push(COAST_CREDIT);" in _body(js, "function renderAttribution() {")
+    assert "let coastCredited = false;" in js

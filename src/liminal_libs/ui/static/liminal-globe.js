@@ -29,10 +29,20 @@
 //   key: a name the layers' switches are remembered under in this browser (localStorage); without it they last as
 //     long as the globe does.
 //
-// - The map is world-atlas 2.0.2 (Natural Earth, public domain) beside this file: vendor/world/countries-110m.json, and
-//   countries-50m.json only once a globe is zoomed past 2.5x; one copy serves every globe on the page. The land is cut
-//   where it goes behind the globe and closed along the rim the way round its own outline goes, so a coast on the
-//   horizon is land to the rim and the sea round it stays sea, from any side.
+// - The map is world-atlas 2.0.2 (Natural Earth, public domain) beside this file: vendor/world/countries-110m.json,
+//   countries-50m.json only once a globe is zoomed past 2.5x and countries-10m.json past 12x; one copy serves every
+//   globe on the page, and the finer two go with the last globe. The land is cut where it goes behind the globe and
+//   closed along the rim the way round its own outline goes, so a coast on the horizon is land to the rim and the sea
+//   round it stays sea, from any side.
+// - It zooms to MAX_ZOOM, 96x (the user, 2026-11-19: "i need to zoom in a few more times maybe 96x"), by the wheel,
+//   two fingers, + and −. Past 24x its coasts and borders are GSHHG's, points some 200 m apart (vendor/world/coast-h/,
+//   LGPL-3.0, credited while they are drawn), in tiles of 10 degrees: only the tiles on the canvas are asked for, the
+//   nearest the middle first and no more than are kept, each once, TILE_LOADS at a time and none while the globe
+//   glides; MAX_TILES are kept for every globe on the page (the least lately drawn go first) and all go with the last
+//   globe; the map's own coasts and borders are drawn under them until every tile on the canvas is in. The map's
+//   lines and the tiles' are kept in pieces with their reach, and a piece out of the canvas's sight is skipped, as is
+//   a ring of the land; a run of points beyond an edge of the canvas is cut short (trimmed): so a globe zoomed 96x
+//   draws what is on its canvas, not the half of the Earth facing it.
 // - Each origin is a dot sized by its count, with a great-circle route to home 1.2 + min(3.6, 1.3 log10(count + 1)) px
 //   wide, by its kind: allowed in, unanswered in (dashed: no answer seen within 3 s) and out, named in the legend
 //   beneath. Private and local peers are never placed: the legend counts them. A place without a known point
@@ -75,7 +85,18 @@
   const TAU = 2 * Math.PI;
   const RETRY_MS = 60_000;  // a map that did not load is not asked for again before this (globe.js)
   const FINE_ZOOM = 2.5;  // past it the 1:50m outlines are loaded and drawn
-  const MAX_ZOOM = 12;  // the 1:50m outlines' detail
+  const FINEST_ZOOM = 12;  // past it the 1:10m outlines
+  const COAST_ZOOM = 24;  // past it GSHHG's coasts and borders, the tiles of them on the canvas (vendor/world/coast-h/)
+  const MAX_ZOOM = 96;  // GSHHG's detail (about 200 m): some 300 m a pixel at 96x on a globe 520 px high
+  const MAX_TILES = 120;  // the coast tiles kept, the least lately drawn let go first (globe.js's)
+  const MAX_TILE_POINTS = 1_000_000;  // and their points at most (some 12 MB as unit vectors)
+  const TILE_LOADS = 4;  // the coast tiles on their way at once, from every globe on the page (globe.js's)
+  // how far a coast tile's points reach from its middle at most, in tiles (GSHHG 2.3.7's furthest: 0.796 of a tile,
+  // its lines running on past its edge into the next one's margin)
+  const TILE_REACH = 0.85;
+  const PIECE = 128;  // points: the map's and the tiles' lines are kept in pieces this long, each skipped out of sight
+  const PEN_MARGIN = 16;  // px round the canvas a path is drawn as it is (beyond it a run is cut short: trimmed)
+  const COAST_CREDIT = { text: 'Coasts and borders: GSHHG 2.3.7 (LGPL-3.0)', url: '' };  // while its tiles are drawn
   const MAX_ORIGINS = 512;  // the places tabled (and drawn: those with a point), the most connections first (traffic.TrafficBook keeps 512)
   const MAX_READ = 20000;  // the most of a spec's list read at all (the note says how many more there were)
   // a spec's note, cut past this: the GeoIP file's words, the home's and, where it shows the hosts recorded, theirs
@@ -121,6 +142,8 @@
   const HERE = (() => {
     try { return new URL('.', (document.currentScript && document.currentScript.src) || location.href).href; } catch (e) { return ''; }
   })();
+  // a file of the map's beside this file (a map, the coast tiles' index, a tile): all the globe itself asks for
+  const world = (name) => fetch(`${HERE}vendor/world/${name}`, { credentials: 'same-origin' });
 
   const own = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);  // a kind or a theme by name only
   const text = (v, max = 200) => (v == null ? '' : String(v).slice(0, max));
@@ -204,6 +227,82 @@
     return ((h >>> 0) % 10007) / 10007;
   }
 
+  // -- what is drawn only where it can be seen: pieces with their reach, the canvas's sight, paths cut short ----------
+  // A line's middle and how far it reaches from it: [x, y, z, radians], the mean of its points (unit vectors, `from` to
+  // `to` of `v`) made a unit vector, and the angle to its point furthest from it. A line with no middle (it goes right
+  // round) reaches everywhere: it is never skipped.
+  function capOf(v, from = 0, to = v.length) {
+    let mx = 0, my = 0, mz = 0, reach = Math.PI;
+    for (let i = from; i < to; i += 3) { mx += v[i]; my += v[i + 1]; mz += v[i + 2]; }
+    const len = Math.hypot(mx, my, mz);
+    if (len > 1e-6) {
+      let least = 1;
+      for (let i = from; i < to; i += 3) least = Math.min(least, (mx * v[i] + my * v[i + 1] + mz * v[i + 2]) / len);
+      reach = Math.acos(clamp(least, -1, 1));
+    }
+    return [mx / (len || 1), my / (len || 1), mz / (len || 1), reach];
+  }
+  // Lines of unit vectors (each a typed array of x, y, z a point) kept as one set: their points in one array of 4-byte
+  // numbers (some 0.4 m on the Earth, a hundredth of a pixel at 96x), cut into pieces of PIECE points at most (a piece
+  // starts where the one before it ended, so a line has no gap), each with its middle and its reach (capOf), to be
+  // skipped while it is out of sight. {n, v, starts, caps}: piece j is v's points starts[j] to starts[j + 1].
+  function piecesOf(lines) {
+    let points = 0, n = 0;
+    for (const l of lines) {
+      const m = l.length / 3, p = Math.ceil((m - 1) / (PIECE - 1));
+      if (m >= 2) { points += m + p - 1; n += p; }
+    }
+    const v = new Float32Array(points * 3), starts = new Uint32Array(n + 1), caps = new Float32Array(n * 4);
+    let at = 0, j = 0;
+    for (const l of lines) {
+      const m = l.length / 3;
+      if (m < 2) continue;  // no line
+      for (let s = 0; s < m - 1; s += PIECE - 1, j++) {
+        const e = Math.min(m, s + PIECE);  // its points s to e - 1, the last of them the next piece's first
+        starts[j] = at;
+        v.set(l.subarray(s * 3, e * 3), at * 3);
+        caps.set(capOf(v, at * 3, (at + e - s) * 3), j * 4);
+        at += e - s;
+      }
+    }
+    starts[n] = at;
+    return { n, v, starts, caps };
+  }
+  // How far round from the middle of the view the canvas shows, in radians and a little more: the whole half of the
+  // globe in front while the globe is no larger than the canvas's diagonal, less the nearer it is zoomed.
+  function sightOf(g) {
+    const half = Math.hypot(g.w / 2, g.h / 2);
+    return (g.r > half ? Math.asin(half / g.r) : Math.PI / 2) + 0.01;
+  }
+  // Whether a piece can be on the canvas: its middle (caps[q] to caps[q + 2]) within the sight and its reach of the
+  // middle of the view C. A piece out of it has every point (and every short step between them) off the canvas.
+  const inSight = (caps, q, C, sight) => Math.acos(clamp(caps[q] * C[0] + caps[q + 1] * C[1] + caps[q + 2] * C[2],
+    -1, 1)) <= sight + caps[q + 3];
+  // A path put on a canvas (its moveTo, lineTo, arc and closePath) with its runs off the canvas cut short: of three
+  // points in a row beyond the same edge of it, PEN_MARGIN px out, the middle one is left out. The path left out and
+  // the line put for it lie beyond that edge, so what is filled (any rule) or stroked on the canvas is the same, and a
+  // coast that runs on for thousands of points off a globe zoomed 96x is a few points here. done() puts the last one.
+  function trimmed(c, w, h) {
+    const m = PEN_MARGIN, side = (x, y) => (x < -m ? 1 : x > w + m ? 2 : 0) | (y < -m ? 4 : y > h + m ? 8 : 0);
+    let held = false, hx = 0, hy = 0, hs = 0, ls = 0;  // the point held back and its side; the side of the last put
+    const put = () => { if (held) { c.lineTo(hx, hy); ls = hs; held = false; } };
+    return {
+      moveTo(x, y) { put(); c.moveTo(x, y); ls = side(x, y); },
+      lineTo(x, y) {
+        const s = side(x, y);
+        if (!(held && (ls & hs & s))) put();  // else the one held is left out: it, the last put and this one are out
+        held = true; hx = x; hy = y; hs = s;
+      },
+      arc(x, y, r, a, b, ccw) {
+        put();
+        c.arc(x, y, r, a, b, ccw);
+        ls = side(x + r * Math.cos(b), y + r * Math.sin(b));  // where it ends
+      },
+      closePath() { put(); c.closePath(); },
+      done: put,
+    };
+  }
+
   // -- the map: loaded once for every globe on the page -----------------------------------------------------------
   // A loader the drawing may call every frame: one request at a time, and after a failure none again for RETRY_MS.
   // `fn` resolves true when it loaded.
@@ -253,7 +352,9 @@
     return area < 0 ? 1 : -1;
   }
   // A ring of the land (arc indexes, ~i: arc i backwards) as one line of unit vectors, its closing point (its first again)
-  // dropped, with its turn; null for a ring of fewer than three points or one naming an arc the map lacks.
+  // dropped, with its turn and its middle and reach (capOf: a ring out of sight is skipped, its land with it, as all of
+  // it is on the side its turn closes it round, within its reach); null for a ring of fewer than three points or one
+  // naming an arc the map lacks. It is drawn from 4-byte numbers; its turn is worked out from the 8-byte ones.
   function landRing(ring, arcs) {
     const pts = [];
     for (let n = 0; n < ring.length; n++) {
@@ -270,18 +371,35 @@
     if (m < 9) return null;
     const v = new Float64Array(m);
     for (let k = 0; k < m; k++) v[k] = pts[k];
-    return { v, turn: turnOf(v) };
+    const kept = new Float32Array(v);
+    return { v: kept, turn: turnOf(v), cap: capOf(kept) };
   }
 
   // The map ready to draw: the lines stroked as unit vectors (x, y, z a point: the coasts, and the borders two countries
-  // share), without the data's cut lines along the antimeridian and round the South Pole, and the land's rings.
+  // share), without the data's cut lines along the antimeridian and round the South Pole, in pieces (piecesOf); and the
+  // land's rings. Its arcs are read as decodeTopo reads them, straight into unit vectors: the 1:10m map's 477,000
+  // points are not made into pairs first.
   function prepare(t) {
-    const lines = decodeTopo(t);
-    const arcs = lines.map((line) => {
-      const v = new Float64Array(line.length * 3);
-      line.forEach(([lon, lat], i) => v.set(unit(lon, lat), i * 3));
-      return v;
-    });
+    const quantized = !!t.transform;
+    const [sx, sy] = quantized ? t.transform.scale : [1, 1];
+    const [tx, ty] = quantized ? t.transform.translate : [0, 0];
+    const seam = (lon1, lat1, lon2, lat2) => (Math.abs(lon1) > 179.99 && Math.abs(lon2) > 179.99)
+      || (lat1 < -89.9 && lat2 < -89.9);
+    const arcs = [], cuts = [];  // each arc's points as unit vectors, and where the data's cut lines are in it
+    for (const arc of t.arcs) {
+      const v = new Float64Array(arc.length * 3), at = [];
+      let x = 0, y = 0, lon0 = 0, lat0 = 0;
+      for (let i = 0; i < arc.length; i++) {
+        const [dx, dy] = arc[i];
+        if (quantized) { x += dx; y += dy; } else { x = dx; y = dy; }
+        const lon = x * sx + tx, lat = y * sy + ty, c = Math.cos(lat * rad);
+        v[i * 3] = c * Math.cos(lon * rad); v[i * 3 + 1] = c * Math.sin(lon * rad); v[i * 3 + 2] = Math.sin(lat * rad);
+        if (i && seam(lon0, lat0, lon, lat)) at.push(i);
+        lon0 = lon; lat0 = lat;
+      }
+      arcs.push(v);
+      cuts.push(at);
+    }
     const objects = t.objects || {};
     const polygons = (collection, each) => {
       for (const g of (collection && collection.geometries) || []) {
@@ -299,32 +417,151 @@
       const r = landRing(ring, arcs);
       if (r) land.push(r);
     }));
-    const seam = ([lon1, lat1], [lon2, lat2]) => (Math.abs(lon1) > 179.99 && Math.abs(lon2) > 179.99) || (lat1 < -89.9 && lat2 < -89.9);
     const coasts = [], borders = [];
-    lines.forEach((line, k) => {
-      const piece = (from, to) => { if (to - from > 1) (uses[k] >= 2 ? borders : coasts).push(arcs[k].subarray(from * 3, to * 3)); };
+    arcs.forEach((v, k) => {  // each arc cut where the data's cut lines are, a border where two countries take it
+      const piece = (from, to) => {
+        if (to - from > 1) (uses[k] >= 2 ? borders : coasts).push(v.subarray(from * 3, to * 3));
+      };
       let start = 0;
-      for (let i = 1; i < line.length; i++) if (seam(line[i - 1], line[i])) { piece(start, i); start = i; }
-      piece(start, line.length);
+      for (const i of cuts[k]) { piece(start, i); start = i; }
+      piece(start, v.length / 3);
     });
-    return { land, coasts, borders };
+    return { land, coasts: piecesOf(coasts), borders: piecesOf(borders) };
   }
 
-  const maps = { coarse: null, fine: null };  // 1:110m and 1:50m
+  const maps = { coarse: null, fine: null, finest: null };  // 1:110m, 1:50m and 1:10m
   const globes = new Set();  // the globes drawn now (each redrawn when a map comes)
   const mapLoader = (name, key) => loader(async () => {
     try {
-      const res = await fetch(`${HERE}vendor/world/${name}`, { credentials: 'same-origin' });
+      const res = await world(name);
       if (!res.ok) return false;
       const map = prepare(await res.json());
-      if (key === 'fine' && !globes.size) return true;  // every globe went meanwhile: not kept
+      if (key !== 'coarse' && !globes.size) return true;  // every globe went meanwhile: not kept
       maps[key] = map;
       globes.forEach((g) => g.mapArrived());
       return true;
-    } catch (e) { return false; }  // the coarse outlines meanwhile, or the sphere and its graticule alone
+    } catch (e) { return false; }  // the coarser outlines meanwhile, or the sphere and its graticule alone
   });
   const loadCoarse = mapLoader('countries-110m.json', 'coarse');
   const loadFine = mapLoader('countries-50m.json', 'fine');
+  const loadFinest = mapLoader('countries-10m.json', 'finest');
+
+  // -- the coasts past COAST_ZOOM: GSHHG's, in tiles, loaded for every globe on the page ------------------------------
+  // liminal-charts' tools/build_coastlines.py made them from GSHHG 2.3.7's high resolution: coast-h/index.json names
+  // the tiles there are, their size and their margin; a tile, <lat0>_<lon0>.bin by its south-west corner, is "GSH1"
+  // and two sections, its shorelines (land, lakes, the Antarctic ice front and grounding line) and its national
+  // borders, each a uint32 count of lines, each line a uint32 count of points and as many uint16 pairs (lon, lat): from
+  // the tile's corner less its margin, across the tile and both margins in 65,535 steps; little-endian. In `tiles` a
+  // tile is a token while it is on its way, then its lines; one that could not be had is not asked for again before
+  // RETRY_MS.
+  const coast = { index: null, tiles: new Map(), failed: new Map(), loading: 0, points: 0 };
+  // The index made safe: the size of a tile (degrees, a divisor of 180), its margin, and each tile it names that is a
+  // tile of the globe, with its middle as a unit vector and its points (its shorelines' and its borders', as the index
+  // counts them: 0 where it does not); null for what is not an index.
+  function coastIndex(d) {
+    const tile = num(d && d.tile), margin = num(d && d.margin);
+    if (tile == null || tile <= 0 || tile > 90 || 180 % tile !== 0 || margin == null || margin < 0 || margin > tile
+      || !d.tiles || typeof d.tiles !== 'object' || Array.isArray(d.tiles)) return null;
+    const list = [], count = (v) => Math.max(0, num(v) || 0);
+    for (const name of Object.keys(d.tiles).slice(0, (180 / tile) * (360 / tile))) {
+      const m = /^(-?\d{1,2})_(-?\d{1,3})$/.exec(name), lat0 = m ? Number(m[1]) : NaN, lon0 = m ? Number(m[2]) : NaN;
+      const whole = lat0 >= -90 && lat0 + tile <= 90 && lon0 >= -180 && lon0 + tile <= 180;
+      if (!whole || lat0 % tile || lon0 % tile) continue;  // not one of the globe's tiles of this size
+      const said = d.tiles[name] && typeof d.tiles[name] === 'object' ? d.tiles[name] : {};
+      list.push({ name, lat0, lon0, c: unit(lon0 + tile / 2, lat0 + tile / 2),
+        points: count(said.shore) + count(said.borders) });
+    }
+    return list.length ? { tile, margin, reach: TILE_REACH * tile * rad, list } : null;
+  }
+  const loadCoast = loader(async () => {
+    try {
+      const res = await world('coast-h/index.json');
+      const index = res.ok ? coastIndex(await res.json()) : null;
+      if (!index) return false;
+      if (!globes.size) return true;  // every globe went meanwhile: not kept
+      coast.index = index;
+      globes.forEach((g) => g.mapArrived());
+      return true;
+    } catch (e) { return false; }  // the map's own coasts meanwhile
+  });
+  // A tile made ready to draw: its shorelines and its borders, each as pieces of unit vectors (piecesOf), and how many
+  // points it has (as the index counts them: coastTiles picks the tiles to draw by those); null for what is not a tile
+  // (no "GSH1" at its head, or a count that runs on past its end).
+  function prepareTile(buf, t, index) {
+    const dv = new DataView(buf), end = dv.byteLength, step = (index.tile + 2 * index.margin) / 65535;
+    const lon0 = t.lon0 - index.margin, lat0 = t.lat0 - index.margin;
+    if (end < 12 || dv.getUint32(0) !== 0x47534831) return null;  // "GSH1"
+    let off = 4, points = 0;
+    const sections = [];
+    for (let s = 0; s < 2; s++) {
+      if (off + 4 > end) return null;
+      const count = dv.getUint32(off, true), lines = [];
+      off += 4;
+      for (let i = 0; i < count; i++) {
+        if (off + 4 > end) return null;
+        const n = dv.getUint32(off, true);
+        if (off + 4 + n * 4 > end) return null;
+        off += 4;
+        points += n;
+        const v = new Float32Array(n * 3);
+        for (let k = 0; k < n * 3; k += 3, off += 4) {
+          const lon = (lon0 + dv.getUint16(off, true) * step) * rad;
+          const lat = (lat0 + dv.getUint16(off + 2, true) * step) * rad, c = Math.cos(lat);
+          v[k] = c * Math.cos(lon); v[k + 1] = c * Math.sin(lon); v[k + 2] = Math.sin(lat);
+        }
+        lines.push(v);
+      }
+      sections.push(piecesOf(lines));
+    }
+    const [coasts, borders] = sections;
+    return { coasts, borders, points };
+  }
+  // The tiles kept within MAX_TILES and MAX_TILE_POINTS: the least lately drawn go first, never one on its way.
+  function keepTiles() {
+    for (const [name, t] of coast.tiles) {
+      if (coast.tiles.size <= MAX_TILES && coast.points <= MAX_TILE_POINTS) return;
+      if (t.loading) continue;
+      coast.tiles.delete(name);
+      coast.points -= t.points;
+    }
+  }
+  // The tiles a globe has on its canvas: each here is touched (put last: the least lately drawn are let go first);
+  // each not here asked for, once (its token stands for it while it is on its way), TILE_LOADS at a time from every
+  // globe, and every globe told when it came or could not. One that comes when every globe went is not kept.
+  function askTiles(want) {
+    for (const t of want) {
+      const had = coast.tiles.get(t.name);
+      if (had) { coast.tiles.delete(t.name); coast.tiles.set(t.name, had); continue; }
+      if (coast.loading >= TILE_LOADS || Date.now() < (coast.failed.get(t.name) || 0)) continue;
+      const token = { loading: true }, index = coast.index;
+      coast.tiles.set(t.name, token);
+      coast.loading++;
+      const settle = (tile) => {
+        if (coast.tiles.get(t.name) !== token) return;  // let go meanwhile, with the last globe
+        if (tile) {
+          coast.tiles.set(t.name, tile);
+          coast.points += tile.points;
+          keepTiles();
+        } else {
+          coast.tiles.delete(t.name);
+          coast.failed.set(t.name, Date.now() + RETRY_MS);
+        }
+        globes.forEach((g) => g.mapArrived());
+      };
+      world(`coast-h/${t.name}.bin`).then((res) => (res.ok ? res.arrayBuffer() : null)).then((buf) => {
+        let tile = null;
+        try { tile = buf ? prepareTile(buf, t, index) : null; } catch (e) { tile = null; }
+        settle(tile);
+      }, () => settle(null)).finally(() => { coast.loading--; });
+    }
+  }
+  // Every tile, the index and the tiles that failed let go (the last globe went): a tile on its way is then not kept.
+  function forgetCoast() {
+    coast.index = null;
+    coast.tiles.clear();
+    coast.failed.clear();
+    coast.points = 0;
+  }
 
   // the graticule every 15 degrees (globe.js), made once
   let graticule = null;
@@ -423,20 +660,7 @@
     });
     lines.v = lv.slice(0, ln * 3);
     lines.caps = new Float32Array(lines.n * 4);  // a line's middle (a unit vector) and its reach from it (radians)
-    for (let j = 0; j < lines.n; j++) {
-      const from = lines.starts[j] * 3, to = lines.starts[j + 1] * 3;
-      let mx = 0, my = 0, mz = 0, reach = Math.PI;  // a line with no middle (it goes right round) is never skipped
-      for (let i = from; i < to; i += 3) { mx += lv[i]; my += lv[i + 1]; mz += lv[i + 2]; }
-      const len = Math.hypot(mx, my, mz);
-      if (len > 1e-6) {
-        let least = 1;
-        for (let i = from; i < to; i += 3) {
-          least = Math.min(least, (mx * lv[i] + my * lv[i + 1] + mz * lv[i + 2]) / len);
-        }
-        reach = Math.acos(clamp(least, -1, 1));
-      }
-      lines.caps.set([mx / (len || 1), my / (len || 1), mz / (len || 1), reach], j * 4);
-    }
+    for (let j = 0; j < lines.n; j++) lines.caps.set(capOf(lv, lines.starts[j] * 3, lines.starts[j + 1] * 3), j * 4);
     return { points: points.n ? points : null, lines: lines.n ? lines : null,
       credits: parts.map((p) => creditOf(p.credit)), cut };
   }
@@ -712,6 +936,7 @@
     // line's words while the pointer is on it, the names to draw with the places', and a count of the paints.
     let grid = { cols: 1, rows: 1 }, markCells = new Map(), lineCells = [], lineHits = new Map();
     let infraNames = [], infraStamp = 0;
+    let coastCredited = false;  // GSHHG's coasts are drawn now: its credit is listed with the others
     let visible = !('IntersectionObserver' in window);
     let seen = root.isConnected;  // on the page once: after that, a globe that left it is destroyed with the next draw
     let destroyed = false, dirty = true, raf = 0, lastFrame = -Infinity;
@@ -941,37 +1166,89 @@
       slot.key = key;
       return c;
     }
-    const viewKey = (g, W, H, ratio) => [W, H, ratio, g.r.toFixed(2), view.lon.toFixed(3), view.lat.toFixed(3), stamp].join('|');
+    // where the view faces, to 1e-5 degrees: a layer painted for it is at most some 0.004 px off at 96x
+    const facing = () => `${view.lon.toFixed(5)},${view.lat.toFixed(5)}`;
+    const viewKey = (g, W, H, ratio) => [W, H, ratio, g.r.toFixed(2), facing(), stamp].join('|');
+    // A set of lines in pieces (piecesOf) put on one path, the pieces out of sight skipped.
+    function strokePieces(c, P, g, fr, sight) {
+      for (let j = 0; j < P.n; j++) {
+        if (inSight(P.caps, j * 4, fr.C, sight)) strokeUnits(c, P.v, g, fr, P.starts[j] * 3, P.starts[j + 1] * 3);
+      }
+    }
+    // The finest map loaded for the zoom: the 1:10m past FINEST_ZOOM, the 1:50m past FINE_ZOOM, else the 1:110m.
+    const mapNow = () => (zoom > FINEST_ZOOM && maps.finest ? maps.finest : zoom > FINE_ZOOM && maps.fine ? maps.fine
+      : maps.coarse);
 
-    // The sphere, the land and its lines.
-    function baseLayer(g, fr, ratio, W, H) {
-      const map = zoom > FINE_ZOOM && maps.fine ? maps.fine : maps.coarse;
-      const key = `${viewKey(g, W, H, ratio)}|${map === maps.fine ? 'fine' : map ? 'coarse' : 'none'}`;
+    // The sphere, the land and its lines: the map's, and past COAST_ZOOM the coast tiles on the canvas (`tiles`, from
+    // coastTiles), over the map's own coasts and borders until every one of them is in, then in their place. Only what
+    // can be on the canvas is drawn: a ring or a piece of a line out of sight is skipped, and the runs off the canvas
+    // are cut short (trimmed), so a globe zoomed 96x costs what is on its canvas.
+    function baseLayer(g, fr, ratio, W, H, tiles) {
+      const map = mapNow();
+      const which = map === maps.finest ? 'finest' : map === maps.fine ? 'fine' : map ? 'coarse' : 'none';
+      const key = `${viewKey(g, W, H, ratio)}|${which}|${tiles ? `${tiles.whole} ${tiles.key}` : ''}`;
       return layer(layers.base, key, W, H, ratio, (b) => {
         const k = colours, ocean = mix(k.surface, k.frame, 0.6), land = mix(ocean, k.text, 0.1);
+        const pen = trimmed(b, g.w, g.h), sight = sightOf(g), under = !!map && !(tiles && tiles.whole);
         b.beginPath(); b.arc(g.cx, g.cy, g.r, 0, TAU);
         b.fillStyle = css(ocean); b.fill();
         if (map) {  // the land: every ring in one path, so the cuts along the antimeridian leave no seam
           b.beginPath();
-          for (const ring of map.land) ringPath(b, ring, g, fr);
+          for (const ring of map.land) if (inSight(ring.cap, 0, fr.C, sight)) ringPath(pen, ring, g, fr);
+          pen.done();
           b.fillStyle = css(land); b.fill('evenodd');
         }
         b.beginPath();
-        for (const line of graticuleLines()) polyline(b, line, g);
+        for (const line of graticuleLines()) polyline(pen, line, g);
+        pen.done();
         b.strokeStyle = css(k.muted, 0.18); b.lineWidth = 0.7; b.stroke();
-        b.beginPath(); polyline(b, graticuleLines()[EQUATOR], g);  // the equator stressed, as the exchanges globe's
+        b.beginPath(); polyline(pen, graticuleLines()[EQUATOR], g); pen.done();  // stressed, as the exchanges globe's
         b.strokeStyle = css(k.muted, 0.3); b.stroke();
-        if (map) {
+        const lines = (kind) => {  // the borders or the coasts: the map's under the tiles' (or alone), then the tiles'
           b.beginPath();
-          for (const v of map.borders) strokeUnits(b, v, g, fr);
-          b.strokeStyle = css(k.muted, 0.45); b.lineWidth = 0.6; b.stroke();
-          b.beginPath();
-          for (const v of map.coasts) strokeUnits(b, v, g, fr);
-          b.strokeStyle = css(k.muted, 0.85); b.lineWidth = 0.8; b.stroke();
-        }
+          if (under) strokePieces(pen, map[kind], g, fr, sight);
+          for (const tile of tiles ? tiles.drawn : []) strokePieces(pen, tile[kind], g, fr, sight);
+          pen.done();
+        };
+        lines('borders');
+        b.strokeStyle = css(k.muted, 0.45); b.lineWidth = 0.6; b.stroke();
+        lines('coasts');
+        b.strokeStyle = css(k.muted, 0.85); b.lineWidth = 0.8; b.stroke();
         b.beginPath(); b.arc(g.cx, g.cy, g.r, 0, TAU);
         b.strokeStyle = css(k.muted, 0.7); b.lineWidth = 1; b.stroke();
       });
+    }
+    // The coast tiles to draw past COAST_ZOOM: the tiles whose middle is within the canvas's sight and their reach (on
+    // the canvas), the nearest the middle of the view first and as many as the cache keeps (MAX_TILES, and
+    // MAX_TILE_POINTS by the index's counts), so that a tile coming in never lets go of another one wanted here (a
+    // canvas wide enough, or a view by a pole, could want more: each tile in would push out one on the canvas, to be
+    // asked for again, without end). Of them those here (`drawn`), `whole` when every tile on the canvas is (the map's
+    // own coasts and borders are then not drawn under them), and their names, the key they are painted under. The
+    // ones not here are asked for, and the index first (`ask`: not while the globe glides, past places it only goes
+    // by). Null at COAST_ZOOM or nearer, and without the index.
+    function coastTiles(g, fr, ask) {
+      if (zoom <= COAST_ZOOM) return null;
+      if (!coast.index) { if (ask) loadCoast(); return null; }
+      const C = fr.C, near = sightOf(g) + coast.index.reach, round = [];
+      for (const t of coast.index.list) {
+        const d = Math.acos(clamp(t.c[0] * C[0] + t.c[1] * C[1] + t.c[2] * C[2], -1, 1));
+        if (d <= near) round.push({ t, d });
+      }
+      round.sort((a, b) => a.d - b.d);
+      const want = [];
+      let points = 0;
+      for (const { t } of round) {
+        if (want.length >= MAX_TILES || points + t.points > MAX_TILE_POINTS) break;
+        want.push(t);
+        points += t.points;
+      }
+      if (ask) askTiles(want);
+      const drawn = [], names = [];
+      for (const t of want) {
+        const tile = coast.tiles.get(t.name);
+        if (tile && !tile.loading) { drawn.push(tile); names.push(t.name); }
+      }
+      return { drawn, whole: drawn.length === round.length, key: names.join(' ') };
     }
 
     // -- the layers: a plugin's infrastructure, between the map and the routes ---------------------------------------
@@ -1033,8 +1310,7 @@
     // most, so that a line another one crosses later is still found there) and, from the zoom its layer names, where
     // its name goes: by its point nearest the middle of the view, a name once however many lines carry it.
     function paintLines(c, g, fr, l, geo, names) {
-      const L = geo.lines, C = fr.C, half = Math.hypot(g.w / 2, g.h / 2);
-      const sight = (g.r > half ? Math.asin(half / g.r) : Math.PI / 2) + 0.01;  // how far round the canvas shows
+      const L = geo.lines, C = fr.C, sight = sightOf(g), pen = trimmed(c, g.w, g.h);  // its runs off the canvas cut
       const thin = (THIN / g.r) ** 2, size = grid.cols * grid.rows;
       // the lines through each cell, as lists: a cell's last one in `head`, the one before each in `next`, and its
       // line in `line`; `last` the line that came to a cell last (a line is in a cell's list once), `held` how many
@@ -1068,12 +1344,13 @@
         const q = j * 4, d = L.caps[q] * C[0] + L.caps[q + 1] * C[1] + L.caps[q + 2] * C[2];
         if (Math.acos(clamp(d, -1, 1)) > sight + L.caps[q + 3]) continue;  // wholly out of sight
         id = j + 1; first = true; best = Infinity;
-        strokeUnits(c, L.v, g, fr, L.starts[j] * 3, L.starts[j + 1] * 3, thin, seen);
+        strokeUnits(pen, L.v, g, fr, L.starts[j] * 3, L.starts[j + 1] * 3, thin, seen);
         const name = best < Infinity ? L.names[j] : '', was = name ? named.get(name) : null;
         if (name && (!was || best < was.d)) {
           named.set(name, { x: bx, y: by, r: 2, words: cut(name, 28), slot: l.slot, d: best });
         }
       }
+      pen.done();
       c.strokeStyle = css(colours.series[l.slot - 1], 0.9);
       c.lineWidth = 1.3;
       c.lineJoin = 'round';
@@ -1375,10 +1652,14 @@
       if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
       if (!maps.coarse) loadCoarse();
       if (zoom > FINE_ZOOM && !maps.fine) loadFine();  // the 1:50m outlines only once zoomed past 2.5x
+      if (zoom > FINEST_ZOOM && !maps.finest) loadFinest();  // the 1:10m only past 12x
+      const tiles = coastTiles(g, fr, !glide);  // GSHHG's only past 24x, and only the tiles on the canvas
+      const credited = !!(tiles && tiles.drawn.length);
+      if (credited !== coastCredited) { coastCredited = credited; renderAttribution(); }  // GSHHG's, while drawn
       for (const l of data.layers) if (isOn(l)) askLayer(l, load);  // a layer switched on: asked of the page, once
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, W, H);
-      ctx.drawImage(baseLayer(g, fr, ratio, W, H), 0, 0);
+      ctx.drawImage(baseLayer(g, fr, ratio, W, H, tiles), 0, 0);
       const infra = infraLayer(g, fr, ratio, W, H);  // the layers: over the map, under the routes
       if (infra) ctx.drawImage(infra, 0, 0);
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -1667,6 +1948,7 @@
     function renderAttribution() {
       const list = data.attribution ? [data.attribution] : [], kept = new Map();
       for (const { l, geo } of shownLayers()) list.push(...l.credits, ...geo.credits.filter(Boolean));
+      if (coastCredited) list.push(COAST_CREDIT);  // GSHHG's coasts, while their tiles are drawn
       for (const a of list) {
         const key = `${a.url}\n${a.text}`;
         if (kept.has(key)) continue;
@@ -2091,7 +2373,11 @@
       globes.delete(self);
       pruneLayers();  // the layers' geometry goes with the last globe that listed it
       if (instances.get(el) === self) instances.delete(el);
-      if (!globes.size) maps.fine = null;  // the 1:50m outlines go with the last globe (the 1:110m are small)
+      if (!globes.size) {  // the 1:50m and 1:10m outlines and the coast tiles go with the last globe (the 1:110m stay)
+        maps.fine = null;
+        maps.finest = null;
+        forgetCoast();
+      }
     }
 
     const handle = { update: (next) => update(next), destroy };

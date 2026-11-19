@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.65.1 (2026-11-19)
+
+The globe zooms to 96x, and draws backbone networks. The user, 2026-11-19: "i need to zoom in a few more times maybe
+96x"; "also on the firewall theres no real ibone or major hub s drawn on the map, data centers in the world (dataset)
+and major network 'bones' need to be displayed on the map"; "also underwater lines". And, 2026-11-16: "the firewall
+globe should instead of exchanges, have all the backbones,ibones, major internet infrastructure, (as many as possible)
+datacenter locations." plugin-platform-firewall-windows 0.7.1 and plugin-platform-firewall-linux 0.9.1 name the new
+data set and need this release. liminal-platform 0.33.0 draws the new layers as it is. The plugin API stays 2.3.
+
+- **The globe zooms to 96x** (`ui/static/liminal-globe.js`: MAX_ZOOM 96, was 12). The wheel, a pinch, two fingers,
+  + and − all stop there, and the words say "96×". Past 12x it draws Natural Earth's 1:10m map. Past 24x it draws
+  GSHHG's coasts and borders, points some 200 m apart: about 300 m a pixel at 96x on a globe 520 px high. The land
+  is still filled from the 1:10m map, since GSHHG's tiles are lines: the fill is within a few pixels of GSHHG's coast
+  in most places, further off in fjords and skerries, and small islands and lakes are outlined only.
+- **Only what is on the canvas is asked for and drawn.** GSHHG's coasts come in tiles of 10 degrees. Only the tiles
+  on the canvas are asked for, the nearest the middle first, each once, four at a time, and none while the globe
+  glides. A tile that fails is not asked again for a minute. At most 120 tiles and 1,000,000 points are kept (some
+  12 MB), and never more are picked than are kept. The least lately drawn go first, and all go with the last globe.
+  The map's own coasts and borders are drawn under the tiles until every tile on the canvas is in. Lines are kept in
+  pieces of 128 points; a piece out of sight is skipped, and a run of points off the canvas is cut short. A drag
+  costs some 5 ms a move at 96x and 3 ms at 10x, where 1.65.0's script took 49 ms at 10x (headless Edge, over
+  Bergen). The view's key is kept to 1e-5 degrees, so a cached layer stays on its routes at 96x.
+- **GSHHG is credited** over the map while its tiles are drawn: "Coasts and borders: GSHHG 2.3.7 (LGPL-3.0)".
+- **Two maps ship with the library** (`ui/static/vendor/world/`). They are the charts app's own copies, as its
+  repository holds them, copied from this PC's disk: nothing was downloaded. `VERSION` gives each file's size and
+  sha256.
+  - `countries-10m.json`: world-atlas 2.0.2's 1:10m map (ISC), Natural Earth's data (public domain), 3,661,071 bytes.
+  - `coast-h/`: GSHHG 2.3.7's high resolution (Wessel and Smith), under the LGPL-3.0: 433 tiles (8,730,088 bytes)
+    and `index.json` (25,542 bytes), built by the charts' `tools/build_coastlines.py`. GSHHG's `LICENSE.TXT` and
+    `COPYING.LESSERv3` come with them, and `COPYINGv3`: the GPL-3.0's words, which the LGPL-3.0 builds on (the Free
+    Software Foundation's text, from this PC's disk).
+  - Together they add 12,460,853 bytes (about 12.5 MB) to the package. `pyproject.toml` takes
+    `ui/static/vendor/world/coast-h/*` as package data. `.gitattributes` keeps `vendor/**` byte for byte and takes no
+    blank of theirs for an error (`-text -whitespace`).
+- **A fourth data-set format, `gml`** (`machines/infrastructure.py`): maps of networks in GML, in a tar archive,
+  gzipped or not, or one alone. It is for the Internet Topology Zoo's maps. The answer is unpacked in memory only and
+  never written out. Of each network, its newest map is drawn, from 2000 on. Its own points of presence with a place
+  go to a new layer, `pops`. Each link between two of them goes to a new layer, `backbones`, drawn as the great circle
+  between its ends. Both layers' titles say "about 2010-2011". The job's log says how many maps were read, how many
+  networks drawn, and which maps were left out and why. `LAYERS` holds 8 now, the globe's MAX_LAYERS.
+- **The gml format is bounded.** At most 32 MB unpacked (MAX_UNPACKED), 2,000 files in an archive (MAX_MAPS), 4 MB a
+  map (MAX_MAP), 100,000 nodes or edges a map (GML_ITEMS), lists 16 deep (GML_DEPTH). A gzip member is fed to zlib in
+  pieces, so many members cost no more than their size (320,000 members: 0.21 s). An archive's maps count against
+  32 MB by the sizes they say, before each is read, so a sparse file's zeros count too. An archive whose headers chain
+  too deep is refused in words. A map holding a number too long to read is left out and said; the others are drawn.
+- The infrastructure table's note names backbones and their points of presence. Three new reasons count what a map
+  leaves out: a point with no place, a point outside its network, a link between points not drawn.
+- **The data sets the firewall plugins name** (this library names no outside host): the Internet Topology Zoo's
+  261 maps of networks, about 2010-2011 (CC BY 4.0, 348,613 bytes), new. OpenStreetMap's submarine cables of all
+  eight telecom categories (ODbL 1.0, about 3 MB), now in both plugins. OpenStreetMap's lines on land without those on
+  power poles (ODbL 1.0, about 15 MB, was 20 MB). Wikidata's data centres with their subclasses (CC0, about 0.2 MB).
+- Left out, and said. No free map of today's backbone fibre routes exists: operators keep them private or sell
+  them, so the backbones are the Topology Zoo's logical links. No free world map of undersea cable routes is as
+  complete as TeleGeography's, which is sold: OpenStreetMap's are mostly coastal pieces. Wikipedia's list of exchange
+  points (CC BY-SA 4.0) and NOAA's cables in US waters (CC0) each need more than one request: not yet. PeeringDB, PCH,
+  IXPDB, CAIDA, TeleGeography and the ITU are not free-licensed, and the World Bank's CC BY copies rest on PCH's and
+  TeleGeography's data. If "underwater lines" meant sea depths, Natural Earth's bathymetry (public domain) could draw
+  them: not done.
+- **Tests**: test_ui_globe.py (40: the zoom to 96x, the 1:10m map past 12x, the tiles picked nearest first and no more
+  than are kept, every tile read whole, pieces out of sight, the cut pen, precision at 96x, the GSHHG credit, the
+  vendored files and their licences); test_infrastructure.py (41: maps of networks read into backbones and points of
+  presence, the GML reader, answers refused in words, the bounds above); test_netstat.py follows the format's words.
+
 ## 1.65.0 (2026-11-19)
 
 The firewalls' Netstat tab, the hosts database, and the globe's filters and internet infrastructure. The user,

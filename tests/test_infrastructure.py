@@ -1,8 +1,10 @@
 """Internet infrastructure on the firewalls' globe (liminal_libs.machines.infrastructure; the user, 2026-11-16: "The
 globe should have the same kind of geography associated with the exchanges globe, but the firewall globe should instead
 of exchanges, have all the backbones,ibones, major internet infrastructure, (as many as possible) datacenter
-locations."). A plugin's dict made a data set, and what is wrong with one said in words; small recorded Overpass, SPARQL
-and GeoJSON answers read into layers and packed, the arrays read back; the download, on the user's word alone: its
+locations."; 2026-11-19: "major network 'bones' need to be displayed on the map"). A plugin's dict made a data set, and
+what is wrong with one said in words; small recorded Overpass, SPARQL and GeoJSON answers, and maps of networks in GML
+archived as the Topology Zoo's (made here, in memory), read into layers and packed, the arrays read back; what is no
+file of maps, or more than may be unpacked, refused in words; the download, on the user's word alone: its
 licence first, one request over https from the data set's own host, the limit, one deadline on a stand-in clock, a
 cancel that ends a wait at once, a busy server asked once more a minute later, the older file kept whenever it fails;
 the Index, which reads no geometry to look; the forms' words. And the two edits of machines/world.py made for it: what
@@ -14,20 +16,24 @@ from __future__ import annotations
 
 import base64
 import email.message
+import gzip
 import http.client
 import inspect
 import io
 import json
+import math
 import os
 import re
 import socket
 import struct
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.error
 import urllib.request
 import urllib.response
+import zlib
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,7 +95,15 @@ ROUTES = {"id": "emodnet-cables", "title": "Telecom cable routes in European wat
           "credit": {"text": "EMODnet Human Activities; data originator Cogea Srl",
                      "url": "https://emodnet.example/en/"},
           "size": 3_000_000, "wait": 120, "about": "the actual routes, from six national sources"}
-EVERY = (CENTRES, CABLES, LAND, WIKIDATA, ROUTES)
+# a file of maps of networks in GML, as the plugins are given the Internet Topology Zoo's gml.tar.gz (progress/
+# globe-datasets.md), at a stand-in host: the file alone is asked, no query
+ZOO = {"id": "topology-zoo", "title": "Backbone networks, about 2010-2011", "format": "gml",
+       "url": "https://raw.zoo.example/InternetTopologyZoo/main/gml.tar.gz",
+       "source": "the Internet Topology Zoo, through its repository", "licence_name": "CC BY 4.0",
+       "licence": "The Internet Topology Zoo's maps are free under Creative Commons Attribution 4.0.",
+       "credit": {"text": "Internet Topology Zoo, CC BY 4.0", "url": "https://zoo.example/InternetTopologyZoo"},
+       "size": 348_613, "about": "each network's newest map: its points of presence and links"}
+EVERY = (CENTRES, CABLES, LAND, WIKIDATA, ROUTES, ZOO)
 AT = {d["id"]: DataSet.of(d).address() for d in EVERY}  # the one address each is asked at
 
 # -- small recorded answers, in their makers' shapes -------------------------------------------------------------------
@@ -193,6 +207,166 @@ GEOJSON_ANSWER = json.dumps({"type": "FeatureCollection", "features": [
     {"type": "Feature", "id": "x.3", "geometry": {"type": "MultiLineString", "coordinates": []}, "properties": {}}],
     "totalFeatures": 7, "numberMatched": 7, "numberReturned": 7, "timeStamp": "2026-11-17T06:40:00.000Z",
     "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::4326"}}}).encode()
+# a network's map as the Topology Zoo's toolset wrote them through NetworkX (Himsolt's GML: key value, lists in
+# brackets): its own values, then its nodes (each with its place where one was found, Internal 0 for another network's,
+# hyperedge for a shared medium) and its edges; a comment and a node's graphics, which a reader reads past
+AARNET = """# a map of a network
+graph [
+  DateObtained "22/10/10"
+  GeoLocation "Australia"
+  Network "AARNet"
+  Type "REN"
+  Backbone 1
+  label "Aarnet"
+  NetworkDate "2010_08"
+  DateYear "2010"
+  node [
+    id 0
+    label "Sydney1"
+    Country "Australia"
+    Longitude 151.20732
+    Internal 1
+    Latitude -33.86785
+  ]
+  node [
+    id 1
+    label "Sydney2"
+    Longitude 151.20732
+    Internal 1
+    Latitude -33.86785
+    graphics [ x 1.0 y 2.0 Label "a drawing's own" ]
+  ]
+  node [
+    id 2
+    label "Perth"
+    Longitude 115.86048
+    Internal 1
+    Latitude -31.95224
+  ]
+  node [
+    id 3
+    label "Canberra &#38; ACT"
+    Longitude 149.12807
+    Internal 1
+    Latitude -35.28346
+  ]
+  node [
+    id 4
+    label "Telstra"
+    Internal 0
+    Longitude 151.2
+    Latitude -33.9
+  ]
+  node [
+    id 5
+    label "Somewhere"
+    Internal 1
+  ]
+  node [
+    id 6
+    label "Nowhere"
+    Longitude NAN
+    Latitude -12.0
+  ]
+  node [
+    id 7
+    label "Ring"
+    hyperedge 1
+    Longitude 151.2
+    Latitude -33.9
+  ]
+  node [
+    label "Darwin"
+    Longitude 130.84185
+    Latitude -12.46113
+  ]
+  edge [
+    source 0
+    target 1
+  ]
+  edge [
+    source 0
+    target 2
+    LinkLabel "10 Gbps"
+  ]
+  edge [
+    source 2
+    target 0
+  ]
+  edge [
+    source 3
+    target 0
+  ]
+  edge [
+    source 2
+    target 4
+  ]
+  edge [
+    source 2
+    target 999
+  ]
+  edge [
+    source 7
+    target 0
+  ]
+  edge [
+    target 2
+  ]
+]
+"""
+
+
+def gml(network: str | None, nodes=(), edges=(), **values) -> str:
+    """A network's map in GML, as the Topology Zoo's are written: its own values, then each node and each edge."""
+    def value(v) -> str:
+        return f'"{v}"' if isinstance(v, str) else str(v)
+    lines = ["graph ["] + ([f'  Network "{network}"'] if network is not None else [])
+    lines += [f"  {k} {value(v)}" for k, v in values.items()]
+    for node in nodes:
+        lines += ["  node ["] + [f"    {k} {value(v)}" for k, v in node.items()] + ["  ]"]
+    for a, b in edges:
+        lines += ["  edge [", f"    source {a}", f"    target {b}", "  ]"]
+    return "\n".join(lines + ["]", ""])
+
+
+def pop(ident: int, label: str, lon: float, lat: float, **more) -> dict:
+    return {"id": ident, "label": label, "Longitude": lon, "Latitude": lat, "Internal": 1, **more}
+
+
+# a network's maps over the years, named by their year (the newest drawn); one whose name has no year (a network of its
+# own), written in Latin-1 as older tools wrote GML; history; one that does not read
+GEANT_2009 = gml("GEANT", [pop(0, "London", -0.12574, 51.50853), pop(1, "Paris", 2.3488, 48.85341)], [(0, 1)])
+GEANT_2012 = gml("G&#201;ANT", [pop(0, "London", -0.12574, 51.50853), pop(1, "Amsterdam", 4.88969, 52.37403),
+                                pop(2, "Zürich", 8.55, 47.36667)], [(1, 0), (0, 2)], DateYear="2012")
+PIONIER = gml("Pionier", [pop(0, "Warszawa", 21.01178, 52.22977), pop(1, "Kraków", 19.93658, 50.06143)], [(0, 1)],
+              Layer="IP")
+ARPANET = gml("ARPANET", [pop(0, "UCLA", -118.44, 34.07), pop(1, "SRI", -122.18, 37.46)], [(0, 1)])
+NSFNET = gml("NSFNET T1", [pop(0, "Ithaca", -76.5, 42.44), pop(1, "Boulder", -105.27, 40.01)], [(0, 1)],
+             DateYear="1991")
+MAPS = {"gml/Aarnet.gml": AARNET, "gml/Geant2009.gml": GEANT_2009, "gml/Geant2012.gml": GEANT_2012,
+        "gml/Pionierl3.gml": PIONIER, "gml/Arpanet19706.gml": ARPANET, "gml/Arpanet19728.gml": ARPANET,
+        "gml/Nsfnet.gml": NSFNET, "gml/Broken.gml": 'graph [ Network "Broken" node [ id 0 ',
+        "gml/._Aarnet.gml": b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        ",  # macOS's copy of its metadata
+        "README.md": "The Internet Topology Zoo"}
+
+
+def archive(files: dict, gzipped: bool = True) -> bytes:
+    """Maps in a tar archive as the Topology Zoo's gml.tar.gz holds them (a folder, then its files: bytes, or text
+    written in Latin-1), gzipped."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        folder = tarfile.TarInfo("gml")
+        folder.type, folder.mode = tarfile.DIRTYPE, 0o755
+        tar.addfile(folder)
+        for name, body in files.items():
+            data = body if isinstance(body, bytes) else body.encode("latin-1")
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime = len(data), 1_316_000_000
+            tar.addfile(info, io.BytesIO(data))
+    return gzip.compress(out.getvalue(), mtime=0) if gzipped else out.getvalue()
+
+
+ZOO_ANSWER = archive(MAPS)
 TOOK = "the download took more than 600 s, the most an install may take, so it was stopped: nothing was installed"
 
 
@@ -422,6 +596,11 @@ def test_a_plugins_dict_is_a_data_set_and_each_format_has_its_one_address():
         "emodnet:bshcontiscables,emodnet:cicacables,emodnet:shomcables,emodnet:sigcables,emodnet:maltacables,"
         "emodnet:ukfibrecables&outputFormat=application/json&srsName=EPSG:4326")
     assert DataSet.of({**ROUTES, "query": ""}).address() == "https://ows.emodnet.example/geoserver/emodnet/wfs"
+    # a file of maps is asked at its address alone, needing no query (one given is sent as it is written)
+    zoo = DataSet.of(ZOO)
+    assert (zoo.format, zoo.query, zoo.host, zoo.wait) == ("gml", "", "raw.zoo.example", infrastructure.READ_S)
+    assert AT["topology-zoo"] == "https://raw.zoo.example/InternetTopologyZoo/main/gml.tar.gz" == ZOO["url"]
+    assert DataSet.of({**ZOO, "query": "raw=true"}).address() == ZOO["url"] + "?raw=true"
     for said in EVERY:  # each of the plan's shapes is one
         assert DataSet.of(said).id == said["id"]
 
@@ -445,8 +624,8 @@ def test_what_is_wrong_with_a_plugins_data_set_is_said_in_words():
             ({"credit": "© OpenStreetMap contributors"}, "names no credit"),
             ({"credit": {"text": "OSM", "url": "http://www.openstreetmap.example/copyright"}},
              "credit links an https address, not http://www.openstreetmap.example"),
-            ({"format": "shapefile"}, "format is overpass, sparql or geojson, not 'shapefile'"),
-            ({"format": None}, "format is overpass, sparql or geojson, not None"),
+            ({"format": "shapefile"}, "format is overpass, sparql, geojson or gml, not 'shapefile'"),
+            ({"format": None}, "format is overpass, sparql, geojson or gml, not None"),
             ({"size": 0}, "says no size: its bytes are said before it is downloaded"),
             ({"size": "2 MB"}, "says no size"), ({"size": True}, "says no size"),
             ({"query": ""}, "the data set osm-datacentres names no query"),
@@ -458,8 +637,9 @@ def test_what_is_wrong_with_a_plugins_data_set_is_said_in_words():
             ({"id": "remove-me"}, "not beginning with remove"), ({"id": None}, "not None")):
         with pytest.raises(ValueError, match=re.escape(words)):
             DataSet.of({**CENTRES, **change})
-    with pytest.raises(ValueError, match="it holds no space and no #"):
-        DataSet.of({**ROUTES, "query": "service=WFS&typeName=a b"})
+    for wrong in ({**ROUTES, "query": "service=WFS&typeName=a b"}, {**ZOO, "query": "raw=1#top"}):
+        with pytest.raises(ValueError, match="it holds no space and no #"):
+            DataSet.of(wrong)
     with pytest.raises(ValueError, match="a data set is a plugin's dict .*, not str"):
         DataSet.of("osm-datacentres")
     with pytest.raises(ValueError, match="two data sets share the id osm-datacentres"):
@@ -588,6 +768,254 @@ def test_a_wfs_is_asked_for_its_coordinates_longitude_first():
     # a GeoJSON file, or a service that is no WFS (OGC API Features: CRS84 unless asked otherwise), as it is
     assert DataSet.of({**ROUTES, "query": ""}).query == ""
     assert DataSet.of({**ROUTES, "query": "f=json"}).query == "f=json"
+
+
+def test_maps_of_networks_are_read_into_backbones_and_their_points_of_presence():
+    """The user, 2026-11-19: "major network 'bones' need to be displayed on the map". Of each network its newest map
+    (its file's name says its year: Geant2009, Geant2012), unless that is history (before 2000: ARPANET's, NSFNET's);
+    of the map its own points of presence with a place, and the links between them, each drawn once, from its end
+    further west. Another network's point, a shared medium (a hyperedge), a point with no place and the links to them
+    are left out and counted; what was read and left out of the maps is said as a remark."""
+    found = parse(ZOO, ZOO_ANSWER)
+    assert list(found["layers"]) == ["pops", "backbones"]  # in the layers' own order
+    assert found["layers"]["pops"] == {"lines": [], "points": [
+        (151.20732, -33.86785, "Sydney1 (AARNet)", "AARNet, 2010"),  # its network's year, from its own DateYear
+        (151.20732, -33.86785, "Sydney2 (AARNet)", "AARNet, 2010"),  # in the same city: a point of its own
+        (115.86048, -31.95224, "Perth (AARNet)", "AARNet, 2010"),
+        (149.12807, -35.28346, "Canberra & ACT (AARNet)", "AARNet, 2010"),  # its &-escape undone
+        (130.84185, -12.46113, "Darwin (AARNet)", "AARNet, 2010"),  # no id: a point, and no link reaches it
+        (-0.12574, 51.50853, "London (GÉANT)", "GÉANT, 2012"),  # its newest map's, the year its file's name says
+        (4.88969, 52.37403, "Amsterdam (GÉANT)", "GÉANT, 2012"),
+        (8.55, 47.36667, "Zürich (GÉANT)", "GÉANT, 2012"),  # written in Latin-1
+        (21.01178, 52.22977, "Warszawa (Pionier)", "Pionier"),  # no year said: none written
+        (19.93658, 50.06143, "Kraków (Pionier)", "Pionier")]}
+    assert found["layers"]["backbones"] == {"points": [], "lines": [
+        ([(115.86048, -31.95224), (151.20732, -33.86785)], "AARNet, 2010: Perth to Sydney1"),  # west to east
+        ([(149.12807, -35.28346), (151.20732, -33.86785)], "AARNet, 2010: Canberra & ACT to Sydney1"),
+        ([(-0.12574, 51.50853), (4.88969, 52.37403)], "GÉANT, 2012: London to Amsterdam"),
+        ([(-0.12574, 51.50853), (8.55, 47.36667)], "GÉANT, 2012: London to Zürich"),
+        ([(19.93658, 50.06143), (21.01178, 52.22977)], "Pionier: Kraków to Warszawa")]}
+    assert found["features"] == 15 and found["dropped"] == {
+        "outside its network": 1, "with no place": 1, "off the globe": 1,  # Telstra's; Somewhere; NAN
+        "of no kind asked for": 1,  # the ring, a hyperedge
+        "under two points": 1, "repeated": 1,  # Sydney1 to Sydney2, in one city; Perth to Sydney1 again
+        "between points not drawn": 4}  # to Telstra's, to a node there is none of, to the ring, from no node at all
+    assert found["remarks"] == [
+        "8 maps in the answer: 3 networks drawn, each from its newest map; 2 older maps of the same networks left out; "
+        "2 networks whose newest map is from before 2000 left out; 1 map that did not read left out (Broken: a list in "
+        "it is never closed)"]
+    assert infrastructure.OLDEST == 2000
+    # a map alone, gzipped or not, or an archive not gzipped, or one gzipped in two members, reads alike
+    alone = gml("Abilene", [pop(0, "Seattle", -122.33, 47.61), pop(1, "Denver", -104.98, 39.74)], [(1, 0)],
+                DateYear=2011)
+    tar = archive({"Abilene.gml": alone}, gzipped=False)
+    assert tar.index(b"graph [") < 1100 < tar.index(b"Denver")  # (the second member holds the map's end)
+    for answer in (alone.encode(), gzip.compress(alone.encode()), tar, archive({"Abilene.gml": alone}),
+                   gzip.compress(tar[:1100]) + gzip.compress(tar[1100:]), alone):
+        abilene = parse(ZOO, answer)
+        assert abilene["layers"] == {
+            "pops": {"lines": [], "points": [(-122.33, 47.61, "Seattle (Abilene)", "Abilene, 2011"),
+                                             (-104.98, 39.74, "Denver (Abilene)", "Abilene, 2011")]},
+            "backbones": {"points": [], "lines": [([(-122.33, 47.61), (-104.98, 39.74)],
+                                                   "Abilene, 2011: Seattle to Denver")]}}
+        assert abilene["remarks"] == ["1 map in the answer: 1 network drawn, each from its newest map"]
+    # a map that names no network: its file's, else none
+    assert parse(ZOO, archive({"Kdl.gml": gml(None, [pop(0, "Chicago", -87.65, 41.85)])}))["layers"]["pops"][
+        "points"] == [(-87.65, 41.85, "Chicago (Kdl)", "Kdl")]
+    assert parse(ZOO, gml(None, [pop(0, "", -87.65, 41.85)]))["layers"]["pops"]["points"] == [
+        (-87.65, 41.85, "a network", "")]  # its sub, the same as its name, is not said twice
+    # history alone: nothing drawn, and said (an install says so: every feature left out, or none)
+    old = parse(ZOO, archive({"Arpanet19728.gml": ARPANET}))
+    assert old["features"] == 0 and old["remarks"] == [
+        "1 map in the answer: 0 networks drawn, each from its newest map; 1 network whose newest map is from before "
+        "2000 left out"]
+
+
+def test_a_map_in_gml_is_read_as_its_graph_and_what_is_no_gml_is_said(monkeypatch):
+    assert (infrastructure.GML_ITEMS, infrastructure.GML_DEPTH, infrastructure.GML_KEYS) == (100_000, 16, 64)
+    graph, nodes, edges = infrastructure._graph(
+        'Creator "a tool" Version 1 graph [ label "first" label "second" directed 0\n'
+        '  node [ id 1 Longitude -INF Latitude +INF Elevation NAN Weight 1.5E+01 graphics [ a [ b 1 ] ] ] # a comment\n'
+        '  edge [ source 1 target 2 ] list [ node [ id 9 ] ] ]')
+    assert graph == {"label": "first", "directed": 0}  # the first of each key; what is outside the graph read past
+    [node] = nodes  # a node inside another list is none of the graph's
+    assert node["id"] == 1 and node["Longitude"] == -math.inf and node["Latitude"] == math.inf
+    assert math.isnan(node["Elevation"]) and node["Weight"] == 15.0 and "graphics" not in node and "b" not in node
+    assert edges == [{"source": 1, "target": 2}]
+    assert infrastructure._graph("graph [ node [ " + " ".join(f"k{i} {i}" for i in range(70)) + " ] ]")[1][0] == {
+        f"k{i}": i for i in range(infrastructure.GML_KEYS)}  # GML_KEYS values an item at most
+    deep = "graph [ " + "a [ " * 16 + "]" * 16 + " ]"
+    for text, why in (('graph [ node [ id 1 ] ] ]', "a bracket that closes nothing at character 24"),
+                      ('graph [ node [ id ] ]', "its key 'id' has no value"),
+                      ('graph [ 7 ]', "a value with no key at character 8"),
+                      ('graph [ label "x"', "a list in it is never closed"),
+                      ('graph [ ] label', "its key 'label' has no value"),
+                      ('graph [ label @ ]', "it holds no GML at character 14"),
+                      ('label "a map of nothing"', "it holds no graph"), ("", "it holds no graph"),
+                      (deep, "its lists are nested more than 16 deep")):
+        with pytest.raises(ValueError) as wrong:
+            infrastructure._graph(text)
+        assert str(wrong.value) == why, text
+    monkeypatch.setattr(infrastructure, "GML_ITEMS", 2)  # nodes a map holds, and edges: no more are read
+    with pytest.raises(ValueError, match=r"^it holds more than 2 nodes$"):
+        infrastructure._graph("graph [ node [ id 1 ] node [ id 2 ] node [ id 3 ] ]")
+    with pytest.raises(ValueError, match=r"^it holds more than 2 edges$"):
+        infrastructure._graph("graph [ edge [ ] edge [ ] edge [ ] ]")
+    assert len(infrastructure._graph("graph [ node [ id 1 ] node [ id 2 ] edge [ ] edge [ ] ]")[2]) == 2
+
+
+def test_an_answer_that_is_no_file_of_maps_or_unpacks_to_more_than_may_be_is_refused_in_words(monkeypatch):
+    """A file of maps is unpacked in memory alone, never written out, and bounded: MAX_UNPACKED bytes unpacked,
+    MAX_MAPS files an archive, MAX_MAP bytes a map. What is not the data asked for is said, and nothing of it kept."""
+    assert (infrastructure.MAX_UNPACKED, infrastructure.MAX_MAPS, infrastructure.MAX_MAP) == (32 << 20, 2000, 4 << 20)
+    broken = bytearray(archive(MAPS, gzipped=False))
+    broken[148:156] = b"0000000\x00"  # its first header's checksum
+    for answer, why in (
+            (b"<!DOCTYPE html><html><body>Not Found</body></html>",
+             "it is no GML map, nor an archive of them: it holds no GML at character 0; it begins '<!DOCTYPE html>"
+             "<html><body>Not Found</body></html>'"),
+            (ZOO_ANSWER[:-10], "it is cut short"),
+            (b"\x1f\x8b\x08\x00" + bytes(6) + b"\xff" * 64, "it does not unpack: "),
+            (bytes(broken), "its archive does not read: "),
+            (archive({"README.md": "The Internet Topology Zoo"}), "its archive holds no GML map"),
+            (archive({"gml/Broken.gml": 'graph [ Network "Broken" ', "gml/Empty.gml": ""}),
+             "no map of it reads: Broken: a list in it is never closed"),
+            (archive({"gml/Bro\x07ken\nmap.gml": "graph ["}),  # a file's name said as a name is kept: printable
+             "no map of it reads: Bro ken map: a list in it is never closed"),
+            ({"type": "FeatureCollection"}, "it is no file of maps")):
+        with pytest.raises(InfrastructureError) as said:
+            parse(ZOO, answer)
+        assert str(said.value).startswith(f"raw.zoo.example's answer is not the data asked for ({why}"), said.value
+    monkeypatch.setattr(infrastructure, "MAX_UNPACKED", 20_000)  # a bomb: small, and unpacking to far more
+    for bomb in (gzip.compress(bytes(10_000_000)), archive({"Big.gml": "graph [ ]" + " " * 30_000})):
+        with pytest.raises(InfrastructureError) as said:
+            parse(ZOO, bomb)
+        assert str(said.value) == (f"raw.zoo.example's answer unpacks to more than {world.size_words(20_000)}, the "
+                                   "most a data set may be")
+    monkeypatch.setattr(infrastructure, "MAX_UNPACKED", 32 << 20)
+    monkeypatch.setattr(infrastructure, "MAX_MAPS", 3)  # the folder and three files: one file too many
+    with pytest.raises(InfrastructureError, match=r"\(its archive holds more than 3 files\)$"):
+        parse(ZOO, archive({"A.gml": alone_map(), "B.gml": alone_map(), "C.gml": alone_map()}))
+    assert parse(ZOO, archive({"A.gml": alone_map(), "B.gml": alone_map()}))["features"] == 3
+    monkeypatch.setattr(infrastructure, "MAX_MAPS", 2000)
+    monkeypatch.setattr(infrastructure, "MAX_MAP", 1000)  # a map larger than a map may be: not read, and said
+    found = parse(ZOO, ZOO_ANSWER)
+    assert "Sydney1 (AARNet)" not in [p[2] for p in found["layers"]["pops"]["points"]]
+    assert found["remarks"][0].endswith("2 maps that did not read left out (Aarnet: it is larger than "
+                                        f"{world.size_words(1000)})")
+    with pytest.raises(InfrastructureError, match=r"\(it is no GML map, nor an archive of them: it is larger than "):
+        parse(ZOO, AARNET)  # a map alone: the answer itself
+
+
+def alone_map() -> str:
+    """One network's map: two points and the link between them."""
+    return gml("Abilene", [pop(0, "Seattle", -122.33, 47.61), pop(1, "Denver", -104.98, 39.74)], [(0, 1)])
+
+
+ABILENE = ([(-122.33, 47.61), (-104.98, 39.74)], "Abilene: Seattle to Denver")  # alone_map()'s link, as it is drawn
+
+
+def gnu_header(name: str, kind: bytes, size: int, real: int = 0) -> bytes:
+    """One header block of a GNU tar archive, made by hand (tarfile writes neither of these kinds): b"L", a long name
+    for the member after it, its `size` bytes following; b"S", a sparse file that stores nothing and reads as `real`
+    bytes of zeros. Then the checksum: the block's bytes summed with that field as spaces."""
+    block = bytearray(512)
+    block[:len(name)] = name.encode("ascii")
+    for at, value in ((100, "0000644"), (108, "0000000"), (116, "0000000"), (124, f"{size:011o}"),
+                      (136, "00000000000")):
+        block[at:at + len(value) + 1] = value.encode("ascii") + b"\x00"
+    block[156:157] = kind
+    block[257:265] = b"ustar  \x00"  # GNU's magic
+    if kind == b"S":  # its one piece of data holds no bytes (from 386), none more follow (482), its size (483)
+        block[483:495] = f"{real:011o}\x00".encode("ascii")
+    block[148:156] = b" " * 8
+    block[148:156] = f"{sum(block):06o}\x00 ".encode("ascii")
+    return bytes(block)
+
+
+def gnu_file(name: str, data: bytes) -> bytes:
+    """A file's header and its data, padded to the archive's blocks."""
+    return gnu_header(name, b"0", len(data)) + data + bytes(-len(data) % 512)
+
+
+def test_a_map_holding_a_number_too_long_to_read_is_left_out_and_said():
+    """A GML integer of more digits than Python reads one (sys.get_int_max_str_digits(), 4,300 by default) is no
+    map's: that map does not read and is said, and the others are drawn. int()'s ValueError, no _Unread, once left
+    the reader whole: one such map failed the whole data set, in Python's words."""
+    huge = 'graph [ Network "Huge" node [ id ' + "7" * 5000 + ' Longitude 1.0 Latitude 2.0 Internal 1 ] ]'
+    found = parse(ZOO, archive({"gml/Abilene.gml": alone_map(), "gml/Huge.gml": huge}))
+    assert found["layers"]["backbones"]["lines"] == [ABILENE]
+    assert found["remarks"] == [
+        "2 maps in the answer: 1 network drawn, each from its newest map; 1 map that did not read left out (Huge: it "
+        "holds a number of 5,000 digits, more than can be read)"]
+    assert infrastructure._number("-" + "1" * 4000) == -int("1" * 4000)  # a long one that int() reads, as it is
+    assert infrastructure._number("7" * 5000 + ".5") == math.inf  # a real of any length: as float() reads it
+
+
+def test_an_answer_of_many_gzip_members_is_unpacked_in_step_with_its_size(monkeypatch):
+    """A gzip member is handed to zlib a piece at a time, FEED bytes first, twice as many each time after, FEED_MOST
+    at most: what zlib copies past a member's end (its unused_data) is no more than that piece, so the work grows with
+    the answer however many members it holds. Handed the whole rest of the answer at each member, 320,000 empty members
+    (6.4 MB) took 306 s here, and a 32 MB answer of them would have taken hours, after the download's deadline and with
+    no cancel looked at. Counted here as the bytes handed to zlib."""
+    class Counting:  # zlib as the reader uses it, counting the bytes handed to its decompressors
+        MAX_WBITS, error, handed = zlib.MAX_WBITS, zlib.error, 0
+
+        def decompressobj(self, wbits):
+            real, outer = zlib.decompressobj(wbits), self
+
+            class Unzip:
+                eof = property(lambda self: real.eof)
+                unused_data = property(lambda self: real.unused_data)
+                unconsumed_tail = property(lambda self: real.unconsumed_tail)
+
+                def decompress(self, data, max_length=0):
+                    outer.handed += len(data)
+                    return real.decompress(data, max_length)
+            return Unzip()
+    counting = Counting()
+    monkeypatch.setattr(infrastructure, "zlib", counting)
+    members = 2000
+    answer = gzip.compress(b"", mtime=0) * members + archive({"gml/Abilene.gml": alone_map()})
+    assert parse(ZOO, answer)["layers"]["backbones"]["lines"] == [ABILENE]  # the map after them, read whole
+    assert counting.handed <= 256 * members + 2 * len(answer)  # some 0.6 MB, where it was 40 MB
+    assert (infrastructure.FEED, infrastructure.FEED_MOST) == (256, 1 << 16)
+    counting.handed = 0
+    big = gzip.compress(bytes(3 << 20), mtime=0)  # one member of 3 MB unpacked: read whole through its pieces
+    assert infrastructure._unpacked(big, "raw.zoo.example") == bytes(3 << 20)
+    assert counting.handed <= 2 * len(big) + 256
+
+
+def test_an_archive_is_read_to_no_more_than_max_unpacked_whatever_its_members_say(monkeypatch):
+    """What an archive's maps read as is held to MAX_UNPACKED in all, as what a gzipped answer unpacks to. A GNU sparse
+    file stores nothing and reads as the size it says (tarfile fills it with zeros): 64 of them in an answer of 514
+    bytes once read as 268 MB, and 2,000 of them, each the 4 MB a map may be, would have read as 8 GB. Such an answer
+    is refused in words before its maps are read; one within it is read, its sparse files maps that do not read."""
+    monkeypatch.setattr(infrastructure, "MAX_UNPACKED", 1 << 20)  # 1 MB in all; a map 4 MB at most, as ever
+    good = gnu_file("gml/Abilene.gml", alone_map().encode())
+    sparse = [gnu_header(f"gml/Net{i}.gml", b"S", 0, 300_000) for i in range(4)]
+    over = good + b"".join(sparse) + bytes(1024)  # 1.2 MB of zeros said
+    assert len(over) == 4096 and tarfile.open(fileobj=io.BytesIO(over)).getmember("gml/Net0.gml").issparse()
+    with pytest.raises(InfrastructureError) as said:
+        parse(ZOO, gzip.compress(over, mtime=0))
+    assert str(said.value) == (f"raw.zoo.example's answer unpacks to more than {world.size_words(1 << 20)}, the most "
+                               "a data set may be")
+    within = parse(ZOO, gzip.compress(good + b"".join(sparse[:3]) + bytes(1024), mtime=0))  # 0.9 MB said
+    assert within["layers"]["backbones"]["lines"] == [ABILENE]
+    assert within["remarks"][0].endswith("3 maps that did not read left out (Net0: it holds no GML at character 0)")
+
+
+def test_an_archive_whose_headers_chain_deeper_than_can_be_read_is_refused_in_words():
+    """tarfile reads a GNU long name (or an extended header), then by recursion the header after it: some 500 chained
+    raised RecursionError, which once left the reader in Python's words. Such an archive does not read, and is said."""
+    name = b"gml/Abilene.gml\x00"
+    link = gnu_header("././@LongLink", b"L", len(name)) + name + bytes(512 - len(name))
+    tail = gnu_file("gml/Abilene.gml", alone_map().encode()) + bytes(1024)
+    assert parse(ZOO, gzip.compress(link + tail, mtime=0))["layers"]["backbones"]["lines"] == [ABILENE]
+    with pytest.raises(InfrastructureError) as said:
+        parse(ZOO, gzip.compress(link * 2000 + tail, mtime=0))
+    assert str(said.value) == ("raw.zoo.example's answer is not the data asked for (its archive does not read: its "
+                               "headers are chained deeper than can be read)")
 
 
 def test_a_layer_keeps_no_more_than_its_caps_and_says_what_it_left_out(monkeypatch):
@@ -1167,7 +1595,13 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
     assert by["cables"]["version"] != by["datacentres"]["version"]  # another file's
     assert (by["lines"]["on"], by["lines"]["mark"], by["datacentres"]["mark"], by["exchanges"]["mark"]) == (
         False, "dash", "square", "diamond")
-    assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "cables", "lines"]
+    assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "pops", "cables",
+                                      "backbones", "lines"]
+    # every layer the library has is one the shared globe lists (its MAX_LAYERS), each on a slot it draws (4 to 7)
+    script = Path(infrastructure.__file__).parents[1] / "ui" / "static" / "liminal-globe.js"
+    assert len(LAYERS) <= int(re.search(r"const MAX_LAYERS = (\d+);", script.read_text(encoding="utf-8")).group(1)) == 8
+    assert {x[4] for x in LAYERS} <= {4, 5, 6, 7} and all(x[3] in ("circle", "square", "diamond", "line", "dash")
+                                                          for x in LAYERS)
     assert json.loads(json.dumps(layers, allow_nan=False)) == layers and len(json.dumps(layers)) < 2000  # small
     sets = index.sets()
     size = (folder / "osm-cables.json").stat().st_size
@@ -1238,6 +1672,48 @@ def test_two_data_sets_feed_one_layer_within_what_a_layer_holds(tmp_path, monkey
     assert [p["set"] for p in index.layer("datacentres")["parts"]] == ["osm-datacentres"]
     assert full["datacentres"]["version"] != by["datacentres"]["version"]  # what feeds it changed
     assert full["stations"] == by["stations"]
+
+
+def test_a_file_of_maps_is_downloaded_at_its_address_alone_and_drawn_as_backbones(tmp_path):
+    """One GET of the file's own address, waited for as the data set says; what was read of its maps said to the job's
+    log; the two layers it feeds as LAYERS says them (the backbones on at first, their points of presence not, both
+    named "about 2010-2011"), credited to the file's makers."""
+    folder, lines = tmp_path / "layers", []
+    fetch = Downloads({ZOO["url"]: ZOO_ANSWER})
+    out = install(ZOO, folder, accept_licence=True, fetch=fetch, log=lines.append, agent="firewall-linux/0.9.0",
+                  clock=Clock(), wall=Clock(NOW))
+    assert fetch.asked == [(ZOO["url"], 60.0, {"agent": "firewall-linux/0.9.0", "what": "a data set"})]
+    size = (folder / "topology-zoo.json").stat().st_size
+    assert out["said"] == f"installed Backbone networks, about 2010-2011: 15 features ({world.size_words(size)})"
+    assert out["lines"] == ["asked of raw.zoo.example", f"kept in {folder}, in place of any older copy",
+                            "credited on the globe as Internet Topology Zoo, CC BY 4.0",
+                            "10 features left out: 1 outside its network, 1 with no place, 1 off the globe, 1 of no "
+                            "kind asked for, 1 under two points, 1 repeated, 4 between points not drawn"]
+    assert out["file"]["layers"] == {"pops": 10, "backbones": 5} and out["file"]["downloaded"] == len(ZOO_ANSWER)
+    assert lines == ["asking raw.zoo.example for Backbone networks, about 2010-2011",
+                     "downloading from raw.zoo.example", f"{world.size_words(len(ZOO_ANSWER))} downloaded: reading it",
+                     parse(ZOO, ZOO_ANSWER)["remarks"][0]]  # what was read of the maps, said to the job's log
+    assert [p.name for p in folder.iterdir()] == ["topology-zoo.json"]  # the archive itself is not kept, nor unpacked
+    index = Index(folder, [ZOO], clock=Clock())
+    by = {x["id"]: x for x in index.layers()}
+    assert list(by) == ["pops", "backbones"]
+    assert by["backbones"] == {"id": "backbones", "title": "Backbones, about 2010-2011", "kind": "lines",
+                               "mark": "line", "slot": 7, "on": True, "names_from": 4.0, "count": 5,
+                               "version": by["backbones"]["version"], "credits": [ZOO["credit"]],
+                               "note": "from the Internet Topology Zoo, through its repository, fetched 2026-11-16"}
+    assert {k: by["pops"][k] for k in ("title", "kind", "mark", "slot", "on", "names_from", "count")} == {
+        "title": "Backbones' points of presence, about 2010-2011", "kind": "points", "mark": "circle", "slot": 4,
+        "on": False, "names_from": 6.0, "count": 10}
+    [part] = index.layer("backbones")["parts"]
+    assert part["set"] == "topology-zoo" and part["lines"]["n"] == 5
+    assert ints(part["lines"]["offsets"], "I") == [0, 2, 4, 6, 8, 10]  # two ends a link: the globe draws the arc
+    assert part["lines"]["names"][0] == "AARNet, 2010: Perth to Sydney1"
+    assert places(part["lines"])[:2] == [(115.86048, -31.95224), (151.20732, -33.86785)]
+    [points] = index.layer("pops")["parts"]
+    assert (points["points"]["names"][5], points["points"]["subs"][5]) == ("London (GÉANT)", "GÉANT, 2012")
+    words = form(ZOO, folder)["confirm"]["words"]  # its form: the file alone is asked
+    assert "Backbone networks, about 2010-2011 is asked of raw.zoo.example in one request" in words
+    assert "The request holds only the file asked for: nothing about this machine or its traffic." in words
 
 
 def test_the_table_offers_each_data_set_and_a_file_that_does_not_read_is_said(tmp_path):

@@ -7,16 +7,19 @@ associated with the exchanges globe, but the firewall globe should instead of ex
 major internet infrastructure, (as many as possible) datacenter locations.").
 
 - A data set is a plugin's. Its address, its query, its licence and its credit are plain data in the plugin (DataSet.of
-  reads the dict), so no outside host is named in the library. Three formats are read: an Overpass answer
-  (OpenStreetMap's features by their tags), a SPARQL answer (Wikidata's items by their kind) and a GeoJSON
-  FeatureCollection of lines (a WFS's cable routes, asked for longitude first). Only free-licensed data: its licence's
-  words are shown whole first and accepted in so many words, and its credit is drawn whole wherever its features are.
+  reads the dict), so no outside host is named in the library. Four formats are read: an Overpass answer
+  (OpenStreetMap's features by their tags), a SPARQL answer (Wikidata's items by their kind), a GeoJSON
+  FeatureCollection of lines (a WFS's cable routes, asked for longitude first) and maps of networks in GML, gzipped
+  and archived together or not (the Internet Topology Zoo's: each network's newest map, its points of presence and the
+  links between them, unpacked in memory alone and bounded). Only free-licensed data: its licence's words are shown
+  whole first and accepted in so many words, and its credit is drawn whole wherever its features are.
 - A download happens only inside install(), on the user's word, as a job: one https GET (world.fetch_url: https on
   every hop, from the same host only) whose User-Agent is the plugin's name and version and nothing of the user's or
   the machine's. It runs on a thread of its own under one deadline, INSTALL_S, while the caller waits, looking at the
   time and at the job's cancel every world.POLL_S and shutting the download's sockets (world.run_download, as the GeoIP
   file's install does). A busy server (HTTP 429, 502, 503 or 504) is asked once more RETRY_S later, inside the same
-  deadline. What is read and kept is bounded: MAX_ANSWER bytes of an answer; MAX_POINTS points and MAX_VERTICES
+  deadline. What is read and kept is bounded: MAX_ANSWER bytes of an answer, and as many unpacked (MAX_UNPACKED);
+  MAX_MAPS files an archive, MAX_MAP bytes and GML_ITEMS nodes and edges a map; MAX_POINTS points and MAX_VERTICES
   vertices a layer; a line's vertices no nearer than STEP. A download that fails leaves the older file as it was.
 - The file is <folder>/<id>.json in the data folder's infrastructure/, each system's own (a folder on another system's
   drive is that system's: geo.foreign), written whole beside itself and put in place in one step. The download itself
@@ -30,13 +33,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
+import io
 import json
 import os
+import posixpath
 import re
 import secrets
 import sys
+import tarfile
 import threading
 import time
+import zlib
 from array import array
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -54,21 +62,33 @@ READ_S = 60.0  # a data set's `wait` when it names none: each socket operation o
 RETRY_S = 60.0  # a busy server is asked once more after this long
 INDEX_S = 10.0  # the folder is looked at again this long after the last look, at the soonest
 CHUNK = 1 << 20  # bytes of an answer read at a time, at most
-MAX_ANSWER = 32 << 20  # bytes of an answer, and of a kept file: half again the largest data set's estimate (20 MB)
+MAX_ANSWER = 32 << 20  # bytes of an answer, and of a kept file: twice the largest data set's estimate (15 MB)
+MAX_UNPACKED = 32 << 20  # bytes a gzipped answer unpacks to, and an archive's maps read as, at most (the Topology Zoo's
+# 0.35 MB: a few MB)
+FEED, FEED_MOST = 256, 64 << 10  # bytes of a gzip member handed to zlib at a time: its first piece, twice as many each
+# time after, and the most (what follows its end in that piece is copied: _unpacked)
+MAX_MAPS = 2000  # files an archive of maps holds, at most (the Topology Zoo's: 261 maps)
+MAX_MAP = 4 << 20  # bytes of one map, at most (the Topology Zoo's largest, of some 750 points: a few hundred kB)
 MAX_POINTS = 20_000  # points a layer holds
 MAX_VERTICES = 400_000  # vertices a layer's lines hold
 NAME = 80  # characters kept of a name
 STEP = 0.02  # degrees between a line's kept vertices
+OLDEST = 2000  # a network whose newest map is from a year before this is history, not a backbone: left out
 LICENCE_FIRST = "A data set is downloaded only once you accept its licence."
 LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names from this zoom
     ("exchanges", "Exchange points", "points", "diamond", 5, True, 3.0),
     ("datacentres", "Data centres", "points", "square", 4, True, 5.0),
     ("landings", "Cable landing stations", "points", "circle", 6, True, 4.0),
     ("stations", "Ground stations and teleports", "points", "circle", 7, False, 4.0),
+    # a backbone's points of presence and its links, as maps of networks give them (the Topology Zoo's, of about 2010
+    # and 2011: logical links between cities, not routes of fibre): the data centres' colour, the land lines' colour
+    ("pops", "Backbones' points of presence, about 2010-2011", "points", "circle", 4, False, 6.0),
     ("cables", "Submarine cables", "lines", "line", 6, True, 3.0),
+    ("backbones", "Backbones, about 2010-2011", "lines", "line", 7, True, 4.0),
     ("lines", "Telecom lines on land (partial)", "lines", "dash", 7, False, 6.0))
 
-FORMATS = ("overpass", "sparql", "geojson")  # what an answer is read as
+FORMATS = ("overpass", "sparql", "geojson", "gml")  # what an answer is read as
+AS_WRITTEN = ("geojson", "gml")  # the formats whose query, where they have one, is sent as it is written
 SCALE = 100_000  # a coordinate is kept in 1e-5 degrees, about a metre
 BUSY = (429, 502, 503, 504)  # HTTP codes of a server too busy to answer now: asked once more
 MAX_QUERY = 4000  # characters of a data set's query: it travels in the address
@@ -92,6 +112,8 @@ LONGITUDE_FIRST = ("epsg:4326", "crs:84", "urn:ogc:def:crs:ogc:1.3:crs84", "urn:
 # why a feature of an answer is left out, as the words count them ("2 repeated, 1 off the globe")
 REPEATED, OFF, SHORT, OVER, OTHER = ("repeated", "off the globe", "under two points", "over the most a layer keeps",
                                      "of no kind asked for")
+# and of a map of a network: a point with no place given, one of another network's, a link to a point not drawn
+UNPLACED, OUTSIDE, ENDS = "with no place", "outside its network", "between points not drawn"
 SITES = (  # an OpenStreetMap site's layer by its tags: the first that fits
     ("exchanges", (("telecom", "internet_exchange"),)),
     ("landings", (("telecom", "cable_landing_station"),)),
@@ -105,7 +127,19 @@ ENTITY = re.compile(r"Q\d+")  # an item's own id, where it has no label in the l
 NAMES = ("name", "name_", "pipe_name", "cable_name")  # a GeoJSON feature's name: the first of these that has words
 OPERATORS = ("operator", "owner")  # else its operator's
 DEGREES = ("4326", "crs84")  # how a GeoJSON answer's `crs` ends when its coordinates are longitude and latitude
-ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for"}
+ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for",
+         "gml": "the file asked for"}
+GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
+# a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
+# (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
+SNAPSHOT = re.compile(r"(.+?)((?:19|20)\d\d)(\d{1,2})?")
+# GML's tokens (Himsolt's GML, as NetworkX writes it): a comment, a list's start and end, a string, a number (INF and
+# NAN among them), a key
+GML_TOKEN = re.compile(r'\s*(?:(#[^\n]*)|(\[)|(\])|"([^"]*)"|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'
+                       r'|[+-]?(?:INF|NAN)(?![A-Za-z0-9_]))|([A-Za-z_][A-Za-z0-9_]*))')
+GML_DEPTH = 16  # lists in lists a map may hold
+GML_KEYS = 64  # values kept of a graph, a node or an edge (the first of each key)
+GML_ITEMS = 100_000  # nodes a map may hold, and as many edges (the Topology Zoo's largest: some 750 and 900)
 _I32 = next((c for c in "il" if array(c).itemsize == 4), "i")  # this machine's 4-byte integers, signed and not
 _U32 = next((c for c in "IL" if array(c).itemsize == 4), "I")
 
@@ -219,9 +253,9 @@ class DataSet:
         if not isinstance(query, str) or len(query) > MAX_QUERY:
             raise ValueError(f"the data set {ident}'s query is text, {MAX_QUERY:,} characters at most")
         query = query.strip()
-        if form != "geojson" and not query:
+        if form not in AS_WRITTEN and not query:
             raise ValueError(f"the data set {ident} names no query")
-        if form == "geojson" and re.search(r"[\s#]", query):
+        if form in AS_WRITTEN and re.search(r"[\s#]", query):
             raise ValueError(f"the data set {ident}'s query is sent as it is written (name=value&name=value): it holds "
                              "no space and no #")
         if form == "geojson":
@@ -261,7 +295,8 @@ class DataSet:
 
     def address(self) -> str:
         """The one address asked: an Overpass server's with the query as its `data`, a SPARQL service's with the query
-        and the JSON format, a GeoJSON source's with its query as it is written (or alone, a file's)."""
+        and the JSON format, a GeoJSON source's or a file of maps' with its query as it is written (or alone, a
+        file's)."""
         if self.format == "overpass":
             return f"{self.url}?data={quote(self.query, safe='')}"
         if self.format == "sparql":
@@ -309,8 +344,10 @@ def _begins(raw) -> str:
 
 
 def _decoded(dataset: DataSet, data):
-    """A data set's answer decoded: its bytes (or its text) as JSON; one decoded already as it is. InfrastructureError
-    when it is no JSON."""
+    """A data set's answer decoded: its bytes (or its text) as JSON; one decoded already as it is. A file of maps
+    (gml) is read as its bytes: its text as UTF-8. InfrastructureError when it is no JSON."""
+    if dataset.format == "gml":
+        return data.encode("utf-8") if isinstance(data, str) else bytes(data) if isinstance(data, memoryview) else data
     if not isinstance(data, (bytes, bytearray, memoryview, str)):
         return data
     raw = bytes(data) if isinstance(data, memoryview) else data
@@ -528,7 +565,262 @@ def _geojson(doc, kept: _Kept, host: str, free: bool) -> None:
             kept.line("cables", part if isinstance(part, list) else (), name)
 
 
-_READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson}
+# -- maps of networks in GML (the Topology Zoo's) ---------------------------------------------------------------------
+class _Unread(ValueError):
+    """A map that does not read as GML, and why."""
+
+
+def _unpacked(data, host: str):
+    """A gml answer unpacked: a gzipped one, each of its gzip members in turn as gzip reads them, MAX_UNPACKED bytes at
+    most; one that is not gzipped as it is. A member is handed to zlib a piece at a time, FEED bytes first and twice as
+    many each time after, FEED_MOST at most: what follows the member's end in its last piece is copied (zlib's
+    unused_data), so the work grows with the answer however many members it holds (handed the whole rest of the
+    answer, 320,000 empty members took 306 s). InfrastructureError for one that does not unpack, is cut short or would
+    unpack to more."""
+    if bytes(data[:2]) != GZIP:
+        return data
+    view, out, at = memoryview(data), bytearray(), 0
+    while len(view) - at >= 2 and bytes(view[at:at + 2]) == GZIP:
+        unzip, feed = zlib.decompressobj(16 + zlib.MAX_WBITS), FEED
+        while not unzip.eof:
+            given = view[at:at + feed]
+            if not given:
+                raise InfrastructureError(f"{host}'s answer is not the data asked for (it is cut short)")
+            try:
+                piece = unzip.decompress(given, MAX_UNPACKED + 1 - len(out))  # a byte more than may be: too much
+            except zlib.error as e:
+                raise InfrastructureError(f"{host}'s answer is not the data asked for (it does not unpack: "
+                                          f"{_text(str(e))[:REMARK]})") from None
+            out += piece
+            if len(out) > MAX_UNPACKED:
+                raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(MAX_UNPACKED)}, the most "
+                                          "a data set may be")
+            at += len(given) - len(unzip.unconsumed_tail) - len(unzip.unused_data)  # what of the piece zlib read
+            feed = min(2 * feed, FEED_MOST)
+    return bytes(out)
+
+
+def _maps(raw, host: str) -> list[tuple[str, object]]:
+    """The maps an unpacked gml answer holds, read in memory and never written out: (its file's name without .gml, its
+    bytes, or None for one over MAX_MAP bytes) for each regular file of a tar archive whose name ends .gml (macOS's ._
+    copies of their metadata left out); a map alone, no archive, as ("", its bytes). The maps read are MAX_UNPACKED
+    bytes at most in all, counted by the sizes their members say, before each is read. A GNU sparse file stores
+    nothing and reads as the size it says, in zeros: 64 of them in 514 bytes once read as 268 MB. InfrastructureError
+    for an archive that does not read whole, holds more than MAX_MAPS files or more than MAX_UNPACKED bytes of maps.
+    tarfile reads a long name or an extended header, then the header after it, by recursion: a chain of them too deep
+    is an archive that does not read."""
+    if bytes(raw[257:262]) != TAR:
+        return [("", raw)]
+    maps: list[tuple[str, object]] = []
+    held = 0  # the bytes the maps read so far say they are
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            for count, member in enumerate(tar, 1):
+                if count > MAX_MAPS:
+                    raise InfrastructureError(f"{host}'s answer is not the data asked for (its archive holds more than "
+                                              f"{MAX_MAPS:,} files)")
+                base = posixpath.basename(member.name)
+                if not member.isfile() or not base.lower().endswith(".gml") or base.startswith("._"):
+                    continue
+                if member.size > MAX_MAP:
+                    maps.append((base[:-4], None))
+                    continue
+                held += max(0, member.size)
+                if held > MAX_UNPACKED:
+                    raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(MAX_UNPACKED)}, the "
+                                              "most a data set may be")
+                maps.append((base[:-4], tar.extractfile(member).read(MAX_MAP + 1)))
+    except (tarfile.TarError, EOFError, OSError, ValueError) as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (its archive does not read: "
+                                  f"{_text(str(e))[:REMARK]})") from None
+    except RecursionError:  # a long name or an extended header is read, then the header after it, by recursion
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (its archive does not read: its headers "
+                                  "are chained deeper than can be read)") from None
+    return maps
+
+
+def _gml_text(raw) -> str:
+    """A map's text: UTF-8 (a byte-order mark let go), else Latin-1, GML's own character set as older tools wrote it."""
+    try:
+        return bytes(raw).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return bytes(raw).decode("latin-1")
+
+
+def _number(token: str):
+    """A GML number: an integer, else a real (INF and NAN among them). _Unread for an integer of more digits than
+    Python reads one (sys.get_int_max_str_digits(), 4,300 by default), which no map holds: int()'s ValueError is no
+    _Unread, and once failed the whole answer for one such map."""
+    if not re.fullmatch(r"[+-]?\d+", token):
+        return float(token)
+    try:
+        return int(token)
+    except ValueError:
+        raise _Unread(f"it holds a number of {len(token.lstrip('+-')):,} digits, more than can be read") from None
+
+
+def _graph(text: str) -> tuple[dict, list[dict], list[dict]]:
+    """A GML map's graph: its own values, its nodes' and its edges' (of each the first value of each key, GML_KEYS at
+    most), what is outside the graph and the lists inside a node or an edge (its graphics) read past. _Unread when it
+    is no GML: a token that is none, a bracket that closes nothing or is never closed, a key with no value or a value
+    with no key, lists nested deeper than GML_DEPTH, no graph; and for a map of more than GML_ITEMS nodes or edges."""
+    graph: dict | None = None
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    stack: list = []  # the lists open: each the dict its values go to, or None for one read past
+    key, at = None, 0
+    while True:
+        found = GML_TOKEN.match(text, at)
+        if found is None:
+            rest = text[at:].lstrip()
+            if rest:
+                raise _Unread(f"it holds no GML at character {len(text) - len(rest):,}")
+            break
+        at = found.end()
+        comment, opened, closed, string, number, word = found.groups()
+        if comment is not None:
+            continue
+        if key is None:  # a key goes here, or the end of a list
+            if word is not None:
+                key = word
+            elif closed is not None and stack:
+                stack.pop()
+            else:
+                raise _Unread(("a bracket that closes nothing" if closed is not None else "a value with no key")
+                              + f" at character {found.start(found.lastindex):,}")
+            continue
+        if opened is not None:
+            if len(stack) >= GML_DEPTH:
+                raise _Unread(f"its lists are nested more than {GML_DEPTH} deep")
+            into = None
+            if not stack and key == "graph" and graph is None:
+                into = graph = {}
+            elif len(stack) == 1 and stack[0] is graph and graph is not None and key in ("node", "edge"):
+                items = nodes if key == "node" else edges
+                if len(items) >= GML_ITEMS:
+                    raise _Unread(f"it holds more than {GML_ITEMS:,} {key}s")
+                into = {}
+                items.append(into)
+            stack.append(into)
+        elif string is not None or number is not None:
+            holder = stack[-1] if stack else None
+            if holder is not None and key not in holder and len(holder) < GML_KEYS:
+                holder[key] = string if string is not None else _number(number)
+        else:
+            raise _Unread(f"its key {key[:40]!r} has no value")
+        key = None
+    if stack:
+        raise _Unread("a list in it is never closed")
+    if key is not None:
+        raise _Unread(f"its key {key[:40]!r} has no value")
+    if graph is None:
+        raise _Unread("it holds no graph")
+    return graph, nodes, edges
+
+
+def _words_of(value) -> str:
+    """A map's name or label as words: its text, its &-escapes undone; an integer's digits; "" for anything else."""
+    if isinstance(value, str):
+        return _name(html.unescape(value))
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else ""
+
+
+def _year(graph: Mapping) -> int:
+    """A map's year as its own values say it (DateYear, else NetworkDate's first four digits); 0 where they do not."""
+    for key in ("DateYear", "NetworkDate"):
+        found = re.match(r"\s*((?:19|20)\d\d)", str(graph.get(key, "")))
+        if found:
+            return int(found.group(1))
+    return 0
+
+
+def _network(kept: _Kept, graph: Mapping, nodes: list, edges: list, year: int, called: str) -> None:
+    """One network's map into the layers: each of its own points of presence (Internal not 0; a hyperedge is none) that
+    has a place (Longitude, Latitude) a point of "pops", named by its label and its network, its network and year its
+    sub; each link between two of them a line of "backbones", from the end further west to the other (the globe draws
+    the great circle between them), named by its network, its year and its ends."""
+    network = _words_of(graph.get("Network")) or _words_of(graph.get("label")) or _name(called) or "a network"
+    sub = f"{network}, {year}" if year else network
+    placed: dict = {}  # a point's id -> (longitude, latitude, label), for its links
+    for node in nodes:
+        if node.get("hyperedge") not in (None, 0, "0"):
+            kept.drop(OTHER)
+            continue
+        if node.get("Internal") in (0, "0"):
+            kept.drop(OUTSIDE)
+            continue
+        lon, lat = node.get("Longitude"), node.get("Latitude")
+        if lon is None or lat is None:
+            kept.drop(UNPLACED)
+            continue
+        label = _words_of(node.get("label"))
+        kept.point("pops", lon, lat, f"{label} ({network})" if label else network, sub)
+        if _spot(lon, lat) is not None and node.get("id") is not None:
+            placed[node["id"]] = (lon, lat, label)
+    for edge in edges:
+        ends = (placed.get(edge.get("source")), placed.get(edge.get("target")))
+        if None in ends:
+            kept.drop(ENDS)
+            continue
+        a, b = sorted(ends)
+        kept.line("backbones", [(a[0], a[1]), (b[0], b[1])], f"{sub}: {a[2] or 'a point'} to {b[2] or 'a point'}")
+
+
+def _gml(doc, kept: _Kept, host: str, free: bool) -> None:
+    """A gml answer's networks: maps in GML, in a tar archive (gzipped or not) or one alone, as the Internet Topology
+    Zoo gives them. Of each network its newest map, its file's name saying its network and its map's year (SNAPSHOT:
+    Geant2009, Geant2012), unless that is from a year before OLDEST; drawn by _network. The answer is read as its bytes
+    (`free` has nothing to let go). What was read is said as a remark: how many maps, how many networks drawn, how
+    many maps left out and why. InfrastructureError when it is not the data asked for: it does not unpack, its archive
+    does not read, or it holds no map that reads."""
+    if not isinstance(doc, (bytes, bytearray)):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no file of maps)")
+    maps = _maps(_unpacked(doc, host), host)
+    newest: dict[str, tuple] = {}  # a network (its family of maps) -> (its map's year and month, its name, its bytes)
+    for name, raw in maps:
+        found = SNAPSHOT.fullmatch(name)
+        family = found.group(1) if found else name
+        when = (int(found.group(2)), int(found.group(3) or 0)) if found else (0, 0)
+        mine = newest.get(family.casefold())
+        if mine is None or (when, name) > mine[:2]:
+            newest[family.casefold()] = (when, name, raw, family)
+    drawn = old = 0
+    unread: list[str] = []  # why each map that does not read does not, its name first
+    for family in sorted(newest):
+        (year, _), name, raw, called = newest[family]
+        try:
+            if raw is None or len(raw) > MAX_MAP:
+                raise _Unread(f"it is larger than {size_words(MAX_MAP)}")
+            graph, nodes, edges = _graph(_gml_text(raw))
+        except _Unread as e:  # said with its file's name, as a name is kept (printable, NAME characters at most)
+            unread.append(f"{_name(name)}: {e}" if name else str(e))
+            continue
+        year = year or _year(graph)
+        if year and year < OLDEST:
+            old += 1
+            continue
+        drawn += 1
+        _network(kept, graph, nodes, edges, year, called)
+    if not drawn and not old:
+        if not maps:
+            why = "its archive holds no GML map"
+        elif maps[0][0]:
+            why = f"no map of it reads: {unread[0]}"
+        else:  # no archive, and its one file no map
+            why = f"it is no GML map, nor an archive of them: {unread[0]}; {_begins(maps[0][1] or b'')}"
+        raise InfrastructureError(f"{host}'s answer is not the data asked for ({why})")
+    said = [f"{world._plural(len(maps), 'map')} in the answer: {world._plural(drawn, 'network')} drawn, each from its "
+            "newest map"]
+    if len(maps) > len(newest):
+        said.append(f"{world._plural(len(maps) - len(newest), 'older map')} of the same networks left out")
+    if old:
+        said.append(f"{world._plural(old, 'network')} whose newest map is from before {OLDEST} left out")
+    if unread:
+        said.append(f"{world._plural(len(unread), 'map')} that did not read left out ({unread[0]})")
+    kept.remarks.append("; ".join(said))
+
+
+_READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml}
 
 
 def _features(dataset: DataSet, doc, free: bool) -> dict:
@@ -551,11 +843,15 @@ def parse(dataset, data) -> dict:
     - A SPARQL answer's `results.bindings`: `kind` ending Q1433061 an exchange point, Q671224 a data centre, Q1349167
       or Q10379228 a ground station or a teleport, at `coord` ("Point(lon lat)").
     - A GeoJSON FeatureCollection's LineString and MultiLineString features, as cables.
+    - Maps of networks in GML (gml: a tar archive of them, gzipped or not, or one alone): of each network its newest
+      map, from OLDEST on; its own points of presence with a place as points of pops, each link between two of them a
+      line of backbones (_gml). What was read and left out of the maps is said as a remark.
 
     Left out, and counted by why: a place off the globe, a line under two points (or with a vertex off the globe), a
     repeat, a vertex nearer than STEP to the last kept (not counted: the line stays), what is over MAX_POINTS or
-    MAX_VERTICES a layer, what is of no kind asked for. InfrastructureError, in words, for an answer that is not the
-    data asked for, and for one whose remark says the query did not finish."""
+    MAX_VERTICES a layer, what is of no kind asked for; of a map, a point with no place, one outside its network and a
+    link to a point not drawn. InfrastructureError, in words, for an answer that is not the data asked for, and for
+    one whose remark says the query did not finish."""
     dataset = DataSet.of(dataset)
     doc = _decoded(dataset, data)
     return _features(dataset, doc, free=doc is not data)
@@ -1263,10 +1559,10 @@ class Index:
                          s["licence_name"], here, get if offer else "",
                          {"form": REMOVE_FORM + s["id"], "title": "Remove…"} if offer and there else ""])
         note = ("What the globe draws where the exchanges globe draws exchanges: exchange points, data centres, cable "
-                "landing stations, ground stations, submarine cables and telecom lines on land, as far as "
-                "free-licensed data gives them. A data set is downloaded only on your word, its size and its licence "
-                f"said first, and kept in {self.folder}: the globe is then drawn from that file, and asks nothing of "
-                "anyone.")
+                "landing stations, ground stations, submarine cables, backbones and their points of presence, and "
+                "telecom lines on land, as far as free-licensed data gives them. A data set is downloaded only on your "
+                f"word, its size and its licence said first, and kept in {self.folder}: the globe is then drawn from "
+                "that file, and asks nothing of anyone.")
         if elsewhere:
             note += f" {elsewhere}. Each system's platform downloads its own."
         elif installing():
