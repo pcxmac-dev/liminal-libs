@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import pytest
 
+from liminal_libs import internal
 from liminal_libs.apps import Scope
+from liminal_libs.machines import netstat
 from liminal_libs.machines.firewall import (APP_PORTS, Firewall, FirewallError, FirewallNotNeeded, Rule, app_ports, host_port,
                                             service_rules)
 from liminal_libs.machines.plugin import CommandError
@@ -97,6 +99,10 @@ def test_the_firewall_plugin_conforms_and_reports():
     fw = FakeFirewall()
     assert problems(fw) == [] and fw.STEPS == ("enable", "exposure", "rules") and fw.KIND == "machine"
     assert {"allow", "remove", "wanted", "status", "setup"} <= set(fw.interface()["hooks"])  # asked by name (Plugin.ask)
+    # 1.65.0: the Netstat tab, the hosts' recording, the globe's filters and its layers, each a hook of the base's, and
+    # what it says of them sound (its tabs' hooks, a read that is no job and accepts no refusal, each with its line)
+    assert set(netstat.HOOKS) <= set(fw.interface()["hooks"]) and internal.problems(fw) == []
+    assert fw.READ_HOOKS == ("wanted", "world_layer") and fw.netstat_listeners() == {}
     assert fw.ask("allow", "asked", [9000]).name == "asked" and fw.ask("remove", "asked") is True
     fw.allow("web", (8443,), detail="a test")
     with pytest.raises(FirewallError):

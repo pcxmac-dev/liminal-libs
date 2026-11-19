@@ -1,5 +1,99 @@
 # Changelog
 
+## 1.65.0 (2026-11-19)
+
+The firewalls' Netstat tab, the hosts database, and the globe's filters and internet infrastructure. The user,
+2026-11-16: "the firewall app should have a 'netstat' like interface for looking at active ports and what apps they are
+attached to, and the hosts that they connect to across the lan or wan. the firewall app should also have a globe that
+can be zoomed and rotated and geoip'd hosts are databased for the apps they talk to, the time they are connected to
+*this *computer"; "the globe-firewall should allow filtering, so i can view apps connected to hosts all across the
+globe, or ports talking to all hosts. The globe should have the same kind of geography associated with the exchanges
+globe, but the firewall globe should instead of exchanges, have all the backbones,ibones, major internet
+infrastructure, (as many as possible) datacenter locations." All of it is the Firewall base's, so both firewall plugins
+have it: plugin-platform-firewall-windows 0.7.0 and plugin-platform-firewall-linux 0.9.0 name the data sets the globe
+draws, and liminal-platform 0.33.0 gives the globe its way to load them. The plugin API stays 2.3.
+
+- **The socket table** (`sockets.py`). `read` is this system's own socket table with the program behind each socket,
+  asked of the system itself: no capture, no administrator and no password, no process started, no window, no name
+  looked up, nothing sent anywhere. On Windows, IP Helper's TCP and UDP tables in their OWNER_MODULE class, one
+  snapshot of the processes and the list of services, by documented calls alone (`WINDOWS_CALLS`); on Linux,
+  /proc/net/tcp, tcp6, udp and udp6, and /proc/<pid>/fd for the account's own processes (`LINUX_FILES`). What a row
+  could not read is said in it, in words (`unread`), never guessed. `judge` says where each remote host is (this
+  machine, the local network or the internet), which way the connection goes, which port is the service's, an
+  internet host's place (from a lookup the caller gives) and its name in the system's own hosts file; `under_wsl` what
+  running inside a WSL distribution changes. A reading says which tables it read whole and whether it was cut
+  (MAX_ROWS, 20,000 rows), carries a clock that leaves sleep out (`awake`), and is shared by every ask for 2.5 s.
+- **The hosts database** (`hostbook.py`): one small SQLite file for each system on its own disk (the data folder's
+  `hosts/hosts.db`; nothing is made, read or written on another system's drive), at most 50,000 rows (about 13 MB
+  with ordinary values), the hosts longest unseen pruned first. For each program and remote host, with the protocol,
+  the service's port and the direction: the program's path and service, whether the host is on the local network or
+  the internet, its name where the system knows one, the first and the last time seen, the time connected to this
+  machine, how many connections, and its GeoIP place. Time is counted only while a connection is established and the
+  system awake (a night asleep is no time connected, a restart adds nothing), the open connections are kept in the
+  file so that a restart goes on where it stopped, and a connection that began and ended between two readings is
+  counted once under the program not named. This machine's own connections are never kept, and a local host is never
+  placed. `book` hands out one database for a path in a process, so two views never count twice. A file SQLite finds
+  damaged is set aside and recording starts anew; `forget` leaves nothing of what it removed in the file. Off Windows
+  the folder is made 0700 and the file 0600.
+- **The Netstat tab** (`machines/netstat.py`, `NetstatView`): the connections, each with its program, pid and service,
+  the remote host and port, whether that host is this machine's, the local network's or the internet's, its name or
+  its GeoIP place, its state, since when and how long it has been up where the system says; the listening ports, the
+  four Liminal apps' pages named; the hosts database with its two forms, Recording and Forget (asked twice). Recording
+  is a setting kept through the login (`LIMINAL_HOSTS_RECORDING`): `shown`, the default, records only while this
+  plugin's Netstat or World Wide Web tab is shown, at their asks, the file let go after each; `always` records all the
+  time the platform runs, a reading every 5 s on a thread of its own (`<name>-hosts`), never in a one-shot app, on a
+  machine the plugin is not for or on another system's drive, and ended when the plugin is detached, when the platform
+  stops and when the setting is set back. The page says that a program run by an interpreter shows as the
+  interpreter.
+- **The globe's filters**: the World Wide Web tab's globe shows the traffic watched now or the hosts recorded, the
+  hosts filtered by program (its hosts across the globe), by port (every host on it), by direction and by when they
+  were last seen (the last hour, 24 hours, 7 days or 30 days). The eight programs and the eight ports with the most
+  hosts are offered right under the globe, with Every program and Every port; Programs, Ports and Hosts tables
+  below. The hosts are grouped by point in the database's own query, and the page is made again at most every 10 s
+  unless a choice changed; the GeoIP file is opened for them only while a host needs a place.
+- **Internet infrastructure** (`machines/infrastructure.py`). A firewall plugin names its data sets
+  (`INFRASTRUCTURE`: plain dicts read by `DataSet.of`, so the address, the query, the licence and the credit are the
+  plugin's, and no outside host is named here). Three formats are read: an Overpass answer (OpenStreetMap's features by
+  their tags), a SPARQL answer (Wikidata's items by their kind) and a GeoJSON FeatureCollection of lines (a WFS's cable
+  routes, asked for longitude first). Only free-licensed data: its licence's words are shown whole first and accepted
+  in a second confirmation, and its credit is drawn wherever its features are. A download is a job on the user's word
+  that Cancel stops: one https request, whose User-Agent is the plugin's name and version and nothing of the user's or
+  the machine's, on a thread of its own under one deadline of 10 minutes, a busy server asked once more a minute
+  later; at most 32 MB is read, 20,000 points and 400,000 line vertices kept a layer. Each data set is kept in the
+  data folder's `infrastructure/`, packed, and read back by layer (exchange points, data centres, cable landing
+  stations, ground stations and teleports, submarine cables, telecom lines on land); a download that fails leaves the
+  older file as it was.
+- **The Firewall base** (`machines/firewall.py`): the Netstat tab after World Wide Web, asked every 3 s while it is
+  shown; ten hooks (`netstat`, a read; `hosts_recording` and `hosts_forget`; `world_show`, `world_direction`,
+  `world_within` and `world_pick`; `world_layer`, a read; `world_layer_get`, a job that can be cancelled;
+  `world_layer_remove`); `INFRASTRUCTURE`; the key `LIMINAL_HOSTS_RECORDING`; and for a subclass `netstat_view`,
+  `make_netstat_view` and `netstat_listeners`. Each ask of the World Wide Web tab reads the socket table for the hosts
+  database too. On a machine the plugin is not for, every one of these hooks refuses in words before any view is
+  made: nothing is read, recorded, kept, forgotten or removed there.
+- **The globe** (`ui/static/liminal-globe.js`): `load`, the page's way to a layer's geometry, and `key`, under which
+  the layers' switches are remembered in this browser. The layers are drawn where the exchanges globe draws its
+  exchanges, with its marks, clusters and name boxes, the equator stressed; each layer is a button in the legend and
+  its credit stands beside the places' attribution. A place of the hosts recorded says its hosts, the programs that
+  talked to them and the time connected; `showing` says the filter in words.
+- `machines/world.py`: the GeoIP file's waiting loop lifted into `run_download`, which a data set's download shares
+  (the GeoIP file's install is as it was); `fetch_url` takes the request's `agent`; `WorldView.rest`. `apps/tabs.py`
+  names the globe's new keys and the flows' (`since`, `state`, `unread`, the direction `local`; Flagged only only
+  where a page's filters name it).
+- Left out of this version, and said: day and night on the globe and the sun's mark; PeeringDB, root-server sites and
+  cloud regions (not free-licensed, or no licence stated); a Netstat row setting the globe's filter.
+- **Tests**: test_sockets_windows, test_sockets_linux and test_sockets_judge (the ctypes layouts' sizes and offsets
+  held on both systems), test_hostbook, test_infrastructure, test_netstat, and the globe's in test_ui_globe, on
+  stand-ins. tests/conftest.py's autouse `no_real_hosts` beside `no_outside`: in every test the recording setting is
+  `shown`, the socket table's reader refuses, and the hosts database and the layers are in the test's own folder. A
+  firewall plugin's suite from before plugin-platform-firewall-windows 0.7.0 and plugin-platform-firewall-linux 0.9.0
+  has no such guard: run against this library it reads the machine's real socket table, so it is not run on it.
+- **A port checked twice in a minute on Linux** (`ports.Listener`): the listener closes each connection it accepts
+  before the other side does, so this machine's side of it lingers on the port for about a minute (TIME_WAIT). Linux
+  refused to listen on that port again meanwhile ("Address already in use"), so a second "listen on the port" check
+  said the port was taken. The listener now sets SO_REUSEADDR on Linux alone, where it never lets two listeners share
+  a port; Windows keeps SO_EXCLUSIVEADDRUSE. Found as a test failing now and then in Ubuntu (the other session's
+  report); a new test forces the order and failed 3 runs of 3 there without the fix, 20 of 20 passing with it.
+
 ## 1.64.1 (2026-11-19)
 
 An empty span is a finding only with evidence, like a hole (the user, 2026-11-19, asked whether the sweep should stop

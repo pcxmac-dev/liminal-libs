@@ -20,13 +20,21 @@ What travels is `as_dict()`, in the plugin's status (`tabs`).
 
 The page a tab's hook answers is a dict, every key optional:
 - `title` and `note`: words at its head;
-- `globe`: what ui/static/liminal-globe.js draws (a home, the origins with their kind, the local peers never placed, the
-  attribution of the places);
+- `globe`: what ui/static/liminal-globe.js draws, every key optional: `home` ({lat, lon, label}, or none); `origins`,
+  the places, each {id, lat, lon, label, country, city, asn, org, count, bytes, kind, ports}, and where a plugin
+  records hosts also its `hosts`, `programs` and `seconds` connected; `local`, the local peers, never placed ({count,
+  bytes, hosts}); `attribution`, the places' ({text, url}); `updated` and `note` (its first 1,200 characters drawn);
+  `kinds`, the kinds its legend lists; `showing`, the filter in words; `layers`, the infrastructure layers it may draw
+  (machines/infrastructure.py's `Index.layers()`), and `layer_hook`, the read hook the page asks with a layer's id for
+  that layer's geometry (`Index.layer()`);
 - `flows`: a table of connections, {title, note, empty, columns, rows, filters}, drawn with filter controls, the flagged
-  rows first. A row: {id, time (epoch seconds or ISO), dir ("in", "out"), proto, local, remote, name, program, labels:
-  [{kind, source, company}], flags: [{id, words}], bytes, packets, duration (seconds)}; `columns` the row's keys to show
-  (a key, or {key, title, num}; the usual ones when it names none); `filters` what the controls offer and start at:
-  {dir: [the directions], flagged: bool, labels: [the kinds], search: str};
+  rows first. A row: {id, time (epoch seconds or ISO), since (that time in words), dir ("in", "out", or "local": both
+  its ends on this machine), proto, local, remote, name, program, state, labels: [{kind, source, company}], flags:
+  [{id, words}], bytes, packets, duration (seconds), unread (what of it could not be read, in words)}; `columns` the
+  row's keys to show (a key, or {key, title, num}; the usual ones when it names none); `filters` what the controls
+  offer and start at: {dir: [the directions], flagged: bool, labels: [the kinds], search: str}, the "Flagged only"
+  switch drawn only where `flagged` is named (liminal-platform 0.33.0; the Netstat tab names none: nothing of it is
+  flagged);
 - `charts`: a LiminalCharts spec ({span, t, charts}: ui/static/charts.js), or a list of them, drawn apart from the Main
   tab's (the page keys them by the tab's id);
 - `tables`, `forms` and `actions`: in the shapes a status has, drawn as the Main tab draws them."""

@@ -1,18 +1,33 @@
 // The globe every app's page can draw (liminal-libs ui/static, for the plugins' World Wide Web tabs, 2026-11-14): the
 // places this machine's traffic comes from and goes to, each a dot with its route to this machine. The user,
 // 2026-11-14: "so for the firewall's both are going to get a 'world wide web view' that shows the globe and the routes
-// incoming all traffic, as well as monitoring port traffic stats". The math and the gestures are the charts app's
-// (globe.js, its Markets view): the orthographic projection, project / unproject / polyline broken on the far side,
-// decodeTopo and its loader, a drag past a slop, the wheel and two fingers zooming about the point under them, a double
-// click (or two taps) back home. One 2D canvas, sharp at the screen's pixel ratio; no libraries.
+// incoming all traffic, as well as monitoring port traffic stats". And, 2026-11-16: "the firewall app should also have
+// a globe that can be zoomed and rotated and geoip'd hosts are databased for the apps they talk to, the time they are
+// connected to *this *computer"; "the globe-firewall should allow filtering, so i can view apps connected to hosts all
+// across the globe, or ports talking to all hosts. The globe should have the same kind of geography associated with
+// the exchanges globe, but the firewall globe should instead of exchanges, have all the backbones,ibones, major
+// internet infrastructure, (as many as possible) datacenter locations." The math and the gestures are the charts
+// app's (globe.js, its Markets view): the orthographic projection, project / unproject / polyline broken on the far
+// side, decodeTopo and its loader, a drag past a slop, the wheel and two fingers zooming about the point under them,
+// a double click (or two taps) back home. One 2D canvas, sharp at the screen's pixel ratio; no libraries.
 //
-//   const globe = LiminalGlobe.draw(el, spec, {theme})   el: the element it fills (drawn into again: updated in place,
-//   globe.update(spec)                                     its view kept); spec: a tab page's "globe" (apps/tabs.py):
-//   globe.destroy()                                        {home: {lat, lon, label} | null, origins: [{id, lat, lon,
-//                                                          label, country, city, asn, org, count, bytes, kind, ports}],
-//                                                          local: {count, bytes}, attribution: {text, url} | null,
-//                                                          updated, note}
-//   theme: the page's theme or its base ("dark", "paper", ...), for the colours of a page without liminal.css's variables
+//   const globe = LiminalGlobe.draw(el, spec, {theme, load, key})   el: the element it fills (drawn into again: it
+//   globe.update(spec)                                               is updated in place, its view kept)
+//   globe.destroy()
+//   spec: a tab page's "globe" (apps/tabs.py): {home: {lat, lon, label} | null, origins: [{id, lat, lon, label,
+//     country, city, asn, org, count, bytes, kind, ports, hosts, programs, seconds}], local: {count, bytes, hosts},
+//     attribution: {text, url} | null, updated, note, kinds: [the kinds its legend lists], showing: the filter in
+//     words, layers: [{id, title, kind: "points" | "lines", mark: "circle" | "square" | "diamond" | "line" | "dash",
+//     slot: 4 to 7, on, names_from, count, version, credits: [{text, url}], note}], layer_hook}
+//   theme: the page's theme or its base ("dark", "paper", ...), for the colours of a page without liminal.css's
+//     variables
+//   load: (layerId) => a Promise of that layer's geometry, as machines/infrastructure.py's Index.layer answers it:
+//     {id, version, parts: [{set, credit: {text, url}, points: {n, xy, names, subs}, lines: {n, offsets, xy, names}}]},
+//     xy the base64 of little-endian int32 pairs (lon, lat in 1e-5 degrees), offsets the base64 of n + 1 little-endian
+//     uint32 (where each line's vertices begin). The page gives it, and asks the spec's layer_hook with it: the globe
+//     itself asks for nothing but its map. Without it every layer stays off, and its switch says why.
+//   key: a name the layers' switches are remembered under in this browser (localStorage); without it they last as
+//     long as the globe does.
 //
 // - The map is world-atlas 2.0.2 (Natural Earth, public domain) beside this file: vendor/world/countries-110m.json, and
 //   countries-50m.json only once a globe is zoomed past 2.5x; one copy serves every globe on the page. The land is cut
@@ -20,21 +35,38 @@
 //   horizon is land to the rim and the sea round it stays sea, from any side.
 // - Each origin is a dot sized by its count, with a great-circle route to home 1.2 + min(3.6, 1.3 log10(count + 1)) px
 //   wide, by its kind: allowed in, unanswered in (dashed: no answer seen within 3 s) and out, named in the legend
-//   beneath. Private and local peers are never placed: the legend counts them. A place without a known point (geo.Place's
-//   lat = lon = None: its country known, not where in it) is not drawn either: it is in its kind's totals, the legend
-//   says how many and how much, and the table lists it.
-// - The colours are the themes' variables (--series-1..7, the kinds on slots 1 to 3, --accent for home, --muted, --text,
-//   --frame), read again when the theme changes (the class or data-theme of <html> or <body>, the system's light or
-//   dark, or a theme given to update).
-// - A mouse hovers a dot, a finger taps it, the keyboard steps through them (the arrows; Home turns back home): its words
-//   show, and a keyboard's step is said to a screen reader (a polite live region; the tooltip is not read). The same
-//   places are a table beneath, for a screen reader and for reading the numbers. An update changes the words in place
-//   (the legend's, the table's rows, the attribution's link): where the table is scrolled to, what is being read or
-//   selected and the focus stay, though a page is asked again every few seconds.
+//   beneath. Private and local peers are never placed: the legend counts them. A place without a known point
+//   (geo.Place's lat = lon = None: its country known, not where in it) is not drawn either: it is in its kind's totals,
+//   the legend says how many and how much, and the table lists it. Where a plugin's places are hosts it recorded, a
+//   place also says its hosts, the programs that talked to them and the time connected; its bytes are said only where
+//   there are any; `kinds` names the kinds the legend lists, and `showing` (the filter, in words) stands top left over
+//   the map.
+// - The layers are a plugin's infrastructure (exchange points, data centres, cables: MAX_LAYERS at most), drawn where
+//   the exchanges globe draws its exchanges, with its marks (a circle, a square, a diamond), its clusters and its name
+//   boxes. A layer's points are gathered on a screen grid of 24 px: a cell with one is its mark, a cell with more one
+//   mark and their count, kept in its cell. Its lines are stroked as the map's, a segment longer than 3 degrees filled
+//   in along its great circle when it is made ready, a vertex less than a pixel from the last one drawn left out. Its
+//   geometry is asked of the page once a version (not waited for past a minute) and kept as unit vectors, one copy for
+//   every globe on the page, let go with the last globe that lists it. The marks and lines are a third layer between
+//   the map and the routes, the layer with the most features painted first (the few on top of the many), painted
+//   again only when the view, the layers on, their versions or the colours change; their names (LAYER_NAMES at most,
+//   from the zoom each layer says) are drawn with the places' names, never over one. A mark or a line under the
+//   pointer says its name, its layer, its operator and its credit; a cluster its count and five names. Each layer is a
+//   button in the legend, its choice remembered; each layer shown is credited beside the places' attribution. The
+//   features have no table (they are thousands): the plugin's own tables count them.
+// - The equator is stressed, as on the exchanges globe.
+// - The colours are the themes' variables (--series-1..7: the kinds on slots 1 to 3, the layers on 4 to 7; --accent for
+//   home, --muted, --text, --frame), read again when the theme changes (the class or data-theme of <html> or <body>,
+//   the system's light or dark, or a theme given to update).
+// - A mouse hovers a dot, a finger taps it, the keyboard steps through them (the arrows; Home turns back home): its
+//   words show, and a keyboard's step is said to a screen reader (a polite live region; the tooltip is not read). The
+//   same places are a table beneath, for a screen reader and for reading the numbers. An update changes the words in
+//   place (the legend's, the table's rows, the credits' links, the layers' buttons): where the table is scrolled to,
+//   what is being read or selected and the focus stay, though a page is asked again every few seconds.
 // - It moves (a light travels each of the busiest routes) only while it is on screen and the page is shown, and stands
-//   still under prefers-reduced-motion. A frame redraws only the routes and their lights: the map and the dots are
-//   layers drawn again when the view, the places or the colours change. Nothing runs once it is destroyed; a globe whose
-//   element left the page is destroyed when the next one is drawn.
+//   still under prefers-reduced-motion. A frame redraws only the routes and their lights: the map, the layers and the
+//   dots are drawn again only when the view, what they show or the colours change. Nothing runs once it is destroyed;
+//   a globe whose element left the page is destroyed when the next one is drawn.
 // Names come from plugins: every text is set with textContent, and an address is a link only when it is an https one.
 (() => {
   'use strict';
@@ -46,10 +78,31 @@
   const MAX_ZOOM = 12;  // the 1:50m outlines' detail
   const MAX_ORIGINS = 512;  // the places tabled (and drawn: those with a point), the most connections first (traffic.TrafficBook keeps 512)
   const MAX_READ = 20000;  // the most of a spec's list read at all (the note says how many more there were)
+  // a spec's note, cut past this: the GeoIP file's words, the home's and, where it shows the hosts recorded, theirs
+  // (machines/netstat.py), with a path or a library's error in them, fit whole
+  const MAX_NOTE = 1200;
   const FRAME_MS = 33;  // about 30 frames a second while the lights move
   const GLIDE_MS = 700;
   const LABELS = 5;  // the busiest places named on the map (the table and the tooltips carry every one)
   const LIGHTS = 64;  // the busiest routes a light travels (the rest stand still: a frame stays cheap)
+  const MAX_LAYERS = 8;  // the infrastructure layers of a spec that are listed (how many more there were is said)
+  const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
+  const MAX_LAYER_VERTICES = 400000;  // a layer's line vertices kept, the ones filled in among them
+  const MAX_PARTS = 16;  // the parts (one a data set) of a layer's answer that are read
+  const LAYER_NAMES = 12;  // the layers' names on the map at once (a mark's words carry every one)
+  const NAME = 80;  // a feature's name or operator, cut (as infrastructure.NAME)
+  const CELL = 24;  // px: the screen grid a layer's points are gathered on: a cell is one mark, or one mark and a count
+  const LINE_CELL = 8;  // the lines a cell keeps for the pointer (where more cross it, the cells round it hold them)
+  const FILL = 3;  // degrees: a line's segment longer than this is filled in along its great circle (the routes' step)
+  const THIN = 0.75;  // px: a line's vertex nearer than this to the last one drawn is left out
+  const LOAD_MS = 60_000;  // a layer the page has not answered for within this is not loaded (and asked again later)
+  const LAYER_SLOTS = [4, 5, 6, 7];  // the themes' series slots the kinds leave free
+  // a layer's mark, and what it marks: the exchanges globe's circle, square and diamond for points; for lines a plain
+  // stroke or a dashed one
+  const MARKS = { circle: 'points', square: 'points', diamond: 'points', line: 'lines', dash: 'lines' };
+  const DASH = [4, 3];
+  const STORE = 'liminal-globe-layers:';  // and opts.key after it: where this browser remembers the layers' switches
+  const NO_LOADER = 'this page gives the globe no way to load it';
   // Each kind keeps its slot (the charts' in and out are slots 1 and 2); the first three slots are the ones that tell
   // every pair apart (the dataviz validator, all pairs, both bases), and the dash says "unanswered" without colour.
   const KINDS = {
@@ -88,6 +141,21 @@
     return `${i === 0 || v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${UNITS[i]}`;
   }
   const many = (n, noun) => `${Math.round(n).toLocaleString()} ${noun}${Math.round(n) === 1 ? '' : 's'}`;
+  function duration(s) {  // a time connected, in two units at most: "45 s", "12 min 5 s", "3 h 20 min", "2 d 4 h"
+    const n = Math.round(s), two = (a, first, b, second) => (b ? `${a} ${first} ${b} ${second}` : `${a} ${first}`);
+    if (n < 60) return `${n} s`;
+    if (n < 3600) return two(Math.floor(n / 60), 'min', n % 60, 's');
+    if (n < 86400) return two(Math.floor(n / 3600), 'h', Math.floor((n % 3600) / 60), 'min');
+    return two(Math.floor(n / 86400), 'd', Math.floor((n % 86400) / 3600), 'h');
+  }
+  // a cluster's count on its mark, in four characters at most
+  const short = (n) => (n < 1000 ? String(n) : n < 9950 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`);
+  const cut = (s, max) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+  // the point a part `t` of the way along the great circle from a to b, unit vectors `w` apart
+  function slerp(a, b, w, t) {
+    const s = Math.sin(w), p = Math.sin((1 - t) * w) / s, q = Math.sin(t * w) / s;
+    return [p * a[0] + q * b[0], p * a[1] + q * b[1], p * a[2] + q * b[2]];
+  }
   // An element's words set only when they change, and then in its own text node: a selection in it, or the place a
   // screen reader is reading, stays through an update that changed nothing there.
   function setText(el, words) {
@@ -111,6 +179,21 @@
     }
     for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) out.add(i);
     return out;
+  }
+  // `nodes` put in their order in `box`, before `end` (a child of it, or null: at its end): the longest run of them
+  // already in their order stays where it is (steady) and only the others move. The caller takes the nodes no longer
+  // listed out first, so the focus on one that stays, or a click, stays through an update that took another away or
+  // put one in.
+  function arrange(box, nodes, end = null) {
+    const now = new Map();
+    let i = 0;
+    for (let node = box.firstChild; node && node !== end; node = node.nextSibling) now.set(node, i++);
+    const stay = steady(nodes.map((node) => (now.has(node) ? now.get(node) : -1)));
+    let ref = end;
+    for (let k = nodes.length - 1; k >= 0; k--) {
+      if (!stay.has(k)) box.insertBefore(nodes[k], ref);
+      ref = nodes[k];
+    }
   }
   // a media query's changes, by addEventListener (or addListener: Safari before 14, as touch.js has it)
   const listen = (q, fn) => { if (q && q.addEventListener) q.addEventListener('change', fn); else if (q && q.addListener) q.addListener(fn); };
@@ -249,6 +332,170 @@
     ...Array.from({ length: 24 }, (_, m) => Array.from({ length: 91 }, (__, i) => [-180 + m * 15, -90 + i * 2])),
     ...Array.from({ length: 11 }, (_, p) => Array.from({ length: 181 }, (__, i) => [-180 + i * 2, -75 + p * 15])),
   ]);
+  const EQUATOR = 24 + 5;  // which of them is the equator: after the 24 meridians, the sixth parallel from -75
+
+  // -- the layers: a plugin's infrastructure, loaded once for every globe on the page ---------------------------------
+  // base64 -> its bytes (a layer's packed numbers); null for what is not base64
+  function bytesOf(b64) {
+    let s = '';
+    try { s = atob(typeof b64 === 'string' ? b64 : ''); } catch (e) { return null; }
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+  // A mark's path, as the exchanges globe's markers: a circle, a square or a diamond `r` large (the caller fills it).
+  function markPath(c, mark, x, y, r) {
+    if (mark === 'square') c.rect(x - r * 0.9, y - r * 0.9, r * 1.8, r * 1.8);
+    else if (mark === 'diamond') {
+      c.moveTo(x, y - r * 1.25); c.lineTo(x + r * 1.25, y); c.lineTo(x, y + r * 1.25); c.lineTo(x - r * 1.25, y);
+      c.closePath();
+    } else { c.moveTo(x + r, y); c.arc(x, y, r, 0, TAU); }
+  }
+  // A layer's answer (machines/infrastructure.py's Index.layer) made ready to draw: its points and its lines as unit
+  // vectors (x, y, z a point, as the map's), each feature with its name and the part (so the credit) it came from. xy
+  // is little-endian int32 pairs, lon and lat in 1e-5 degrees; offsets little-endian uint32, where each line begins.
+  // Kept: the first MAX_LAYER_POINTS points, and whole lines while they fit in MAX_LAYER_VERTICES; `cut` counts the
+  // features left out. A line's segment longer than FILL degrees is filled in along its great circle, so a cable of
+  // few vertices bends with the globe; each line has its middle and its reach, to be skipped while it is out of sight.
+  function prepareLayer(answer) {
+    if (!answer || typeof answer !== 'object' || !Array.isArray(answer.parts)) return null;
+    const parts = answer.parts.slice(0, MAX_PARTS).map((p) => (p && typeof p === 'object' ? p : {}));
+    const within = (lon, lat) => Math.abs(lat) <= 90 && Math.abs(lon) <= 180;  // a point of the globe
+    const pv = [], points = { n: 0, v: null, names: [], subs: [], part: [] };
+    let cut = 0;
+    parts.forEach((p, k) => {
+      const given = p.points && typeof p.points === 'object' ? p.points : null, raw = given ? bytesOf(given.xy) : null;
+      if (!raw) return;
+      const xy = new DataView(raw.buffer), n = Math.min(Math.max(0, num(given.n) ?? 0), Math.floor(raw.length / 8));
+      const names = Array.isArray(given.names) ? given.names : [], subs = Array.isArray(given.subs) ? given.subs : [];
+      for (let i = 0; i < n; i++) {
+        const lon = xy.getInt32(i * 8, true) / 1e5, lat = xy.getInt32(i * 8 + 4, true) / 1e5;
+        if (!within(lon, lat)) continue;
+        if (points.n >= MAX_LAYER_POINTS) { cut += n - i; break; }
+        pv.push(...unit(lon, lat));
+        points.names.push(text(names[i], NAME));
+        points.subs.push(text(subs[i], NAME));
+        points.part.push(k);
+        points.n++;
+      }
+    });
+    points.v = Float32Array.from(pv);
+    let lv = new Float32Array(3 * 4096), ln = 0;  // the lines' vertices, the array grown as they come
+    const lines = { n: 0, v: null, starts: [0], caps: null, names: [], part: [] }, fill = FILL * rad;
+    parts.forEach((p, k) => {
+      const given = p.lines && typeof p.lines === 'object' ? p.lines : null;
+      const raw = given ? bytesOf(given.xy) : null, offs = given ? bytesOf(given.offsets) : null;
+      if (!raw || !offs) return;
+      const xy = new DataView(raw.buffer), at = new DataView(offs.buffer), all = Math.floor(raw.length / 8);
+      const n = Math.min(Math.max(0, num(given.n) ?? 0), Math.floor(offs.length / 4) - 1);
+      const names = Array.isArray(given.names) ? given.names : [];
+      for (let j = 0; j < n; j++) {
+        const from = at.getUint32(j * 4, true), to = Math.min(all, at.getUint32(j * 4 + 4, true)), one = [];
+        let a = null;
+        for (let i = from; i < to && one.length <= MAX_LAYER_VERTICES * 3; i++) {
+          const lon = xy.getInt32(i * 8, true) / 1e5, lat = xy.getInt32(i * 8 + 4, true) / 1e5;
+          if (!within(lon, lat)) continue;
+          const b = unit(lon, lat);
+          if (a) {
+            const w = 2 * Math.asin(Math.min(1, Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / 2));
+            if (w < 1e-9) continue;  // the same point again
+            const steps = w > fill && Math.sin(w) > 1e-6 ? Math.ceil(w / fill) : 1;
+            for (let s = 1; s < steps; s++) one.push(...slerp(a, b, w, s / steps));
+          }
+          one.push(b[0], b[1], b[2]);
+          a = b;
+        }
+        const m = one.length / 3;
+        if (m < 2) continue;  // no line
+        if (ln + m > MAX_LAYER_VERTICES) { cut++; continue; }
+        if ((ln + m) * 3 > lv.length) {
+          const grown = new Float32Array(Math.min(MAX_LAYER_VERTICES * 3, Math.max(lv.length * 2, (ln + m) * 3)));
+          grown.set(lv.subarray(0, ln * 3));
+          lv = grown;
+        }
+        lv.set(one, ln * 3);
+        ln += m;
+        lines.starts.push(ln);
+        lines.names.push(text(names[j], NAME));
+        lines.part.push(k);
+        lines.n++;
+      }
+    });
+    lines.v = lv.slice(0, ln * 3);
+    lines.caps = new Float32Array(lines.n * 4);  // a line's middle (a unit vector) and its reach from it (radians)
+    for (let j = 0; j < lines.n; j++) {
+      const from = lines.starts[j] * 3, to = lines.starts[j + 1] * 3;
+      let mx = 0, my = 0, mz = 0, reach = Math.PI;  // a line with no middle (it goes right round) is never skipped
+      for (let i = from; i < to; i += 3) { mx += lv[i]; my += lv[i + 1]; mz += lv[i + 2]; }
+      const len = Math.hypot(mx, my, mz);
+      if (len > 1e-6) {
+        let least = 1;
+        for (let i = from; i < to; i += 3) {
+          least = Math.min(least, (mx * lv[i] + my * lv[i + 1] + mz * lv[i + 2]) / len);
+        }
+        reach = Math.acos(clamp(least, -1, 1));
+      }
+      lines.caps.set([mx / (len || 1), my / (len || 1), mz / (len || 1), reach], j * 4);
+    }
+    return { points: points.n ? points : null, lines: lines.n ? lines : null,
+      credits: parts.map((p) => creditOf(p.credit)), cut };
+  }
+  const featuresOf = (geo) => (geo.points ? geo.points.n : 0) + (geo.lines ? geo.lines.n : 0);
+
+  // A layer's geometry by its id and version ("<id>\n<version>": a layer's `key`) -> {state: 'loading' | 'ready' |
+  // 'failed', geo, why, retry, timer}: one copy for every globe on the page, as the maps.
+  const layerData = new Map();
+  // What no globe lists any more is let go, and so is a load still on its way (its deadline with it); with the last
+  // globe, everything.
+  function pruneLayers() {
+    const listed = new Set();
+    globes.forEach((g) => g.layerKeys().forEach((key) => listed.add(key)));
+    for (const [key, entry] of [...layerData]) {
+      if (!listed.has(key)) { clearTimeout(entry.timer); layerData.delete(key); }
+    }
+  }
+  // A layer asked of the page's loader, once a version: every globe is told when it came or could not. An answer that
+  // does not come within LOAD_MS is not waited for: the layer is not loaded, and says so (one that comes later is
+  // still taken). After a failure it is not asked again before RETRY_MS (as the map).
+  function askLayer(l, load) {
+    const was = layerData.get(l.key);
+    if (was && (was.state !== 'failed' || Date.now() < was.retry)) return;
+    const entry = { state: 'loading', geo: null, why: '', retry: 0, timer: 0 };
+    layerData.set(l.key, entry);
+    const settle = (geo, why) => {
+      if (layerData.get(l.key) !== entry) return;  // no globe lists it any more: not kept
+      clearTimeout(entry.timer);
+      Object.assign(entry, geo ? { state: 'ready', geo } : { state: 'failed', why, retry: Date.now() + RETRY_MS });
+      globes.forEach((g) => g.layerArrived());
+    };
+    entry.timer = setTimeout(() => {
+      if (entry.state === 'loading') settle(null, `the page gave no answer for it within ${LOAD_MS / 1000} s`);
+    }, LOAD_MS);
+    let asked = null;
+    try { asked = Promise.resolve(load(l.id)); } catch (e) { asked = Promise.reject(e); }
+    asked.then((answer) => {
+      let geo = null;
+      try { geo = prepareLayer(answer); } catch (e) { geo = null; }
+      settle(geo, 'the page answered with no geometry for it');
+    }, (e) => settle(null, text((e && e.message) || e || 'the page could not load it', 200)));
+  }
+  // The layers' switches as this browser remembers them under `name`: a layer's id -> on or off. Nothing kept, no
+  // storage here or what is there not being ours: no switch is remembered, and each layer starts as its spec says.
+  function recall(name) {
+    const chosen = new Map();
+    let kept = null;
+    try { kept = name ? JSON.parse(localStorage.getItem(STORE + name) || 'null') : null; } catch (e) { kept = null; }
+    if (kept && typeof kept === 'object' && !Array.isArray(kept)) {
+      for (const id of Object.keys(kept).slice(0, 64)) {
+        if (typeof kept[id] === 'boolean') chosen.set(text(id, 40), kept[id]);
+      }
+    }
+    return chosen;
+  }
+  function remember(name, chosen) {
+    const words = JSON.stringify(Object.fromEntries(chosen));
+    try { if (name) localStorage.setItem(STORE + name, words); } catch (e) { /* not kept: it holds for this page */ }
+  }
 
   // -- colours: the themes' variables ---------------------------------------------------------------------------------
   let probe = null;  // a canvas the browser writes any CSS colour out on as #rrggbb or rgba()
@@ -304,6 +551,35 @@
     if (lat == null || lon == null || Math.abs(lat) > 90 || Math.abs(lon) > 540) return null;
     return { lat, lon: wrap(lon) };
   }
+  // A credit: its words, and its address only when it is an https one; null for one that says nothing.
+  function creditOf(a) {
+    const c = a && typeof a === 'object' ? { text: text(a.text), url: safeUrl(a.url) } : null;
+    return c && (c.text || c.url) ? c : null;
+  }
+  // The layers a spec lists, made safe: MAX_LAYERS at most, each an id of its own, a mark that fits its kind and one
+  // of the slots the kinds leave free. What a layer does not say is the careful answer: off at first, no names on the
+  // map.
+  function layersOf(list) {
+    const layers = [], ids = new Set();
+    for (const l of Array.isArray(list) ? list.slice(0, 64) : []) {
+      const id = l && typeof l === 'object' && !Array.isArray(l) ? text(l.id, 40) : '';
+      if (!id || ids.has(id)) continue;
+      ids.add(id);
+      if (layers.length >= MAX_LAYERS) continue;  // counted (ids), not listed
+      const kind = l.kind === 'lines' ? 'lines' : 'points', version = text(l.version, 40);
+      const slot = num(l.slot), from = num(l.names_from), count = num(l.count);
+      layers.push({
+        id, key: `${id}\n${version}`, version, title: text(l.title, 80) || id, kind,
+        mark: own(MARKS, l.mark) && MARKS[l.mark] === kind ? l.mark : kind === 'lines' ? 'line' : 'circle',
+        slot: LAYER_SLOTS.includes(slot) ? slot : LAYER_SLOTS[layers.length % LAYER_SLOTS.length],
+        on: l.on === true, namesFrom: from != null && from >= 1 ? from : Infinity,
+        count: count != null && count >= 0 ? Math.round(count) : null,
+        credits: (Array.isArray(l.credits) ? l.credits.slice(0, 8) : []).map(creditOf).filter(Boolean),
+        note: text(l.note, 200),
+      });
+    }
+    return { layers, unlisted: ids.size - layers.length };
+  }
   function normal(spec) {
     let s = spec && typeof spec === 'object' ? spec : {};
     if (s.globe && typeof s.globe === 'object' && !Array.isArray(s.origins)) s = s.globe;  // a whole tab page given
@@ -314,13 +590,17 @@
     const all = [];
     given.slice(0, MAX_READ).forEach((o, i) => {
       if (!o || typeof o !== 'object' || Array.isArray(o)) return;
-      const p = placeOf(o);
+      const p = placeOf(o), hosts = num(o.hosts), seconds = num(o.seconds);
       all.push({
         id: text(o.id) || (p ? `${p.lat},${p.lon}#${i}` : `#${i}`), placed: !!p, lat: p ? p.lat : null, lon: p ? p.lon : null,
         label: text(o.label), country: text(o.country),
         city: text(o.city), asn: o.asn == null ? '' : text(o.asn, 40), org: text(o.org), count: Math.max(0, num(o.count) ?? 1),
         bytes: Math.max(0, num(o.bytes) ?? 0), kind: own(KINDS, o.kind) ? o.kind : 'allowed',
         ports: (Array.isArray(o.ports) ? o.ports.slice(0, 64) : []).map(num).filter((n) => n != null && n >= 0 && n <= 65535),
+        // a plugin's recorded hosts: how many at this place, the programs that talked to them, the seconds connected
+        hosts: hosts != null && hosts >= 0 ? Math.round(hosts) : null,
+        seconds: seconds != null && seconds >= 0 ? seconds : null,
+        programs: (Array.isArray(o.programs) ? o.programs.slice(0, 8) : []).map((w) => text(w, 80)).filter(Boolean),
       });
     });
     all.sort((a, b) => b.count - a.count || b.bytes - a.bytes);
@@ -334,12 +614,19 @@
     for (const o of all) { add(totals[o.kind], o); if (!o.placed) add(unplaced[o.kind], o); }
     const listed = all.slice(0, MAX_ORIGINS);  // the table's rows; the globe draws those of them with a point
     const l = s.local && typeof s.local === 'object' ? s.local : null;
-    const a = s.attribution && typeof s.attribution === 'object' ? { text: text(s.attribution.text), url: safeUrl(s.attribution.url) } : null;
+    // which of the facts a place may say some place here does say: the table has a column for each that is said
+    const has = { hosts: listed.some((o) => o.hosts != null), programs: listed.some((o) => o.programs.length > 0),
+      seconds: listed.some((o) => o.seconds != null), bytes: listed.some((o) => o.bytes > 0) };
+    const kinds = Object.keys(KINDS).filter((kind) => Array.isArray(s.kinds) && s.kinds.includes(kind));
+    const localHosts = l ? num(l.hosts) : null;
     return {
       home: h ? { ...h, label: text(s.home.label, 80) } : null, origins: listed.filter((o) => o.placed), listed,
       more: Math.max(0, all.length - MAX_ORIGINS), unread: Math.max(0, given.length - MAX_READ), totals, unplaced,
-      local: l ? { count: Math.max(0, num(l.count) ?? 0), bytes: Math.max(0, num(l.bytes) ?? 0) } : null,
-      attribution: a && (a.text || a.url) ? a : null, updated: text(s.updated, 40), note: text(s.note, 400),
+      local: l ? { count: Math.max(0, num(l.count) ?? 0), bytes: Math.max(0, num(l.bytes) ?? 0),
+        hosts: localHosts != null && localHosts >= 0 ? Math.round(localHosts) : null } : null,
+      attribution: creditOf(s.attribution), updated: text(s.updated, 40), note: text(s.note, MAX_NOTE),
+      // the kinds the legend lists (all of them when the spec names none it knows), the filter in words, the layers
+      kinds: kinds.length ? kinds : Object.keys(KINDS), showing: text(s.showing, 200), has, ...layersOf(s.layers),
     };
   }
   const unplacedOf = (d) => Object.keys(KINDS).reduce((n, kind) => n + d.unplaced[kind].places, 0);  // places without a point
@@ -371,6 +658,9 @@
     zoomWords.className = 'lg-zoom';
     zoomWords.hidden = true;
     controls.appendChild(zoomWords);
+    const showing = document.createElement('div');  // the filter in words (the spec's `showing`), top left over the map
+    showing.className = 'lg-showing';
+    showing.hidden = true;
     const attribution = document.createElement('div');
     attribution.className = 'lg-attr';
     const said = document.createElement('div');  // a keyboard's step, said to a screen reader (the tooltip is not read)
@@ -379,6 +669,12 @@
     said.setAttribute('aria-atomic', 'true');
     const legend = document.createElement('div');
     legend.className = 'lg-legend';
+    const layerBar = document.createElement('div');  // the layers' switches, a row of their own at the legend's foot
+    layerBar.className = 'lg-layers';
+    layerBar.hidden = true;
+    const layerHead = document.createElement('span'), layerWhy = document.createElement('span');
+    layerHead.textContent = 'Layers';
+    layerBar.append(layerHead, layerWhy);
     const note = document.createElement('div');
     note.className = 'lg-note';
     const table = document.createElement('details');
@@ -386,6 +682,7 @@
     const summary = document.createElement('summary');
     table.appendChild(summary);
     stage.append(canvas, controls, attribution, said);
+    stage.insertBefore(showing, controls);
     root.append(stage, legend, note, table);
     el.appendChild(root);
     const tip = document.createElement('div');
@@ -407,12 +704,21 @@
     let pick = null;  // what the tooltip is about: {o} a place or {home: true}, by 'mouse', 'finger' or 'keys'
     let anchor = '';  // where an anchored tooltip was put last
     let routes = [];
+    let load = typeof opts.load === 'function' ? opts.load : null;  // the page's way to a layer's geometry, or none
+    let storeName = typeof opts.key === 'string' ? text(opts.key, 200) : '';  // what the switches are remembered under
+    let chosen = recall(storeName);  // a layer's id -> switched on or off here; a layer not in it is as its spec says
+    let layersShown = null, layersKey = '';  // the layers drawn now and what tells them apart: made again when null
+    // What the layers' paint leaves behind: its grid, the marks by their cell and the lines' cells (for the pointer), a
+    // line's words while the pointer is on it, the names to draw with the places', and a count of the paints.
+    let grid = { cols: 1, rows: 1 }, markCells = new Map(), lineCells = [], lineHits = new Map();
+    let infraNames = [], infraStamp = 0;
     let visible = !('IntersectionObserver' in window);
     let seen = root.isConnected;  // on the page once: after that, a globe that left it is destroyed with the next draw
     let destroyed = false, dirty = true, raf = 0, lastFrame = -Infinity;
-    // offscreen layers, drawn again only when what they show changes: the sphere, the land and its lines; the dots and
-    // the names
-    const layers = { base: { canvas: null, key: '' }, places: { canvas: null, key: '' } };
+    // offscreen layers, drawn again only when what they show changes: the sphere, the land and its lines; a plugin's
+    // infrastructure (its marks and lines); the dots and the names
+    const layers = { base: { canvas: null, key: '' }, infra: { canvas: null, key: '' },
+      places: { canvas: null, key: '' } };
     const motion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
     const scheme = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
     let reduced = !!(motion && motion.matches);
@@ -469,21 +775,30 @@
       x /= n; y /= n; z /= n;
       return [x * fr.E[0] + y * fr.E[1] + z * fr.E[2], x * fr.N[0] + y * fr.N[1] + z * fr.N[2]];
     }
-    // polyline for a map's line of unit vectors: broken on the far side, its ends at the horizon where it goes behind.
-    function strokeUnits(c, v, g, fr) {
+    // polyline for a line of unit vectors (the map's coasts and borders, a layer's lines): broken on the far side, its
+    // ends at the horizon where it goes behind. `from` and `to` take one line out of `v`; with `thin` (a chord's
+    // square) a vertex nearer than that to the last one drawn is left out, never a line's last; `seen(x, y)` is told
+    // each point drawn.
+    function strokeUnits(c, v, g, fr, from = 0, to = v.length, thin = 0, seen = null) {
       const { C, E, N } = fr;
-      let pen = false, px = 0, py = 0, pz = 0, pd = -1;
-      for (let i = 0; i < v.length; i += 3) {
+      let pen = false, px = 0, py = 0, pz = 0, pd = -1, kx = 2, ky = 2, kz = 2;
+      for (let i = from; i < to; i += 3) {
         const x = v[i], y = v[i + 1], z = v[i + 2];
+        if (thin && i < to - 3 && (x - kx) * (x - kx) + (y - ky) * (y - ky) + (z - kz) * (z - kz) < thin) continue;
+        kx = x; ky = y; kz = z;
         const d = x * C[0] + y * C[1] + z * C[2];
         if (d >= 0) {
           const sx = g.cx + g.r * (x * E[0] + y * E[1] + z * E[2]), sy = g.cy - g.r * (x * N[0] + y * N[1] + z * N[2]);
           if (pen) c.lineTo(sx, sy);
           else {
-            if (i > 0) { const h = horizon(x, y, z, d, px, py, pz, pd, fr); c.moveTo(g.cx + g.r * h[0], g.cy - g.r * h[1]); c.lineTo(sx, sy); }
-            else c.moveTo(sx, sy);
+            if (i > from) {  // it comes round the horizon: from there
+              const h = horizon(x, y, z, d, px, py, pz, pd, fr);
+              c.moveTo(g.cx + g.r * h[0], g.cy - g.r * h[1]);
+              c.lineTo(sx, sy);
+            } else c.moveTo(sx, sy);
             pen = true;
           }
+          if (seen) seen(sx, sy);
         } else if (pen) {
           const h = horizon(px, py, pz, pd, x, y, z, d, fr);
           c.lineTo(g.cx + g.r * h[0], g.cy - g.r * h[1]);
@@ -585,10 +900,6 @@
       }
       routes.sort((x, y) => x.o.count - y.o.count);  // the busiest drawn last, on top
     }
-    function slerp(a, b, w, t) {
-      const s = Math.sin(w), p = Math.sin((1 - t) * w) / s, q = Math.sin(t * w) / s;
-      return [p * a[0] + q * b[0], p * a[1] + q * b[1], p * a[2] + q * b[2]];
-    }
     function perpendicular(a) {
       const o = Math.abs(a[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
       const c = [a[1] * o[2] - a[2] * o[1], a[2] * o[0] - a[0] * o[2], a[0] * o[1] - a[1] * o[0]];
@@ -648,6 +959,8 @@
         b.beginPath();
         for (const line of graticuleLines()) polyline(b, line, g);
         b.strokeStyle = css(k.muted, 0.18); b.lineWidth = 0.7; b.stroke();
+        b.beginPath(); polyline(b, graticuleLines()[EQUATOR], g);  // the equator stressed, as the exchanges globe's
+        b.strokeStyle = css(k.muted, 0.3); b.stroke();
         if (map) {
           b.beginPath();
           for (const v of map.borders) strokeUnits(b, v, g, fr);
@@ -661,11 +974,232 @@
       });
     }
 
-    // The dots and the names on the map, over the routes and their lights.
+    // -- the layers: a plugin's infrastructure, between the map and the routes ---------------------------------------
+    // Without a loader every layer is off; else a layer is as it was switched here, or as its spec says.
+    const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);
+    // The layers switched on whose geometry is here, in the spec's order: [{l, geo}]. Worked out again only after the
+    // spec, a switch or what is loaded changed (layersShown = null).
+    function shownLayers() {
+      if (!layersShown) {
+        layersShown = [];
+        for (const l of data.layers) {
+          const e = isOn(l) ? layerData.get(l.key) : null;
+          if (e && e.state === 'ready') layersShown.push({ l, geo: e.geo });
+        }
+        layersKey = layersShown.map(({ l }) => `${l.key} ${l.mark} ${l.slot} ${l.namesFrom}`).join('|');
+      }
+      return layersShown;
+    }
+    // What a paint of the layers left behind goes with it: the marks and the lines' cells, the names, and the words
+    // of a mark or a line the pointer was on (a cluster is made again with the view).
+    function forgetMarks() {
+      markCells = new Map();
+      lineCells = [];
+      lineHits = new Map();
+      infraNames = [];
+      infraStamp++;
+      if (pick && pick.f) { pick = null; anchor = ''; tip.hidden = true; }
+    }
+    // The layers' marks and lines. Its key leaves out the spec's version: an update of the places, every few seconds,
+    // does not paint it again; only the view, the layers on, their versions or the colours do. No layer shown: no
+    // canvas kept for it.
+    function infraLayer(g, fr, ratio, W, H) {
+      const list = shownLayers(), slot = layers.infra;
+      if (!list.length) {
+        if (slot.canvas) {
+          slot.canvas.width = 0; slot.canvas.height = 0;
+          slot.canvas = null; slot.key = '';
+          forgetMarks();
+        }
+        return null;
+      }
+      return layer(slot, `${viewKey(g, W, H, ratio)}|${layersKey}`, W, H, ratio, (c) => paintLayers(c, g, fr, list));
+    }
+    // Every layer's lines, then every layer's marks over them; of each, the layer with the most features first, so that
+    // the few stay on top of the many (an exchange point's diamond over the data centres round it, a cable over the
+    // lines on land), the spec's order among layers as many.
+    function paintLayers(c, g, fr, list) {
+      forgetMarks();
+      grid = { cols: Math.ceil(g.w / CELL), rows: Math.ceil(g.h / CELL) };
+      const names = [];
+      const most = (kind) => list.filter(({ geo }) => geo[kind]).sort((a, b) => b.geo[kind].n - a.geo[kind].n);
+      for (const { l, geo } of most('lines')) paintLines(c, g, fr, l, geo, names);
+      for (const { l, geo } of most('points')) paintPoints(c, g, fr, l, geo, names);
+      infraNames = names.sort((a, b) => a.d - b.d);  // the nearest the middle of the view first
+    }
+    // A layer's lines as one path, each stroked as the map's (strokeUnits): a line wholly out of sight is skipped by
+    // its middle and its reach, and a vertex nearer than THIN px to the last one drawn is left out. As it is painted a
+    // line leaves its number in each cell it crosses (for the pointer: every line a cell is crossed by, LINE_CELL at
+    // most, so that a line another one crosses later is still found there) and, from the zoom its layer names, where
+    // its name goes: by its point nearest the middle of the view, a name once however many lines carry it.
+    function paintLines(c, g, fr, l, geo, names) {
+      const L = geo.lines, C = fr.C, half = Math.hypot(g.w / 2, g.h / 2);
+      const sight = (g.r > half ? Math.asin(half / g.r) : Math.PI / 2) + 0.01;  // how far round the canvas shows
+      const thin = (THIN / g.r) ** 2, size = grid.cols * grid.rows;
+      // the lines through each cell, as lists: a cell's last one in `head`, the one before each in `next`, and its
+      // line in `line`; `last` the line that came to a cell last (a line is in a cell's list once), `held` how many
+      const head = new Int32Array(size).fill(-1), last = new Int32Array(size), held = new Uint8Array(size);
+      const next = [], line = [];
+      const naming = zoom >= l.namesFrom, named = new Map();
+      let id = 0, first = true, lx = 0, ly = 0, best = Infinity, bx = 0, by = 0;
+      const cell = (x, y) => {
+        if (x < 0 || y < 0 || x >= g.w || y >= g.h) return;
+        const k = Math.floor(y / CELL) * grid.cols + Math.floor(x / CELL);
+        if (last[k] === id || held[k] >= LINE_CELL) return;  // this line is there already, or the cell is full
+        last[k] = id;
+        held[k]++;
+        next.push(head[k]);
+        line.push(id - 1);
+        head[k] = line.length - 1;
+      };
+      const seen = (x, y) => {  // a point of line `id` drawn: the cells from the last point to it, how near the middle
+        if (!first) {
+          const steps = Math.min(64, Math.ceil(Math.hypot(x - lx, y - ly) / (CELL / 2)));
+          for (let s = 1; s < steps; s++) cell(lx + ((x - lx) * s) / steps, ly + ((y - ly) * s) / steps);
+        }
+        cell(x, y);
+        lx = x; ly = y; first = false;
+        if (!naming || x < 0 || y < 0 || x >= g.w || y >= g.h) return;
+        const d = (x - g.cx) ** 2 + (y - g.cy) ** 2;
+        if (d < best) { best = d; bx = x; by = y; }
+      };
+      c.beginPath();
+      for (let j = 0; j < L.n; j++) {
+        const q = j * 4, d = L.caps[q] * C[0] + L.caps[q + 1] * C[1] + L.caps[q + 2] * C[2];
+        if (Math.acos(clamp(d, -1, 1)) > sight + L.caps[q + 3]) continue;  // wholly out of sight
+        id = j + 1; first = true; best = Infinity;
+        strokeUnits(c, L.v, g, fr, L.starts[j] * 3, L.starts[j + 1] * 3, thin, seen);
+        const name = best < Infinity ? L.names[j] : '', was = name ? named.get(name) : null;
+        if (name && (!was || best < was.d)) {
+          named.set(name, { x: bx, y: by, r: 2, words: cut(name, 28), slot: l.slot, d: best });
+        }
+      }
+      c.strokeStyle = css(colours.series[l.slot - 1], 0.9);
+      c.lineWidth = 1.3;
+      c.lineJoin = 'round';
+      c.setLineDash(l.mark === 'dash' ? DASH : []);
+      c.stroke();
+      c.setLineDash([]);
+      lineCells.push({ l, geo, head, next, line });
+      for (const m of named.values()) names.push(m);
+    }
+    // A layer's points, gathered on the screen's grid of CELL px: a cell with one is its mark (the layer's circle,
+    // square or diamond) where it is; a cell with more is one larger mark and their count, at the middle of them but
+    // kept in its cell by as much as the mark and its ring reach, so that the marks of two cells side by side do not
+    // lie on each other and their counts stay apart (the largest, reaching past half a cell, meet at their edges).
+    // Every mark of the layer is one path (and one more for the ring that keeps it apart from the map): no fill a
+    // feature. Each mark is kept by its cell for the pointer, with the first five of its features; from the zoom its
+    // layer names, its name is one to draw.
+    function paintPoints(c, g, fr, l, geo, names) {
+      const P = geo.points, v = P.v, { C, E, N } = fr, size = grid.cols * grid.rows;
+      const count = new Uint16Array(size), sx = new Float32Array(size), sy = new Float32Array(size);
+      const firsts = new Int32Array(size * 5), cells = [];
+      for (let i = 0, k = 0; i < P.n; i++, k += 3) {
+        const x = v[k], y = v[k + 1], z = v[k + 2];
+        if (x * C[0] + y * C[1] + z * C[2] < 0) continue;  // behind the globe
+        const px = g.cx + g.r * (x * E[0] + y * E[1] + z * E[2]), py = g.cy - g.r * (x * N[0] + y * N[1] + z * N[2]);
+        if (px < 0 || py < 0 || px >= g.w || py >= g.h) continue;
+        const cell = Math.floor(py / CELL) * grid.cols + Math.floor(px / CELL), m = count[cell]++;
+        if (!m) cells.push(cell);
+        if (m < 5) firsts[cell * 5 + m] = i;
+        sx[cell] += px; sy[cell] += py;
+      }
+      const colour = colours.series[l.slot - 1], naming = zoom >= l.namesFrom, mine = [];
+      const wide = l.mark === 'diamond' ? 1.25 : 1;  // how far a mark reaches for its size: a diamond's points, further
+      for (const cell of cells) {
+        const n = count[cell], r = n === 1 ? 3.5 : n < 10 ? 6 : n < 100 ? 7.5 : n < 1000 ? 9.5 : 11;
+        const left = (cell % grid.cols) * CELL, top = Math.floor(cell / grid.cols) * CELL;
+        const pad = n === 1 ? 0 : Math.min(CELL / 2, (r + 1.5) * wide);  // one feature is where it is
+        const x = clamp(sx[cell] / n, left + pad, left + CELL - pad);
+        const y = clamp(sy[cell] / n, top + pad, top + CELL - pad);
+        const m = { l, geo, n, x, y, r, first: Array.from(firsts.subarray(cell * 5, cell * 5 + Math.min(n, 5))) };
+        mine.push(m);
+        const there = markCells.get(cell);
+        if (there) there.push(m); else markCells.set(cell, [m]);
+        const name = naming ? m.first.map((i) => P.names[i]).find(Boolean) : '';
+        if (!name) continue;
+        const words = n > 1 ? `${cut(name, 24)} +${n - 1}` : cut(name, 28);
+        names.push({ x, y, r: r + 1.5, words, slot: l.slot, d: (x - g.cx) ** 2 + (y - g.cy) ** 2 });
+      }
+      c.beginPath();
+      for (const m of mine) markPath(c, l.mark, m.x, m.y, m.r + 1.5);
+      c.fillStyle = css(colours.surface, 0.9); c.fill();  // a ring in the surface colour: a mark apart from the map
+      c.beginPath();
+      for (const m of mine) markPath(c, l.mark, m.x, m.y, m.r);
+      c.fillStyle = css(colour); c.fill();
+      c.font = `600 9px ${colours.font}`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = luminance(colour) > 0.5 ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.95)';  // readable on its mark
+      for (const m of mine) if (m.n > 1) c.fillText(short(m.n), m.x, m.y + 0.5);
+      c.textAlign = 'start'; c.textBaseline = 'alphabetic';
+    }
+    // How near a point is to line `j` of a layer as it is drawn now, and the point of the line nearest it.
+    function nearLine(L, j, x, y, g, fr) {
+      const { C, E, N } = fr, v = L.v;
+      let best = Infinity, bx = 0, by = 0, px = 0, py = 0, pen = false;
+      for (let i = L.starts[j] * 3; i < L.starts[j + 1] * 3; i += 3) {
+        const a = v[i], b = v[i + 1], c = v[i + 2];
+        if (a * C[0] + b * C[1] + c * C[2] < 0) { pen = false; continue; }
+        const sx = g.cx + g.r * (a * E[0] + b * E[1] + c * E[2]), sy = g.cy - g.r * (a * N[0] + b * N[1] + c * N[2]);
+        if (pen) {
+          const ux = sx - px, uy = sy - py, len = ux * ux + uy * uy;
+          const along = len ? clamp(((x - px) * ux + (y - py) * uy) / len, 0, 1) : 0;
+          const qx = px + ux * along, qy = py + uy * along, d = Math.hypot(qx - x, qy - y);
+          if (d < best) { best = d; bx = qx; by = qy; }
+        }
+        px = sx; py = sy; pen = true;
+      }
+      return { d: best, x: bx, y: by };
+    }
+    // The layers' mark or line under a point (canvas px), `by` a mouse or a finger: the nearest mark within its reach,
+    // else the nearest line; found through the cells the last paint left, never by going through every feature.
+    function featureAt(x, y, by) {
+      if (!markCells.size && !lineCells.length) return null;
+      const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL), round = [];
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const X = cx + dx, Y = cy + dy;
+          if (X >= 0 && Y >= 0 && X < grid.cols && Y < grid.rows) round.push(Y * grid.cols + X);
+        }
+      }
+      let best = null, bestD = Infinity;
+      for (const cell of round) {
+        for (const m of markCells.get(cell) || []) {
+          const d = Math.hypot(m.x - x, m.y - y);
+          if (d < Math.max(PLACE_REACH[by], m.r + 4) && d < bestD) { best = m; bestD = d; }
+        }
+      }
+      if (best) return best;
+      const g = geometry(), fr = camera();
+      for (const { l, geo, head, next, line } of lineCells) {
+        const lines = new Set();  // every line through the cells round the point, once
+        for (const cell of round) for (let e = head[cell]; e >= 0; e = next[e]) lines.add(line[e]);
+        for (const j of lines) {
+          const near = nearLine(geo.lines, j, x, y, g, fr);
+          if (near.d >= LINE_REACH[by] || near.d >= bestD) continue;
+          const key = `${l.id}\n${j}`;  // the same words while the pointer goes along the line
+          best = lineHits.get(key) || { l, geo, line: j, n: 1, r: 0, x: 0, y: 0 };
+          lineHits.set(key, best);
+          best.x = near.x; best.y = near.y;
+          bestD = near.d;
+        }
+      }
+      return best;
+    }
+
+    // The dots and the names on the map, over the routes and their lights; the layers' names with them, and a ring
+    // round the mark the pointer is on.
     function placesLayer(g, ratio, W, H) {
-      const picked = pick ? (pick.home ? 'home' : pick.o.id) : '';
-      const key = `${viewKey(g, W, H, ratio)}|${version}|${picked}`;
-      return layer(layers.places, key, W, H, ratio, (c) => drawLabels(c, g, drawPlaces(c, g)));
+      const f = pick && pick.f, at = f && f.line == null ? `${f.x.toFixed(1)},${f.y.toFixed(1)}` : '';
+      const picked = !pick ? '' : pick.home ? 'home' : f ? `${f.l.id} ${at || f.line}` : pick.o.id;
+      const key = `${viewKey(g, W, H, ratio)}|${version}|${picked}|${infraStamp}`;
+      return layer(layers.places, key, W, H, ratio, (c) => {
+        if (at) {
+          c.beginPath(); c.arc(f.x, f.y, f.r + 4, 0, TAU);
+          c.strokeStyle = css(colours.text, 0.9); c.lineWidth = 1.5; c.stroke();
+        }
+        drawLabels(c, g, drawPlaces(c, g));
+      });
     }
 
     // Every route, the routes alike (a kind, a width and whether the one picked) stroked as one path; then a light along
@@ -794,7 +1328,44 @@
       }
       const busiest = shown.filter(([, p]) => p.depth > 0.12).sort((a, b) => b[0].count - a[0].count).slice(0, LABELS);
       for (const [o, p] of busiest) put(text(nameOf(o), 40), p.x, p.y, dotRadius(o.count) + 2, false);
+      nameLayers(c, g, boxes, shown);
       c.textBaseline = 'alphabetic';
+    }
+    // The layers' names, drawn here with the places' names (this layer is painted at every update anyway; the third
+    // one then is not): each in a box as the exchanges globe's, beside its mark where it fits, else a little further
+    // out with a line to it. Never over a place's name or its dot, over home, or over another box; the nearest the
+    // middle of the view first, LAYER_NAMES at most.
+    function nameLayers(c, g, boxes, shown) {
+      if (!infraNames.length) return;
+      for (const [o, p] of shown) {
+        const r = dotRadius(o.count) + 2;
+        boxes.push({ x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r });
+      }
+      c.font = `11px ${colours.font}`;
+      let put = 0, tried = 0;
+      for (const m of infraNames) {
+        if (put >= LAYER_NAMES || tried++ >= LAYER_NAMES * 4) break;
+        const w = c.measureText(m.words).width + 10, h = 16, gap = m.r + 4;
+        const fits = ([x, y]) => x >= 2 && y >= 2 && x + w <= g.w - 2 && y + h <= g.h - 2
+          && !boxes.some((b) => x < b.x + b.w + 2 && b.x < x + w + 2 && y < b.y + b.h + 2 && b.y < y + h + 2);
+        const near = [[m.x + gap, m.y - h / 2], [m.x - gap - w, m.y - h / 2],
+          [m.x - w / 2, m.y - gap - h], [m.x - w / 2, m.y + gap]];
+        const far = [[1, -1], [1, 1], [-1, -1], [-1, 1], [1, 0], [-1, 0], [0, -1], [0, 1]].map(([dx, dy]) => [
+          m.x + dx * 30 - (dx < 0 ? w : dx === 0 ? w / 2 : 0), m.y + dy * 24 - (dy < 0 ? h : dy === 0 ? h / 2 : 0)]);
+        const beside = near.find(fits), spot = beside || far.find(fits);
+        if (!spot) continue;
+        const [x, y] = spot;
+        if (!beside) {  // further out: a line from its mark to its box
+          c.beginPath(); c.moveTo(m.x, m.y); c.lineTo(clamp(m.x, x, x + w), clamp(m.y, y, y + h));
+          c.strokeStyle = css(colours.muted, 0.7); c.lineWidth = 1; c.stroke();
+        }
+        c.fillStyle = css(colours.surface, 0.86); c.fillRect(x, y, w, h);
+        c.strokeStyle = css(colours.series[m.slot - 1], 0.7); c.lineWidth = 1;
+        c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        c.fillStyle = css(colours.text, 0.95); c.fillText(m.words, x + 5, y + h / 2 + 0.5);
+        boxes.push({ x, y, w, h }, { x: m.x - m.r, y: m.y - m.r, w: 2 * m.r, h: 2 * m.r });
+        put++;
+      }
     }
 
     function render(now) {
@@ -804,9 +1375,12 @@
       if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
       if (!maps.coarse) loadCoarse();
       if (zoom > FINE_ZOOM && !maps.fine) loadFine();  // the 1:50m outlines only once zoomed past 2.5x
+      for (const l of data.layers) if (isOn(l)) askLayer(l, load);  // a layer switched on: asked of the page, once
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, W, H);
       ctx.drawImage(baseLayer(g, fr, ratio, W, H), 0, 0);
+      const infra = infraLayer(g, fr, ratio, W, H);  // the layers: over the map, under the routes
+      if (infra) ctx.drawImage(infra, 0, 0);
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       drawRoutes(g, fr, now);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -876,9 +1450,10 @@
       if (p.home) {
         line('lg-tip-head', 'This machine');
         if (data.home && data.home.label) line('lg-tip-sub', data.home.label);
-        if (data.local) line('', `local network: ${many(data.local.count, 'connection')}, ${bytes(data.local.bytes)}, never placed`);
+        if (data.local) line('', `local network: ${localWords()}, never placed`);
         return;
       }
+      if (p.f) { featureTip(p.f, line); return; }
       const o = p.o, k = KINDS[o.kind];
       line('lg-tip-head', nameOf(o));
       const where = whereOf(o);
@@ -891,10 +1466,36 @@
       s.textContent = k.tip;
       row.append(keyOf(o.kind), b, s);
       tip.appendChild(row);
+      if (o.hosts != null) line('', many(o.hosts, 'host'));
+      if (o.seconds != null) line('', `connected ${duration(o.seconds)}`);
       if (o.bytes) line('', bytes(o.bytes));
+      if (o.programs.length) line('lg-tip-sub', o.programs.join(', '));
       if (networkOf(o)) line('lg-tip-sub', networkOf(o));
       if (o.ports.length) line('lg-tip-sub', `ports ${portsOf(o.ports)}`);
     }
+    // A layer's mark or line: its name, its layer, its operator and the credit of the data set it came from; a cluster:
+    // its count, five of its names and their credits.
+    function featureTip(f, line) {
+      const { l, geo } = f, src = f.line == null ? geo.points : geo.lines;
+      const credit = (i) => { const c = geo.credits[src.part[i]]; return c ? c.text || c.url : ''; };
+      if (f.n === 1) {
+        const i = f.line == null ? f.first[0] : f.line, name = src.names[i];
+        line('lg-tip-head', name || l.title);
+        line('lg-tip-sub', name ? l.title : 'no name in the data');
+        if (src.subs && src.subs[i]) line('', src.subs[i]);
+        if (credit(i)) line('lg-tip-sub', credit(i));
+        return;
+      }
+      line('lg-tip-head', `${l.title}: ${f.n.toLocaleString()} here`);
+      for (const i of f.first) line('', src.names[i] || 'no name in the data');
+      const more = f.n - f.first.length;
+      if (more > 0) line('lg-tip-sub', `and ${more.toLocaleString()} more: zoom in to tell them apart`);
+      const credits = [...new Set(f.first.map(credit).filter(Boolean))];
+      if (credits.length) line('lg-tip-sub', credits.join(' · '));
+    }
+    // the local network's sum in words: its hosts where a plugin counts them, its bytes only where there are any
+    const localWords = () => [data.local.hosts != null ? many(data.local.hosts, 'host') : '',
+      many(data.local.count, 'connection'), data.local.bytes ? bytes(data.local.bytes) : ''].filter(Boolean).join(', ');
     function placeTip(px, py, above) {  // charts.js's placing: beside a mouse, above a finger (or the keyboard's dot)
       tip.hidden = false;
       const tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -918,7 +1519,8 @@
     // A finger's or the keyboard's tooltip stays on its dot as the globe turns, and goes while the dot is behind it.
     function anchorTip(g) {
       if (!pick || pick.by === 'mouse') return;
-      const at = pick.home ? (data.home ? project(data.home.lon, data.home.lat, g) : null) : project(pick.o.lon, pick.o.lat, g);
+      const at = pick.home ? (data.home ? project(data.home.lon, data.home.lat, g) : null)
+        : pick.f ? { x: pick.f.x, y: pick.f.y, visible: true } : project(pick.o.lon, pick.o.lat, g);
       if (!at || !at.visible || at.x < 0 || at.y < 0 || at.x > g.w || at.y > g.h) { tip.hidden = true; anchor = ''; return; }
       const r = canvas.getBoundingClientRect(), x = r.left + at.x, y = r.top + at.y;
       const key = `${x.toFixed(1)},${y.toFixed(1)}`;
@@ -936,7 +1538,10 @@
         if (was) changed();
         return;
       }
-      if (!was || was.o !== p.o || !!was.home !== !!p.home || was.by !== p.by) { fillTip(p); changed(); }
+      if (!was || was.o !== p.o || was.f !== p.f || !!was.home !== !!p.home || was.by !== p.by) {
+        fillTip(p);
+        changed();
+      }
       if (p.by === 'mouse') placeTip(p.x, p.y, false);
       else anchorTip(geometry());
     }
@@ -960,14 +1565,82 @@
         show(it.b, !!value);
         show(it.s, !!words);
       };
-      for (const [kind, k] of Object.entries(KINDS)) {
-        const t = data.totals[kind];
-        item(kind, kind, k.words, t.places ? `${many(t.places, 'place')}, ${many(t.count, k.noun)}` : 'none');
+      for (const [kind, k] of Object.entries(KINDS)) {  // the kinds the spec names, and any other that has places
+        const t = data.totals[kind], listed = t.places > 0 || data.kinds.includes(kind);
+        const value = t.places ? `${many(t.places, 'place')}, ${many(t.count, k.noun)}` : 'none';
+        item(kind, kind, listed ? k.words : '', value);
       }
       item('home', 'home', 'This machine', data.home ? data.home.label || 'placed' : 'not placed yet');
-      item('local', null, data.local ? `Local network: ${many(data.local.count, 'connection')}, ${bytes(data.local.bytes)}, never placed` : '');
+      item('local', null, data.local ? `Local network: ${localWords()}, never placed` : '');
       item('unplaced', null, unplacedWords());
       item('grows', null, 'A dot and its route grow with its connections');
+      renderLayers();
+    }
+    // The layers' switches, a row at the legend's foot: a button each (its mark, its title, how many features, and its
+    // state while it loads or where it could not), pressed while its layer is switched on. A button is made once and
+    // kept while its layer is listed, and the buttons of the layers gone are taken out before the others are put in
+    // order (arrange), so the focus on one stays through an update, and its words change in place. Without a loader
+    // each is off and says why, and so does the row.
+    let layerButtons = new Map();  // a layer's id -> {b, m, w, n, s}: its button and the parts of it
+    const attr = (el, name, value) => {  // an attribute set, or taken off (null), only when it changes
+      if (value == null) { if (el.hasAttribute(name)) el.removeAttribute(name); }
+      else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+    };
+    function renderLayers() {
+      if (layerBar.parentNode !== legend) legend.appendChild(layerBar);  // after the legend's own items
+      const kept = new Map(), why = [];
+      for (const l of data.layers) {
+        let it = layerButtons.get(l.id);
+        if (!it) {
+          it = { b: document.createElement('button'), m: document.createElement('span'),
+            w: document.createElement('span'), n: document.createElement('b'), s: document.createElement('span') };
+          it.b.type = 'button';
+          it.b.className = 'lg-layer';
+          it.m.setAttribute('aria-hidden', 'true');
+          it.s.className = 'lg-layer-state';
+          it.b.append(it.m, it.w, it.n, it.s);
+          it.b.addEventListener('click', () => switchLayer(l.id));
+        }
+        const e = layerData.get(l.key), on = isOn(l);
+        const ready = on && !!e && e.state === 'ready', failed = on && !!e && e.state === 'failed';
+        const count = l.count != null ? l.count : ready ? featuresOf(e.geo) : null;
+        attr(it.m, 'class', `lg-m lg-m-${l.mark} lg-s${l.slot}`);
+        setText(it.w, l.title);
+        setText(it.n, count == null ? '' : count.toLocaleString());
+        setText(it.s, !on ? '' : failed ? 'not loaded' : !ready ? 'loading…' : e.geo.cut ? 'in part' : '');
+        attr(it.b, 'aria-pressed', String(on));
+        attr(it.b, 'aria-disabled', load ? null : 'true');
+        const over = ready ? e.geo.cut : 0;  // its features past what the globe keeps of a layer
+        attr(it.b, 'title', !load ? NO_LOADER : failed ? `not loaded: ${e.why}`
+          : over ? `${many(over, 'feature')} more than the globe draws of a layer: left out` : l.note || null);
+        if (failed) why.push(`${l.title} is not loaded: ${e.why}`);
+        kept.set(l.id, it);
+      }
+      for (const [id, it] of layerButtons) if (!kept.has(id)) it.b.remove();  // the layers gone: their buttons, first
+      arrange(layerBar, [...kept.values()].map((it) => it.b), layerWhy);  // between the row's head and its words
+      layerButtons = kept;
+      if (!load && kept.size) why.unshift('These layers stay off: this page gives the globe no way to load them');
+      if (data.unlisted) {
+        why.push(`${many(data.unlisted, 'more layer')} not listed: the globe lists ${MAX_LAYERS} at most`);
+      }
+      setText(layerWhy, why.join(' · '));
+      show(layerWhy, why.length > 0);
+      show(layerBar, kept.size > 0);
+    }
+    // A layer switched on or off by its button, the choice remembered under the page's key. Without a loader it stays
+    // off, and why is said.
+    function switchLayer(id) {
+      const l = data.layers.find((x) => x.id === id);
+      if (!l) return;
+      if (!load) { say(`${l.title}: ${NO_LOADER}`); return; }
+      const next = !isOn(l);  // read before its choice is taken out: without it, isOn says what the spec says
+      chosen.delete(id);  // put last: the oldest choices go first once there are too many
+      chosen.set(id, next);
+      while (chosen.size > 64) chosen.delete(chosen.keys().next().value);
+      remember(storeName, chosen);
+      layersShown = null;
+      renderWords();
+      changed();
     }
     // The origins without a known point, in their kinds' totals above: how many, and what came from them, by kind.
     function unplacedWords() {
@@ -986,33 +1659,59 @@
       if (data.updated) parts.push(`updated ${clock(data.updated)}`);
       setText(note, parts.join(' · '));
     }
-    let link = null;  // the attribution's link, kept while the address is one: a keyboard's focus on it, or a click, stays
+    // The credits over the map: the places' attribution, then the credit of each layer shown (its spec's and its
+    // parts'), each once. A credit is a link only when its address is an https one (creditOf); its node is made once
+    // and kept while it is listed, and the nodes of the credits gone are taken out before the others are put in order
+    // (arrange), so a keyboard's focus on a link, or a click, stays through an update.
+    let credits = new Map();  // a credit (its address and its words) -> its node
     function renderAttribution() {
-      const a = data.attribution;
-      show(attribution, !!a);
-      if (a && a.url) {
-        if (!link || link.parentNode !== attribution) {
-          link = document.createElement('a');
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          attribution.replaceChildren(link);
+      const list = data.attribution ? [data.attribution] : [], kept = new Map();
+      for (const { l, geo } of shownLayers()) list.push(...l.credits, ...geo.credits.filter(Boolean));
+      for (const a of list) {
+        const key = `${a.url}\n${a.text}`;
+        if (kept.has(key)) continue;
+        let node = credits.get(key);
+        if (!node) {
+          node = document.createElement(a.url ? 'a' : 'span');
+          if (a.url) {
+            node.target = '_blank';
+            node.rel = 'noopener noreferrer';
+            node.href = a.url;
+          }
         }
-        if (link.getAttribute('href') !== a.url) link.href = a.url;
-        setText(link, a.text || a.url);
-      } else {
-        link = null;
-        setText(attribution, a ? a.text : '');
+        setText(node, a.text || a.url);
+        kept.set(key, node);
       }
+      for (const [key, node] of credits) if (!kept.has(key)) node.remove();  // the credits gone: their nodes, first
+      arrange(attribution, [...kept.values()]);
+      credits = kept;
+      show(attribution, kept.size > 0);
     }
     // The table, made while it is open and then kept: each place's row (by its id) has its cells' words set again only
     // where they changed, and is moved only when its place in the order is not where it stands.
-    const COLUMNS = [['Place', false], ['Kind', false], ['Connections', true], ['Bytes', true], ['Network', false], ['Ports', false],
-      ['On the globe', false]];
+    // A column: its head, whether its numbers line up right, a place's words in it, and the fact it shows (data.has):
+    // a column of a fact no place here says is left out (hosts, programs and time connected where a plugin records
+    // hosts; bytes where there are any).
+    const placeWords = (o) => {
+      const where = whereOf(o);
+      return where && where !== nameOf(o) ? `${nameOf(o)} (${where})` : nameOf(o);
+    };
+    const COLUMNS = [['Place', false, placeWords], ['Kind', false, (o) => KINDS[o.kind].words],
+      ['Connections', true, (o) => Math.round(o.count).toLocaleString()],
+      ['Hosts', true, (o) => (o.hosts == null ? '–' : o.hosts.toLocaleString()), 'hosts'],
+      ['Programs', false, (o) => o.programs.join(', '), 'programs'],
+      ['Connected', true, (o) => (o.seconds == null ? '–' : duration(o.seconds)), 'seconds'],
+      ['Bytes', true, (o) => (o.bytes ? bytes(o.bytes) : '–'), 'bytes'], ['Network', false, networkOf],
+      ['Ports', false, (o) => portsOf(o.ports)], ['On the globe', false, pointOf]];
     let rows = new Map();  // a row's key (which place of its id, and the id) -> its <tr>
+    let heads = '';  // the columns the table was made with
     function renderTable() {  // its rows are made only while it is open
       const list = data.listed, n = list.length;
       setText(summary, n ? `The ${many(n, 'place')} as a table` : 'No places yet');
       let box = table.querySelector('.lg-scroll');
+      const columns = COLUMNS.filter(([, , , fact]) => !fact || data.has[fact]);
+      const names = columns.map(([head]) => head).join('|');
+      if (box && names !== heads) { box.remove(); box = null; }  // other columns (what the places say changed): anew
       if (!table.open || !n) { if (box) box.remove(); rows = new Map(); return; }
       if (!box) {
         box = document.createElement('div');
@@ -1023,7 +1722,7 @@
         caption.className = 'lg-sr';
         caption.textContent = "The places this machine's traffic comes from and goes to, the most connections first";
         const head = t.createTHead().insertRow();
-        for (const [h, numeric] of COLUMNS) {
+        for (const [h, numeric] of columns) {
           const th = document.createElement('th');
           th.scope = 'col';
           th.textContent = h;
@@ -1034,6 +1733,7 @@
         box.appendChild(t);
         table.appendChild(box);
         rows = new Map();
+        heads = names;
       }
       const body = box.querySelector('tbody'), kept = new Map(), ids = new Map();
       for (const o of list) {
@@ -1043,11 +1743,9 @@
         let tr = rows.get(key);
         if (!tr) {
           tr = document.createElement('tr');
-          for (const [, numeric] of COLUMNS) { const td = tr.insertCell(); if (numeric) td.className = 'num'; }
+          for (const [, numeric] of columns) { const td = tr.insertCell(); if (numeric) td.className = 'num'; }
         }
-        const where = whereOf(o);
-        [where && where !== nameOf(o) ? `${nameOf(o)} (${where})` : nameOf(o), KINDS[o.kind].words, Math.round(o.count).toLocaleString(),
-          o.bytes ? bytes(o.bytes) : '–', networkOf(o), portsOf(o.ports), pointOf(o)].forEach((words, c) => setText(tr.cells[c], words));
+        columns.map(([, , cell]) => cell(o)).forEach((words, c) => setText(tr.cells[c], words));
         kept.set(key, tr);
       }
       for (const [key, tr] of rows) if (!kept.has(key)) tr.remove();  // the places gone: their rows
@@ -1066,19 +1764,28 @@
     function describe() {
       const t = data.totals, n = data.listed.length + data.more, away = unplacedOf(data);
       const kinds = Object.entries(KINDS).filter(([kind]) => t[kind].places).map(([kind, k]) => `${t[kind].places} ${k.words.toLowerCase()}`);
+      // each layer shown, with how many of its features are drawn
+      const shown = shownLayers().map(({ l, geo }) => `${l.title} (${featuresOf(geo).toLocaleString()})`);
       const words = `A globe of the places this machine's traffic comes from and goes to: ${many(n, 'place')}`
         + `${kinds.length ? ` (${kinds.join(', ')})` : ''}${away ? `, ${away.toLocaleString()} of them without a known point and not drawn` : ''}`
         + `; this machine: ${data.home ? data.home.label || 'placed' : 'not placed yet'}.`
+        + `${data.showing ? ` Showing: ${data.showing}.` : ''}`
+        + `${shown.length ? ` Layers shown: ${shown.join(', ')}.` : ''}`
         + ' The arrow keys step through the places, + and − zoom, Home turns back to this machine; the table below lists them.';
       if (canvas.getAttribute('aria-label') !== words) canvas.setAttribute('aria-label', words);
     }
-    function renderWords() { renderLegend(); renderNote(); renderAttribution(); renderTable(); describe(); }
+    function renderShowing() { setText(showing, data.showing); show(showing, !!data.showing); }
+    function renderWords() {
+      renderLegend(); renderNote(); renderShowing(); renderAttribution(); renderTable(); describe();
+    }
     // Said to a screen reader once; the same words again get a no-break space, or a reader would not say them again.
     function say(words) { said.textContent = said.textContent === words ? `${words}\u00a0` : words; }
     function stepWords(o, list) {  // a keyboard's step: the place, what came from it, and which of how many it is
       const k = KINDS[o.kind], name = nameOf(o), where = whereOf(o);
       const place = !where || where === name ? name : where.startsWith(`${name}, `) ? where : `${name}, ${where}`;
-      return `${place}: ${many(o.count, k.noun)} ${k.words.toLowerCase()}${o.bytes ? `, ${bytes(o.bytes)}` : ''}`
+      return `${place}: ${many(o.count, k.noun)} ${k.words.toLowerCase()}`
+        + `${o.hosts != null ? `, ${many(o.hosts, 'host')}` : ''}`
+        + `${o.seconds != null ? `, connected ${duration(o.seconds)}` : ''}${o.bytes ? `, ${bytes(o.bytes)}` : ''}`
         + `; ${list.indexOf(o) + 1} of ${list.length}`;
     }
     const sayZoom = () => say(zoom > 1.01 ? `Zoomed in ${zoomText()}` : 'The whole globe');
@@ -1090,6 +1797,7 @@
     // hovers a place for its words; a finger taps it, and they stay until its next tap; two quick taps go back home, as
     // a double click does.
     const PLACE_REACH = { mouse: 12, finger: 22 }, HOME_REACH = { mouse: 16, finger: 24 };  // px from the point
+    const LINE_REACH = { mouse: 6, finger: 16 };  // px from a layer's line
     // px a press moves before it turns the globe: a fingertip (or a pen's) rolls a little in a tap; a mouse's 3 px
     const DRAG_SLOP = { mouse: 3, finger: 10 };
     const pointers = new Map();  // pointerId -> {x, y}: the pointers down on the globe, in the order they went down
@@ -1100,7 +1808,7 @@
     let justDragged = false;  // the click that ends a drag (or a pinch) is not a click on a place
 
     // What is under a point, `by` a mouse or a finger: the nearest of the places (within its reach, or its dot's own size
-    // and then some) and home; {o} or {home: true}, or null.
+    // and then some) and home; where neither is, a mark or a line of the layers; {o}, {home: true} or {f}, or null.
     function hitAt(clientX, clientY, by) {
       const g = geometry(), r = canvas.getBoundingClientRect();
       const x = clientX - r.left, y = clientY - r.top;
@@ -1115,7 +1823,8 @@
         const d = Math.hypot(p.x - x, p.y - y);
         if (p.visible && d < HOME_REACH[by] && d <= bestD) best = { home: true };
       }
-      return best;
+      const f = best ? null : featureAt(x, y, by);
+      return f ? { f } : best;
     }
     // Zoom to `want` (1x to MAX_ZOOM), turning a little towards the point under (clientX, clientY) so it stays roughly
     // under it: the wheel's, a trackpad's pinch and two fingers' alike. False when it is as near or as far as it goes.
@@ -1329,10 +2038,17 @@
     function update(next, more) {
       if (destroyed) return;
       if (more && more.theme !== undefined && more.theme !== theme) { theme = more.theme; recolour(); }
+      if (more && typeof more.load === 'function') load = more.load;
+      if (more && typeof more.key === 'string' && text(more.key, 200) !== storeName) {  // the switches kept elsewhere
+        storeName = text(more.key, 200);
+        chosen = recall(storeName);
+      }
       data = normal(next);
       version++;
       buildRoutes();
-      if (pick) {  // the same place in the new list (by its id) keeps its words, with its new numbers
+      layersShown = null;
+      pruneLayers();  // a layer the spec no longer lists, or lists in another version, is let go
+      if (pick && !pick.f) {  // the same place in the new list (by its id) keeps its words, with its new numbers
         const o = pick.o ? data.origins.find((x) => x.id === pick.o.id) : null;
         if (pick.o ? !o : !data.home) setPick(null);
         else {
@@ -1373,6 +2089,7 @@
       routes = [];
       pointers.clear();
       globes.delete(self);
+      pruneLayers();  // the layers' geometry goes with the last globe that listed it
       if (instances.get(el) === self) instances.delete(el);
       if (!globes.size) maps.fine = null;  // the 1:50m outlines go with the last globe (the 1:110m are small)
     }
@@ -1381,6 +2098,8 @@
     const self = {
       handle, root, update, destroy,
       mapArrived() { changed(); },
+      layerKeys: () => (destroyed ? [] : data.layers.map((l) => l.key)),
+      layerArrived() { layersShown = null; renderWords(); changed(); },  // a layer came, or not: its button says so
       left: () => seen && !root.isConnected,
       destroyed: () => destroyed,
     };
@@ -1407,7 +2126,11 @@
 @media (hover: hover){.lg-button:hover{background:var(--hover,#2a2e39)}}
 @media (any-pointer: coarse){.lg-button{min-width:40px;height:40px}}
 .lg-attr{position:absolute;right:6px;bottom:4px;max-width:calc(100% - 12px);font-size:11px;color:var(--muted,#787b86);background:var(--panel,#1e222d);border-radius:4px;padding:1px 6px;opacity:.9}
+.lg-attr{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:0 10px}
 .lg-attr a{color:inherit}
+.lg-showing{position:absolute;left:6px;top:6px;max-width:calc(100% - 150px);box-sizing:border-box;font-size:11px;
+  color:var(--muted,#787b86);background:var(--panel,#1e222d);border-radius:4px;padding:1px 6px;opacity:.9;
+  pointer-events:none;overflow-wrap:anywhere}
 .lg-legend{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12px;color:var(--muted,#787b86)}
 .lg-legend>span{display:inline-flex;align-items:center;gap:5px}
 .lg-legend b{color:var(--text,#d1d4dc);font-weight:600}
@@ -1420,6 +2143,24 @@
 .lg-k-unanswered{color:var(--series-3,#199e70);border-top-style:dashed}
 .lg-k-home{width:12px;height:12px;border:2px solid var(--accent,#2962ff);border-radius:50%;box-sizing:border-box;margin:0}
 .lg-k-home::before{left:2px;top:2px;width:4px;height:4px;background:var(--accent,#2962ff)}
+.lg-layers{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;flex-basis:100%}
+.lg-layer{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--border,#2a2e39);
+  border-radius:7px;background:none;color:inherit;font:inherit;line-height:1.5;cursor:pointer}
+.lg-layer[aria-pressed="false"]{opacity:.55}
+.lg-layer[aria-disabled="true"]{cursor:default}
+.lg-layer:focus-visible{outline:2px solid var(--accent,#2962ff);outline-offset:1px}
+@media (hover: hover){.lg-layer:not([aria-disabled="true"]):hover{background:var(--hover,#2a2e39)}}
+@media (any-pointer: coarse){.lg-layer{min-height:36px}}
+.lg-layer-state:empty{display:none}
+.lg-m{display:inline-block;flex:none;width:9px;height:9px;background:currentColor}
+.lg-m-circle{border-radius:50%}
+.lg-m-diamond{transform:rotate(45deg) scale(.82)}
+.lg-m-line,.lg-m-dash{width:18px;height:0;background:none;border-top:2px solid}
+.lg-m-dash{border-top-style:dashed}
+.lg-s4{color:var(--series-4,#c98500)}
+.lg-s5{color:var(--series-5,#d55181)}
+.lg-s6{color:var(--series-6,#008300)}
+.lg-s7{color:var(--series-7,#9085e9)}
 .lg-table{font-size:12px}
 .lg-table summary{cursor:pointer;color:var(--muted,#787b86);padding:2px 0}
 .lg-scroll{overflow:auto;max-height:360px}
@@ -1445,10 +2186,12 @@
 
   const instances = new WeakMap();  // an element -> the globe drawn in it
 
-  // LiminalGlobe.draw(el, spec, {theme}) -> {update(spec), destroy()}. Drawn into the same element again, it is the same
-  // globe updated in place (its view, zoom and words kept), and the same handle comes back.
+  // LiminalGlobe.draw(el, spec, {theme, load, key}) -> {update(spec), destroy()}. Drawn into the same element again, it
+  // is the same globe updated in place (its view, zoom and words kept), and the same handle comes back.
   function draw(el, spec, opts) {
-    if (!el || el.nodeType !== 1) throw new TypeError('LiminalGlobe.draw(el, spec, {theme}): el is the element to draw in');
+    if (!el || el.nodeType !== 1) {
+      throw new TypeError('LiminalGlobe.draw(el, spec, {theme, load, key}): el is the element to draw in');
+    }
     for (const g of [...globes]) if (g.left()) g.destroy();  // a globe whose element left the page
     const there = instances.get(el);
     if (there && !there.destroyed() && there.root.parentNode === el) {

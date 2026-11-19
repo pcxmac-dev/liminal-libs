@@ -1,17 +1,21 @@
 """The shared guard (tests/conftest.py, `no_outside`) bites, the code under test cannot silence it, and a stand-in
 handed to the code is used as it is. Nothing here is started, connected, bound or looked up for real: a name is
 called only once it is known to be the guard's stand-in, the one socket made is closed, and every program named is
-one that is nowhere."""
+one that is nowhere. The hosts' guard beside it (`no_real_hosts`, every test's) keeps a firewall a test attaches
+from recording this machine's sockets by the user's own setting."""
 from __future__ import annotations
 
 import os
 import socket
 import subprocess
+import threading
 
 import pytest
 
 from conftest import REFUSED, STOOD_IN, Reached
-from liminal_libs.machines import gpu
+from liminal_libs import hostbook, sockets
+from liminal_libs.apps.authorization import EnvironmentLogin
+from liminal_libs.machines import gpu, infrastructure
 
 pytestmark = pytest.mark.usefixtures("no_outside")
 
@@ -120,3 +124,32 @@ def test_a_stand_in_handed_to_the_code_is_used_and_the_guard_stays_quiet(no_outs
     with pytest.raises(Reached, match="subprocess.run"):  # the same code without one meets the guard
         gpu.read(which=lambda name: NOWHERE)
     no_outside.clear()
+
+
+def test_a_firewall_attached_under_a_login_that_says_always_starts_nothing_real(no_real_hosts, tmp_path):
+    """B-critique B1: the platform's suite builds its app with no login given, so with this user's own variables, and
+    attaches its stand-in firewall. Here the user's saved variables say LIMINAL_HOSTS_RECORDING=always (what the
+    Recording form keeps on Windows): the guard's "shown" in the test's process wins (the process's own variable over
+    a saved one), so nothing records; and the socket table the view would read is the guard's refusal, the database
+    and the layers in the test's own folder."""
+    from test_firewall import FakeFirewall
+
+    saved = {"LIMINAL_HOSTS_RECORDING": "always"}
+    fw = FakeFirewall()
+    fw.attach(object(), EnvironmentLogin(saved=lambda: dict(saved)))  # the platform's own login, as it reads it
+    try:
+        view = fw.netstat_view(make=False)
+        assert view is not None and view.mode() == "shown" and not view.recording()
+        assert not [t for t in threading.enumerate() if t.name.endswith("-hosts")]
+        assert os.environ[hostbook.VARIABLE] == "shown"
+        assert hostbook.path().is_relative_to(tmp_path) and infrastructure.folder().is_relative_to(tmp_path)
+        with pytest.raises(Reached, match="socket table for real"):
+            view.touch()  # the reader the firewall's view is made with by default: the guard's
+        assert no_real_hosts == ["sockets.read ()"]
+        no_real_hosts.clear()  # (read on purpose: the guard's own check at the end stays quiet)
+        assert not hostbook.path().exists()  # nothing was kept
+    finally:
+        fw.detach()
+    with pytest.raises(Reached):
+        sockets.read("windows")  # whichever system it is asked for
+    no_real_hosts.clear()

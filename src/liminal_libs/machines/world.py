@@ -370,15 +370,16 @@ def _where(url: str) -> str:
     return f"{parts.scheme.lower()}://{host}" if parts.scheme and host else (str(url or "")[:80] or "nowhere")
 
 
-def _over_https(url: str, host: str) -> None:
-    """RedirectRefused unless `url` is https on `host`."""
+def _over_https(url: str, host: str, what: str = "a GeoIP file") -> None:
+    """RedirectRefused unless `url` is https on `host`. `what`: what is downloaded, for the words (a GeoIP file; a data
+    set of machines/infrastructure.py)."""
     try:
         parts = urlsplit(str(url or ""))
         there = (parts.hostname or "").lower()
     except ValueError:
         parts, there = None, ""
     if parts is None or parts.scheme.lower() != "https" or there != host:
-        raise RedirectRefused(f"it was sent on to {_where(url)}, and a GeoIP file comes over https from {host} alone")
+        raise RedirectRefused(f"it was sent on to {_where(url)}, and {what} comes over https from {host} alone")
 
 
 def _shut(sock) -> None:
@@ -402,6 +403,9 @@ class _Cutoff:
         self.sockets: list = []
         self.why = ""  # why it was stopped; "" while it goes on
         self.ended = False  # the stream read to its end
+        # its download's thread still ran when the install stopped waiting for it (run_download): a read waiting on a
+        # shut socket ends at once on Linux, and on Windows only within its own timeout
+        self.left = False
 
     def hand(self, sock) -> None:
         with self.lock:
@@ -428,6 +432,63 @@ def _handed(sock) -> None:
     cutoff = getattr(_WORLD_DOWNLOADS, "cutoff", None)
     if cutoff is not None:
         cutoff.hand(sock)
+
+
+def run_download(work, cutoff: _Cutoff, deadline: float, took: str, *, name: str, stopping=None, clock=None,
+                 late: str = "", what: str = "the GeoIP file", error=None):
+    """A download run on a thread of its own while the caller waits for it, under one deadline: what `work()` gives. The
+    GeoIP file's install waits so, and a data set's (machines/infrastructure.py): a read waiting on a socket ends
+    neither for a deadline nor for a cancel by itself, so the waiting side ends it.
+
+    The thread is named `name`, and the sockets its connections open are handed to `cutoff` (_handed). Every POLL_S the
+    caller looks at the time (`clock`, the GeoIP install's when not given, against `deadline`: `took` says it has
+    passed) and at `stopping()` (the words why the download must end now, "" to go on: the plugin detached, the user
+    cancelled). Then the sockets are shut (cutoff.stop: a read waiting on one ends), the thread is waited for GRACE_S,
+    and `error` (geo.GeoError when not given) is raised with those words, unless the work was done meanwhile; a thread
+    still running then is noted on the cut-off (`left`: its read ends within its socket's timeout at most). A stream
+    read to its end (cutoff.ended) is not stopped: what is left is this machine's own, waited for LOCAL_S more, then
+    `error` with `late`. What `work` raised is raised here, as `error` with the cut-off's words when it was stopped.
+    `what`: what is downloaded, for the words when no thread could be started."""
+    error = geo.GeoError if error is None else error
+    clock = clock or (lambda: geo._clock())  # geo's as it is now: a test's stand-in clock too
+    result: dict = {}
+    done = threading.Event()
+
+    def download() -> None:
+        _WORLD_DOWNLOADS.cutoff = cutoff
+        try:
+            result["out"] = work()
+        except BaseException as e:  # noqa: BLE001 - said by the install waiting for it
+            result["error"] = e
+        finally:
+            _WORLD_DOWNLOADS.cutoff = None
+            done.set()
+
+    worker = threading.Thread(target=download, name=name, daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as e:  # no thread to download on: nothing done
+        raise error(f"{what} could not be downloaded: {e}") from None
+    while not done.is_set():
+        left = deadline - clock()
+        stop = took if left <= 0 else (cutoff.why or (stopping() if stopping is not None else ""))
+        if stop:
+            if cutoff.stop(stop):
+                done.wait(GRACE_S)  # its sockets shut: its thread ends soon, and puts nothing in place
+                if "out" in result:  # done before it needed to read (this month's file there already)
+                    break
+                cutoff.left = not done.is_set()
+                raise error(cutoff.why or stop)
+            if not done.wait(LOCAL_S):  # read to its end: what is left is this machine's own, not stopped
+                raise error(late or f"{what} was downloaded, and what was left to do here took more than "
+                            f"{_seconds(LOCAL_S)} s")
+            break
+        done.wait(min(POLL_S, left))
+    if "error" in result:
+        if cutoff.why:
+            raise error(cutoff.why) from None
+        raise result["error"]
+    return result["out"]
 
 
 @functools.lru_cache(maxsize=None)
@@ -466,12 +527,12 @@ def _transport() -> tuple[type, type, type]:
 
         max_redirections = MAX_REDIRECTS
 
-        def __init__(self, host: str):
-            self.host = host
+        def __init__(self, host: str, what: str = "a GeoIP file"):
+            self.host, self.what = host, what  # `what` is downloaded: for a refusal's words
 
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             try:
-                _over_https(newurl, self.host)
+                _over_https(newurl, self.host, self.what)
                 new = super().redirect_request(req, fp, code, msg, headers, newurl)
             except BaseException:
                 _close(fp)  # refused: its connection let go now, nothing read of it
@@ -483,13 +544,17 @@ def _transport() -> tuple[type, type, type]:
     return Connection, Https, SameHost
 
 
-def fetch_url(url: str, timeout: float = READ_S, *, handlers=()):
+def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = USER_AGENT, what: str = "a GeoIP file"):
     """The download's stream: an HTTP GET of `url`, https on every hop: a redirect is followed only to the same host over
     https (MAX_REDIRECTS at most, its body never read), and one anywhere else (http, ftp, another host) is refused before
     anything is asked of it (RedirectRefused); the address the answer came from is checked again. Each socket operation
     waits `timeout` seconds at most, and the sockets it opens reach the install its thread runs for, which shuts them
     when its time is up. urllib's HTTPError (its code 404 when the file is not there) or URLError when it cannot be had;
-    ValueError for an address that is no https one. `handlers`: a test's stand-ins for the protocols (no socket)."""
+    ValueError for an address that is no https one. `handlers`: a test's stand-ins for the protocols (no socket).
+
+    `agent`: the request's User-Agent, a product's name and its version and nothing of the user's or the machine's: the
+    library's own for a GeoIP file, a plugin's name and version for a data set it downloads
+    (machines/infrastructure.py). `what`: what is downloaded, for the words of a refusal (a GeoIP file; a data set)."""
     import urllib.request
 
     try:
@@ -498,13 +563,13 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=()):
     except ValueError:
         parts, host = None, ""
     if parts is None or parts.scheme.lower() != "https" or not host:
-        raise ValueError("a GeoIP file is downloaded over https only")
+        raise ValueError(f"{what} is downloaded over https only")
     _, https, same_host = _transport()
-    opener = urllib.request.build_opener(same_host(host), *(handlers or (https(),)))
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    opener = urllib.request.build_opener(same_host(host, what), *(handlers or (https(),)))
+    request = urllib.request.Request(url, headers={"User-Agent": str(agent or USER_AGENT)})
     response = opener.open(request, timeout=timeout)  # noqa: S310 - the plugin's own https address, on the user's word
     try:
-        _over_https(_answered_from(response, url), host)
+        _over_https(_answered_from(response, url), host, what)
     except RedirectRefused:
         _close(response)
         raise
@@ -973,6 +1038,13 @@ class WorldView:
             geoip.close()
             self._geo_said = geoip.describe()
 
+    def rest(self) -> None:
+        """The GeoIP file let go again unless this view watches: for a geoip() asked outside page() (the Netstat tab's
+        places and the hosts database's: machines/netstat.py), which lets it go itself. While the capture runs the file
+        stays mapped, as page() leaves it; once nobody watches nothing stays mapped, and the next ask opens it again."""
+        if not self.watcher.running:
+            self._let_go()
+
     def install(self, template: str, log=None) -> dict:
         """The GeoIP file downloaded and put in place, on the user's word (the plugin's world_geoip, its licence accepted).
         `template` is the plugin's https address with {year} and {month} in it: this month's file, else last month's when
@@ -1028,44 +1100,13 @@ class WorldView:
         deadline = geo._clock() + budget
         took = (f"the download took more than {_seconds(budget)} s, the most an install may take, so it was stopped: "
                 "nothing was installed")
-        result: dict = {}
-        done = threading.Event()
-
-        def download() -> None:
-            _WORLD_DOWNLOADS.cutoff = cutoff
-            try:
-                result["out"] = self._download(template, wanted, cutoff, deadline, took, say)
-            except BaseException as e:  # noqa: BLE001 - said by the install waiting for it
-                result["error"] = e
-            finally:
-                _WORLD_DOWNLOADS.cutoff = None
-                done.set()
-
-        worker = threading.Thread(target=download, name=f"{self.name or 'world'}-geoip-download", daemon=True)
-        try:
-            worker.start()
-        except RuntimeError as e:  # no thread to download on: nothing done
-            raise geo.GeoError(f"the GeoIP file could not be downloaded: {e}") from None
-        while not done.is_set():
-            left = deadline - geo._clock()
-            stopping = took if left <= 0 else (cutoff.why or (DETACHED if self.closed else ""))
-            if stopping:
-                if cutoff.stop(stopping):
-                    done.wait(GRACE_S)  # its sockets shut: its thread ends soon, and puts nothing in place
-                    if "out" in result:  # done before it needed to read (this month's file there already)
-                        break
-                    raise geo.GeoError(cutoff.why or stopping)
-                if not done.wait(LOCAL_S):  # read to its end: what is left is this machine's own, not stopped
-                    raise geo.GeoError(f"the GeoIP file was downloaded, and checking it here took more than "
-                                       f"{_seconds(LOCAL_S)} s: it is still put in place if it passes, and the tab then "
-                                       "shows its places")
-                break
-            done.wait(min(POLL_S, left))
-        if "error" in result:
-            if cutoff.why:
-                raise geo.GeoError(cutoff.why) from None
-            raise result["error"]
-        path, url, fell_back, again = result["out"]
+        late = (f"the GeoIP file was downloaded, and checking it here took more than {_seconds(LOCAL_S)} s: it is "
+                "still put in place if it passes, and the tab then shows its places")
+        # the download on a thread of its own, this one waiting what is left of the time (run_download: its sockets shut
+        # once the time is up or the plugin was detached)
+        path, url, fell_back, again = run_download(
+            lambda: self._download(template, wanted, cutoff, deadline, took, say), cutoff, deadline, took,
+            name=f"{self.name or 'world'}-geoip-download", stopping=lambda: DETACHED if self.closed else "", late=late)
         return self._installed(path, url, fell_back, again)
 
     def _download(self, template: str, wanted: list, cutoff: _Cutoff, deadline: float, took: str, say) -> tuple:

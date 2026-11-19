@@ -179,7 +179,9 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert got["builtOn"]["line"].startswith("The base of the firewall plugins.")
     assert [c["class"] for c in got["chain"]] == ["Firewall", "MachinePlugin", "PlatformPlugin", "Plugin"]
     adds = [h for h in Firewall.HOOKS if h not in MachinePlugin.HOOKS]
-    assert len(adds) == 9  # the critique's count: Firewall's 9, MachinePlugin's 5, Plugin's 2
+    # the critique's count, Firewall's 9, and 1.65.0's 10 more (the Netstat tab, the hosts' recording, the globe's
+    # filters and its layers' data sets): Firewall's 19, MachinePlugin's 5, Plugin's 2
+    assert len(adds) == 19
     assert [(s["class"], s["hooks"]) for s in got["standard"]] == [
         ("Firewall", adds), ("MachinePlugin", ["present", "status", "setup", "run", "instances"]),
         ("Plugin", ["scan", "settings"])]
@@ -194,7 +196,16 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert by["world"]["tab"] == "world" and by["world"]["every"] == 2.0 and by["world"]["kind"] == "tab"
     assert by["world_geoip"]["job"] and by["world_geoip"]["twice"] == ["accept_licence"]
     assert by["rename_label"]["line"], "Firewall.rename_label says what it does (its line on every firewall's tab)"
-    assert got["counts"]["standard"] == 16 and got["counts"]["own"] == 1
+    # 1.65.0: the Netstat tab's hook is a tab's; a layer's geometry a read; a data set's download a job the page may
+    # cancel, asked twice for its licence; forgetting the hosts asked twice too; the filters and the recording changes
+    assert (by["netstat"]["kind"], by["netstat"]["tab"], by["netstat"]["every"]) == ("tab", "netstat", 3.0)
+    assert by["world_layer"]["kind"] == "read" and by["world_layer"]["reads"]
+    assert (by["world_layer_get"]["kind"], by["world_layer_get"]["cancels"]) == ("job", True)
+    assert by["world_layer_get"]["twice"] == ["accept_licence"] and by["hosts_forget"]["twice"] == ["accept_forget"]
+    assert {by[h]["kind"] for h in ("hosts_recording", "hosts_forget", "world_show", "world_direction", "world_within",
+                                    "world_pick", "world_layer_remove")} == {"change"}
+    assert all(by[h]["line"] for h in adds), "each of the base's hooks says what it does"
+    assert got["counts"]["standard"] == 26 and got["counts"]["own"] == 1
     assert got["left"] == ["present", "run", "instances", "scan", "settings"]  # MachinePlugin's defaults (CONTRACT)
 
 

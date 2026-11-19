@@ -15,8 +15,12 @@ import re
 import threading
 from dataclasses import dataclass
 
+from .. import sockets
 from ..apps.tabs import Tab
-from . import world as world_module
+from ..hostbook import HOSTS_KEY
+from . import netstat, world as world_module
+from .infrastructure import DataSet, Index
+from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
 from .rulegroups import RuleGroups, Sorted
 from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
@@ -39,6 +43,7 @@ APP_PORTS = (  # the framework's own pages: (the app, the variable moving it, it
 # liminal-charts ; liminal-integrator"; 1.52.0: the integrator's login at 8796 gone, a login inherited is an object in
 # its app, at that app's port)
 _WORLD_LOCK = threading.Lock()  # a plugin's WorldView made once, however many asks come at once
+_NETSTAT_LOCK = threading.Lock()  # ... and its NetstatView
 
 
 class FirewallError(CommandError):
@@ -161,21 +166,49 @@ class Firewall(MachinePlugin):
     stopped on detach. A subclass names its GeoIP download (GEOIP_URL, GEOIP_LICENCE), the attribution of its places
     (ATTRIBUTION) and the name servers asked for this network's public address (PUBLIC_DNS), and makes a capture of its
     own in make_world_view when it needs one; what asks nothing (its API card's facts) reads the tab's view through
-    world_view(make=False)."""
+    world_view(make=False).
+
+    1.65.0: the Netstat tab, the hosts database and the globe's filters and layers are this base's too
+    (machines/netstat.py; the user, 2026-11-16: "the firewall app should have a 'netstat' like interface for looking at
+    active ports and what apps they are attached to, and the hosts that they connect to across the lan or wan", "geoip'd
+    hosts are databased for the apps they talk to, the time they are connected to *this *computer", "the globe-firewall
+    should allow filtering", "have all the backbones,ibones, major internet infrastructure, (as many as possible)
+    datacenter locations"). Its hook `netstat` (a read, the tab's, asked every three seconds while it is shown) reads
+    this machine's socket table with no capture and no administrator; the hosts are recorded only while one of its two
+    tabs is shown, or all the time the platform runs where the user chose it (LIMINAL_HOSTS_RECORDING, set through the
+    hook `hosts_recording` or the page's Settings, kept through the login); the globe shows the traffic watched or the
+    hosts recorded (`world_show`, `world_direction`, `world_within`, `world_pick`) and draws the infrastructure of the
+    data sets a subclass names (INFRASTRUCTURE), each downloaded on the user's word as a job (`world_layer_get`) and
+    read back by layer (`world_layer`, a read). What asks nothing reads the view through netstat_view(make=False). On
+    a machine the plugin is not for (not_for_here), each of these hooks refuses in words (`netstat` answers a page
+    saying so), before any view is made: nothing is read, recorded, kept, forgotten or removed there."""
 
     HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted",  # what the platform may ask by name (Plugin.ask)
              "move_rules", "new_label", "rename_label", "remove_label",
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
-             WORLD_HOOK, GEOIP_HOOK)
-    READ_HOOKS = ("wanted",)  # its reads beside MachinePlugin's (Plugin.READ_HOOKS); world reads as its tab's hook
+             WORLD_HOOK, GEOIP_HOOK,
+             # 1.65.0: netstat, the Netstat tab's page (a read); hosts_recording and hosts_forget, the hosts database's
+             # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
+             # globe shows; world_layer, a layer's geometry (a read); world_layer_get and world_layer_remove, a data
+             # set downloaded (a job) and removed
+             *netstat.HOOKS)
+    # its reads beside MachinePlugin's (Plugin.READ_HOOKS): world and netstat read as its tabs' hooks; world_layer reads
+    # a layer's file on this machine for the globe (the page asks it, and it writes no log line)
+    READ_HOOKS = ("wanted", netstat.LAYER_HOOK)
     STEPS = STEPS
     ICON = "shield"
     GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS
-    # -- the World Wide Web tab (1.55.0) -------------------------------------------------------------------------------
-    TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0),)  # after Main and the API tabs: asked every 2 s while shown
+    # -- the World Wide Web tab (1.55.0) and the Netstat tab (1.65.0) --------------------------------------------------
+    # after Main, External API and Internal API: the World Wide Web tab asked every 2 s while shown, Netstat every 3 s
+    TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0), Tab(netstat.TAB, netstat.TITLE, netstat.HOOK, netstat.EVERY))
     # hooks the platform runs as a job (liminal-platform 0.19.0), their lines followed in the plugin's panel: the GeoIP
-    # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes
-    JOB_HOOKS = (GEOIP_HOOK,)
+    # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes; and a data
+    # set's download (1.65.0), which the page may ask to stop (CANCEL_HOOKS: liminal-platform 0.31.0's Cancel)
+    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK)
+    CANCEL_HOOKS = (netstat.GET_HOOK,)
+    # the internet infrastructure the globe may draw (1.65.0): the plugin's data sets, each a plain dict of
+    # infrastructure.DataSet's keys (its address, query, licence and credit are the plugin's, in its apis.py); none here
+    INFRASTRUCTURE: tuple = ()
     # this month's GeoIP file, {year} and {month} filled in (2026, 11): an https address of the plugin's own ("" offers
     # no download); last month's is tried when this month's is not out yet
     GEOIP_URL = ""
@@ -186,7 +219,9 @@ class Firewall(MachinePlugin):
     # {4: (...), 6: (...)}. () asks none: home is then the user's place, or none
     PUBLIC_DNS: tuple = ()
     WORLD_TIMEOUT = TIMEOUT_S  # watching stops this long after the tab was last asked
-    keys = (HOME_KEY,)  # LIMINAL_HOME_PLACE (optional), set on the plugin's page: the globe's home, read through the login
+    # set on the plugin's page and read through the login, both optional: LIMINAL_HOME_PLACE, the globe's home;
+    # LIMINAL_HOSTS_RECORDING (1.65.0), when the hosts are recorded: shown (nothing set) or always
+    keys = (HOME_KEY, HOSTS_KEY)
 
     # -- the backend: a subclass's -----------------------------------------------------------------
     def backend(self) -> str:
@@ -409,20 +444,30 @@ class Firewall(MachinePlugin):
         return (view or self.world_view()).setting(read)
 
     def world(self) -> dict:
-        """The World Wide Web tab's page (apps/tabs.py), asked every two seconds while the tab is shown. Each ask keeps the
-        watching going: a capture at this machine's adapter, which stops by itself WORLD_TIMEOUT seconds after the last ask,
-        and on detach. The page is what has been counted: the globe with the places traffic came from and went to (placed
-        by the GeoIP file on this machine) and their routes to home, the busiest ports' charts, the ports and the places
-        tabled, and the GeoIP file's install form while none is installed. Not for this machine (not_for_here): a page
-        saying so, and nothing started."""
+        """The World Wide Web tab's page (apps/tabs.py), asked every two seconds while the tab is shown. Each ask reads
+        the socket table for the hosts database (netstat_view: recorded while this tab or Netstat is shown, unless
+        always) and, while the globe shows the traffic, keeps the watching going: a capture at this machine's adapter,
+        which stops by itself WORLD_TIMEOUT seconds after the last ask, and on detach. The page is what has been
+        counted: the globe with the places traffic came from and went to (placed by the GeoIP file on this machine) and
+        their routes to home, the busiest ports' charts, the ports and the places tabled, and the GeoIP file's install
+        form while none is installed; or, while it shows the hosts recorded, each program's remote hosts by place,
+        filtered as chosen, with no traffic page made for it. Always what the globe shows and the internet
+        infrastructure's layers and data sets (NetstatView.onto). Not for this machine (not_for_here): a page saying
+        so, and nothing started."""
         here = self.not_for_here()
         if here:
             return not_here_page(here)
         view = self.world_view()
-        view.touch()
+        net = self.netstat_view()
+        net.touch()
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
-        page = view.page(home=self.world_home(view), public=self.PUBLIC_DNS, attribution=attribution,
-                         can_install=bool(self.GEOIP_URL), licence=self.GEOIP_LICENCE, source=self.GEOIP_URL)
+        frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
+                 "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL}
+        page = None
+        if net.shows() == "traffic":
+            view.touch()
+            page = view.page(**frame)
+        page = net.onto(page, view, **frame)
         under = world_module.under_wsl()  # inside a WSL distribution: what WSL changes for the tab, after its own tables
         if under is not None and isinstance(page.get("tables"), list):
             page["tables"].append(under)
@@ -445,17 +490,189 @@ class Firewall(MachinePlugin):
             raise LicenceRefused(LICENCE_FIRST)
         return self.world_view().install(self.GEOIP_URL, log=log)
 
+    # -- the Netstat tab, the hosts database and the globe's filters and layers (1.65.0; machines/netstat.py) ---------
+    def netstat_view(self, make: bool = True) -> NetstatView | None:
+        """This plugin's Netstat tab and hosts recording: made when first asked (make_netstat_view), kept until the
+        plugin is detached. `make=False`: the view there is, or None, never making one (for what asks nothing: the
+        plugin's API card's facts)."""
+        view = self.__dict__.get("_netstat")
+        if view is None and make:
+            with _NETSTAT_LOCK:
+                view = self.__dict__.get("_netstat")
+                if view is None:
+                    view = self.__dict__["_netstat"] = self.make_netstat_view()
+        return view
+
+    def make_netstat_view(self) -> NetstatView:
+        """The NetstatView the tabs read with: this machine's socket table (sockets.read), the hosts database in the
+        data folder (hostbook.book), the data sets of INFRASTRUCTURE (each read by infrastructure.DataSet.of; one that
+        does not read is left out and said in its table), the plugin's login and the listeners its own read names
+        (netstat_listeners). A subclass with stand-ins of its own (its tests) makes it here."""
+        sets, refused, ids = [], [], set()
+        for said in self.INFRASTRUCTURE or ():
+            try:
+                found = DataSet.of(said)
+            except ValueError as e:
+                refused.append(str(e))
+                continue
+            if found.id in ids:
+                refused.append(f"the data set {found.id} is named twice: its first is kept")
+                continue
+            ids.add(found.id)
+            sets.append(found)
+        return NetstatView(self.name, login_of=lambda: getattr(self, "login", None), listeners=self.netstat_listeners,
+                           app_ports=app_ports, index=Index(datasets=sets), refused=refused,
+                           agent=netstat.agent_of(self.name, self.version))
+
+    def netstat_listeners(self) -> dict[tuple[str, int], str]:
+        """The listening sockets this plugin's own read names that the socket table does not ({(proto, port):
+        program}, another user's, as a root read of the firewall sees them): none here. Asking nothing: what a read
+        made already."""
+        return {}
+
+    def _only_here(self) -> None:
+        """A ValueError in words on a machine this plugin is not for (not_for_here), asked first by every hook of the
+        Netstat tab, the hosts database and the globe's choices and layers: there none of them makes a view, reads
+        the socket table, starts the recording, keeps a setting, forgets the hosts or removes a data set (the plugin
+        this machine is for keeps them; the hosts database and the layers' folder are this system's, not a plugin's)."""
+        here = self.not_for_here()
+        if here:
+            raise ValueError(f"not for this machine: {here}")
+
+    def netstat(self) -> dict:
+        """The Netstat tab's page: the listening ports and the open connections with the program behind each.
+
+        Asked every three seconds while the tab is shown (a read): this machine's socket table, read with no capture, no
+        administrator and no window, each socket with its program, pid and service, the remote host and port, whether
+        that host is this machine's, the local network's or the internet's, its name or its GeoIP place, and how long it
+        has been up where the system says; the hosts database (recorded meanwhile, unless always) and its forms. Inside
+        a WSL distribution, what WSL changes for it after its tables. Not for this machine: a page saying so, nothing
+        read."""
+        here = self.not_for_here()
+        if here:
+            return {"title": netstat.TITLE, "note": f"Not for this machine: {here}. Nothing is read here."}
+        page = self.netstat_view().page(self.world_view())
+        under = sockets.under_wsl()
+        if under is not None and isinstance(page.get("tables"), list):
+            page["tables"].append(under)
+        return page
+
+    def hosts_recording(self, mode) -> dict:
+        """When the hosts are recorded: "shown" (only while its Netstat or World Wide Web tab is shown) or "always".
+
+        Kept through the plugin's login (LIMINAL_HOSTS_RECORDING), from the hosts database's Recording form; recording
+        all the time starts at once (a reading every few seconds on a thread of its own), and stops when it is set
+        back. ValueError, in words, for any other word, no login, a database kept on another system's drive, or a
+        machine the plugin is not for (nothing is kept or started there)."""
+        self._only_here()
+        return self.netstat_view().set_mode(mode)
+
+    def hosts_forget(self, accept_forget=False) -> dict:
+        """Every host recorded forgotten, on the user's word asked twice.
+
+        hostbook.ForgetRefused (naming accept_forget, which the page asks as a second confirmation) unless it is exactly
+        True; then every row of the hosts database is removed, nothing of them left in the file. ValueError on a
+        machine the plugin is not for: the hosts this system's own plugin recorded are left as they are."""
+        self._only_here()
+        return self.netstat_view().forget(accept_forget)
+
+    def world_show(self, what) -> dict:
+        """What the globe shows: "traffic" (watched now, the default) or "hosts" (recorded in the hosts database).
+
+        A choice of its page, kept in this plugin until it is detached; its answer says the filter in words. ValueError
+        on a machine the plugin is not for, as for every choice of the globe."""
+        self._only_here()
+        return self.netstat_view().show(what)
+
+    def world_direction(self, direction) -> dict:
+        """The hosts recorded of one direction on the globe: "out", "in", or "" for both (the globe shows the hosts)."""
+        self._only_here()
+        return self.netstat_view().direction(direction)
+
+    def world_within(self, within) -> dict:
+        """The hosts last seen within "hour", "day", "week" or "month", or "" for any time, on the globe.
+
+        The globe shows the hosts recorded."""
+        self._only_here()
+        return self.netstat_view().within(within)
+
+    def world_pick(self, choice) -> dict:
+        """A program's hosts on the globe (program=<name>), every host on a port (port=<tcp|udp>/<number>), or clear.
+
+        program= and port= alone pick every program, every port; clear takes every filter back. The globe shows the
+        hosts recorded."""
+        self._only_here()
+        return self.netstat_view().pick(choice)
+
+    def world_layer(self, layer) -> dict:
+        """One infrastructure layer's geometry for the globe, read from this machine's files (a read).
+
+        The page asks it once a layer's version, with the layer's id (Index.layer); LookupError when none is
+        installed, ValueError on a machine the plugin is not for."""
+        self._only_here()
+        return self.netstat_view().layer(layer)
+
+    def world_layer_get(self, dataset, accept_licence=False, log=None) -> dict:
+        """A data set of INFRASTRUCTURE downloaded on the user's word, run by the platform as a job (Cancel stops it).
+
+        Refused (world.LicenceRefused, naming accept_licence, asked by the page as a second confirmation with the
+        licence's words) until its licence is accepted; then one https request to the data set's own host, read under
+        one deadline and kept on this machine's disk in place of any older copy (infrastructure.install). ValueError for
+        a data set this plugin does not name, and on a machine it is not for."""
+        self._only_here()
+        return self.netstat_view().get(dataset, accept_licence, log)
+
+    def world_layer_remove(self, dataset) -> dict:
+        """A data set's file removed from this machine, confirmed on the page: the globe no longer draws its layers.
+
+        ValueError on a machine the plugin is not for: the layers' folder is this system's, and its own plugin's
+        files are left as they are."""
+        self._only_here()
+        return self.netstat_view().drop(dataset)
+
+    # -- attached, told, detached --------------------------------------------------------------------------------------
+    def attach(self, app, login=None) -> dict:
+        """Attached by its app as every plugin is; then, on a machine it is for, the hosts' recording follows its
+        setting: all the time where the user chose always (never in a one-shot app: `once`), else nothing runs."""
+        out = super().attach(app, login)
+        if not self.not_for_here():
+            try:
+                self.netstat_view().follow(once=bool(getattr(app, "once", False)))
+            except Exception:  # noqa: BLE001 - a view that cannot be made or read: its tab says why when it is asked
+                pass
+        return out
+
+    def app_stopping(self) -> None:
+        """The platform stops (liminal-platform 0.31.0): the hosts' recording thread ended and what it read written. It
+        bears a second call."""
+        view = self.netstat_view(make=False)
+        if view is not None:
+            view.stop()
+
     def settings_changed(self) -> None:
         """The platform kept one of this plugin's settings (its page's Settings): the home the user set is read anew at the
-        tab's next ask."""
+        tab's next ask, and the hosts' recording follows its setting at once."""
         view = self.world_view(make=False)
         if view is not None:
             view.forget_setting()
+        net = self.netstat_view(make=False)
+        if net is not None:
+            net.forget_setting()
+        if not self.not_for_here():
+            try:
+                self.netstat_view().follow()
+            except Exception:  # noqa: BLE001 - a view that cannot be made or read: its tab says why when it is asked
+                pass
 
     def detach(self) -> None:
-        """Detached by its app: the World Wide Web tab's watching ended for good (WorldView.close: its capture closed, its
-        thread gone, its GeoIP file let go, an ask still under way starting nothing) and forgotten, then the plugin detached
-        as every plugin is."""
+        """Detached by its app: the hosts' recording ended for good (NetstatView.close: its thread gone, what it read
+        written, the file let go), then the World Wide Web tab's watching (WorldView.close: its capture closed, its
+        thread gone, its GeoIP file let go, an ask still under way starting nothing), both forgotten; then the plugin
+        detached as every plugin is."""
+        with _NETSTAT_LOCK:
+            net = self.__dict__.pop("_netstat", None)
+        if net is not None:
+            net.close()
         with _WORLD_LOCK:
             view = self.__dict__.pop("_world", None)
         if view is not None:

@@ -38,6 +38,7 @@ from liminal_libs.apps.tabs import Tab
 from liminal_libs.capture import ACK, PSH, SYN, CaptureError, Packet
 from liminal_libs.machines import world
 from liminal_libs.machines.firewall import Firewall
+from liminal_libs.machines.netstat import NetstatView
 from liminal_libs.machines.world import (ACCEPT_LICENCE, MAX_DRAWN, RETRY_S, SETTING_S, LicenceRefused, RedirectRefused,
                                          WorldView, capture_help, home_place, servers_of)
 from liminal_libs.sources.conformance import problems
@@ -122,7 +123,8 @@ def downloading() -> list[threading.Thread]:
 def _nothing_real(monkeypatch, tmp_path):
     """Nothing real is reached: no libpcap loaded, no route asked, no name server, no download, not this machine's data
     folder (each reach is noted, so one inside a thread is seen too). Each WorldView a test makes is stopped after it,
-    and no watching thread is left."""
+    and no watching thread is left. The socket table, the hosts database and the layers' folder are the suite's own
+    guard's (tests/conftest.py, no_real_hosts: the real reader refused, the two in tmp_path)."""
     reached: list[str] = []
 
     def refusing(name):
@@ -183,9 +185,17 @@ def traffic_of(book: TrafficBook) -> None:
         book.add(p)
 
 
+def socket_table(*rows, at: float = NOW) -> dict:
+    """This machine's socket table as sockets.read answers it, of the rows given (none by default): a stand-in, so the
+    tab's every ask, which also reads the socket table for the hosts database (1.65.0), reads nothing real."""
+    return {"system": "windows", "at": at, "awake": 100.0, "took": 0.004, "root": False, "starts": True,
+            "read": ("tcp4", "tcp6", "udp4", "udp6"), "cut": False, "rows": list(rows), "notes": []}
+
+
 class Walled(FakeFirewall):
     """A stand-in firewall naming its GeoIP download, its places' attribution and its name servers, its WorldView
-    watching through the test's stand-ins."""
+    watching through the test's stand-ins, and its NetstatView reading a stand-in socket table (1.65.0: the tab's ask
+    reads it for the hosts database; the suite's guard refuses the real one, and keeps the database in tmp_path)."""
 
     name = "walled-firewall"
     GEOIP_URL, GEOIP_LICENCE, ATTRIBUTION, PUBLIC_DNS = URL, LICENCE, MARK, SERVERS
@@ -193,27 +203,43 @@ class Walled(FakeFirewall):
     def __init__(self, **view):
         super().__init__()
         view.setdefault("resolve", lambda version, servers: (None, "no name server answers in a test"))
-        self.view, self.made = view, 0
+        self.view, self.made, self.readings = view, 0, 0
 
     def make_world_view(self) -> WorldView:
         self.made += 1
         return WorldView(self.name, **self.view)
 
+    def make_netstat_view(self) -> NetstatView:
+        def reader() -> dict:
+            self.readings += 1
+            return socket_table()
+        return NetstatView(self.name, reader=reader, names={}, login_of=lambda: getattr(self, "login", None),
+                           clock=self.view.get("clock", time.monotonic), wall=self.view.get("wall", time.time))
+
 
 # -- the tab as the Firewall base declares it ----------------------------------------------------------------------------
 def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     fw = FakeFirewall()
-    assert Firewall.TABS == (Tab("world", "World Wide Web", "world", 2.0),) and fw.TABS == Firewall.TABS
+    # 1.65.0: the Netstat tab after it, asked every three seconds while it is shown
+    assert Firewall.TABS == (Tab("world", "World Wide Web", "world", 2.0), Tab("netstat", "Netstat", "netstat", 3.0))
+    assert fw.TABS == Firewall.TABS
     hooks = fw.interface()["hooks"]
     # asked by name (Plugin.ask): the tab's hook with no arguments, the install with the one its form sets, and the log
     # the platform hands a job (the install runs as one: JOB_HOOKS, its progress in the plugin's panel)
     assert hooks["world"].startswith("() ") and hooks["world_geoip"].startswith("(accept_licence=False, log=None) ")
-    assert Firewall.JOB_HOOKS == ("world_geoip",) and fw.JOB_HOOKS == Firewall.JOB_HOOKS
+    assert hooks["netstat"].startswith("() ") and hooks["world_layer_get"].startswith(
+        "(dataset, accept_licence=False, log=None) ")  # a data set's download: a job too, which the page may cancel
+    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get") and fw.JOB_HOOKS == Firewall.JOB_HOOKS
+    assert Firewall.CANCEL_HOOKS == ("world_layer_get",) and Firewall.INFRASTRUCTURE == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
     assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())
-    [home] = fw.keys  # the home on the globe, set on the plugin's page and kept through the login
+    # the home on the globe and when the hosts are recorded, set on the plugin's page and kept through the login
+    [home, recording] = fw.keys
     assert (home.name, home.secret, home.pair) == ("LIMINAL_HOME_PLACE", False, "liminal-home-place")
-    assert home.hint.startswith("optional") and problems(fw) == [] and problems(Walled()) == []
+    assert (recording.name, recording.secret, recording.pair) == ("LIMINAL_HOSTS_RECORDING", False,
+                                                                  "liminal-hosts-recording")
+    assert home.hint.startswith("optional") and recording.hint.startswith("optional")
+    assert problems(fw) == [] and problems(Walled()) == []
     assert ACCEPT_LICENCE.isidentifier() and LicenceRefused.accept == ACCEPT_LICENCE and issubclass(LicenceRefused, ValueError)
 
 
