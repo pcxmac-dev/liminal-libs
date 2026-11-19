@@ -769,6 +769,9 @@ MONTH_ROWS = 60_000  # a month is read whole for its rules only below this many 
 BASES = ("second", "minute", "day")  # the frames a feed sends; the others are built here
 STORAGE_RULES = ("duplicate", "malformed", "missing", "out_of_session")  # of data.py's rules, those kept as findings
 HOLE_KINDS = ("hole", "empty-span")
+# What 1.64.0 took for an empty span's evidence. It is none: the ledger holds the time before a ticker existed, and
+# rightly nothing is there (1.64.1; the first sweep of the user's data found 56 such spans and nothing else).
+LEDGER_ONLY = "the ledger says it is held"
 
 
 @dataclass
@@ -799,8 +802,10 @@ class Sweep:
     A day without a single bar is a **hole** only with evidence that bars should be there: the feed's own daily bar
     of that day shows it traded (or its own finer bars do, for a missing daily bar), another feed of the same market
     holds bars that day, the feed's ticks do, or a pull that was cut off covers it. A thin stock's quiet days and a
-    market's closed hours are no holes. A span said to be held that holds no bar at all is an **empty span**. Both
-    are asked of the feed again by its next run, a few a run (the collector's re-pulls: `repulls`); one asked again
+    market's closed hours are no holes. A span said to be held that holds no bar at all is an **empty span**, and a
+    finding by the same rule: only with evidence that bars should be there. The ledger's word is no such evidence:
+    it holds the time before a company took its ticker too, and nothing is there to be had (1.64.1). Both are
+    asked of the feed again by its next run, a few a run (the collector's re-pulls: `repulls`); one asked again
     and still empty is **absent**, remembered and not asked a third time. Nothing is ever deleted or overwritten
     here, and coverage is never withdrawn."""
 
@@ -829,6 +834,7 @@ class Sweep:
             return out
         recover(store, None, self.log)
         out["pulls"] += len(audit_pulls(store, policy_=self.policy, log=self.log, budget_s=budget / 4))
+        out["closed"] += self._ledger_only()
         rows = [r for r in store.watchlist() if only is None or (r["source"], r["ticker"]) in only]
         last = (rows[-1]["source"], rows[-1]["ticker"]) if rows else None  # the end of the line, in its order
         if only is None and rows:
@@ -862,6 +868,37 @@ class Sweep:
             return int(self.store.kv_get(ROUND_KEY) or 0)
         except ValueError:
             return 0
+
+    def _ledger_only(self) -> int:
+        """The empty spans 1.64.0 kept as findings on the ledger's word alone, judged again by the rule every hole
+        is held to. One that something says should hold bars stays, now saying what; one nothing speaks for is
+        closed: nothing was missing there (the time before a ticker existed). Returns those closed. Once done there
+        are none left to judge: no finding is made on that word any more."""
+        store, closed = self.store, 0
+        for f in store.findings(kind="empty-span", limit=5000):
+            if f["state"] not in ("open", "asked") or (f.get("detail") or {}).get("evidence") != LEDGER_ONLY:
+                continue
+            why = ""
+            try:
+                watched = store.watchlist(f["feed"], f["ticker"])
+                conn = store._bars(f["feed"])
+                if watched and conn is not None and f["timespan"] and f["start_ms"] is not None:
+                    cut = [p for p in store.pulls(feed=f["feed"], ticker=f["ticker"], state="cut", limit=500)
+                           if p["start_ms"] is not None and p["end_ms"] is not None and p["timespan"]]
+                    why = self._evidence(conn, watched[0], f["timespan"], f["start_ms"], f["end_ms"], cut)
+            except (sqlite3.Error, OSError, ValueError) as e:
+                self.log(f"audit {f['feed']}:{f['ticker']}: an empty span is judged again next run ({type(e).__name__}: {e})"[:300])
+                continue
+            if why:
+                store.finding_set(f["id"], f["state"], detail={**f["detail"], "evidence": why})
+            else:
+                store.finding_set(f["id"], "closed", detail={**f["detail"], "evidence": "",
+                                                             "settled": "nothing says bars should be there"})
+                closed += 1
+        if closed:
+            self.log(f"audit: {closed} empty spans kept on the ledger's word alone are closed: nothing says bars should "
+                     "be there (the time before a ticker existed)")
+        return closed
 
     # -- a series ------------------------------------------------------------------------------------------------
     def series(self, row: dict) -> Visit:
@@ -1004,9 +1041,9 @@ class Sweep:
         for lo, hi, n, kind in runs:
             if any(f["start_ms"] < hi and f["end_ms"] > lo for f in known):
                 continue  # known already: open, asked or absent
-            why = "the ledger says it is held" if kind == "empty-span" else self._evidence(conn, row, timespan, lo, hi, cut)
+            why = self._evidence(conn, row, timespan, lo, hi, cut)
             if not why:
-                continue  # nothing says bars should be there: a quiet day, not a hole
+                continue  # nothing says bars should be there: a quiet day, the time before a ticker existed
             store.finding_put(kind, feed, ticker, timespan, lo, hi, count=n, detail={"days": n, "evidence": why})
             visit.holes += 1
 
@@ -1078,13 +1115,16 @@ def repulls(store, feed: str, ticker: str, limit: int) -> list[dict]:
     """What a feed's run is to ask it again for a symbol, the oldest finding first, at most `limit` spans: each
     {"finding", "timespan", "start_ms", "end_ms"}. A hole or an empty span as it was found; a bar stored with other
     values than its cache file's, by the bars kept with the finding. (The collector asks, stores what comes as any
-    answer is stored, and marks the findings asked: mark_asked.)"""
+    answer is stored, and marks the findings asked: mark_asked.) An empty span 1.64.0 kept on the ledger's word
+    alone is not asked: a feed is asked again only with evidence, and the next sweep judges it by that."""
     out: list[dict] = []
     if limit <= 0 or not hasattr(store, "findings"):
         return out
     for f in reversed(store.findings(state="open", feed=feed, ticker=ticker, limit=200)):
         if len(out) >= limit:
             break
+        if (f.get("detail") or {}).get("evidence") == LEDGER_ONLY:
+            continue
         if f["kind"] in HOLE_KINDS and f["timespan"] and f["start_ms"] is not None:
             out.append({"finding": f["id"], "timespan": f["timespan"], "start_ms": f["start_ms"], "end_ms": f["end_ms"]})
         elif f["kind"] == "copy-differs" and f["timespan"] in _STEP:

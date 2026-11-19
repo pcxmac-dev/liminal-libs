@@ -140,7 +140,42 @@ def test_a_span_said_to_be_held_that_holds_nothing_is_an_empty_span(store):
     store.add_coverage("fake", "AAA", "day", MON, SAT)
     visit = _sweep(store).series(store.watchlist("fake", "AAA")[0])
     assert visit.holes == 1 and _findings(store) == [("empty-span", "minute", MON, SAT, 5, "open")]
-    assert store.findings()[0]["detail"]["evidence"] == "the ledger says it is held"
+    assert store.findings()[0]["detail"]["evidence"] == "its own daily bar shows it traded"  # what says so, not the ledger
+
+
+def test_a_span_that_holds_nothing_and_that_nothing_speaks_for_is_no_finding(store):
+    # the time before a company took its ticker: the feed was asked, had nothing, and the ledger holds the span
+    store.watch("fake", ["AAA"], "minute")
+    store.add_coverage("fake", "AAA", "minute", MON, SAT)
+    store.add_coverage("fake", "AAA", "day", MON, SAT)
+    store.upsert_bars("fake", "AAA", "minute", 1, [_minute(SAT + 2 * DAY)])  # it trades from the Monday after
+    store.upsert_bars("fake", "AAA", "day", 1, [_daily(SAT + 2 * DAY)])
+    visit = _sweep(store).series(store.watchlist("fake", "AAA")[0])
+    assert (visit.days, visit.holes) == (10, 0) and store.findings() == []
+    assert auditing.repulls(store, "fake", "AAA", 5) == []  # nothing of it is asked of the feed again
+
+
+def test_what_was_kept_on_the_ledgers_word_alone_is_judged_again_and_never_asked_on_that_word(store):
+    kept = {"days": 5, "evidence": auditing.LEDGER_ONLY}  # as 1.64.0 kept an empty span
+    for ticker in ("AAA", "BBB"):
+        store.watch("fake", [ticker], "minute")
+        store.add_coverage("fake", ticker, "minute", MON, SAT)
+        store.finding_put("empty-span", "fake", ticker, "minute", MON, SAT, count=5, detail=dict(kept))
+    store.upsert_bars("fake", "BBB", "day", 1, [_daily(d) for d in (MON, TUE, WED, THU, FRI)])  # BBB did trade that week
+    assert auditing.repulls(store, "fake", "AAA", 5) == [] == auditing.repulls(store, "fake", "BBB", 5)
+    said: list[str] = []
+    out = _sweep(store, log=said.append).run(only={("fake", "AAA"), ("fake", "BBB")})
+    found = {f["ticker"]: f for f in store.findings()}
+    assert out["closed"] == 1 and len(found) == 2
+    assert found["AAA"]["state"] == "closed" and found["AAA"]["detail"]["settled"] == "nothing says bars should be there"
+    assert found["BBB"]["state"] == "open" and found["BBB"]["detail"]["evidence"] == "its own daily bar shows it traded"
+    assert auditing.repulls(store, "fake", "AAA", 5) == []  # closed: there is nothing to ask for
+    assert auditing.repulls(store, "fake", "BBB", 5) == [
+        {"finding": found["BBB"]["id"], "timespan": "minute", "start_ms": MON, "end_ms": SAT}]  # asked, with evidence
+    assert said == ["audit: 1 empty spans kept on the ledger's word alone are closed: nothing says bars should be there "
+                    "(the time before a ticker existed)"]
+    again = _sweep(store).run(only={("fake", "AAA")})  # and the span is not found a second time
+    assert again["holes"] == 0 and again["closed"] == 0 and len(store.findings()) == 2
 
 
 def test_a_span_with_no_session_in_it_and_a_day_too_recent_are_not_judged(store):

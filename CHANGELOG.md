@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.64.1 (2026-11-19)
+
+An empty span is a finding only with evidence, like a hole (the user, 2026-11-19, asked whether the sweep should stop
+flagging spans that are empty only because the ticker did not exist yet: "Yes, fix it"). The first sweep of the real
+data, the morning 1.64.0 landed, went over 3,148 series and kept 56 findings, every one of the same kind: a span the
+coverage ledger holds that has no bar in it, on Alpaca, each the time before a company took its ticker (companies
+that came to market through a merger). 1.64.0 took the ledger's word for evidence and would have asked the feed for
+each again. The plan's rule is that a feed is asked again only with evidence.
+
+- **The sweep** (`auditing.Sweep._days`): a held span with no bar at all is kept as an empty span only when something
+  says bars should be there: the series' own daily bars with volume (its finer bars, for a missing daily span),
+  another feed of the same market holding bars there, its ticks, or a pull that was cut off over it. Without that it
+  is no finding: the ledger holds the time before a ticker existed, and rightly nothing is there.
+- **What 1.64.0 kept on the ledger's word** (`Sweep._ledger_only`, at the start of every run): judged again by that
+  rule. One that something speaks for stays, now saying what; the others are closed, with why.
+- **Never asked on that word** (`auditing.repulls`): a feed's run does not ask again for an empty span whose only
+  evidence is the ledger's, from its next run on, before any sweep has judged it.
+- Nothing stored is touched by any of this, and no coverage: findings only.
+
 ## 1.64.0 (2026-11-18)
 
 The fetch cache, the auditors, and the auditors' plugin (plugin API 2.4). The user, 2026-11-15: "when the integrator
