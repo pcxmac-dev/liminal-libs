@@ -40,7 +40,8 @@ def _key(lat, lon) -> tuple[float, float] | None:
 class Routes:
     """The routes of one plugin's World Wide Web tab: what waits to be traced, what was, and the thread tracing."""
 
-    def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None):
+    def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None, keep=None,
+                 wall=None):
         # the system's tracers, stopped once the tab is left or the routes closed (review: none outlives them)
         self._tracer = tracer or (lambda address: netpath.trace(address, stop=self._stopping))
         self.clock = clock or time.monotonic
@@ -55,6 +56,11 @@ class Routes:
         self._asked = -math.inf
         self.closed = False
         self.traced = 0
+        # 1.68.0: each route traced kept in the hosts database once it is placed (`keep(remote, traced, reached, how,
+        # hops, way)`: hostbook.HostBook.keep_route), the wall clock its time is said in, the routes kept so
+        self._keep = keep
+        self._wall = wall or time.time
+        self._saved: set[tuple] = set()
 
     def _stopping(self) -> bool:
         """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
@@ -172,6 +178,30 @@ class Routes:
                 break
         return points
 
+    def _save(self, address: str, at: float, route: netpath.Trace, way: list, geoip, now: float) -> None:
+        """A route kept in the hosts database once (1.68.0): every hop with the place the GeoIP file gives it, the
+        places on its way in words. A keeper that fails is passed over: the route is kept at its next trace."""
+        if self._keep is None or (address, at) in self._saved:
+            return
+        hops = []
+        for hop in route.hops:
+            item = {"n": hop.n, "address": hop.address, "ms": hop.ms}
+            try:
+                place = geoip.lookup(hop.address) if geoip is not None and hop.address else None
+            except Exception:  # noqa: BLE001 - a lookup that fails places nothing
+                place = None
+            if place is not None and getattr(place, "lat", None) is not None:
+                item.update(label=place.label, lat=place.lat, lon=place.lon)
+            hops.append(item)
+        words = " → ".join(p["label"] or p["address"] for p in way)
+        try:
+            self._keep(address, self._wall() - (now - at), route.reached, route.how, hops, words)
+        except Exception:  # noqa: BLE001 - kept at its next trace
+            return
+        if len(self._saved) >= 2 * MAX_KEPT:
+            self._saved.clear()
+        self._saved.add((address, at))
+
     def onto(self, page: dict, geoip, addresses: Iterable) -> dict:
         """The routes on the tab's page: each dot of the globe at a place a route ends gets that route's placed hops
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
@@ -202,6 +232,7 @@ class Routes:
                 by_place[key] = way
             answered = sum(1 for h in route.hops if h.address)
             rows.append((len(way), address, found, route, way, answered, now - at))
+            self._save(address, at, route, way, geoip, now)
         if globe is not None and isinstance(globe.get("origins"), list):
             # copies: the hosts view hands out the places it keeps, and a route's hops are this page's alone
             globe["origins"] = [dict(o) if isinstance(o, dict) else o for o in globe["origins"]]

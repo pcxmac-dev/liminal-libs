@@ -1098,8 +1098,28 @@ def _local(address: str) -> bool:
     return ip.is_multicast or ip.is_unspecified or ip.is_reserved or str(ip) == "255.255.255.255"
 
 
+_SERVICES: dict[tuple, str] = {}  # what a port is for, as this system's services file says: (port, protocol) -> name
+
+
+def service_name(port, proto) -> str:
+    """What a port is for, as this system's own services file names it (\"https\" for 443/tcp); \"\" where it names
+    none (1.68.0). Read on this machine alone: nothing is asked of anyone. 4096 answers kept at most."""
+    try:
+        key = (int(port), str(proto or "").lower()[:8])
+    except (TypeError, ValueError):
+        return ""
+    if key not in _SERVICES:
+        if len(_SERVICES) >= 4096:
+            _SERVICES.clear()
+        try:
+            _SERVICES[key] = socket.getservbyport(*key)[:64] if 0 < key[0] <= 65535 else ""
+        except (OSError, OverflowError, TypeError, ValueError):
+            _SERVICES[key] = ""
+    return _SERVICES[key]
+
+
 def judge(reading: dict, *, places=None, names=None) -> list[dict]:
-    """A reading's rows, each a new dict with five keys more:
+    """A reading's rows, each a new dict with six keys more:
 
     - "where": "" for a row without a remote; "this machine" for a loopback remote and for one of this machine's own
       addresses (every local address of the reading but 0.0.0.0 and ::, so a row whose other end is a row of the same
@@ -1113,7 +1133,9 @@ def judge(reading: dict, *, places=None, names=None) -> list[dict]:
       listener holds; the local one for a row without a remote.
     - "place": `places(remote)` for an internet host, asked once a host; None for every other row, and without
       `places`.
-    - "name": `names[remote]` (the hosts file's, as known_names gives them), else ""."""
+    - "name": `names[remote]` (the hosts file's, as known_names gives them), else "".
+    - "port_name": what the service's port is for, as this system's services file says (`service_name`), else ""
+      (1.68.0)."""
     rows = list(reading.get("rows") or ())
     names = names or {}
     own = {r["local"] for r in rows} - set(ports.EVERY) - {""}
@@ -1148,7 +1170,8 @@ def judge(reading: dict, *, places=None, names=None) -> list[dict]:
                     placed[remote] = places(remote)
                 place = placed[remote]
         out.append({**r, "pids": list(r["pids"]), "unread": dict(r["unread"]), "where": where, "direction": direction,
-                    "port": port, "place": place, "name": str(names.get(remote) or "") if remote else ""})
+                    "port": port, "place": place, "name": str(names.get(remote) or "") if remote else "",
+                    "port_name": service_name(port, r["proto"]) if remote else ""})
     return out
 
 

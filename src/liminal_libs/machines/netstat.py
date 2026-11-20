@@ -60,6 +60,7 @@ NAMES_S = 60.0  # the system's hosts file is read again after this long
 FLOW_ROWS = 2000  # connections the tab is sent, the ones up first
 LISTEN_ROWS = 200  # rows of the listening ports
 TABLE_ROWS = 100  # rows of the hosts view's tables (programs, ports, hosts)
+RECORDED_ROWS = 200  # connections the Netstat tab's "Connections recorded" shows, the newest first (1.68.0)
 PICKS = 8  # programs and ports offered right under the globe, the ones with the most hosts
 MOST = 1000  # programs and ports summed for the hosts view's tables, at most
 HOSTS_S = 10.0  # the hosts view's places and tables are made again this often at most, unless a choice changed
@@ -543,13 +544,58 @@ class NetstatView:
             if world is not None and not self.closed and any(r.get("where") == sockets.WHERE[2] for r in rows):
                 geoip = world.geoip()
             flows = self._flows(rows, geoip, now)
+            if geoip is not None:  # 1.68.0: the connections recorded with no place yet placed while it is open
+                self._place(world, geoip)
         finally:
             if geoip is not None:
                 world.rest()
         listening = self._listening(rows, now)
         facts = self._facts()
         return {"title": TITLE, "note": self._note(seen, rows, now), "flows": flows,
-                "tables": [listening, self._database(facts, now)], "forms": self._forms(facts, now)}
+                "tables": [listening, self._database(facts, now), self._recorded(facts, now)],
+                "forms": self._forms(facts, now)}
+
+    def _recorded(self, facts: dict, now: float) -> dict:
+        """1.68.0 (the user, 2026-11-20: "all connections need to be databased, basically who, what, when, why,where"):
+        each connection the hosts database recorded, its own row, the newest RECORDED_ROWS: when it began, how long
+        it lasted and when it was gone; who (the program, its service, its user, its process); what (the protocol,
+        both ends, the host's name); where (the place and network the GeoIP file gives, and the route traced to the
+        host); why (hostbook.why_of's words)."""
+        title = "Connections recorded"
+        columns = [{"title": "Began"}, {"title": "Lasted"}, {"title": "Gone"}, {"title": "Who"},
+                   {"title": "What"}, {"title": "Where"}, {"title": "Why"}]
+        if facts.get("elsewhere"):
+            return {"title": title, "columns": columns, "rows": [], "empty": facts["elsewhere"]}
+        out = []
+        for c in self.book.connections(limit=RECORDED_ROWS):
+            began = c.get("started") if c.get("started") is not None else c.get("first")
+            who = [c.get("service_title") or c.get("service") or "", c.get("user") or "",
+                   f"process {c['pid']}" if c.get("pid") else ""]
+            place = ", ".join(x for x in (c.get("city"), c.get("country")) if x)
+            if c.get("network") != hostbook.INTERNET:
+                place = "the local network"
+            owner = " ".join(x for x in (f"AS{c['asn']}" if c.get("asn") else "", c.get("org") or "") if x)
+            route = c.get("route") or {}
+            way = route.get("way") or ""
+            out.append([_when(began, now), _lasted(c.get("seconds")),
+                        "open" if c.get("ended") is None else _when(c["ended"], now),
+                        {"text": c.get("program") or "", "sub": " · ".join(x for x in who if x)},
+                        {"text": f"{c.get('proto', '')} {_end(c.get('local') or '', c.get('local_port') or 0)} "
+                                 f"{'←' if c.get('direction') == 'in' else '→'} "
+                                 f"{_end(c.get('remote') or '', c.get('remote_port') or 0)}",
+                         "sub": c.get("name") or ""},
+                        {"text": place or "not placed yet",
+                         "sub": " · ".join(x for x in (owner, f"by way of {way}" if way else "") if x)},
+                        c.get("why") or ""])
+        held = facts.get("connections", 0)
+        note = (f"Every connection the hosts database recorded is its own row, from the reading that first listed it "
+                f"to the first one without it: {world_module._plural(held, 'connection')} kept, the newest "
+                f"{len(out):,} here. Kept {hostbook.KEEP_DAYS} days after they end, {hostbook.CONNECTIONS:,} at "
+                "most, the ones that ended longest ago let go first. A place is the GeoIP file's, looked up on this "
+                "machine; a route is the one traced to the host while the World Wide Web tab was shown. Nothing in "
+                "it is sent anywhere.")
+        return {"title": title, "note": note, "empty": "No connection recorded yet.", "columns": columns,
+                "rows": out}
 
     def _note(self, seen: _Seen, rows: list, now: float) -> str:
         reading = seen.reading or {}
@@ -689,7 +735,9 @@ class NetstatView:
                 ["Since", _when(facts.get("since"), now) or "nothing recorded yet"],
                 ["Last reading", _when(facts.get("last"), now) or "none yet"],
                 ["Size", world_module.size_words(facts.get("bytes", 0))],
-                ["Open now", world_module._plural(facts.get("open", 0), "connection")]]
+                ["Open now", world_module._plural(facts.get("open", 0), "connection")],
+                ["Connections", f"{facts.get('connections', 0):,} of {hostbook.CONNECTIONS:,} at most, each its own "
+                                f"row (kept {hostbook.KEEP_DAYS} days after it ends)"]]
         if facts.get("not_kept"):
             rows.append(["Not kept", f"{world_module._plural(facts['not_kept'], 'connection')} of the last reading, "
                                      f"past the {hostbook.MAX_OPEN:,} held open at once"])
@@ -866,6 +914,8 @@ class NetstatView:
                     page["note"] = (str(page.get("note") or "") + " Hosts recorded needs no capture: choose it under "
                                     "What the globe shows.").strip()
             tables.append(self._infrastructure())
+            if not hosts:  # 1.68.0: the connections recorded with no place yet placed (the hosts view places its own)
+                self._place(world)
             try:
                 forms += self.index.forms(can=True)
             except Exception:  # noqa: BLE001 - its table says why
@@ -977,7 +1027,7 @@ class NetstatView:
             self._made = made
         return made
 
-    def _place(self, world) -> None:
+    def _place(self, world, geoip=None) -> None:
         """The internet's hosts with no place yet (or one from an older GeoIP file) looked up in the GeoIP file on this
         machine and kept: the file is opened only when a host needs a place, or STAMP_S after it was last looked at,
         for a newer one (the caller lets it go again)."""
@@ -988,7 +1038,7 @@ class NetstatView:
             stamp = self._stamp
         if stamp is not None and 0 <= now - stamp[0] < STAMP_S and not book.unplaced(stamp[1]):
             return
-        geoip = world.geoip()
+        geoip = geoip if geoip is not None else world.geoip()  # one the caller has open already
         if geoip is None:
             return
         try:

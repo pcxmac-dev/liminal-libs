@@ -194,3 +194,25 @@ def test_the_page_gets_copies_of_its_places_and_the_tracer_is_stopped_with_the_t
     assert seen["stop"]()  # left: the tracer is stopped
     plain.close()
     assert seen["stop"]()
+
+
+def test_a_route_is_kept_once_in_the_hosts_database_with_every_hop_and_its_place():
+    """1.68.0: once a route is on the page, it is handed to the keeper once (the hosts database), with every hop, each
+    with the place the GeoIP file gives it, the places on its way, and when it was traced by the wall clock."""
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["192.168.1.1", "62.0.0.2", target]})
+    kept = []
+    clock = Clock()
+    r = Routes(tracer=tracer, clock=clock, start=lambda work: None, keep=lambda *a: kept.append(a),
+               wall=lambda: 1_800_000_000.0)
+    r.want([target])
+    r.step()
+    clock.now += 30
+    geo = Geo({"62.0.0.2": Place(52.37, 4.9, "Amsterdam"), target: Place(48.2, 16.37, "Vienna")})
+    for _ in range(3):  # asked every two seconds: kept once
+        r.onto({"globe": {"home": HOME, "origins": []}}, geo, [target])
+    assert len(kept) == 1
+    remote, traced, reached, how, hops, way = kept[0]
+    assert (remote, traced, reached, how, way) == (target, 1_800_000_000.0 - 30, True, "stand-in", "Amsterdam")
+    assert hops[0] == {"n": 1, "address": "192.168.1.1", "ms": 1.0}  # the local network: no place
+    assert hops[1] == {"n": 2, "address": "62.0.0.2", "ms": 2.0, "label": "Amsterdam", "lat": 52.37, "lon": 4.9}

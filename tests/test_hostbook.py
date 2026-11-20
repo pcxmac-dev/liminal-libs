@@ -1351,7 +1351,7 @@ def test_a_file_with_a_damaged_page_is_set_aside_and_recording_starts_anew(db):
     many = [row(f"198.51.{i // 250}.{i % 250 + 1}", started=T0, local_port=20000 + i) for i in range(600)]
     with HostBook(db) as first:
         win(first, T0, *many)
-    damage(db, "hosts", "hosts_last")
+    damage(db, "hosts", "hosts_last", "hosts_host")
     b = HostBook(db)  # its header and its schema are sound: the damage is found when the hosts are counted
     assert win(b, T0 + 5, row(SHELL, started=T0 + 1, local_port=51000)) == {"new": 1, "ended": 0, "open": 1}
     problem = b.describe()["problem"]
@@ -1364,7 +1364,7 @@ def test_a_file_with_a_damaged_page_is_set_aside_and_recording_starts_anew(db):
     c = HostBook(db.with_name("later.db"))
     win(c, T0, *many)
     c.flush()
-    damage(c.path, "hosts", "hosts_last")
+    damage(c.path, "hosts", "hosts_last", "hosts_host")
     assert c.hosts() == [] and not c.path.exists() and c.path.with_name("later.db.bad").exists()
     assert "set aside as later.db.bad" in c.describe()["problem"]
     win(c, T0 + 5, *many[:2])
@@ -1374,7 +1374,7 @@ def test_a_file_with_a_damaged_page_is_set_aside_and_recording_starts_anew(db):
     d = HostBook(db.with_name("written.db"))
     win(d, T0, *many)
     d.flush()
-    damage(d.path, "hosts", "hosts_last")
+    damage(d.path, "hosts", "hosts_last", "hosts_host")
     win(d, T0 + 5, *many[:3])
     d.flush()
     assert d.path.with_name("written.db.bad").exists() and len(d.hosts()) == 3 and d.describe()["rows"] == 3
@@ -1608,3 +1608,128 @@ def test_a_recording_thread_and_a_pages_ask_share_a_book(db):
     rows = {h["host"]: h for h in b.hosts()}
     assert (rows[WEB]["connections"], rows[WEB]["seconds"]) == (1, 119.0) and b.describe()["problem"] == ""
     assert sum(h["connections"] for h in rows.values()) == 121
+
+
+
+# -- 1.68.0: every connection its own row: who, what, when, why, where --------------------------------------------
+def test_each_connection_is_its_own_row_with_who_what_when_why_and_where(db):
+    """The user, 2026-11-20: "all connections need to be databased, basically who, what, when, why,where". A
+    connection is its own row from the reading that first counts it to the first one without it, its seconds counted
+    as its host's are; two connections of one program to one host and port are two rows (the hosts' row folds them)."""
+    b = HostBook(db)
+    first = row(started=T0 - 1, user="NEPTUNE\\ciara", service="BITS", service_title="Background Intelligent Transfer",
+                port_name="https")
+    second = row(started=T0 + 2, local_port=51001, port_name="https")
+    win(b, T0, first)
+    win(b, T0 + 5, first, second)
+    win(b, T0 + 10, second)
+    b.flush()
+    rows = b.connections()
+    assert [(r["local_port"], r["ended"]) for r in rows] == [(51001, None), (51000, T0 + 10)]  # the newest first
+    one = rows[1]
+    assert (one["program"], one["path"], one["pid"], one["user"], one["service"], one["service_title"]) == (
+        BROWSER, BROWSER_PATH, 4321, "NEPTUNE\\ciara", "BITS", "Background Intelligent Transfer")  # who
+    assert (one["proto"], one["family"], one["local"], one["local_port"], one["remote"], one["remote_port"],
+            one["direction"], one["port"], one["network"]) == ("tcp", 4, LAN, 51000, WEB, 443, "out", 443,
+                                                               "internet")  # what
+    assert (one["started"], one["first"], one["last"], one["ended"]) == (T0 - 1, T0 - 1, T0 + 5, T0 + 10)  # when
+    assert one["seconds"] == kept(b)[0]["seconds"] - 0 - rows[0]["seconds"]  # the host's time is the two's together
+    assert one["why"] == ("its program reached out to a host on the internet on 443/tcp (https), for the service "
+                          "Background Intelligent Transfer (BITS)")  # why
+    assert (one["country"], one["city"], one["route"]) == (None, None, None)  # where: placed by `place`, no route
+    assert len(kept(b)) == 1 and kept(b)[0]["connections"] == 2 and b.describe()["connections"] == 2
+
+
+def test_a_connection_open_across_a_restart_goes_on_in_its_own_row(db):
+    with HostBook(db) as first:
+        win(first, T0, row(started=T0))
+    b = HostBook(db)
+    win(b, T0 + 5, row(started=T0))
+    win(b, T0 + 9)
+    b.flush()
+    rows = b.connections()
+    assert len(rows) == 1 and (rows[0]["first"], rows[0]["last"], rows[0]["ended"]) == (T0, T0 + 5, T0 + 9)
+    assert rows[0]["seconds"] == 5.0
+
+
+def test_a_connection_that_began_and_ended_between_two_readings_is_its_own_row_too(db):
+    b = HostBook(db)
+    win(b, T0, closing(WEB2, port_name="https"))
+    b.flush()
+    (one,) = b.connections()
+    assert (one["program"], one["remote"], one["first"], one["ended"], one["seconds"]) == (NOT_NAMED, WEB2, T0, T0, 0.0)
+    assert one["why"] == ("a connection with the internet on 443/tcp (https) that began and ended between two readings: "
+                          "its program had let go of it")
+
+
+def test_a_connection_takes_its_hosts_place_and_placing_a_host_places_its_connections(db):
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.flush()
+    assert b.place(lambda host: NUREMBERG if host == WEB else None, NOVEMBER) == 1
+    (one,) = b.connections()
+    assert (one["city"], one["country"], one["asn"], one["org"]) == ("Nuremberg", "Germany", 64500, "Example Net")
+    win(b, T0 + 5, row(started=T0), row(started=T0 + 4, local_port=51009))
+    b.flush()  # a new connection to a host placed already takes its place when it is written
+    assert [r["city"] for r in b.connections()] == ["Nuremberg", "Nuremberg"]
+
+
+def test_a_route_traced_is_kept_and_handed_out_with_its_hosts_connections(db):
+    b = HostBook(db)
+    win(b, T0, row(started=T0), row(WEB2, started=T0, local_port=51001))
+    hops = [{"n": 1, "address": "192.168.1.1", "ms": 0.5}, {"n": 2, "address": WEB, "ms": 9.0}]
+    b.keep_route(WEB, T0 + 1, True, "icmp", hops, "Amsterdam → Frankfurt")
+    b.flush()
+    by = {r["remote"]: r for r in b.connections()}
+    assert by[WEB]["route"] == {"traced": T0 + 1, "reached": True, "how": "icmp", "way": "Amsterdam → Frankfurt"}
+    assert by[WEB2]["route"] is None
+    con = sqlite3.connect(db)
+    try:
+        assert json.loads(con.execute("SELECT hops FROM routes").fetchone()[0]) == hops
+    finally:
+        con.close()
+
+
+def test_the_connections_are_filtered_as_the_hosts_are(db):
+    b = HostBook(db)
+    win(b, T0, row(started=T0), row(MAIL, 993, started=T0, local_port=51001, program=MAILER, path=""),
+        row(PRINTER, 9100, started=T0, local_port=51002, where="local network"))
+    b.flush()
+    assert {r["remote"] for r in b.connections(program=MAILER)} == {MAIL}
+    assert {r["remote"] for r in b.connections(port=9100)} == {PRINTER}
+    assert {r["remote"] for r in b.connections(proto="tcp", direction="out", since=T0)} == {WEB, MAIL, PRINTER}
+    assert b.connections(direction="in") == [] and len(b.connections(limit=2)) == 2
+
+
+def test_old_connections_and_routes_are_let_go_and_past_the_cap_the_ones_that_ended_longest_ago(db, monkeypatch):
+    monkeypatch.setattr(hostbook, "CONNECTIONS", 3)
+    b = HostBook(db)
+    for i in range(5):  # five connections, one after the other, each gone by the next reading
+        win(b, T0 + 10 * i, row(started=T0 + 10 * i, local_port=52000 + i))
+    win(b, T0 + 50)
+    b.keep_route(WEB, T0, True, "icmp", [], "")
+    b.flush()
+    assert [r["local_port"] for r in b.connections()] == [52004, 52003, 52002]  # three kept: the last three
+    later = T0 + hostbook.KEEP_DAYS * 86400.0 + 100
+    win(b, later, row(started=later, local_port=53000))
+    b.flush()  # every one that ended KEEP_DAYS ago goes; so does the route traced ROUTE_DAYS ago
+    assert [r["local_port"] for r in b.connections()] == [53000] and b.describe()["connections"] == 1
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM routes").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_forget_forgets_the_connections_and_the_routes_too(db):
+    b = HostBook(db, clock=Clock(T0 + 60))
+    win(b, T0, row(started=T0))
+    b.keep_route(WEB, T0, True, "icmp", [], "")
+    b.flush()
+    assert b.forget() == 1 and b.connections() == [] and b.describe()["connections"] == 0
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM routes").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM connections").fetchone()[0] == 0
+    finally:
+        con.close()

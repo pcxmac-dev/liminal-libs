@@ -57,9 +57,27 @@ system's). A file SQLite finds damaged, or no database at all, is set aside as h
 recording starts anew. `forget` leaves nothing it removed in the file (it is built anew from what is left, and its log
 emptied), and a copy set aside goes with it. `book` hands out one HostBook for a path in a process, so two views feed
 one book under one lock. Off Windows the folder is made for this account alone (0700) and the file too (0600): it
-lists every program's hosts."""
+lists every program's hosts.
+
+1.68.0, every connection (the user, 2026-11-20: "all connections need to be databased, basically who, what, when,
+why,where"): beside the hosts' rows, which fold a program's connections to a host and a port into one, the table
+`connections` keeps each connection as its own row, from the reading that first counts it (rule 2) to the first
+reading without it (rule 4): who (the program, its path, its process, its user, its service and the service's
+title), what (the protocol and family, both ends, the direction, the service's port, the host's name where the
+system knows one), when (its start where the system says one, first and last seen, when it was gone, the seconds
+connected, counted as the hosts' are), why (`why_of`: in words, from what this machine knows: which way it goes,
+the port and what this system's services file says it is for, the service behind it) and where (the local network
+or the internet; the place, network and owner the GeoIP file gives, looked up as the hosts' are by `place`). A row
+waiting to close that no open connection had is a connection that began and ended between two readings: kept under
+NOT_NAMED, gone as soon as it is seen. Its id (`_cid`) is its key and when it was first counted, so a connection
+open across a restart goes on in the same row. The table `routes` keeps the route traced to each host
+(machines/routes.py, by `keep_route`): when, whether it reached the host, how, its hops and the places on its way;
+`connections` hands each connection out with its host's route. At most CONNECTIONS connections, the ones that
+ended longest ago pruned first, none kept past KEEP_DAYS after it ended; at most ROUTES routes, none past ROUTE_DAYS.
+`forget` forgets them with the hosts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -76,6 +94,12 @@ FOLDER = "hosts"  # in layout.data_dir(): one file for each system, on its own d
 FILE = "hosts.db"
 VERSION = 1  # the file's layout, kept in its meta table
 CAP = 50_000  # rows kept (about 13 MB with ordinary values): the ones longest unseen are pruned first
+CONNECTIONS = 500_000  # connections kept, a row each (about 150 MB with ordinary values): the oldest ended pruned first
+KEEP_DAYS = 90  # a connection that ended longer ago than this is let go
+ROUTES = 20_000  # routes kept, one a host: the ones traced longest ago pruned first
+ROUTE_DAYS = 30  # a route traced longer ago than this is let go
+CONNECTION_ROWS = 2_000  # connections `connections` hands out at the most
+WHY = 300  # characters kept of a connection's why
 MAX_OPEN = 8192  # connections held open at once, the ones waiting to close among them: one more is not counted
 GAP_S = 30.0  # without the system's word on starts, or an awake clock, a longer gap between two readings adds no time
 FLUSH_S = 30.0  # recording all the time: what is pending is written this often (the Netstat view's thread)
@@ -136,10 +160,45 @@ _SCHEMA = (
     "lat REAL, lon REAL, asn INTEGER, org TEXT, placed TEXT, "
     "PRIMARY KEY (program, host, proto, port, direction)) WITHOUT ROWID",
     "CREATE INDEX IF NOT EXISTS hosts_last ON hosts (last)",
+    "CREATE INDEX IF NOT EXISTS hosts_host ON hosts (host)",  # 1.68.0: a connection finds its host's place
     "CREATE TABLE IF NOT EXISTS open (key TEXT PRIMARY KEY, program TEXT NOT NULL, host TEXT NOT NULL, "
     "proto TEXT NOT NULL, port INTEGER NOT NULL, direction TEXT NOT NULL, started REAL, first REAL NOT NULL, "
     "last REAL NOT NULL, tbl TEXT NOT NULL, awake REAL, waiting INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
-    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value) WITHOUT ROWID")
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value) WITHOUT ROWID",
+    # 1.68.0: every connection, a row each, and the route traced to each host
+    "CREATE TABLE IF NOT EXISTS connections (cid TEXT PRIMARY KEY, program TEXT NOT NULL, path TEXT NOT NULL DEFAULT "
+    "'', pid INTEGER, user TEXT NOT NULL DEFAULT '', service TEXT NOT NULL DEFAULT '', service_title TEXT NOT NULL "
+    "DEFAULT '', proto TEXT NOT NULL, family INTEGER, local TEXT NOT NULL DEFAULT '', local_port INTEGER, "
+    "remote TEXT NOT NULL, remote_port INTEGER, direction TEXT NOT NULL, port INTEGER NOT NULL, network TEXT NOT "
+    "NULL, name TEXT NOT NULL DEFAULT '', started REAL, first REAL NOT NULL, last REAL NOT NULL, ended REAL, "
+    "seconds REAL NOT NULL DEFAULT 0, why TEXT NOT NULL DEFAULT '', country TEXT, code TEXT, city TEXT, lat REAL, "
+    "lon REAL, asn INTEGER, org TEXT, placed TEXT) WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS connections_first ON connections (first)",
+    "CREATE INDEX IF NOT EXISTS connections_last ON connections (last)",
+    "CREATE INDEX IF NOT EXISTS connections_remote ON connections (remote)",
+    "CREATE TABLE IF NOT EXISTS routes (remote TEXT PRIMARY KEY, traced REAL NOT NULL, reached INTEGER NOT NULL, "
+    "how TEXT NOT NULL DEFAULT '', hops TEXT NOT NULL, way TEXT NOT NULL DEFAULT '') WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS routes_traced ON routes (traced)")
+# a connection's columns, as `_born` keeps them and `_CONN_INSERT` writes them, in this order
+CONNECTION_COLUMNS = ("cid", "program", "path", "pid", "user", "service", "service_title", "proto", "family",
+                      "local", "local_port", "remote", "remote_port", "direction", "port", "network", "name",
+                      "started", "first", "last", "ended", "seconds", "why")
+_LAST, _ENDED, _SECONDS = (CONNECTION_COLUMNS.index(c) for c in ("last", "ended", "seconds"))
+_CONN_INSERT = (f"INSERT OR IGNORE INTO connections ({', '.join(CONNECTION_COLUMNS)}) "
+                f"VALUES ({', '.join('?' * len(CONNECTION_COLUMNS))})")
+_CONN_TOUCH = ("UPDATE connections SET last = CASE WHEN ? IS NULL THEN last ELSE max(last, ?) END, "
+               "seconds = seconds + ?, ended = coalesce(?, ended) WHERE cid = ?")
+_CONN_PLACE = ("UPDATE connections SET country = ?, code = ?, city = ?, lat = ?, lon = ?, asn = ?, org = ?, placed = ? "
+               "WHERE remote = ? AND network = 'internet' AND (placed IS NULL OR placed < ?)")
+_ROUTE_KEEP = "INSERT OR REPLACE INTO routes (remote, traced, reached, how, hops, way) VALUES (?, ?, ?, ?, ?, ?)"
+_CONN_PRUNE = ("DELETE FROM connections WHERE cid IN (SELECT cid FROM connections WHERE ended IS NOT NULL ORDER BY "
+               "last LIMIT ?)")
+# a new connection's place: its host's, where a hosts row of it has one (looked up by the index on host)
+_CONN_HOSTS_PLACE = ("UPDATE connections SET (country, code, city, lat, lon, asn, org, placed) = (SELECT country, "
+                     "code, city, lat, lon, asn, org, placed FROM hosts WHERE hosts.host = connections.remote AND "
+                     "hosts.placed IS NOT NULL ORDER BY hosts.placed DESC LIMIT 1) WHERE cid = ? AND placed IS NULL "
+                     "AND EXISTS (SELECT 1 FROM hosts WHERE hosts.host = connections.remote AND hosts.placed IS NOT "
+                     "NULL)")
 _KEY = "program = ? AND host = ? AND proto = ? AND port = ? AND direction = ?"  # a hosts row, by its key
 _INSERT = ("INSERT OR IGNORE INTO hosts (program, host, proto, port, direction, path, service, network, name, first, "
            "last, seconds, connections) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -249,12 +308,16 @@ class _Row:
     hosts row its connection and time go to, what that row keeps of the program, whether its time counts now
     (`counts`) or it only waits to close (`waiting`), and the key it would have with no owner (`bare`; None for a row
     that has none)."""
-    __slots__ = ("key", "table", "row", "path", "service", "network", "name", "started", "counts", "waiting", "bare")
+    __slots__ = ("key", "table", "row", "path", "service", "network", "name", "started", "counts", "waiting", "bare",
+                 "who")
 
-    def __init__(self, key, table, row, path, service, network, name, started, counts, waiting, bare=None):
+    def __init__(self, key, table, row, path, service, network, name, started, counts, waiting, bare=None, who=None):
         self.key, self.table, self.row, self.path, self.service = key, table, row, path, service
         self.network, self.name, self.started, self.counts, self.waiting = network, name, started, counts, waiting
         self.bare = bare
+        # 1.68.0: the rest a connection's own row keeps: (pid, user, service title, local address, local port,
+        # remote port, family, what the service's port is for)
+        self.who = who or (0, "", "", "", 0, 0, 0, "")
 
 
 def _row_of(row, starts: bool) -> _Row | None:
@@ -279,16 +342,46 @@ def _row_of(row, starts: bool) -> _Row | None:
     family = row.get("family")
     table = f"{proto}{family if family in (4, 6) else 6 if ':' in local else 4}"
     ends = (proto, local, local_port, remote, remote_port)
+    fam = 6 if table.endswith("6") else 4
     if waiting:  # its owner has let go of it: the table names its host, not its program
         return _Row((*ends, "w"), table, (NOT_NAMED, remote, proto, port, direction), "", "", network,
-                    _clip(row.get("name")), None, False, True)
+                    _clip(row.get("name")), None, False, True,
+                    who=(0, "", "", local, local_port, remote_port, fam, _clip(row.get("port_name"))))
     started = _number(row.get("started")) if starts and owner else None
     bare = (*ends, 0, None) if starts else (*ends, 0)
     key = (*ends, owner, started) if starts else (*ends, owner)
     program = _clip(row.get("program")) or NOT_NAMED
     return _Row(key, table, (program, remote, proto, port, direction), _clip(row.get("path"), PATH),
                 _clip(row.get("service")), network, _clip(row.get("name")), started, state == CONNECTED[proto], False,
-                bare if owner else None)
+                bare if owner else None,
+                who=(_whole(row.get("pid")), _clip(row.get("user")), _clip(row.get("service_title")), local,
+                     local_port, remote_port, fam, _clip(row.get("port_name"))))
+
+
+def why_of(r: _Row) -> str:
+    """Why a connection is there, in words this machine can say without asking anyone: which way it goes, its
+    service's port and what this system's services file says the port is for, whether the host is on the local network
+    or the internet, and the service behind its program."""
+    _program, _host, proto, port, direction = r.row
+    named = r.who[7]  # sockets.judge's port_name
+    words = f"{port}/{proto}" + (f" ({named})" if named else "")
+    where = "the local network" if r.network == LOCAL else "the internet"
+    if r.waiting:
+        return _clip(f"a connection with {where} on {words} that began and ended between two readings: its "
+                     "program had let go of it", WHY)
+    said = (f"this machine answered a host on {where} on {words}" if direction == "in"
+            else f"its program reached out to a host on {where} on {words}")
+    title = r.who[2]
+    if title or r.service:
+        said += f", for the service {title or r.service}" + (f" ({r.service})" if title and r.service and
+                                                              r.service != title else "")
+    return _clip(said, WHY)
+
+
+def _cid(key: tuple, first: float) -> str:
+    """A connection's own id in the connections table: its key and when it was first counted, the same after a
+    restart (the open connections' keys and first times are kept in the file)."""
+    return hashlib.sha1(f"{json.dumps(list(key))}|{float(first)!r}".encode()).hexdigest()[:20]
 
 
 def _between(wall: float, awake: float | None, before: float | None, starts: bool) -> float:
@@ -321,11 +414,12 @@ class _Open:
     """A connection the book holds open: the hosts row its time goes to, the table it was read from, its start where
     the system says one, when it was first and last seen, the awake clock at that last reading, and whether it only
     waits to close (held so that it is counted once, never given time)."""
-    __slots__ = ("row", "table", "started", "first", "last", "awake", "waiting")
+    __slots__ = ("row", "table", "started", "first", "last", "awake", "waiting", "cid")
 
-    def __init__(self, row, table, started, first, last, awake, waiting=False):
+    def __init__(self, row, table, started, first, last, awake, waiting=False, cid=None):
         self.row, self.table, self.started, self.first = row, table, started, first
         self.last, self.awake, self.waiting = last, awake, waiting
+        self.cid = cid  # 1.68.0: its row of the connections table
 
 
 def _windows(text) -> dict[tuple, tuple]:
@@ -445,6 +539,12 @@ class HostBook:
         self._open: dict[tuple, _Open] = {}  # the connections open now, by key: MAX_OPEN at most
         # hosts rows to write, by their key: [first, last, seconds, connections, path, service, network, name]
         self._pending: dict[tuple, list] = {}
+        # 1.68.0: connections to write: new ones whole (CONNECTION_COLUMNS), by id; known ones' changes by id:
+        # [last (or None), seconds to add, ended (or None)]; routes to keep, by host
+        self._born: dict[str, list] = {}
+        self._touched: dict[str, list] = {}
+        self._routes: dict[str, tuple] = {}
+        self._n_connections = 0  # as the last count left it
         # the two ends of the keys that ended lately: (the time of the reading they ended in, the time of the next
         # reading NEAR_S or more after it, None until there is one); dropped at the reading after that next one
         self._ended: dict[tuple, tuple] = {}
@@ -620,6 +720,7 @@ class HostBook:
         """The file's rows, hosts and programs counted (at first use; after a write, as COUNT_ROWS and COUNT_S say)."""
         self._n_rows, self._n_hosts, self._n_programs = conn.execute(
             "SELECT COUNT(*), COUNT(DISTINCT host), COUNT(DISTINCT program) FROM hosts").fetchone()
+        self._n_connections = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
         self._counted = self._last
 
     def _due(self) -> bool:
@@ -679,7 +780,7 @@ class HostBook:
             first, last = _number(first), _number(last)
             if len(key) >= 6 and first is not None and last is not None:
                 self._open[key] = _Open((program, host, proto, port, direction), table, _number(started), first, last,
-                                        _number(awake), bool(waiting))
+                                        _number(awake), bool(waiting), cid=_cid(key, first))
 
     def _read(self, work, nothing):
         """`work(conn)` for a call that only reads: over the file open, or opened for this read alone and let go
@@ -736,21 +837,25 @@ class HostBook:
                         lost += 1
                         continue
                     first, seconds = self._begins(r, t, prev, awake, before)
-                    self._open[key] = _Open(r.row, r.table, r.started, first, t, awake)
+                    self._open[key] = _Open(r.row, r.table, r.started, first, t, awake, cid=_cid(key, first))
                     self._add(r.row, r, first, t, seconds, 1)
+                    self._born_now(self._open[key].cid, r, first, t, seconds)
                     new += 1
                 else:  # rule 3
                     seconds = _between(t - held.last, awake, held.awake, starts) if r.counts else 0.0
                     held.last, held.awake = t, awake
                     self._add(held.row, r, t, t, seconds, 0)
+                    self._touch(held.cid, t, seconds)
             gone: set[tuple] = set()
             if not cut:  # rule 4
                 whole = {_clip(name, CODE).lower() for name in read or ()}
                 for key in [k for k, held in self._open.items()
                             if held.table in whole and k not in up and k not in waiting]:
-                    if not self._open.pop(key).waiting:
+                    went = self._open.pop(key)
+                    if not went.waiting:
                         ended += 1
                         gone.add(key[:5])
+                        self._touch(went.cid, None, 0.0, ended=t)  # gone by this reading
                 self._window(t, gone)
             ends = None
             for key, r in waiting.items():
@@ -766,14 +871,15 @@ class HostBook:
                 if len(self._open) >= MAX_OPEN:
                     lost += 0 if counted else 1
                     continue
-                self._open[key] = _Open(r.row, r.table, None, t, t, awake, waiting=True)
+                self._open[key] = _Open(r.row, r.table, None, t, t, awake, waiting=True, cid=_cid(key, t))
                 if not counted:
                     self._add(r.row, r, t, t, 0.0, 1)
                     new += 1
+                    self._born_now(self._open[key].cid, r, t, t, 0.0, ended=t)  # began and ended between two readings
             self._last, self._awake, self._not_kept, self._cut, self._dirty = t, awake, lost, bool(cut), True
             if self._since is None:
                 self._since = t
-            if len(self._pending) > MAX_PENDING:
+            if len(self._pending) > MAX_PENDING or len(self._born) > MAX_PENDING:
                 self._flush(keep_open=was_open)
             return {"new": new, "ended": ended, "open": self._up()}
 
@@ -855,6 +961,55 @@ class HostBook:
         pending[4], pending[5], pending[6], pending[7] = (path or pending[4], service or pending[5], r.network,
                                                           r.name or pending[7])
 
+    def _born_now(self, cid: str, r: _Row, first: float, last: float, seconds: float, ended=None) -> None:
+        """A new connection's own row, pending: who, what, when, why (`why_of`); its place comes with `place`."""
+        program, host, proto, port, direction = r.row
+        pid, user, title, local, local_port, remote_port, family, _named = r.who
+        self._born[cid] = [cid, program, r.path, pid or None, user, r.service, title, proto, family or None, local,
+                           local_port, host, remote_port, direction, port, r.network, r.name, r.started, first,
+                           last, ended, max(0.0, seconds), why_of(r)]
+
+    def _touch(self, cid, last, seconds: float, ended=None) -> None:
+        """A known connection seen again (`last`, the `seconds` it adds) or gone (`ended`): onto its pending row when it
+        has one, else kept to be written onto the row in the file."""
+        if cid is None:
+            return
+        born = self._born.get(cid)
+        if born is not None:
+            if last is not None:
+                born[_LAST] = max(born[_LAST], last)
+            born[_SECONDS] += max(0.0, seconds)
+            if ended is not None:
+                born[_ENDED] = ended
+            return
+        touched = self._touched.get(cid)
+        if touched is None:
+            self._touched[cid] = [last, max(0.0, seconds), ended]
+            return
+        if last is not None:
+            touched[0] = last if touched[0] is None else max(touched[0], last)
+        touched[1] += max(0.0, seconds)
+        if ended is not None:
+            touched[2] = ended
+
+    def keep_route(self, remote, traced, reached, how, hops, way) -> None:
+        """The route traced to a host (machines/routes.py), kept with the next write: `traced` (epoch seconds),
+        whether it reached the host, how it was traced, its hops (a list of mappings: n, address, ms, and the place's
+        label, lat and lon where the GeoIP file gave one) and the places on its way in words. Nothing on a folder of
+        another system's drive."""
+        with self._lock:
+            if not self._ready():
+                return
+            host, at = _clip(remote), _number(traced)
+            if not host or at is None:
+                return
+            if len(self._routes) >= MAX_PENDING and host not in self._routes:
+                return  # bounded: kept again at its next trace
+            self._routes[host] = (host, at, int(bool(reached)), _clip(how, CODE * 4),
+                                  json.dumps(list(hops or ())[:64], separators=(",", ":"))[:16_000],
+                                  _clip(way, WHY))
+            self._dirty = True
+
     def _up(self) -> int:
         return sum(1 for held in self._open.values() if not held.waiting)
 
@@ -881,11 +1036,14 @@ class HostBook:
                 self._close()
             return
         pending, back = self._pending, self._back
+        born, touched, routes = self._born, self._touched, self._routes
         changed = grew = False
         counted = self._n_rows
+        tallied = self._n_connections  # the connections' rows (not `connections`: a hosts row's count is named so)
+        now = self._last if self._last is not None else _number(self.clock()) or 0.0
 
         def write(c: sqlite3.Connection) -> None:
-            nonlocal changed, grew, counted
+            nonlocal changed, grew, counted, tallied
             changed = grew = False
             rows = self._n_rows
             if back is not None:  # the clock went back: no row was seen after the time it went back to
@@ -903,6 +1061,26 @@ class HostBook:
                 rows -= c.execute(_PRUNE, (rows - (self.cap - self.cap // 100),)).rowcount
                 grew = True
             counted = rows  # the rows as this write leaves them, counted by it
+            # 1.68.0: every connection's own row, its changes, the routes; then the old ones let go, and past the cap
+            # the ones that ended longest ago
+            many = tallied
+            for rec in born.values():
+                many += c.execute(_CONN_INSERT, rec).rowcount
+            c.executemany(_CONN_HOSTS_PLACE, [(rec[0],) for rec in born.values() if rec[15] == INTERNET])
+            for cid, (last, seconds, ended) in touched.items():
+                c.execute(_CONN_TOUCH, (last, last, seconds, ended, cid))
+            c.executemany(_ROUTE_KEEP, list(routes.values()))
+            if born or touched or routes:
+                changed = True
+            many -= c.execute("DELETE FROM connections WHERE last < ? AND ended IS NOT NULL",
+                              (now - KEEP_DAYS * 86400.0,)).rowcount
+            if many > CONNECTIONS:
+                many -= c.execute(_CONN_PRUNE, (many - (CONNECTIONS - CONNECTIONS // 100),)).rowcount
+            c.execute("DELETE FROM routes WHERE traced < ?", (now - ROUTE_DAYS * 86400.0,))
+            if routes and c.execute("SELECT COUNT(*) FROM routes").fetchone()[0] > ROUTES:
+                c.execute("DELETE FROM routes WHERE remote IN (SELECT remote FROM routes ORDER BY traced LIMIT "
+                          "(SELECT COUNT(*) FROM routes) - ?)", (ROUTES,))
+            tallied = max(0, many)
             c.execute("DELETE FROM open")
             c.executemany(_HOLD, [(json.dumps(key), *held.row, held.started, held.first, held.last, held.table,
                                    held.awake, int(held.waiting)) for key, held in self._open.items()])
@@ -927,12 +1105,16 @@ class HostBook:
             if not self._error:
                 self._error = f"The hosts database could not be written ({failure})."
             self._error += " What was seen since is kept in memory and written at the next try."
-            if len(pending) > 2 * MAX_PENDING:  # memory stays bounded: what cannot be written is let go
+            if len(born) > 2 * MAX_PENDING:  # memory stays bounded: what cannot be written is let go (connections)
+                self._error += f" {len(born):,} connections waiting were more than is kept so, and were let go."
+                self._born, self._touched, self._routes = {}, {}, {}
+            if len(pending) > 2 * MAX_PENDING:  # ... and the hosts' rows
                 self._error += f" {len(pending):,} rows waiting were more than is kept so, and were let go."
                 self._pending = {}
             return
         # written: nothing of it is pending any more, whatever the count below does
         self._pending, self._back, self._dirty, self._error = {}, None, False, ""
+        self._born, self._touched, self._routes, self._n_connections = {}, {}, {}, tallied
         if changed:
             self.changes += 1
         if grew or self._recount:
@@ -974,7 +1156,13 @@ class HostBook:
                     if row[1] not in found:
                         found[row[1]] = _placed(lookup(row[1]))
                 placed = [(*found[row[1]], stamp, *row) for row in rows]
-                self._transaction(conn, lambda c: c.executemany(_PLACE, placed))
+                # 1.68.0: each connection's own row placed as its host's
+                linked = [(*found[host], stamp, host, stamp) for host in found]
+
+                def write(c: sqlite3.Connection) -> None:
+                    c.executemany(_PLACE, placed)
+                    c.executemany(_CONN_PLACE, linked)
+                self._transaction(conn, write)
             except (sqlite3.Error, OSError) as e:
                 self._failed("written", e)
                 return 0
@@ -1007,6 +1195,8 @@ class HostBook:
                 nonlocal removed
                 removed = c.execute("DELETE FROM hosts").rowcount
                 c.execute("DELETE FROM open")
+                c.execute("DELETE FROM connections")
+                c.execute("DELETE FROM routes")
                 c.executemany(_HOLD, [(json.dumps(key), *held.row, None, held.first, held.last, held.table,
                                        held.awake, 1) for key, held in kept.items()])
                 c.executemany(_FACTS, [("version", VERSION), ("since", now), ("last", now), ("awake", None)])
@@ -1025,6 +1215,7 @@ class HostBook:
                 if not was_open:
                     self._close()
             self._open, self._pending, self._ended = kept, {}, {}
+            self._born, self._touched, self._routes, self._n_connections = {}, {}, {}, 0
             self._since = self._last = now
             self._awake = self._back = None
             self._n_rows = self._n_hosts = self._n_programs = self._not_kept = 0
@@ -1163,6 +1354,33 @@ class HostBook:
         sql = "SELECT COUNT(*) FROM hosts WHERE network = ? AND (placed IS NULL OR placed < ?)"
         return self._read(lambda conn: conn.execute(sql, (INTERNET, _clip(stamp, STAMP))).fetchone()[0], 0)
 
+    def connections(self, *, program=None, proto="", port=0, direction="", since=None,
+                    limit: int = 200) -> list[dict]:
+        """Every connection's own row as last written, the newest first (by when it was first seen), filtered as
+        `hosts` is (`since`: seen since), at most `limit` (CONNECTION_ROWS at the very most): each its who, what, when,
+        why and where (CONNECTION_COLUMNS and the place's), and its host's route as kept (`route`: traced, reached,
+        how, way; None where none was traced)."""
+        clauses, args = _filters(program=program, proto=proto, port=port, direction=direction, since=since)
+        most = max(1, min(int(limit or 1), CONNECTION_ROWS))
+        columns = [f"c.{name}" for name in (*CONNECTION_COLUMNS, "country", "code", "city", "lat", "lon", "asn",
+                                                  "org")]
+        # the hosts' filters, on this table: "+port = ?" (of no index) as "+c.port = ?"
+        where = _where([f"+c.{clause[1:]}" if clause.startswith("+") else f"c.{clause}" for clause in clauses])
+        sql = (f"SELECT {', '.join(columns)}, r.traced, r.reached, r.how, r.way FROM connections c LEFT JOIN routes r "
+               f"ON r.remote = c.remote{where} ORDER BY c.first DESC LIMIT ?")
+        names = (*CONNECTION_COLUMNS, "country", "code", "city", "lat", "lon", "asn", "org")
+
+        def work(conn):
+            out = []
+            for values in conn.execute(sql, (*args, most)):
+                d = dict(zip(names, values[:len(names)]))
+                traced, reached, how, way = values[len(names):]
+                d["route"] = None if traced is None else {"traced": traced, "reached": bool(reached), "how": how,
+                                                          "way": way}
+                out.append(d)
+            return out
+        return self._read(work, [])
+
     def describe(self) -> dict:
         """The book, asking nothing of the hosts' rows: {"path", "rows" (as the last write left them), "hosts",
         "programs" (as counted at the last write that added or removed rows, not anew; past COUNT_ROWS rows at most
@@ -1184,4 +1402,5 @@ class HostBook:
             return {"path": str(self.path), "rows": self._n_rows, "hosts": self._n_hosts,
                     "programs": self._n_programs, "since": self._since, "last": self._last, "bytes": size,
                     "cap": self.cap, "open": self._up(), "not_kept": self._not_kept, "cut": self._cut,
+                    "connections": self._n_connections,
                     "elsewhere": self._elsewhere, "problem": " ".join(words for words in said if words)}

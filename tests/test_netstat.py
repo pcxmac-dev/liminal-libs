@@ -870,7 +870,7 @@ def test_the_firewall_tab_reads_the_socket_table_says_not_for_here_and_what_wsl_
     fw = Wall(tmp_path, placing=Placing())
     page = fw.ask("netstat")  # the platform asks it so, every three seconds while the tab is shown
     assert page["title"] == "Netstat" and len(page["flows"]["rows"]) == 6
-    assert [t["title"] for t in page["tables"]] == ["Listening ports", "The hosts database"]
+    assert [t["title"] for t in page["tables"]] == ["Listening ports", "The hosts database", "Connections recorded"]
     under = {"title": "Under WSL", "columns": [{"title": "What"}], "rows": [["This Linux", "WSL 2: Ubuntu"]]}
     monkeypatch.setattr(sockets, "under_wsl", lambda: under)
     assert fw.netstat()["tables"][-1] == under
@@ -1025,4 +1025,27 @@ def test_every_connection_to_the_internet_has_its_route_traced_while_the_tab_is_
     assert len(fw.started) == 1  # nothing new to trace within the hour: no second thread asked for
     fw.app_stopping()  # stopped: these routes closed and let go; a platform started again traces anew
     assert routes.closed and fw.world_routes() is not routes and not fw.world_routes().closed
+    fw.detach()
+
+
+
+    assert routes.closed and routes.describe()["kept"] == 0
+
+
+
+def test_the_netstat_tab_tables_every_connection_recorded_its_who_what_when_where_and_why(tmp_path):
+    """1.68.0: each connection the hosts database recorded, its own row, the newest first, under the database's own
+    table: when it began, how long it lasted, when it was gone, who, what, where and why."""
+    fw = Wall(tmp_path, placing=Placing())
+    page = fw.ask("netstat")
+    recorded = page["tables"][-1]
+    assert recorded["title"] == "Connections recorded"
+    assert [c["title"] for c in recorded["columns"]] == ["Began", "Lasted", "Gone", "Who", "What", "Where", "Why"]
+    rows = recorded["rows"]
+    assert rows and all(len(r) == 7 for r in rows)
+    out = next(r for r in rows if r[4]["text"].endswith(f"→ {WEB}:443"))
+    assert out[2] == "open" and out[3]["text"] and "reached out to a host on the internet on 443/tcp" in out[6]
+    assert "kept, the newest" in recorded["note"] and "Nothing in it is sent anywhere." in recorded["note"]
+    database = page["tables"][1]
+    assert any(r[0] == "Connections" and "at most, each its own row" in r[1] for r in database["rows"])
     fw.detach()

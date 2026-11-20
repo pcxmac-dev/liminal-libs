@@ -239,7 +239,7 @@ def test_a_name_where_the_hosts_file_has_one():
     assert [r["name"] for r in judged(row(local=LAN, local_port=1, remote=PEER, remote_port=2))] == [""]
 
 
-def test_a_judged_row_is_the_row_and_five_keys_more_and_the_reading_stays_as_it_was():
+def test_a_judged_row_is_the_row_and_six_keys_more_and_the_reading_stays_as_it_was():
     reading = {"system": "linux", "at": 5.0, "rows": [
         row(local="0.0.0.0", local_port=443, pid=10, pids=[10], program="nginx"),
         row(local=LAN, local_port=443, remote=LONDON, remote_port=50001, pid=11, pids=[10, 11], program="nginx",
@@ -248,7 +248,7 @@ def test_a_judged_row_is_the_row_and_five_keys_more_and_the_reading_stays_as_it_
     found = sockets.judge(reading, places=PLACES.get, names={LONDON: "london.example"})
     assert json.dumps(reading, sort_keys=True) == before
     for made, given in zip(found, reading["rows"]):
-        assert made is not given and list(made) == [*given, "where", "direction", "port", "place", "name"]
+        assert made is not given and list(made) == [*given, "where", "direction", "port", "place", "name", "port_name"]
         assert {key: made[key] for key in given} == given
     found[1]["unread"]["path"] = "changed"
     found[1]["pids"].append(12)

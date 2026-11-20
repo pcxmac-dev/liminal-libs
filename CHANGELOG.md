@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.68.0 (2026-11-20)
+
+Every connection in the hosts database. The user, 2026-11-20: "all connections need to be databased, basically who,
+what, when, why,where", and, asked whether to record all the time the platform runs: "Yes, always" (their own
+Recording setting, now Always). The connections are still found by the socket table's readings, every 5 s while
+recording runs all the time; the subscription to the system's own connection events comes next (the user: "we
+should be subscribed to the events instead of polling").
+
+- **`connections`** (hostbook.py): each connection its own row, from the reading that first counts it to the first
+  reading without it, where the hosts' rows fold a program's connections to a host and a port into one. Who: the
+  program, its path, its process, its user, its service and the service's title. What: the protocol and family, both
+  ends, the direction, the service's port, the host's name where the system knows one. When: its start where the
+  system says one, first and last seen, when it was gone, the seconds connected (counted as the hosts' are: no sleep,
+  only while established). Why (`why_of`): in words, from what this machine knows: which way it goes, the port and
+  what this system's services file says it is for, the local network or the internet, the service behind it. Where:
+  the place, the network and its owner the GeoIP file gives (a new connection takes its host's place when it is
+  written; placing a host places its connections), and the route traced to the host. A connection that began and
+  ended between two readings is kept too, under "?". Its id is its key and when it was first counted, so one open
+  across a restart goes on in the same row.
+- **`routes`**: the route traced to each host (machines/routes.py hands each one over once it is placed): when, whether
+  it reached the host, how, every hop with its place, the places on its way. `connections()` hands each connection
+  out with its host's route.
+- **Bounds**: 500,000 connections at most (about 150 MB), the ones that ended longest ago let go first, none kept 90
+  days after it ended; 20,000 routes, none past 30 days. `forget` forgets them with the hosts.
+- **`sockets.judge`** says what each row's service port is for (`port_name`, `service_name`: this system's own services
+  file, nothing asked of anyone).
+- **The Netstat tab**: "Connections recorded", the newest 200, under the hosts database's own table (which counts
+  them): began, lasted, gone, who, what, where, why. A tab with the GeoIP file open places the connections recorded
+  with no place yet, with the file it has open.
+
 ## 1.67.0 (2026-11-20)
 
 Every connection's route on the firewalls' World Wide Web globe. The user, 2026-11-19: "also use traceroute or find
