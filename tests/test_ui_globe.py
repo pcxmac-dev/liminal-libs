@@ -1574,7 +1574,9 @@ def test_a_places_line_runs_through_the_hops_of_its_traced_route(js):
     build = _body(js, "function buildRoutes() {")
     assert "...o.via.slice().reverse().map((p) => unit(p.lon, p.lat)), b];" in build
     assert "lift * Math.sin((Math.PI * (gone + l.d * t)) / w)" in build and "if (l.hop) hops.push(k - 1);" in build
-    assert "if (d < 1e-4) continue;" in build  # a hop at the place before it makes no leg
+    assert "if (d < 1e-3) continue;" in build  # a hop within a few kilometres of the stop before it: no leg
+    assert "mid: Math.PI - d < 1e-3 ? perpendicular(s) : null" in build  # the detour only for a leg nearly opposite
+    assert "if (most > MAX_ROUTE_POINTS) counts = counts.map(" in build  # a route's points capped, whatever its hops
     draw = _body(js, "function drawRoutes(g, fr, now) {")
     assert "for (const j of rt.hops) {" in draw and "if (!rt.screen[j * 3 + 2]) continue;" in draw
     assert "ctx.fillStyle = css(colours.network, picked ? 0.45 : 0.9);" in draw

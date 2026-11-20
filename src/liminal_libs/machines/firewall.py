@@ -480,7 +480,11 @@ class Firewall(MachinePlugin):
         remotes = [r.get("remote") for r in seen.get("rows") or ()
                    if isinstance(r, dict) and r.get("remote") and r.get("where") == sockets.WHERE[2]]
         routes = self.world_routes()
-        routes.want(remotes)
+        try:
+            if not getattr(view, "closed", False):  # a view a detach under way closed: nothing started for it
+                routes.want(remotes)
+        except Exception:  # noqa: BLE001 - the routes never cost the tab its page
+            pass
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
                  "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL}
@@ -675,7 +679,8 @@ class Firewall(MachinePlugin):
         view = self.netstat_view(make=False)
         if view is not None:
             view.stop()
-        routes = self.__dict__.get("_routes")
+        with _WORLD_LOCK:  # let go of: a platform stopped may start again in this process, and trace anew
+            routes = self.__dict__.pop("_routes", None)
         if routes is not None:
             routes.close()
 

@@ -130,6 +130,7 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
     monkeypatch.setattr(sockets, "read", read)
     monkeypatch.setattr(netpath, "_icmp_probe", probe)
     monkeypatch.setattr(netpath, "_run", tracer)
+    monkeypatch.setattr(netpath, "_trace_run", lambda args, timeout=None, stop=None: (tracer(args), ""))
     monkeypatch.setattr(routes.Routes, "_thread", staticmethod(thread))
     monkeypatch.setattr(hostbook, "path", lambda: own() / "liminal-data" / hostbook.FOLDER / hostbook.FILE)
     monkeypatch.setattr(hostbook, "_BOOKS", {})

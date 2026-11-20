@@ -25,6 +25,14 @@ is: no plugin and no app changes for it.
 - **The firewall base**: `world()` hands the routes the connections' remote addresses at each ask and puts the routes
   on the page; `world_routes()` and `make_world_routes()` (a subclass's tests hand a stand-in); closed on detach and
   in `app_stopping`.
+- **After two independent reviews**: an unreachable ends a route where it was said (a router that passes it no
+  further, not reached; the target's own, reached), where it had padded the route to 30 hops; a tracer is killed
+  once the tab is left or the routes are closed, and the ICMP path asks no further wave then; a tracer that lists no
+  hop hands over to the next and says why; a tracer's silent hops past the last answer are left out, as the ICMP
+  path's are; the retired site-local and the reserved ranges have no route; a thread that will not start is asked
+  for again; the page gets copies of its places; a platform stopped and started traces anew. On the globe a hop
+  within a few kilometres of the one before it makes no leg (it had been drawn round the far side), and a route is
+  drawn with 128 points at most. The Routes table is the tab's last, so every table before it keeps its place.
 - **Tests**: the suite's guard refuses a real trace (the ICMP probe, the tracers, the routes' thread): a test hands its
   own. The globe's script was loaded in headless Edge over stand-ins, routes through hops among them.
 

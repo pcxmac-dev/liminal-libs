@@ -41,7 +41,8 @@ class Routes:
     """The routes of one plugin's World Wide Web tab: what waits to be traced, what was, and the thread tracing."""
 
     def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None):
-        self._tracer = tracer or netpath.trace
+        # the system's tracers, stopped once the tab is left or the routes closed (review: none outlives them)
+        self._tracer = tracer or (lambda address: netpath.trace(address, stop=self._stopping))
         self.clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self.timeout = timeout
@@ -54,6 +55,10 @@ class Routes:
         self._asked = -math.inf
         self.closed = False
         self.traced = 0
+
+    def _stopping(self) -> bool:
+        """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
+        return self.closed or self.clock() - self._asked > self.timeout
 
     @staticmethod
     def _thread(work) -> None:
@@ -83,13 +88,18 @@ class Routes:
             if start:
                 self._running = True
         if start:
-            self._start(self._loop)
+            try:
+                self._start(self._loop)
+            except Exception:  # noqa: BLE001 - no thread: started again at the next ask
+                with self._lock:
+                    self._running = False
 
     def step(self) -> bool:
         """The oldest address waiting traced and its route kept. False, tracing nothing, when none waits, the tab was
         not asked within the timeout, or the routes were closed."""
         with self._lock:
             if self.closed or not self._waiting or self.clock() - self._asked > self.timeout:
+                self._running = False  # in the hold that decides it: a want() after this starts a thread again
                 return False
             address, _ = self._waiting.popitem(last=False)
             self._busy = address
@@ -112,9 +122,10 @@ class Routes:
         try:
             while self.step():
                 self._sleep(GAP_S)
-        finally:
+        except BaseException:  # step() clears the flag itself when it ends the loop; this is for the unexpected
             with self._lock:
                 self._running = False
+            raise
 
     def route(self, address) -> netpath.Trace | None:
         with self._lock:
@@ -191,8 +202,10 @@ class Routes:
                 by_place[key] = way
             answered = sum(1 for h in route.hops if h.address)
             rows.append((len(way), address, found, route, way, answered, now - at))
-        if globe is not None:
-            for origin in globe.get("origins") or ():
+        if globe is not None and isinstance(globe.get("origins"), list):
+            # copies: the hosts view hands out the places it keeps, and a route's hops are this page's alone
+            globe["origins"] = [dict(o) if isinstance(o, dict) else o for o in globe["origins"]]
+            for origin in globe["origins"]:
                 if isinstance(origin, dict):
                     way = by_place.get(_key(origin.get("lat"), origin.get("lon")))
                     if way:
@@ -224,7 +237,7 @@ class Routes:
                  "rows": table_rows, "traced": traced}
         tables = page.get("tables")
         if isinstance(tables, list):
-            tables.insert(1 if tables else 0, table)
+            tables.append(table)
         else:
             page["tables"] = [table]
         return page

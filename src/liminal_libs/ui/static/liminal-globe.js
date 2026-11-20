@@ -118,6 +118,7 @@
   const THIN = 0.75;  // px: a line's vertex nearer than this to the last one drawn is left out
   const LOAD_MS = 60_000;  // a layer the page has not answered for within this is not loaded (and asked again later)
   const MAX_VIA = 32;  // hops a place's line runs through at most (machines/routes.py's MAX_VIA)
+  const MAX_ROUTE_POINTS = 128;  // points a route's line is drawn with at most, whatever its hops
   const LAYER_SLOTS = [4, 5, 6, 7];  // the themes' series slots the kinds leave free
   // a layer's mark, and what it marks: the exchanges globe's circle, square and diamond for points; for lines a plain
   // stroke or a dashed one
@@ -1125,14 +1126,16 @@
         for (let i = 0; i + 1 < stops.length; i++) {
           const s = stops[i], e = stops[i + 1];
           const d = Math.acos(clamp(s[0] * e[0] + s[1] * e[1] + s[2] * e[2], -1, 1));
-          if (d < 1e-4) continue;  // a hop at the place before it
+          if (d < 1e-3) continue;  // a hop within a few kilometres of the stop before it: no leg of its own
           // nearly opposite, any great circle will do: by a point a quarter of the way round
-          legs.push({ s, e, d, mid: Math.sin(d) < 1e-3 ? perpendicular(s) : null, hop: i + 1 < stops.length - 1 });
+          legs.push({ s, e, d, mid: Math.PI - d < 1e-3 ? perpendicular(s) : null, hop: i + 1 < stops.length - 1 });
           w += d;
         }
         if (w < 0.002) continue;  // at home's own place: its dot, no route
         const lift = Math.min(0.22, 0.04 + (0.18 * Math.min(w, Math.PI)) / Math.PI);
-        const counts = legs.map((l) => clamp(Math.ceil(l.d / rad / 3), legs.length > 1 ? 2 : 8, 64));
+        let counts = legs.map((l) => clamp(Math.ceil(l.d / rad / 3), legs.length > 1 ? 1 : 8, 64));
+        const most = counts.reduce((x, y) => x + y, 0);
+        if (most > MAX_ROUTE_POINTS) counts = counts.map((c) => Math.max(1, Math.floor((c * MAX_ROUTE_POINTS) / most)));
         const n = counts.reduce((x, y) => x + y, 0), path = new Float64Array((n + 1) * 4), hops = [];
         let k = 0, gone = 0;
         legs.forEach((l, j) => {

@@ -135,8 +135,8 @@ def test_a_place_on_the_globe_gets_its_routes_placed_hops_from_home_outward():
     via = page["globe"]["origins"][0]["via"]
     assert [(p["label"], p["n"]) for p in via] == [("Amsterdam", 3), ("Frankfurt", 5)]
     assert "via" not in page["globe"]["origins"][1] and "via" not in page["globe"]["origins"][2]
-    assert [t["title"] for t in page["tables"]] == ["What the globe shows", "Routes", "Internet infrastructure"]
-    table = page["tables"][1]
+    assert [t["title"] for t in page["tables"]] == ["What the globe shows", "Internet infrastructure", "Routes"]
+    table = page["tables"][-1]
     assert [row[0]["text"] for row in table["rows"]] == [target, other]  # the most hops placed first
     assert table["rows"][0][1] == "7 of 7 hops answered, the address reached"
     assert table["rows"][0][2] == "Amsterdam → Frankfurt" and table["rows"][1][2] == "Amsterdam"
@@ -152,3 +152,45 @@ def test_the_page_without_a_globe_or_a_geoip_file_still_gets_its_table():
     assert page["tables"][0]["rows"] == [["81.2.69.142", "2 of 2 hops answered, the address reached", "no hop placed",
                                           "just now"]]
     assert r.onto({"tables": []}, None, [])["tables"][0]["empty"] == "No connection to the internet is open."
+
+
+
+def test_a_thread_that_will_not_start_is_asked_for_again_and_the_flag_is_cleared_where_the_loop_ends():
+    tracer, _asked = tracer_of({})
+    tries = []
+
+    def start(work):
+        tries.append(work)
+        if len(tries) == 1:
+            raise RuntimeError("can't start new thread")
+    r = Routes(tracer=tracer, clock=Clock(), start=start)
+    r.want(["81.2.69.142"])
+    assert not r.describe()["running"]
+    r.want([])  # asked again: started again
+    assert len(tries) == 2 and r.describe()["running"]
+    while r.step():
+        pass
+    assert not r.describe()["running"]  # cleared in the hold that ended the loop
+
+
+def test_the_page_gets_copies_of_its_places_and_the_tracer_is_stopped_with_the_tab(monkeypatch):
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.2", target]})
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    r.want([target])
+    r.step()
+    kept = {"id": "v", "lat": 48.2, "lon": 16.37}
+    page = {"globe": {"home": HOME, "origins": [kept]}}
+    r.onto(page, Geo({"62.0.0.2": Place(52.37, 4.9, "Amsterdam"), target: Place(48.2, 16.37, "Vienna")}), [target])
+    assert page["globe"]["origins"][0]["via"] and "via" not in kept  # the hosts view's own place left as it was
+    seen = {}
+    monkeypatch.setattr(routes_module.netpath, "trace", lambda address, **kw: seen.update(kw) or netpath.Trace(address))
+    clock = Clock()
+    plain = Routes(clock=clock, start=lambda work: None, timeout=20.0)
+    plain.want([target])
+    plain.step()
+    assert not seen["stop"]()  # the tab is shown: the tracer goes on
+    clock.now += 21
+    assert seen["stop"]()  # left: the tracer is stopped
+    plain.close()
+    assert seen["stop"]()

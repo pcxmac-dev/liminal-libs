@@ -120,10 +120,10 @@ def _probe(distance: int, asked: list, silent=()):
     def probe(target, ttl, wait_ms):
         asked.append(ttl)
         if ttl in silent:
-            return None, None, False
+            return None, None, None
         if ttl >= distance:
-            return target, 20.0, True
-        return f"62.0.0.{ttl}", float(ttl), False
+            return target, 20.0, netpath.IP_SUCCESS
+        return f"62.0.0.{ttl}", float(ttl), netpath.IP_TTL_EXPIRED
     return probe
 
 
@@ -147,9 +147,10 @@ def test_a_route_that_never_reaches_its_address_ends_at_its_last_answer():
 def test_windows_without_its_icmp_api_and_ipv6_go_to_tracert_and_linux_to_traceroute_then_tracepath():
     ran = []
 
-    def run(args, timeout):
+    def run(args, timeout, stop=None):
         ran.append(args)
-        return {"tracert": TRACERT_FULL, "tracepath": TRACEPATH}.get(args[0])
+        out = {"tracert": TRACERT_FULL, "tracepath": TRACEPATH}.get(args[0])
+        return (out, "") if out is not None else (None, "")
 
     def broken(target, ttl, wait_ms):
         raise OSError("IcmpCreateFile failed")
@@ -161,17 +162,72 @@ def test_windows_without_its_icmp_api_and_ipv6_go_to_tracert_and_linux_to_tracer
     t = netpath.trace("2606:4700::1111", run=run, windows=False)
     assert [a[0] for a in ran] == ["traceroute", "tracepath"] and t.how == "tracepath" and t.reached
     assert "-6" in ran[0] and "-n" in ran[0] and "-6" in ran[1]
-    t = netpath.trace("81.2.69.142", run=lambda *a: None, windows=False)
-    assert t.error.startswith("no tracer could run here") and t.hops == ()
+    t = netpath.trace("81.2.69.142", run=lambda *a: (None, ""), windows=False)
+    assert t.error == "no tracer traced it here: traceroute is not here; tracepath is not here" and t.hops == ()
 
 
 def test_a_name_or_a_local_address_is_refused_before_anything_is_sent():
     asked: list = []
     for bad in ("example.com", "192.168.1.1"):
         try:
-            netpath.trace(bad, probe=_probe(3, asked), run=lambda *a: asked.append(a), windows=True)
+            netpath.trace(bad, probe=_probe(3, asked), run=lambda *a: (asked.append(a), (None, ""))[1], windows=True)
         except ValueError:
             pass
         else:
             raise AssertionError(bad)
     assert asked == []
+
+
+
+def test_an_unreachable_ends_the_route_where_it_was_said_and_the_targets_own_is_reached():
+    """The review of 1.67.0: an unreachable is where a route ends, not one more hop: a router that passes it no
+    further ends it there, not reached, and nothing past it is asked; the target's own unreachable (it refuses echo)
+    is the target reached."""
+    asked: list = []
+
+    def blocked(target, ttl, wait_ms):
+        asked.append(ttl)
+        if ttl >= 4:
+            return "62.0.0.99", 7.0, 11003  # destination host unreachable, said by a router
+        return f"62.0.0.{ttl}", float(ttl), netpath.IP_TTL_EXPIRED
+    t = netpath.trace("81.2.69.142", probe=blocked, windows=True)
+    assert not t.reached and [h.address for h in t.hops] == ["62.0.0.1", "62.0.0.2", "62.0.0.3", "62.0.0.99"]
+    assert sorted(asked) == list(range(1, 17))  # one wave: the route ended within it
+
+    def refuses(target, ttl, wait_ms):
+        return (target, 9.0, 11005) if ttl >= 6 else (f"62.0.0.{ttl}", float(ttl), netpath.IP_TTL_EXPIRED)
+    t = netpath.trace("81.2.69.142", probe=refuses, windows=True)
+    assert t.reached and len(t.hops) == 6 and t.hops[-1].address == "81.2.69.142"
+
+
+def test_no_more_is_asked_once_stop_says_so_and_a_tracer_that_lists_nothing_hands_over():
+    asked: list = []
+    t = netpath.trace("81.2.69.142", probe=_probe(99, asked, silent=set(range(1, 31))), windows=True,
+                      stop=lambda: True)
+    assert sorted(asked) == list(range(1, 17)) and t.hops == ()  # the first wave only
+    ran = []
+
+    def run(args, timeout, stop=None):
+        ran.append(args[0])
+        if args[0] == "traceroute":  # there, but not the one it takes for (inetutils'): a usage line and nothing else
+            return "", "traceroute: invalid option -- 'q'"
+        return TRACEPATH, ""
+    t = netpath.trace("2606:4700::1111", run=run, windows=False)
+    assert ran == ["traceroute", "tracepath"] and t.how == "tracepath" and t.reached
+    t = netpath.trace("2606:4700::1111", run=lambda args, timeout, stop=None: ("", ""), windows=False)
+    assert t.error == "no tracer traced it here: traceroute: it listed no hop; tracepath: it listed no hop"
+
+
+def test_a_tracers_silent_tail_is_left_out_as_the_icmp_paths_is():
+    silent = TRACEROUTE_STARS + " 4  *\n 5  *\n"
+    t = netpath.trace("81.2.69.142", run=lambda args, timeout, stop=None: (silent, ""), windows=False)
+    assert not t.reached and [h.n for h in t.hops] == [1, 2, 3]
+
+
+def test_the_retired_and_reserved_ranges_have_no_route():
+    for bad in ("fec0::1", "240.0.0.1"):
+        try:
+            netpath.traceable(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
