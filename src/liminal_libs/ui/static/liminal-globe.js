@@ -134,10 +134,16 @@
   const BASES = { dark: 'dark', midnight: 'dark', graphite: 'dark', light: 'light', paper: 'light' };
   const FALLBACK = {  // liminal.css's own values, for a page without its variables
     dark: { series: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9'], accent: '#2962ff',
-      muted: '#787b86', text: '#d1d4dc', frame: '#2a2e39', surface: '#131722' },
+      muted: '#787b86', text: '#d1d4dc', frame: '#2a2e39', surface: '#131722',
+      land: '#3edb65', network: '#8fa3bf' },
     light: { series: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6'], accent: '#1f4fd8',
-      muted: '#474c59', text: '#0f1219', frame: '#cdd3dd', surface: '#f3f4f7' },
+      muted: '#474c59', text: '#0f1219', frame: '#cdd3dd', surface: '#f3f4f7',
+      land: '#2e8b57', network: '#5b6f8a' },
   };
+  // 1.66.1 (the user, 2026-11-19: "the land borders should be green", "lets use faint grey-green, (matrix green)",
+  // "use grey blue for the routes, hubs, bones, underwater cables", "only end points of routes are colored"): the
+  // coasts and borders are drawn in --globe-land, the routes and every layer in --globe-network; a kind's colour
+  // marks only a route's ends (its place's dot) and the legend's kinds.
   // the map beside this file (vendor/world/), wherever the page is served from (a front proxying an app's pages too)
   const HERE = (() => {
     try { return new URL('.', (document.currentScript && document.currentScript.src) || location.href).href; } catch (e) { return ''; }
@@ -764,6 +770,7 @@
       series: fb.series.map((f, i) => rgbOf(v(`--series-${i + 1}`), f)),
       accent: rgbOf(v('--accent'), fb.accent), muted: rgbOf(v('--muted'), fb.muted), text: rgbOf(v('--text'), fb.text),
       frame: rgbOf(v('--frame'), fb.frame), surface: surface || rgbOf(v('--card') || v('--bg'), fb.surface),
+      land: rgbOf(v('--globe-land'), fb.land), network: rgbOf(v('--globe-network'), fb.network),
       font: cs.fontFamily || 'system-ui, sans-serif', detached: !node.isConnected,
     };
   }
@@ -1211,9 +1218,9 @@
           pen.done();
         };
         lines('borders');
-        b.strokeStyle = css(k.muted, 0.45); b.lineWidth = 0.6; b.stroke();
+        b.strokeStyle = css(k.land, 0.3); b.lineWidth = 0.6; b.stroke();
         lines('coasts');
-        b.strokeStyle = css(k.muted, 0.85); b.lineWidth = 0.8; b.stroke();
+        b.strokeStyle = css(k.land, 0.55); b.lineWidth = 0.8; b.stroke();
         b.beginPath(); b.arc(g.cx, g.cy, g.r, 0, TAU);
         b.strokeStyle = css(k.muted, 0.7); b.lineWidth = 1; b.stroke();
       });
@@ -1351,7 +1358,7 @@
         }
       }
       pen.done();
-      c.strokeStyle = css(colours.series[l.slot - 1], 0.9);
+      c.strokeStyle = css(colours.network, 0.9);
       c.lineWidth = 1.3;
       c.lineJoin = 'round';
       c.setLineDash(l.mark === 'dash' ? DASH : []);
@@ -1381,7 +1388,7 @@
         if (m < 5) firsts[cell * 5 + m] = i;
         sx[cell] += px; sy[cell] += py;
       }
-      const colour = colours.series[l.slot - 1], naming = zoom >= l.namesFrom, mine = [];
+      const colour = colours.network, naming = zoom >= l.namesFrom, mine = [];
       const wide = l.mark === 'diamond' ? 1.25 : 1;  // how far a mark reaches for its size: a diamond's points, further
       for (const cell of cells) {
         const n = count[cell], r = n === 1 ? 3.5 : n < 10 ? 6 : n < 100 ? 7.5 : n < 1000 ? 9.5 : 11;
@@ -1504,7 +1511,7 @@
         const dash = k.dash ? k.dash.map((d) => d * Math.max(1, group.width / 2)) : [];
         ctx.setLineDash(dash);
         ctx.lineDashOffset = dash.length && now ? -((now / 60) % (dash[0] + dash[1])) : 0;  // in towards home
-        ctx.strokeStyle = css(colours.series[k.slot - 1], group.level === 2 ? 0.95 : group.level === 0 ? 0.2 : 0.55);
+        ctx.strokeStyle = css(colours.network, group.level === 2 ? 0.95 : group.level === 0 ? 0.2 : 0.65);
         ctx.lineWidth = group.width;
         ctx.stroke();
       }
@@ -1513,14 +1520,14 @@
       if (!now) return;  // still: no lights
       ctx.lineCap = 'round';
       for (let i = Math.max(0, routes.length - LIGHTS); i < routes.length; i++) {
-        const rt = routes[i], k = KINDS[rt.o.kind], out = rt.o.kind === 'outbound';
+        const rt = routes[i], out = rt.o.kind === 'outbound';
         let t = (now / rt.period + rt.seed) % 1;
         if (out) t = 1 - t;
         const fade = rt.o.kind === 'unanswered' ? 1 - smooth(0.6, 0.9, t) : 1;  // it knocks, and no answer comes
         const head = fade > 0 ? along(rt.screen, t) : null;
         if (!head) continue;
         const dim = picked && picked !== rt.o ? 0.25 : 1;
-        const glow = mix(colours.series[k.slot - 1], colours.text, 0.35);
+        const glow = mix(colours.network, colours.text, 0.35);
         let end = head;
         ctx.beginPath();
         ctx.moveTo(head[0], head[1]);
@@ -1637,7 +1644,7 @@
           c.strokeStyle = css(colours.muted, 0.7); c.lineWidth = 1; c.stroke();
         }
         c.fillStyle = css(colours.surface, 0.86); c.fillRect(x, y, w, h);
-        c.strokeStyle = css(colours.series[m.slot - 1], 0.7); c.lineWidth = 1;
+        c.strokeStyle = css(colours.network, 0.7); c.lineWidth = 1;
         c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
         c.fillStyle = css(colours.text, 0.95); c.fillText(m.words, x + 5, y + h / 2 + 0.5);
         boxes.push({ x, y, w, h }, { x: m.x - m.r, y: m.y - m.r, w: 2 * m.r, h: 2 * m.r });
@@ -2443,10 +2450,7 @@
 .lg-m-diamond{transform:rotate(45deg) scale(.82)}
 .lg-m-line,.lg-m-dash{width:18px;height:0;background:none;border-top:2px solid}
 .lg-m-dash{border-top-style:dashed}
-.lg-s4{color:var(--series-4,#c98500)}
-.lg-s5{color:var(--series-5,#d55181)}
-.lg-s6{color:var(--series-6,#008300)}
-.lg-s7{color:var(--series-7,#9085e9)}
+.lg-s4,.lg-s5,.lg-s6,.lg-s7{color:var(--globe-network,#8fa3bf)}
 .lg-table{font-size:12px}
 .lg-table summary{cursor:pointer;color:var(--muted,#787b86);padding:2px 0}
 .lg-scroll{overflow:auto;max-height:360px}

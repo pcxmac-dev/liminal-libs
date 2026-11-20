@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.66.1 (2026-11-19)
+
+The globe's look, as the user asked while looking at the firewalls' World Wide Web tab: "only end points of routes are
+colored", "the land borders should be green", "lets use faint grey-green, (matrix green)", "use grey blue for the
+routes, hubs, bones, underwater cables". Static files only: a page shows it once reloaded, with no app restarted.
+
+- **Coasts and country borders** are drawn in a faint matrix grey-green (`--globe-land` in `liminal.css`: #3edb65
+  on the dark themes, #2e8b57 on the light ones, laid on at 55 % and 30 %), in place of the muted grey.
+- **Routes and every infrastructure layer** (data centres, exchange points, landing stations, backbones, submarine
+  cables, lines on land) are drawn in grey-blue (`--globe-network`: #8fa3bf, light #5b6f8a), the lights moving along
+  the routes too. A kind's colour (allowed in, unanswered in, out) now marks only a route's ends: its place's dot and
+  the legend's kinds. The layers are told apart by their marks (circle, square, diamond; line, dashed line).
+- A page without the variables draws the same colours (the globe's own fallbacks).
+
 ## 1.66.0 (2026-11-19)
 
 The MCP plugin's base, and what the top four inference engines and harnesses stand on. The user, 2026-11-18: "now i

@@ -210,6 +210,9 @@ table.list td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertic
   --series-6: #008300; --series-7: #9085e9; }
 body.light { --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4;
   --series-6: #008300; --series-7: #6250d6; }
+/* the globe (liminal-globe.js, 1.66.1): coasts and borders a faint matrix grey-green, routes and layers grey-blue */
+:root { --globe-land: #3edb65; --globe-network: #8fa3bf; }
+body.light { --globe-land: #2e8b57; --globe-network: #5b6f8a; }
 .spans { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; }
 .spans button { padding: 3px 10px; border-radius: 5px; font-size: 12px; color: var(--muted); }
 .spans button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
