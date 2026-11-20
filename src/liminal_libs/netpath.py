@@ -3,6 +3,9 @@ have this computer as DMZ host so, basically the check needs to validate the com
 computer, then the internet to the computer"): its address on the local network and its gateway (`local_route`), a
 ping (`ping`), the first routers on the way to an address (`hops`) and what kind of address each is (`kind`: a
 private or a carrier's shared address after the home router means another NAT stands between it and the internet).
+1.67.0: a whole route (`trace`), for every connection's route on the firewalls' globe (machines/routes.py): on
+Windows through its ICMP API (iphlpapi's IcmpSendEcho, no administrator; every hop asked at once), elsewhere and for
+IPv6 the system's tracert, traceroute or tracepath; only to a public address given as one, never a name.
 The system's ping and tracert/traceroute run windowless; nothing here names an outside host: the caller gives the
 address to trace to (the router's UPnP answer is the plugin's: it speaks a protocol with namespaces of its own)."""
 from __future__ import annotations
@@ -14,6 +17,8 @@ import socket
 import struct
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 NO_ROUTE_PROBE = "192.0.2.1"  # TEST-NET-1: a UDP socket "connected" to it shows the address the default route uses (nothing is sent)
@@ -151,3 +156,201 @@ def hops(target: str, count: int = 3, wait_ms: int = 700, run=None) -> list[str 
             found[n] = addresses[-1] if addresses else None
     return [found.get(n) for n in range(1, count + 1)] if found else None
 
+
+# -- a whole route (1.67.0) ----------------------------------------------------------------------------------------
+TRACE_HOPS = 30  # routers asked at most: the tracers' own default
+TRACE_WAIT_MS = 1000  # how long a probe waits for its answer (Windows' ICMP API, traceroute)
+TRACERT_WAIT_MS = 500  # tracert's, which asks each hop three times in turn: 45 s at most for 30 hops
+WAVE = 16  # hops asked at once through the ICMP API: the next ones only when the target did not answer within them
+IP_SUCCESS = 0  # the ICMP API's status for the target's own echo reply
+ANSWERED = (IP_SUCCESS, 11002, 11003, 11004, 11005, 11013)  # replies naming who sent them: unreachables, time exceeded
+REPLY_BYTES = 256  # the reply buffer: an ICMP_ECHO_REPLY (40 bytes at most), the 32 bytes sent back, an error's 8
+PAYLOAD = bytes(32)  # what each probe carries, as tracert's
+_RTT = re.compile(r"(<)?\s*(\d+(?:[.,]\d+)?)\s*ms\b", re.I)
+_HOP = re.compile(r"^\s*(\d+)\??:?\s+(.*)$")
+
+
+@dataclass(frozen=True)
+class Hop:
+    """One router on a route: its number (1: this network's gateway), the address that answered (None when nothing did
+    within the wait) and the quickest round trip to it in milliseconds (None when nothing answered)."""
+    n: int
+    address: str | None
+    ms: float | None = None
+
+
+@dataclass(frozen=True)
+class Trace:
+    """A route traced to `target`: its hops in order, the target's own last when it answered (`reached`); how it was
+    traced ("icmp": Windows' ICMP API; else "tracert", "traceroute" or "tracepath"); and why nothing was, when nothing
+    could be (`error`)."""
+    target: str
+    hops: tuple[Hop, ...] = ()
+    reached: bool = False
+    how: str = ""
+    error: str = ""
+
+
+def traceable(address) -> str:
+    """`address` as a route is traced to it: a public IPv4 or IPv6 address (an IPv4 one carried in IPv6 as itself).
+    ValueError, in words, for anything else: a name is never looked up, and the local network's addresses have no
+    route on the internet."""
+    try:
+        ip = ipaddress.ip_address(str(address).split("%")[0].strip())
+    except ValueError:
+        raise ValueError(f"{str(address)[:60]!r} is no address: a route is traced to an address, never to a name") from None
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_multicast or kind(str(ip)) != "public":
+        raise ValueError(f"{ip} is not on the internet ({kind(str(ip))}): only a public address has a route traced")
+    return str(ip)
+
+
+def _address_in(token: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(token.strip("()[],").split("%")[0]))
+    except ValueError:
+        return None
+
+
+def parse_trace(text: str | None, target: str, max_hops: int = TRACE_HOPS) -> tuple[Hop, ...]:
+    """The hops a tracer's words list (tracert's, traceroute's, tracepath's lines that begin with a hop's number; the
+    rest of what they say is left), in order: each its address (the last its line names) and its quickest round trip
+    ("<1 ms" counted as half a millisecond). A hop no line names did not answer; the hops past the target are left
+    out."""
+    found: dict[int, Hop] = {}
+    for line in (text or "").splitlines():
+        m = _HOP.match(line)
+        if not m or not 1 <= int(m.group(1)) <= max_hops:
+            continue
+        n, rest = int(m.group(1)), m.group(2)
+        addresses = [a for a in map(_address_in, rest.split()) if a]
+        times = [float(v.replace(",", ".")) / (2 if lt else 1) for lt, v in _RTT.findall(rest)]
+        hop = Hop(n, addresses[-1] if addresses else None, min(times) if times and addresses else None)
+        if n not in found or (found[n].address is None and hop.address is not None):  # tracepath's "1?:" then "1:"
+            found[n] = hop
+    hops = [found.get(n, Hop(n, None)) for n in range(1, max(found) + 1)] if found else []
+    for i, h in enumerate(hops):
+        if h.address == target:
+            return tuple(hops[:i + 1])
+    return tuple(hops)
+
+
+def _commands(target: str, max_hops: int, windows: bool) -> list[tuple[str, list[str], float]]:
+    """The system's tracers for `target`, in the order tried: (name, its words, how long it may take)."""
+    six = ["-6"] if ":" in target else []
+    if windows:
+        return [("tracert", ["tracert", "-d", "-h", str(max_hops), "-w", str(TRACERT_WAIT_MS), *(six or ["-4"]), target],
+                 max_hops * 3 * TRACERT_WAIT_MS / 1000 + 15)]
+    wait = max(1, round(TRACE_WAIT_MS / 1000))
+    return [("traceroute", ["traceroute", "-n", "-q", "1", "-w", str(wait), "-m", str(max_hops), *six, target],
+             max_hops * wait + 15),
+            ("tracepath", ["tracepath", "-n", "-m", str(max_hops), *six, target], max_hops * 3 + 15)]
+
+
+def _tool_trace(target: str, max_hops: int, run, windows: bool) -> Trace:
+    for name, args, timeout in _commands(target, max_hops, windows):
+        out = run(args, timeout)
+        if out is None:  # not there, or it failed to run: the next one
+            continue
+        hops = parse_trace(out, target, max_hops)
+        return Trace(target, hops, bool(hops) and hops[-1].address == target, name)
+    names = ", ".join(n for n, _a, _t in _commands(target, max_hops, windows))
+    return Trace(target, error=f"no tracer could run here ({names})")
+
+
+_ICMP = None
+
+
+def _icmp_api():
+    """iphlpapi's ICMP functions with their types (Windows), loaded once."""
+    global _ICMP
+    if _ICMP is None:
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.WinDLL("iphlpapi", use_last_error=True)
+        api.IcmpCreateFile.restype = wintypes.HANDLE
+        api.IcmpCreateFile.argtypes = []
+        api.IcmpCloseHandle.restype = wintypes.BOOL
+        api.IcmpCloseHandle.argtypes = [wintypes.HANDLE]
+        api.IcmpSendEcho.restype = wintypes.DWORD
+        api.IcmpSendEcho.argtypes = [wintypes.HANDLE, wintypes.ULONG, ctypes.c_void_p, wintypes.WORD, ctypes.c_void_p,
+                                     ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+        _ICMP = api
+    return _ICMP
+
+
+def _icmp_probe(target: str, ttl: int, wait_ms: int) -> tuple[str | None, float | None, bool]:
+    """One ICMP echo to `target` (IPv4) with this time to live, through Windows' ICMP API (no administrator): who
+    answered, the round trip in milliseconds, and whether it was the target's own echo reply. OSError when the API
+    cannot be used."""
+    import ctypes
+
+    class Options(ctypes.Structure):  # IP_OPTION_INFORMATION, as this process's own width lays it out
+        _fields_ = [("Ttl", ctypes.c_ubyte), ("Tos", ctypes.c_ubyte), ("Flags", ctypes.c_ubyte),
+                    ("OptionsSize", ctypes.c_ubyte), ("OptionsData", ctypes.c_void_p)]
+    api = _icmp_api()
+    handle = api.IcmpCreateFile()
+    if not handle or handle == ctypes.c_void_p(-1).value:
+        raise OSError(ctypes.get_last_error(), "IcmpCreateFile failed")
+    try:
+        options = Options(Ttl=ttl)
+        reply = ctypes.create_string_buffer(REPLY_BYTES)
+        data = ctypes.create_string_buffer(PAYLOAD, len(PAYLOAD))
+        began = time.perf_counter()
+        api.IcmpSendEcho(handle, struct.unpack("<I", socket.inet_aton(target))[0], data, len(PAYLOAD),
+                         ctypes.byref(options), reply, REPLY_BYTES, wait_ms)
+        took = (time.perf_counter() - began) * 1000
+        # Address, Status and RoundTripTime lead ICMP_ECHO_REPLY in either width (the 32-bit layout too)
+        address, status, rtt = struct.unpack_from("<III", reply.raw, 0)
+    finally:
+        api.IcmpCloseHandle(handle)
+    if not address or status not in ANSWERED:
+        return None, None, False
+    return (socket.inet_ntoa(struct.pack("<I", address)), float(rtt) if status == IP_SUCCESS and rtt else round(took, 1),
+            status == IP_SUCCESS)
+
+
+def _icmp_trace(target: str, max_hops: int, wait_ms: int, probe) -> Trace:
+    """Every hop asked at once, a wave of WAVE at a time (about a second a wave): the next wave only when the target
+    did not answer within this one. The hops past the last that answered are left out."""
+    answers: dict[int, tuple] = {}
+    failures = 0
+    reached = 0
+    for first in range(1, max_hops + 1, WAVE):
+        ttls = list(range(first, min(max_hops, first + WAVE - 1) + 1))
+        with ThreadPoolExecutor(max_workers=len(ttls), thread_name_prefix="liminal-trace") as pool:
+            futures = {ttl: pool.submit(probe, target, ttl, wait_ms) for ttl in ttls}
+        for ttl, f in futures.items():
+            try:
+                answers[ttl] = f.result()
+            except OSError:
+                failures += 1
+                answers[ttl] = (None, None, False)
+        if failures == len(answers):  # the API could not be used at all
+            raise OSError("Windows' ICMP API could not be used")
+        reached = min((ttl for ttl, a in answers.items() if a[2]), default=0)
+        if reached:
+            break
+    last = reached or max((ttl for ttl, a in answers.items() if a[0]), default=0)
+    hops = tuple(Hop(ttl, answers[ttl][0], answers[ttl][1]) for ttl in range(1, last + 1))
+    if reached:
+        hops = hops[:-1] + (Hop(reached, target, hops[-1].ms),)
+    return Trace(target, hops, bool(reached), "icmp")
+
+
+def trace(target, max_hops: int = TRACE_HOPS, wait_ms: int = TRACE_WAIT_MS, *, probe=None, run=None,
+          windows: bool | None = None) -> Trace:
+    """The route to `target`, a public address (ValueError otherwise, before anything is sent: traceable). On Windows
+    an IPv4 route is traced through its ICMP API (`probe`: one echo with a time to live), every hop of a wave asked at
+    once; IPv6, and a Windows whose ICMP API cannot be used, through tracert; elsewhere through traceroute, else
+    tracepath (`run`: the system's command, windowless). Each hop's address and quickest round trip; nothing is looked
+    up by name."""
+    target = traceable(target)
+    windows = sys.platform == "win32" if windows is None else windows
+    if windows and ":" not in target:
+        try:
+            return _icmp_trace(target, max_hops, wait_ms, probe or _icmp_probe)
+        except OSError:
+            pass
+    return _tool_trace(target, max_hops, run or _run, windows)

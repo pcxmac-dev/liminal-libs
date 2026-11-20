@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from .. import sockets
 from ..apps.tabs import Tab
 from ..hostbook import HOSTS_KEY
-from . import netstat, world as world_module
+from . import netstat, routes as routes_module, world as world_module
 from .infrastructure import DataSet, Index
 from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
@@ -428,6 +428,21 @@ class Firewall(MachinePlugin):
         of its own (another adapter, a stand-in in its tests) makes it here."""
         return WorldView(self.name, timeout=self.WORLD_TIMEOUT)
 
+    def world_routes(self) -> routes_module.Routes:
+        """The routes of this plugin's World Wide Web tab (1.67.0, machines/routes.py): made when first asked, closed
+        when the plugin is detached or the platform stops."""
+        routes = self.__dict__.get("_routes")
+        if routes is None:
+            with _WORLD_LOCK:
+                routes = self.__dict__.get("_routes")
+                if routes is None:
+                    routes = self.__dict__["_routes"] = self.make_world_routes()
+        return routes
+
+    def make_world_routes(self) -> routes_module.Routes:
+        """The Routes the tab traces with: the system's own (netpath.trace). A subclass's tests hand a stand-in."""
+        return routes_module.Routes()
+
     def world_home(self, view: WorldView | None = None):
         """The place the user set for this machine on the globe (LIMINAL_HOME_PLACE, "lat,lon[,label]"), read through this
         plugin's login, the one way to a setting, at most every world.SETTING_S; None when none is set, nobody is signed in
@@ -459,7 +474,13 @@ class Firewall(MachinePlugin):
             return not_here_page(here)
         view = self.world_view()
         net = self.netstat_view()
-        net.touch()
+        seen = net.touch()
+        # 1.67.0: every connection open now to an address on the internet has its route traced while the tab is
+        # shown (the user, 2026-11-19: "trace all connections"); a place's line then runs through its hops
+        remotes = [r.get("remote") for r in seen.get("rows") or ()
+                   if isinstance(r, dict) and r.get("remote") and r.get("where") == sockets.WHERE[2]]
+        routes = self.world_routes()
+        routes.want(remotes)
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
                  "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL}
@@ -468,6 +489,10 @@ class Firewall(MachinePlugin):
             view.touch()
             page = view.page(**frame)
         page = net.onto(page, view, **frame)
+        try:
+            routes.onto(page, view.geoip(), remotes)
+        except Exception:  # noqa: BLE001 - the routes never cost the tab its page
+            pass
         under = world_module.under_wsl()  # inside a WSL distribution: what WSL changes for the tab, after its own tables
         if under is not None and isinstance(page.get("tables"), list):
             page["tables"].append(under)
@@ -648,6 +673,9 @@ class Firewall(MachinePlugin):
         view = self.netstat_view(make=False)
         if view is not None:
             view.stop()
+        routes = self.__dict__.get("_routes")
+        if routes is not None:
+            routes.close()
 
     def settings_changed(self) -> None:
         """The platform kept one of this plugin's settings (its page's Settings): the home the user set is read anew at the
@@ -675,6 +703,9 @@ class Firewall(MachinePlugin):
             net.close()
         with _WORLD_LOCK:
             view = self.__dict__.pop("_world", None)
+            routes = self.__dict__.pop("_routes", None)
         if view is not None:
             view.close()
+        if routes is not None:
+            routes.close()
         super().detach()

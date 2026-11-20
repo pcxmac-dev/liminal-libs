@@ -117,6 +117,7 @@
   const FILL = 3;  // degrees: a line's segment longer than this is filled in along its great circle (the routes' step)
   const THIN = 0.75;  // px: a line's vertex nearer than this to the last one drawn is left out
   const LOAD_MS = 60_000;  // a layer the page has not answered for within this is not loaded (and asked again later)
+  const MAX_VIA = 32;  // hops a place's line runs through at most (machines/routes.py's MAX_VIA)
   const LAYER_SLOTS = [4, 5, 6, 7];  // the themes' series slots the kinds leave free
   // a layer's mark, and what it marks: the exchanges globe's circle, square and diamond for points; for lines a plain
   // stroke or a dashed one
@@ -832,6 +833,8 @@
         hosts: hosts != null && hosts >= 0 ? Math.round(hosts) : null,
         seconds: seconds != null && seconds >= 0 ? seconds : null,
         programs: (Array.isArray(o.programs) ? o.programs.slice(0, 8) : []).map((w) => text(w, 80)).filter(Boolean),
+        // 1.67.0: the route traced to it, its placed hops from home outward: its line runs through them
+        via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(placeOf).filter(Boolean),
       });
     });
     all.sort((a, b) => b.count - a.count || b.bytes - a.bytes);
@@ -1114,21 +1117,36 @@
       if (!data.home) return;
       const b = unit(data.home.lon, data.home.lat);
       for (const o of data.origins) {
-        const a = unit(o.lon, o.lat);
-        const w = Math.acos(clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1, 1));
-        if (w < 0.002) continue;  // at home's own place: its dot, no route
-        const n = clamp(Math.ceil(w / rad / 3), 8, 64);
-        const lift = Math.min(0.22, 0.04 + (0.18 * w) / Math.PI);
-        // nearly opposite home, any great circle will do: by a point a quarter of the way round
-        const mid = Math.sin(w) < 1e-3 ? perpendicular(a) : null;
-        const path = new Float64Array((n + 1) * 4);
-        for (let i = 0; i <= n; i++) {
-          const t = i / n;
-          const q = mid ? (t < 0.5 ? slerp(a, mid, Math.PI / 2, 2 * t) : slerp(mid, b, Math.PI / 2, 2 * t - 1)) : slerp(a, b, w, t);
-          path.set([q[0], q[1], q[2], lift * Math.sin(Math.PI * t)], i * 4);
+        // from the place to home: straight, or through the hops of the route traced to it (1.67.0), each leg a great
+        // circle, the whole line rising a little off the globe and down again
+        const stops = [unit(o.lon, o.lat), ...o.via.slice().reverse().map((p) => unit(p.lon, p.lat)), b];
+        const legs = [];
+        let w = 0;
+        for (let i = 0; i + 1 < stops.length; i++) {
+          const s = stops[i], e = stops[i + 1];
+          const d = Math.acos(clamp(s[0] * e[0] + s[1] * e[1] + s[2] * e[2], -1, 1));
+          if (d < 1e-4) continue;  // a hop at the place before it
+          // nearly opposite, any great circle will do: by a point a quarter of the way round
+          legs.push({ s, e, d, mid: Math.sin(d) < 1e-3 ? perpendicular(s) : null, hop: i + 1 < stops.length - 1 });
+          w += d;
         }
+        if (w < 0.002) continue;  // at home's own place: its dot, no route
+        const lift = Math.min(0.22, 0.04 + (0.18 * Math.min(w, Math.PI)) / Math.PI);
+        const counts = legs.map((l) => clamp(Math.ceil(l.d / rad / 3), legs.length > 1 ? 2 : 8, 64));
+        const n = counts.reduce((x, y) => x + y, 0), path = new Float64Array((n + 1) * 4), hops = [];
+        let k = 0, gone = 0;
+        legs.forEach((l, j) => {
+          for (let i = j ? 1 : 0; i <= counts[j]; i++, k++) {
+            const t = i / counts[j];
+            const q = l.mid ? (t < 0.5 ? slerp(l.s, l.mid, Math.PI / 2, 2 * t) : slerp(l.mid, l.e, Math.PI / 2, 2 * t - 1))
+              : slerp(l.s, l.e, l.d, t);
+            path.set([q[0], q[1], q[2], lift * Math.sin((Math.PI * (gone + l.d * t)) / w)], k * 4);
+          }
+          gone += l.d;
+          if (l.hop) hops.push(k - 1);  // where a hop is on the line: a small dot there
+        });
         const seed = seedOf(o.id);
-        routes.push({ o, path, screen: new Float64Array((n + 1) * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
+        routes.push({ o, path, hops, screen: new Float64Array((n + 1) * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
       }
       routes.sort((x, y) => x.o.count - y.o.count);  // the busiest drawn last, on top
     }
@@ -1517,6 +1535,16 @@
       }
       ctx.setLineDash([]);
       ctx.lineDashOffset = 0;
+      ctx.beginPath();  // the hops of the routes traced: a small grey-blue dot each, where it stands before the globe
+      for (const rt of routes) {
+        for (const j of rt.hops) {
+          if (!rt.screen[j * 3 + 2]) continue;
+          ctx.moveTo(rt.screen[j * 3] + 1.8, rt.screen[j * 3 + 1]);
+          ctx.arc(rt.screen[j * 3], rt.screen[j * 3 + 1], 1.8, 0, TAU);
+        }
+      }
+      ctx.fillStyle = css(colours.network, picked ? 0.45 : 0.9);
+      ctx.fill();
       if (!now) return;  // still: no lights
       ctx.lineCap = 'round';
       for (let i = Math.max(0, routes.length - LIGHTS); i < routes.length; i++) {

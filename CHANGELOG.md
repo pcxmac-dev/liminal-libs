@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.67.0 (2026-11-20)
+
+Every connection's route on the firewalls' World Wide Web globe. The user, 2026-11-19: "also use traceroute or find
+the routes that the traffic is being used", then "no, trace all connections". The firewall plugins' tab draws it as it
+is: no plugin and no app changes for it.
+
+- **`netpath.trace`**: a whole route to a public address (`traceable`: never a name, never the local network). On
+  Windows an IPv4 route goes through its ICMP API (iphlpapi's IcmpSendEcho: no administrator, no process started),
+  every hop of a wave of 16 asked at once, about a second a wave, the next wave only when the address did not answer
+  within this one; IPv6, and a Windows whose ICMP API cannot be used, through `tracert -d`; elsewhere through
+  `traceroute -n`, else `tracepath -n`. Each hop's address and quickest round trip (`Hop`, `Trace`); `parse_trace`
+  reads the three tracers' words.
+- **`machines/routes.py`** (`Routes`): while a firewall's World Wide Web tab is shown, the remote address of every
+  connection open to the internet waits to be traced, one at a time on one thread, a quarter of a second between two.
+  A route is kept an hour in memory (1,024 at most), never on disk, and traced again after that while its connection
+  is open. The thread ends once nothing waits or the tab has not been asked for 20 s, and for good on detach or when
+  the platform stops.
+- **The globe**: a place's line runs from home through the placed hops of the route traced to an address there (`via`
+  on the place; the hops at home's place, at the place's own, at the place of the hop before and those the GeoIP file
+  does not place are left out), each leg a great circle, a small grey-blue dot at each hop. The tab's new table
+  **Routes**: each route's address and place, its hops answered, its way through the places, when it was traced. A
+  router's place is where the GeoIP file puts its address, often its network's home rather than the router.
+- **The firewall base**: `world()` hands the routes the connections' remote addresses at each ask and puts the routes
+  on the page; `world_routes()` and `make_world_routes()` (a subclass's tests hand a stand-in); closed on detach and
+  in `app_stopping`.
+- **Tests**: the suite's guard refuses a real trace (the ICMP probe, the tracers, the routes' thread): a test hands its
+  own. The globe's script was loaded in headless Edge over stand-ins, routes through hops among them.
+
 ## 1.66.1 (2026-11-19)
 
 The globe's look, as the user asked while looking at the firewalls' World Wide Web tab: "only end points of routes are

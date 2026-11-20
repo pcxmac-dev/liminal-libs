@@ -844,6 +844,15 @@ class Wall(FakeFirewall):
     def make_world_view(self) -> WorldView:
         return Globe(self.tmp, self.placing)
 
+    def make_world_routes(self):  # 1.67.0: routes traced by a stand-in, stepped by the test (no thread)
+        from liminal_libs import netpath
+        from liminal_libs.machines.routes import Routes
+
+        def tracer(address):
+            return netpath.Trace(address, (netpath.Hop(1, ROUTER, 0.5), netpath.Hop(2, address, 9.0)), True, "stand-in")
+        self.started = []
+        return Routes(tracer=tracer, start=self.started.append)
+
     def make_netstat_view(self) -> NetstatView:
         made = super().make_netstat_view()  # the base's own: its index, its listeners, its agent
         view = view_of(self.source, login=None, index=made.index, listeners=self.netstat_listeners, agent=made.agent,
@@ -918,7 +927,7 @@ def test_the_world_tab_reads_for_the_hosts_and_shows_them_when_chosen_with_no_ca
     fw.world_view().stop()
     hosts = plain(fw.world())
     assert hosts["globe"]["showing"] == "Hosts recorded · all of them" and not fw.world_view().running
-    assert [t["title"] for t in hosts["tables"]] == ["What the globe shows", "Programs", "Ports", "Hosts",
+    assert [t["title"] for t in hosts["tables"]] == ["What the globe shows", "Routes", "Programs", "Ports", "Hosts",
                                                      "Internet infrastructure"]
     assert fw.world_pick("port=tcp/443")["said"] == "Hosts recorded · port 443/tcp"
     assert fw.world_direction("out")["ok"] and fw.world_within("week")["ok"]
@@ -994,3 +1003,25 @@ def test_the_views_facts_ask_nothing():
     view.describe()
     assert login.reads == reads and len(view.asked) == 1
     assert FakeFirewall().netstat_view(make=False) is None and isinstance(FakeFirewall(), Firewall)
+
+
+
+def test_every_connection_to_the_internet_has_its_route_traced_while_the_tab_is_shown(tmp_path):
+    """1.67.0 (the user, 2026-11-19: "trace all connections"): each ask of the World Wide Web tab hands the routes the
+    remote addresses of the connections open to the internet, and only those; the routes' thread is started once, and
+    nothing is traced but by it (here a stand-in, stepped by the test). Detached: the routes are closed."""
+    fw = Wall(tmp_path, placing=Placing())
+    page = fw.world()
+    routes = fw.world_routes()
+    assert fw.started and len(fw.started) == 1  # the thread asked for once, not run here
+    assert routes.describe()["waiting"] == 3 and routes.describe()["kept"] == 0  # WEB, WEB2, V6WEB; not the LAN
+    assert [t["title"] for t in page["tables"]][:2] == ["What the globe shows", "Routes"]
+    while routes.step():
+        pass
+    assert routes.describe() == {"kept": 3, "waiting": 0, "tracing": "", "running": True, "traced": 3}
+    again = fw.world()
+    table = next(t for t in again["tables"] if t["title"] == "Routes")
+    assert len(table["rows"]) == 3 and "3 of 3 traced, 0 waiting." in table["note"]
+    assert len(fw.started) == 1  # nothing new to trace within the hour: no second thread asked for
+    fw.detach()
+    assert routes.closed and routes.describe()["kept"] == 0

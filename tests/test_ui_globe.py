@@ -1564,3 +1564,18 @@ def test_gshhg_is_credited_while_its_coasts_are_drawn(js):
     assert "if (credited !== coastCredited) { coastCredited = credited; renderAttribution(); }" in render
     assert "if (coastCredited) list.push(COAST_CREDIT);" in _body(js, "function renderAttribution() {")
     assert "let coastCredited = false;" in js
+
+
+def test_a_places_line_runs_through_the_hops_of_its_traced_route(js):
+    """1.67.0: a place may carry `via`, the placed hops of the route traced to it from home outward (read as places,
+    MAX_VIA at most, what is no place dropped); its line runs from the place through them to home, leg by leg on great
+    circles, rising once over the whole way, with a small grey-blue dot at each hop."""
+    assert "via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(placeOf).filter(Boolean)," in js
+    build = _body(js, "function buildRoutes() {")
+    assert "...o.via.slice().reverse().map((p) => unit(p.lon, p.lat)), b];" in build
+    assert "lift * Math.sin((Math.PI * (gone + l.d * t)) / w)" in build and "if (l.hop) hops.push(k - 1);" in build
+    assert "if (d < 1e-4) continue;" in build  # a hop at the place before it makes no leg
+    draw = _body(js, "function drawRoutes(g, fr, now) {")
+    assert "for (const j of rt.hops) {" in draw and "if (!rt.screen[j * 3 + 2]) continue;" in draw
+    assert "ctx.fillStyle = css(colours.network, picked ? 0.45 : 0.9);" in draw
+

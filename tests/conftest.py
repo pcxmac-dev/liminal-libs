@@ -96,8 +96,8 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
     """Every test: no recording all the time by the user's own setting, no socket table read for real, and the hosts
     database and the infrastructure layers kept in the test's own folder (the module's docstring). Yields the reads
     refused, so the guard's own test can clear the one it made on purpose."""
-    from liminal_libs import hostbook, sockets
-    from liminal_libs.machines import infrastructure
+    from liminal_libs import hostbook, netpath, sockets
+    from liminal_libs.machines import infrastructure, routes
 
     folder = request.getfixturevalue("tmp_path") if "tmp_path" in request.fixturenames else None
     lock = threading.Lock()
@@ -115,8 +115,22 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
         refused.append(f"sockets.read {args[:1]!r}"[:300])
         raise Reached("the test read this machine's socket table for real: give the code a reader of its own")
 
+    def probe(*args, **kwargs):  # 1.67.0: a route is never traced for real (Windows' ICMP API, the tracers)
+        refused.append(f"netpath probe {args[:2]!r}"[:300])
+        raise Reached("the test traced a route for real: give netpath.trace a probe and a run of its own")
+
+    def tracer(args, timeout=None):
+        refused.append(f"netpath tracer {list(args)[:1]!r}"[:300])
+        return None  # as a tracer that is not there: nothing runs
+
+    def thread(work):  # nor is the routes' thread started: a test steps its Routes itself
+        refused.append("routes thread")
+
     monkeypatch.setenv(hostbook.VARIABLE, "shown")
     monkeypatch.setattr(sockets, "read", read)
+    monkeypatch.setattr(netpath, "_icmp_probe", probe)
+    monkeypatch.setattr(netpath, "_run", tracer)
+    monkeypatch.setattr(routes.Routes, "_thread", staticmethod(thread))
     monkeypatch.setattr(hostbook, "path", lambda: own() / "liminal-data" / hostbook.FOLDER / hostbook.FILE)
     monkeypatch.setattr(hostbook, "_BOOKS", {})
     monkeypatch.setattr(infrastructure, "folder", lambda: own() / "liminal-data" / infrastructure.FOLDER)
