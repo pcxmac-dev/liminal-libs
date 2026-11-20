@@ -493,6 +493,8 @@ class Firewall(MachinePlugin):
             routes.onto(page, view.geoip(), remotes)
         except Exception:  # noqa: BLE001 - the routes never cost the tab its page
             pass
+        finally:
+            view.rest()  # the GeoIP file let go again unless the capture runs (WorldView.rest)
         under = world_module.under_wsl()  # inside a WSL distribution: what WSL changes for the tab, after its own tables
         if under is not None and isinstance(page.get("tables"), list):
             page["tables"].append(under)
