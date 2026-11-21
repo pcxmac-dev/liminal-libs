@@ -13,8 +13,8 @@ platform is restarted; the globe's script keeps drawing an older server's page a
   telecom lines on land), built from their files when a page asks and their versions changed, held until they change
   or the plugin is detached. Points on one cell of the files' 0.02 degree grid are one vertex; a line's end is joined to
   the nearest point within 25 km (`JOIN_KM`) of a line not connected to it, and a loose end to any other line's point
-  that near; runs with no branch are one edge each. About 0.6 s for a layer's 400,000 points (the joins' pairs weighed a
-  quarter of a million at a time, some 40 MB).
+  that near; runs with no branch are one edge each. Half a second for a layer's 400,000 points here (20,000 lines at
+  random; the joins' pairs weighed a quarter of a million at a time, some 40 MB).
 - **Each leg snapped onto it**: home, the route's placed hops and the host, leg by leg, each end to the nearest junction
   within 150 km (`SNAP_KM`), then the shortest way (A*, bounded by the limit and 50,000 junctions looked on from),
   taken when it is no longer than 2.5 times (`DETOUR`) the leg's great circle, the snaps included; else, under 30 km
