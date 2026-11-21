@@ -958,7 +958,8 @@ def test_it_zooms_to_96x_by_the_wheel_two_fingers_and_the_keys(js):
     """The user, 2026-11-19: "i need to zoom in a few more times maybe 96x". MAX_ZOOM is 96, and every way in goes
     through zoomAt, which holds it there: the wheel and a trackpad's pinch, two fingers, + and − and their buttons
     (ten presses of + from the whole globe). Its words say "96×"; at its nearest a wheel's notch scrolls the page."""
-    assert "  const MAX_ZOOM = 96;  // " in js and "const MAX_ZOOM = 12;" not in js
+    assert "  const MAX_ZOOM = 1024;\n" in js and "const MAX_ZOOM = 96;" not in js  # 1024x since 1.68.1
+    assert "i need zoom up to 1024x" in js
     assert "i need to zoom in a few more times maybe 96x" in js.split("(() => {", 1)[0]
     assert "const next = clamp(want, 1, MAX_ZOOM);" in _body(js, "function zoomAt(clientX, clientY, want) {")
     assert "zoomAt(r.left + r.width / 2, r.top + r.height / 2, zoom * f);" in _body(js, "function zoomBy(f) {")
@@ -968,10 +969,10 @@ def test_it_zooms_to_96x_by_the_wheel_two_fingers_and_the_keys(js):
     keys = _body(js, "canvas.addEventListener('keydown', (e) => {")
     assert "{ zoomBy(1.6); sayZoom(); }" in keys and "{ zoomBy(1 / 1.6); sayZoom(); }" in keys
     assert "button('+', 'Zoom in', () => { zoomBy(1.6); sayZoom(); });" in js
-    assert 1.6 ** 9 < 96 < 1.6 ** 10  # ten presses
+    assert 1.6 ** 14 < 1024 < 1.6 ** 15  # fifteen presses (ten took it to 96x)
     assert "zoom >= 10 ? zoom.toFixed(0) : zoom.toFixed(1)" in _body(js, "function zoomText() {")
-    assert f"{96:.0f}×" == "96×" and 20_900 < _radius(96) < 21_000  # some 300 m a pixel (the Earth's 6,371 km)
-    assert 6371e3 / _radius(96) < 310
+    assert f"{1024:.0f}×" == "1024×" and 223_000 < _radius(1024) < 224_000  # some 30 m a pixel (6,371 km)
+    assert 6371e3 / _radius(1024) < 30
 
 
 def test_the_finest_map_only_past_twelve_times(js):

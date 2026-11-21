@@ -87,7 +87,10 @@
   const FINE_ZOOM = 2.5;  // past it the 1:50m outlines are loaded and drawn
   const FINEST_ZOOM = 12;  // past it the 1:10m outlines
   const COAST_ZOOM = 24;  // past it GSHHG's coasts and borders, the tiles of them on the canvas (vendor/world/coast-h/)
-  const MAX_ZOOM = 96;  // GSHHG's detail (about 200 m): some 300 m a pixel at 96x on a globe 520 px high
+  // 1024x since 1.68.1 (the user, 2026-11-20: "i need zoom up to 1024x"): some 30 m a pixel on a globe 520 px high.
+  // GSHHG's coasts (about 200 m of detail) and the layers' lines (a point kept every 0.02 degrees, about 2 km) show
+  // as straight runs there; places and marks keep their 1e-5 degrees (about a metre).
+  const MAX_ZOOM = 1024;
   const MAX_TILES = 120;  // the coast tiles kept, the least lately drawn let go first (globe.js's)
   const MAX_TILE_POINTS = 1_000_000;  // and their points at most (some 12 MB as unit vectors)
   const TILE_LOADS = 4;  // the coast tiles on their way at once, from every globe on the page (globe.js's)

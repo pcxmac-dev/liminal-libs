@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.68.1 (2026-11-20)
+
+The globe zooms to 1024x. The user, 2026-11-20: "i need zoom up to 1024x". Static files only: a page shows it once
+reloaded, with no app restarted.
+
+- `MAX_ZOOM` 1024 (it was 96): some 30 m a pixel on a globe 520 px high. The wheel and two fingers zoom smoothly; + and
+  − step by 1.6, fifteen presses from the whole globe. GSHHG's coasts (about 200 m of detail) and the infrastructure
+  layers' lines (a point kept every 0.02 degrees, about 2 km) show as straight runs that close; places and marks keep
+  their 1e-5 degrees (about a metre). Checked in headless Edge: zoomed in to 1024x and out again, nothing thrown.
+
 ## 1.68.0 (2026-11-20)
 
 Every connection in the hosts database. The user, 2026-11-20: "all connections need to be databased, basically who,
