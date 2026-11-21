@@ -501,7 +501,7 @@ class Firewall(MachinePlugin):
             page = view.page(**frame)
         page = net.onto(page, view, **frame)
         try:
-            routes.onto(page, view.geoip(), remotes)
+            routes.onto(page, view.geoip(), remotes, index=net.index)  # 1.69.0: and their heat on the layers' network
         except Exception:  # noqa: BLE001 - the routes never cost the tab its page
             pass
         finally:

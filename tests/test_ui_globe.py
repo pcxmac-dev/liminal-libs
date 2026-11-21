@@ -215,7 +215,8 @@ def test_it_moves_only_while_seen_and_stands_still_under_reduced_motion(js):
     assert "if (destroyed || !visible || document.hidden) return;" in frame
     assert "render(lights ? now : 0);" in frame and "if (glide || lights) raf = requestAnimationFrame(frame);" in frame
     routes = _body(js, "function drawRoutes(g, fr, now) {")
-    assert "if (!now) return;  // still: no lights" in routes
+    assert "if (!now) return;  // still: no lights" in _body(js, "function drawLights(picked, now) {")
+    assert routes.count("drawLights(picked, now);") == 2  # with the heat (1.69.0) and without it
     assert "ctx.lineDashOffset = dash.length && now ?" in routes
     assert "if (now) {" in _body(js, "function drawHome(g, now) {")
     assert "if (reduced) { view = { lon: to.lon, lat: to.lat }; zoom = to.zoom; glide = null; changed(); return; }" in js
@@ -1582,3 +1583,30 @@ def test_a_places_line_runs_through_the_hops_of_its_traced_route(js):
     assert "for (const j of rt.hops) {" in draw and "if (!rt.screen[j * 3 + 2]) continue;" in draw
     assert "ctx.fillStyle = css(colours.network, picked ? 0.45 : 0.9);" in draw
 
+
+
+def test_the_routes_are_a_heat_map_and_the_lights_travel_only_the_last_stretch(js):
+    """1.69.0 (the user, 2026-11-20: "they should look like a heat map ... the brighter it gets, lets keep grey scale to
+    white but don't use the current method of dots flying over existing infrastructure, just use that to the end
+    points/hosts"): the page's heat runs are drawn grey to white by their weight on a log scale, 1 to 3 px, in a layer
+    of their own over the infrastructure; the lights travel each place's last stretch alone (from `last` to it); a page
+    with no heat (an older server's) keeps the routes and their lights as they were."""
+    normal = _body(js, "function normal(spec) {")
+    assert "heat: Array.isArray(s.heat) ? heatOf(s.heat) : null," in normal
+    assert "last: Array.isArray(o.last) ? placeOf({ lat: o.last[0], lon: o.last[1] }) : null," in normal
+    heat = _body(js, "function heatOf(list) {")
+    assert "list.slice(0, MAX_HEAT_RUNS)" in heat and "points + one.length / 3 >= MAX_HEAT_POINTS" in heat
+    assert "Math.ceil(d / fill)" in heat and "runs.sort((x, y) => x.w - y.w);" in heat  # filled in, the brightest last
+    build = _body(js, "function buildRoutes() {")
+    stretch = _body(build, "if (data.heat) {")
+    assert "const s = unit(o.lon, o.lat), e = unit(o.last.lon, o.last.lat);" in stretch and "return;" in stretch
+    assert "hops: []" in stretch  # no hop dots: the network is the heat's
+    draw = _body(js, "function drawRoutes(g, fr, now) {")
+    assert "for (const rt of routes) onScreen(rt, g, fr);\n        drawLights(picked, now);\n        return;" in draw
+    paint = _body(js, "function paintHeat(c, g, fr, h) {")
+    assert "Math.log1p(h.most)" in paint and "(Math.log1p(r.w) / top) * (HEAT_STEPS - 1)" in paint
+    assert "c.strokeStyle = css(mix(least, most, t), 0.75 + 0.25 * t);" in paint and "c.lineWidth = 1 + 2 * t;" in paint
+    assert "[[110, 110, 110, 1], [255, 255, 255, 1]]" in js  # grey to white (to the text's colour on a light page)
+    render = _body(js, "function render(now) {")
+    assert render.index("infraLayer(g, fr, ratio, W, H)") < render.index("heatLayer(g, fr, ratio, W, H)") \
+        < render.index("drawRoutes(g, fr, now);")

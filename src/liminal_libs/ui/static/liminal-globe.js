@@ -121,6 +121,9 @@
   const THIN = 0.75;  // px: a line's vertex nearer than this to the last one drawn is left out
   const LOAD_MS = 60_000;  // a layer the page has not answered for within this is not loaded (and asked again later)
   const MAX_VIA = 32;  // hops a place's line runs through at most (machines/routes.py's MAX_VIA)
+  const MAX_HEAT_RUNS = 4000;  // the heat's runs drawn at most (machines/network.py's MAX_RUNS)
+  const MAX_HEAT_POINTS = 250000;  // their points, the great circles filled in (the page's MAX_POINTS, and the filling)
+  const HEAT_STEPS = 16;  // the heat's shades from grey to white, each drawn as one path
   const MAX_ROUTE_POINTS = 128;  // points a route's line is drawn with at most, whatever its hops
   const LAYER_SLOTS = [4, 5, 6, 7];  // the themes' series slots the kinds leave free
   // a layer's mark, and what it marks: the exchanges globe's circle, square and diamond for points; for lines a plain
@@ -776,6 +779,9 @@
       accent: rgbOf(v('--accent'), fb.accent), muted: rgbOf(v('--muted'), fb.muted), text: rgbOf(v('--text'), fb.text),
       frame: rgbOf(v('--frame'), fb.frame), surface: surface || rgbOf(v('--card') || v('--bg'), fb.surface),
       land: rgbOf(v('--globe-land'), fb.land), network: rgbOf(v('--globe-network'), fb.network),
+      // 1.69.0: the heat's scale, from its least to its most (the user, 2026-11-20: "lets keep grey scale to white"):
+      // a mid grey to white; on a light page, where white would not show, a grey to the text's own colour
+      heat: base === 'light' ? [[150, 150, 150, 1], rgbOf(v('--text'), fb.text)] : [[110, 110, 110, 1], [255, 255, 255, 1]],
       font: cs.fontFamily || 'system-ui, sans-serif', detached: !node.isConnected,
     };
   }
@@ -839,6 +845,8 @@
         programs: (Array.isArray(o.programs) ? o.programs.slice(0, 8) : []).map((w) => text(w, 80)).filter(Boolean),
         // 1.67.0: the route traced to it, its placed hops from home outward: its line runs through them
         via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(placeOf).filter(Boolean),
+        // 1.69.0: where the route leaves the network (else its last hop, else home): its light travels from there
+        last: Array.isArray(o.last) ? placeOf({ lat: o.last[0], lon: o.last[1] }) : null,
       });
     });
     all.sort((a, b) => b.count - a.count || b.bytes - a.bytes);
@@ -865,7 +873,41 @@
       attribution: creditOf(s.attribution), updated: text(s.updated, 40), note: text(s.note, MAX_NOTE),
       // the kinds the legend lists (all of them when the spec names none it knows), the filter in words, the layers
       kinds: kinds.length ? kinds : Object.keys(KINDS), showing: text(s.showing, 200), has, ...layersOf(s.layers),
+      // 1.69.0: the routes' heat (machines/network.py); null on an older server's page, whose routes are drawn as before
+      heat: Array.isArray(s.heat) ? heatOf(s.heat) : null, heatBy: s.heat_by === 'bytes' ? 'bytes' : 'connections',
     };
+  }
+  // The heat's runs as the globe draws them: each run's points as unit vectors, a stretch longer than FILL degrees
+  // filled in along its great circle; MAX_HEAT_RUNS runs and MAX_HEAT_POINTS points at most, the lightest first (the
+  // brightest drawn on top), and the heaviest weight, the top of the scale.
+  function heatOf(list) {
+    const runs = [], fill = FILL * rad;
+    let points = 0, most = 0;
+    for (const r of list.slice(0, MAX_HEAT_RUNS)) {
+      if (!r || typeof r !== 'object' || !Array.isArray(r.points)) continue;
+      const w = Math.max(0, num(r.w) ?? 0), one = [];
+      let a = null;
+      for (const p of r.points) {
+        if (points + one.length / 3 >= MAX_HEAT_POINTS) break;
+        const q = Array.isArray(p) ? placeOf({ lat: p[0], lon: p[1] }) : null;
+        if (!q) continue;
+        const b = unit(q.lon, q.lat);
+        if (a) {
+          const d = 2 * Math.asin(Math.min(1, Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / 2));
+          if (d < 1e-9) continue;  // the same point again
+          const steps = d > fill && Math.sin(d) > 1e-6 ? Math.ceil(d / fill) : 1;
+          for (let k = 1; k < steps; k++) one.push(...slerp(a, b, d, k / steps));
+        }
+        one.push(b[0], b[1], b[2]);
+        a = b;
+      }
+      if (one.length < 6) continue;  // no stretch
+      points += one.length / 3;
+      runs.push({ v: Float32Array.from(one), w });
+      most = Math.max(most, w);
+    }
+    runs.sort((x, y) => x.w - y.w);
+    return { runs, most };
   }
   const unplacedOf = (d) => Object.keys(KINDS).reduce((n, kind) => n + d.unplaced[kind].places, 0);  // places without a point
   const nameOf = (o) => o.label || o.city || o.country || o.id;
@@ -957,7 +999,7 @@
     // offscreen layers, drawn again only when what they show changes: the sphere, the land and its lines; a plugin's
     // infrastructure (its marks and lines); the dots and the names
     const layers = { base: { canvas: null, key: '' }, infra: { canvas: null, key: '' },
-      places: { canvas: null, key: '' } };
+      places: { canvas: null, key: '' }, heat: { canvas: null, key: '' } };
     const motion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
     const scheme = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
     let reduced = !!(motion && motion.matches);
@@ -1119,6 +1161,20 @@
     function buildRoutes() {
       routes = [];
       if (!data.home) return;
+      if (data.heat) {  // 1.69.0: the heat draws the routes; a light travels each place's last stretch alone
+        for (const o of data.origins) {
+          if (!o.placed || !o.last) continue;
+          const s = unit(o.lon, o.lat), e = unit(o.last.lon, o.last.lat);
+          const d = Math.acos(clamp(s[0] * e[0] + s[1] * e[1] + s[2] * e[2], -1, 1));
+          if (d < 2e-4 || Math.PI - d < 1e-3) continue;  // within a kilometre or so: no stretch to travel
+          const n = clamp(Math.ceil(d / rad / 0.5), 4, 64), path = new Float64Array((n + 1) * 4);
+          for (let i = 0; i <= n; i++) path.set([...slerp(s, e, d, i / n), 0], i * 4);  // on the globe, as the heat
+          const seed = seedOf(o.id);
+          routes.push({ o, path, hops: [], screen: new Float64Array((n + 1) * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
+        }
+        routes.sort((x, y) => x.o.count - y.o.count);
+        return;
+      }
       const b = unit(data.home.lon, data.home.lat);
       for (const o of data.origins) {
         // from the place to home: straight, or through the hops of the route traced to it (1.67.0), each leg a great
@@ -1323,6 +1379,43 @@
       }
       return layer(slot, `${viewKey(g, W, H, ratio)}|${layersKey}`, W, H, ratio, (c) => paintLayers(c, g, fr, list));
     }
+    // 1.69.0: the routes as a heat map (the user, 2026-11-20: "they should look like a heat map ... more traffic over
+    // this and that, the brighter it gets, lets keep grey scale to white"): every run of the network the routes use,
+    // and every great circle where they leave it, on the globe's surface, from grey to white and from 1 to 3 px by the
+    // traffic over it on a log scale (t = log(1 + w) / log(1 + the most)), HEAT_STEPS steps of it, each one path; the
+    // brightest with a faint wider stroke under them. Drawn again only when the view or the spec changes.
+    function heatLayer(g, fr, ratio, W, H) {
+      const slot = layers.heat, h = data.heat;
+      if (!h || !h.runs.length) {
+        if (slot.canvas) { slot.canvas.width = 0; slot.canvas.height = 0; slot.canvas = null; slot.key = ''; }
+        return null;
+      }
+      return layer(slot, `${viewKey(g, W, H, ratio)}|${version}`, W, H, ratio, (c) => paintHeat(c, g, fr, h));
+    }
+    function paintHeat(c, g, fr, h) {
+      const top = Math.log1p(h.most), [least, most] = colours.heat, steps = new Map();
+      for (const r of h.runs) {  // the lightest first
+        const k = top > 0 ? Math.round((Math.log1p(r.w) / top) * (HEAT_STEPS - 1)) : 0;
+        if (!steps.has(k)) steps.set(k, []);
+        steps.get(k).push(r.v);
+      }
+      c.lineJoin = 'round';
+      c.lineCap = 'round';
+      for (const [k, runs] of [...steps].sort((a, b) => a[0] - b[0])) {
+        const t = k / (HEAT_STEPS - 1);
+        c.beginPath();
+        for (const v of runs) strokeUnits(c, v, g, fr);
+        if (t >= 0.6) {  // the brightest: a faint glow under
+          c.strokeStyle = css(most, 0.1 + 0.15 * t);
+          c.lineWidth = 3 + 4 * t;
+          c.stroke();
+        }
+        c.strokeStyle = css(mix(least, most, t), 0.75 + 0.25 * t);
+        c.lineWidth = 1 + 2 * t;
+        c.stroke();
+      }
+      c.lineCap = 'butt';
+    }
     // Every layer's lines, then every layer's marks over them; of each, the layer with the most features first, so that
     // the few stay on top of the many (an exchange point's diamond over the data centres round it, a cable over the
     // lines on land), the spec's order among layers as many.
@@ -1514,6 +1607,11 @@
     // each of the busiest, in towards home or out from it, its tail thinning behind it.
     function drawRoutes(g, fr, now) {
       const picked = pick && pick.o, groups = new Map();
+      if (data.heat) {  // 1.69.0: the lines are the heat's (heatLayer); the last stretches are only where lights go
+        for (const rt of routes) onScreen(rt, g, fr);
+        drawLights(picked, now);
+        return;
+      }
       for (const rt of routes) {
         const on = picked === rt.o, level = on ? 2 : picked ? 0 : 1, width = rt.width + (on ? 1 : 0);
         const key = `${level}|${width}|${rt.o.kind}`;
@@ -1551,6 +1649,10 @@
       }
       ctx.fillStyle = css(colours.network, picked ? 0.45 : 0.9);
       ctx.fill();
+      drawLights(picked, now);
+    }
+    // A light along each of the busiest routes, in towards home or out from it, its tail thinning behind it.
+    function drawLights(picked, now) {
       if (!now) return;  // still: no lights
       ctx.lineCap = 'round';
       for (let i = Math.max(0, routes.length - LIGHTS); i < routes.length; i++) {
@@ -1703,6 +1805,8 @@
       ctx.drawImage(baseLayer(g, fr, ratio, W, H, tiles), 0, 0);
       const infra = infraLayer(g, fr, ratio, W, H);  // the layers: over the map, under the routes
       if (infra) ctx.drawImage(infra, 0, 0);
+      const heat = heatLayer(g, fr, ratio, W, H);  // 1.69.0: the routes' heat, over the layers they run along
+      if (heat) ctx.drawImage(heat, 0, 0);
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       drawRoutes(g, fr, now);
       ctx.setTransform(1, 0, 0, 1, 0, 0);

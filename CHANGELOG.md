@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.69.0 (2026-11-20)
+
+The routes on the firewalls' World Wide Web globe follow the physical network and are drawn as a heat map. The user,
+2026-11-20: "so for the routes, they should try to mirror their physical routing on the map, ie undersea cables, fiber
+runs, etc... also, they should look like a heat map, but the actual route between pt a and pt b, doesn't change so more
+traffic over this and that, the brighter it gets, lets keep grey scale to white but don't use the current method of
+dots flying over existing infrastructure, just use that to the end points/hosts". The platform's page shows it once the
+platform is restarted; the globe's script keeps drawing an older server's page as before.
+
+- **The network** (new `machines/network.py`): a graph of the installed line layers (submarine cables, backbones,
+  telecom lines on land), built from their files when a page asks and their versions changed, held until they change
+  or the plugin is detached. Points on one cell of the files' 0.02 degree grid are one vertex; a line's end is joined to
+  the nearest point within 25 km (`JOIN_KM`) of a line not connected to it, and a loose end to any other line's point
+  that near; runs with no branch are one edge each. About 0.6 s for a layer's 400,000 points (the joins' pairs weighed a
+  quarter of a million at a time, some 40 MB).
+- **Each leg snapped onto it**: home, the route's placed hops and the host, leg by leg, each end to the nearest junction
+  within 150 km (`SNAP_KM`), then the shortest way (A*, bounded by the limit and 50,000 junctions looked on from),
+  taken when it is no longer than 2.5 times (`DETOUR`) the leg's great circle, the snaps included; else, under 30 km
+  (`CITY_KM`, one city's) and where no layer is installed, the leg's great circle. A hop the network meets on both its
+  legs is passed through at its junction (no spike out to the router's GeoIP place). Ways and snaps are cached with
+  their graph.
+- **The heat**: each stretch a route uses gains its place's traffic once, however often the route goes along it (the
+  place's bytes where the capture counted any on the page, else its connections); shared stretches are summed. The
+  page gets `globe.heat = [{points: [[lat, lon], ...], w}]` (runs of one weight, the heaviest kept first, 4,000 runs and
+  200,000 points at most), `globe.heat_by` and each place's `last`: where its route leaves the network, else its last
+  hop, else home. `Routes.onto(..., index=)` adds it (the firewall passes its layers' index); a heat that fails is left
+  out and the routes are drawn as before. The routes table's note says so.
+- **The drawing** (liminal-globe.js): the heat in a layer of its own over the infrastructure and under the places, on
+  the globe's surface, from a mid grey to white (on a light page, grey to the text's colour) and 1 to 3 px by the
+  traffic on a log scale, 16 shades, the brightest with a faint glow under them. No lights on the network: a light
+  travels each place's last stretch alone, from `last` to it. A page without `heat` keeps the lifted routes and their
+  lights. Checked in headless Edge over stand-ins: the heat, an older page, the heat again, none, a light page; nothing
+  thrown.
+- No layer is installed on this machine yet: until one is, every leg is its great circle, drawn as heat.
+
 ## 1.68.1 (2026-11-20)
 
 The globe zooms to 1024x. The user, 2026-11-20: "i need zoom up to 1024x". Static files only: a page shows it once

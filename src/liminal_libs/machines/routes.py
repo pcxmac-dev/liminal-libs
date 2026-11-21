@@ -8,7 +8,11 @@ home through its route's placed hops (`via`) instead of straight to it, and the 
 A route is kept in memory for an hour (KEEP_S), never on disk, and traced again after that while its connection is
 still open. Nothing is traced while the tab is not shown: the thread ends once nothing waits or the tab has not been
 asked for TIMEOUT_S, and for good when the plugin is detached (close). A router's place is where the GeoIP file puts
-its address, often its network's home rather than the router itself."""
+its address, often its network's home rather than the router itself.
+
+1.69.0: the routes follow the installed cables, backbones and lines on land where they can (machines/network.py), and
+the page gets them as a heat map, each stretch as bright as the traffic over it (globe["heat"]), each place's light
+on its last stretch alone ("last")."""
 from __future__ import annotations
 
 import math
@@ -18,6 +22,7 @@ from collections import OrderedDict
 from typing import Iterable
 
 from .. import netpath
+from . import network as network_module
 
 KEEP_S = 3600.0  # a route is traced again after this long, while its connection is still open
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
@@ -61,6 +66,8 @@ class Routes:
         self._keep = keep
         self._wall = wall or time.time
         self._saved: set[tuple] = set()
+        # 1.69.0: the network the routes are drawn on, made from the plugin's installed layers when the page asks
+        self.network = network_module.Network()
 
     def _stopping(self) -> bool:
         """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
@@ -144,6 +151,7 @@ class Routes:
             self.closed = True
             self._waiting.clear()
             self._kept.clear()
+        self.network.clear()
 
     def describe(self) -> dict:
         with self._lock:
@@ -202,10 +210,12 @@ class Routes:
             self._saved.clear()
         self._saved.add((address, at))
 
-    def onto(self, page: dict, geoip, addresses: Iterable) -> dict:
+    def onto(self, page: dict, geoip, addresses: Iterable, index=None) -> dict:
         """The routes on the tab's page: each dot of the globe at a place a route ends gets that route's placed hops
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
-        connections open now (`addresses`, their order kept)."""
+        connections open now (`addresses`, their order kept). 1.69.0: then the routes' heat on the network of the
+        line layers `index` (the plugin's infrastructure.Index) has installed, great circles without any
+        (network.Network.onto: globe["heat"], "heat_by", each place's "last"); a heat that fails is left out."""
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
         home = _key(home_place.get("lat"), home_place.get("lon")) if isinstance(home_place, dict) else None
@@ -241,6 +251,10 @@ class Routes:
                     way = by_place.get(_key(origin.get("lat"), origin.get("lon")))
                     if way:
                         origin["via"] = way
+            try:
+                self.network.onto(globe, index)
+            except Exception:  # noqa: BLE001 - the heat never costs the tab its page: the routes drawn as before
+                globe.pop("heat", None)
         rows.sort(key=lambda r: (-r[0], r[1]))
         table_rows = []
         for placed, address, found, route, way, answered, age in rows[:TABLE_ROWS]:
@@ -260,7 +274,10 @@ class Routes:
                 f"{len(wanted)} traced, {waiting} waiting.{tracing} On Windows each route is asked through its ICMP API "
                 "(small echo probes, about 16 at once, no administrator); elsewhere through traceroute or tracepath. "
                 "Nothing is traced while the tab is not shown; a route is kept an hour, in memory only. A router's "
-                "place is where the GeoIP file puts its address, often its network's home rather than the router.")
+                "place is where the GeoIP file puts its address, often its network's home rather than the router. "
+                "Each leg follows the cables, backbones and lines on land installed below where its way along them "
+                f"is at most {network_module.DETOUR:g} times its great circle, else it is that great circle; the "
+                "brighter a stretch, the more traffic over it.")
         table = {"title": TITLE, "note": note, "empty": ("No route traced yet." if wanted else
                                                          "No connection to the internet is open."),
                  "columns": [{"title": "To"}, {"title": "Hops"}, {"title": "The way, from here"},
