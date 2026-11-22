@@ -98,6 +98,10 @@ CONNECTIONS = 500_000  # connections kept, a row each (about 150 MB with ordinar
 KEEP_DAYS = 90  # a connection that ended longer ago than this is let go
 ROUTES = 20_000  # routes kept, one a host: the ones traced longest ago pruned first
 ROUTE_DAYS = 30  # a route traced longer ago than this is let go
+# 1.74.0 (the user, 2026-11-22: "all routes need to be saved in a database for now"): every trace kept, each its
+# own row of `traces`, however often a host is traced again and however long ago; TRACES of them at most, the
+# ones traced longest ago let go first (about 2 kB a trace: some 1 GB at the most)
+TRACES = 500_000
 CONNECTION_ROWS = 2_000  # connections `connections` hands out at the most
 WHY = 300  # characters kept of a connection's why
 MAX_OPEN = 8192  # connections held open at once, the ones waiting to close among them: one more is not counted
@@ -178,7 +182,11 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS connections_remote ON connections (remote)",
     "CREATE TABLE IF NOT EXISTS routes (remote TEXT PRIMARY KEY, traced REAL NOT NULL, reached INTEGER NOT NULL, "
     "how TEXT NOT NULL DEFAULT '', hops TEXT NOT NULL, way TEXT NOT NULL DEFAULT '') WITHOUT ROWID",
-    "CREATE INDEX IF NOT EXISTS routes_traced ON routes (traced)")
+    "CREATE INDEX IF NOT EXISTS routes_traced ON routes (traced)",
+    "CREATE TABLE IF NOT EXISTS traces (id INTEGER PRIMARY KEY, remote TEXT NOT NULL, traced REAL NOT NULL, "
+    "reached INTEGER NOT NULL, how TEXT NOT NULL DEFAULT '', hops TEXT NOT NULL, way TEXT NOT NULL DEFAULT '')",
+    "CREATE INDEX IF NOT EXISTS traces_remote ON traces (remote, traced)",
+    "CREATE INDEX IF NOT EXISTS traces_traced ON traces (traced)")
 # a connection's columns, as `_born` keeps them and `_CONN_INSERT` writes them, in this order
 CONNECTION_COLUMNS = ("cid", "program", "path", "pid", "user", "service", "service_title", "proto", "family",
                       "local", "local_port", "remote", "remote_port", "direction", "port", "network", "name",
@@ -191,6 +199,7 @@ _CONN_TOUCH = ("UPDATE connections SET last = CASE WHEN ? IS NULL THEN last ELSE
 _CONN_PLACE = ("UPDATE connections SET country = ?, code = ?, city = ?, lat = ?, lon = ?, asn = ?, org = ?, placed = ? "
                "WHERE remote = ? AND network = 'internet' AND (placed IS NULL OR placed < ?)")
 _ROUTE_KEEP = "INSERT OR REPLACE INTO routes (remote, traced, reached, how, hops, way) VALUES (?, ?, ?, ?, ?, ?)"
+_TRACE_KEEP = "INSERT INTO traces (remote, traced, reached, how, hops, way) VALUES (?, ?, ?, ?, ?, ?)"  # 1.74.0
 _CONN_PRUNE = ("DELETE FROM connections WHERE cid IN (SELECT cid FROM connections WHERE ended IS NOT NULL ORDER BY "
                "last LIMIT ?)")
 # a new connection's place: its host's, where a hosts row of it has one (looked up by the index on host)
@@ -1070,6 +1079,7 @@ class HostBook:
             for cid, (last, seconds, ended) in touched.items():
                 c.execute(_CONN_TOUCH, (last, last, seconds, ended, cid))
             c.executemany(_ROUTE_KEEP, list(routes.values()))
+            c.executemany(_TRACE_KEEP, list(routes.values()))  # 1.74.0: and every trace, its own row
             if born or touched or routes:
                 changed = True
             many -= c.execute("DELETE FROM connections WHERE last < ? AND ended IS NOT NULL",
@@ -1077,6 +1087,9 @@ class HostBook:
             if many > CONNECTIONS:
                 many -= c.execute(_CONN_PRUNE, (many - (CONNECTIONS - CONNECTIONS // 100),)).rowcount
             c.execute("DELETE FROM routes WHERE traced < ?", (now - ROUTE_DAYS * 86400.0,))
+            if routes and c.execute("SELECT COUNT(*) FROM traces").fetchone()[0] > TRACES:
+                c.execute("DELETE FROM traces WHERE id IN (SELECT id FROM traces ORDER BY traced LIMIT "
+                          "(SELECT COUNT(*) FROM traces) - ?)", (TRACES,))
             if routes and c.execute("SELECT COUNT(*) FROM routes").fetchone()[0] > ROUTES:
                 c.execute("DELETE FROM routes WHERE remote IN (SELECT remote FROM routes ORDER BY traced LIMIT "
                           "(SELECT COUNT(*) FROM routes) - ?)", (ROUTES,))
@@ -1197,6 +1210,7 @@ class HostBook:
                 c.execute("DELETE FROM open")
                 c.execute("DELETE FROM connections")
                 c.execute("DELETE FROM routes")
+                c.execute("DELETE FROM traces")
                 c.executemany(_HOLD, [(json.dumps(key), *held.row, None, held.first, held.last, held.table,
                                        held.awake, 1) for key, held in kept.items()])
                 c.executemany(_FACTS, [("version", VERSION), ("since", now), ("last", now), ("awake", None)])

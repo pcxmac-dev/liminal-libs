@@ -1733,3 +1733,27 @@ def test_forget_forgets_the_connections_and_the_routes_too(db):
         assert con.execute("SELECT COUNT(*) FROM connections").fetchone()[0] == 0
     finally:
         con.close()
+
+
+def test_every_trace_is_kept_its_own_row_and_forgetting_lets_them_go(db):
+    """1.74.0 (the user: "all routes need to be saved in a database for now"): a host traced again keeps its newest
+    route in `routes` and every trace in `traces`."""
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.keep_route(WEB, T0 + 1, True, "icmp", [{"n": 1, "address": WEB, "ms": 9.0}], "Amsterdam")
+    b.flush()
+    b.keep_route(WEB, T0 + 3601, False, "icmp", [], "")
+    b.flush()
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM routes").fetchone()[0] == 1
+        assert con.execute("SELECT traced, reached, way FROM traces ORDER BY traced").fetchall() == [
+            (T0 + 1, 1, "Amsterdam"), (T0 + 3601, 0, "")]
+    finally:
+        con.close()
+    b.forget()
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 0
+    finally:
+        con.close()

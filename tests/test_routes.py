@@ -217,3 +217,20 @@ def test_a_route_is_kept_once_in_the_hosts_database_with_every_hop_and_its_place
     assert (remote, traced, reached, how, way) == (target, 1_800_000_000.0 - 30, True, "stand-in", "Amsterdam")
     assert hops[0] == {"n": 1, "address": "192.168.1.1", "ms": 1.0}  # the local network: no place
     assert hops[1] == {"n": 2, "address": "62.0.0.2", "ms": 2.0, "label": "Amsterdam", "lat": 52.37, "lon": 4.9}
+
+
+def test_a_route_whose_connection_closed_is_saved_all_the_same_once():
+    """1.74.0 (the user: "all routes need to be saved in a database for now"): a route traced is kept in the hosts
+    database even when its connection closed before the tab's next ask, and once."""
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.1", target]})
+    saved = []
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None, keep=lambda *a: saved.append(a))
+    r.want([target])
+    while r.step():
+        pass
+    geo = Geo({"62.0.0.1": Place(52.37, 4.9, "Amsterdam"), target: Place(48.2, 16.37, "Vienna")})
+    r.onto({"globe": {"home": HOME, "origins": []}}, geo, [])  # the connection closed: none open now
+    r.onto({"globe": {"home": HOME, "origins": []}}, geo, [])
+    assert [s[0] for s in saved] == [target] and saved[0][5] == "Amsterdam"
+

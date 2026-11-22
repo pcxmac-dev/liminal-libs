@@ -316,7 +316,12 @@ class Routes:
         wanted = list(dict.fromkeys(wanted))
         with self._lock:
             kept = {a: self._kept[a] for a in wanted if a in self._kept}
+            closed = [(a, at, route) for a, (at, route) in self._kept.items()
+                      if a not in kept and (a, at) not in self._saved]
             waiting, busy, traced = len(self._waiting), self._busy, self.traced
+        # 1.74.0: every route traced saved, those of connections closed since the last ask too (once each)
+        for address, at, route in closed:
+            self._save(address, at, route, self._way(route, geoip, home), geoip, self.clock())
         rows, by_place = [], {}
         now = self.clock()
         for address, (at, route) in kept.items():
