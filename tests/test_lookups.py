@@ -166,7 +166,7 @@ def test_the_routes_page_asks_for_its_routers_and_shows_their_names_and_networks
         pass
     page = {"globe": {"home": {"lat": 45.6, "lon": -121.2}, "origins": [{"id": "l", "lat": 51.5, "lon": -0.12}]}}
     r.onto(page, Geo(), [target])
-    assert r.lookups.describe()["waiting"] == 1  # the router, not the target
+    assert r.lookups.describe()["waiting"] == 2  # the router, and the host itself for its name (1.74.0)
     r.lookups.clock = Clock()
     r.lookups._asked = r.lookups.clock()
     while r.lookups.step():

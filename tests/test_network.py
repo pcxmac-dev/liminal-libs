@@ -204,8 +204,8 @@ def test_the_routes_page_gets_the_heat_each_places_tail_and_the_legs_waiting():
     assert g["origins"][0]["via"][0]["label"] == "Hop" and g["origins"][0]["tail"][:2] == [[0, 20], [0, 19.5]]
     assert g["heat_by"] == "connections" and [h["w"] for h in g["heat"]] == [4]
     assert ends(g["heat"][0]) == {(0, 0), (0, 20)}
-    assert [t["title"] for t in page["tables"]] == ["Routes", "Legs waiting for a line"]
-    assert "times its straight distance" in page["tables"][0]["note"] and page["tables"][1]["rows"] == []
+    assert [t["title"] for t in page["tables"]] == ["Routes", "Routes, hop by hop", "Legs waiting for a line"]
+    assert "times its straight distance" in page["tables"][0]["note"] and page["tables"][-1]["rows"] == []
     r.close()
     assert r.network._graph is None
 

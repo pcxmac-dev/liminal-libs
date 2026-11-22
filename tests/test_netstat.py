@@ -921,15 +921,16 @@ def test_the_world_tab_reads_for_the_hosts_and_shows_them_when_chosen_with_no_ca
     fw = Wall(tmp_path, placing=Placing())
     page = fw.world()  # the traffic view (the default): its capture is a stand-in
     titles = [t["title"] for t in page["tables"]]
-    assert titles[0] == "What the globe shows" and titles[-3:] == ["Internet infrastructure", "Routes",
-                                                                    "Legs waiting for a line"]  # 1.70.0: the last
+    assert titles[0] == "What the globe shows" and titles[-4:] == ["Internet infrastructure", "Routes",
+                                                                    "Routes, hop by hop", "Legs waiting for a line"]
     assert fw.netstat_view().book.describe()["rows"] == 4  # recorded while the tab is shown
     assert fw.world_show("hosts")["said"] == "Hosts recorded · all of them"
     fw.world_view().stop()
     hosts = plain(fw.world())
     assert hosts["globe"]["showing"] == "Hosts recorded · all of them" and not fw.world_view().running
     assert [t["title"] for t in hosts["tables"]] == ["What the globe shows", "Programs", "Ports", "Hosts",
-                                                     "Internet infrastructure", "Routes", "Legs waiting for a line"]
+                                                     "Internet infrastructure", "Routes",
+                                                     "Routes, hop by hop", "Legs waiting for a line"]
     assert fw.world_pick("port=tcp/443")["said"] == "Hosts recorded · port 443/tcp"
     assert fw.world_direction("out")["ok"] and fw.world_within("week")["ok"]
     assert fw.world()["globe"]["showing"] == "Hosts recorded · port 443/tcp · out · seen in the last 7 days"
@@ -1018,7 +1019,7 @@ def test_every_connection_to_the_internet_has_its_route_traced_while_the_tab_is_
     assert fw.started and len(fw.started) == 1  # the thread asked for once, not run here
     assert routes.describe()["waiting"] == 3 and routes.describe()["kept"] == 0  # WEB, WEB2, V6WEB; not the LAN
     # last but the legs waiting for a line (1.70.0): every table before them keeps its place
-    assert [t["title"] for t in page["tables"]][-2:] == ["Routes", "Legs waiting for a line"]
+    assert [t["title"] for t in page["tables"]][-3:] == ["Routes", "Routes, hop by hop", "Legs waiting for a line"]
     while routes.step():
         pass
     assert routes.describe() == {"kept": 3, "waiting": 0, "tracing": "", "running": False, "traced": 3}

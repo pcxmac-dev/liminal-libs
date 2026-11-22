@@ -161,7 +161,7 @@ def test_a_place_on_the_globe_gets_its_routes_placed_hops_from_home_outward():
     assert [(p["label"], p["n"]) for p in via] == [("Amsterdam", 3), ("Frankfurt", 5)]
     assert "via" not in page["globe"]["origins"][1] and "via" not in page["globe"]["origins"][2]
     assert [t["title"] for t in page["tables"]] == ["What the globe shows", "Internet infrastructure", "Routes",
-                                                   "Legs waiting for a line"]  # 1.70.0
+                                                   "Routes, hop by hop", "Legs waiting for a line"]  # 1.74.0
     table = next(t for t in page["tables"] if t["title"] == "Routes")
     assert [row[0]["text"] for row in table["rows"]] == [target, other]  # the most hops placed first
     assert table["rows"][0][1] == "7 of 7 hops answered, the address reached"
@@ -259,3 +259,37 @@ def test_a_route_whose_connection_closed_is_saved_all_the_same_once():
     r.onto({"globe": {"home": HOME, "origins": []}}, geo, [])
     assert [s[0] for s in saved] == [target] and saved[0][5] == "Amsterdam"
 
+
+def test_every_hop_of_each_route_is_tabled_in_order_the_missing_kept_and_each_crossing_said():
+    """1.74.0 (the user: "for each traceroute show every hop in order with it's IP, round trip time, reverse DNS name,
+    ASN, network operator, hostname, show RDAP ownership keep missing hops visible. finally highlight where it crosses
+    between network operators")."""
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.1", None, "62.0.0.2", target]})
+
+    class Hop:
+        def __init__(self, lat, lon, label, asn, org):
+            self.lat, self.lon, self.label, self.asn, self.org = lat, lon, label, asn, org
+
+    class Geo:
+        def lookup(self, address):
+            return {"62.0.0.1": Hop(47.6, -122.3, "Seattle", 20115, "Charter"),
+                    "62.0.0.2": Hop(41.9, -87.6, "Chicago", 6461, "Zayo"),
+                    target: Hop(48.2, 16.37, "Vienna", 6461, "Zayo")}.get(address)
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    r.want([target])
+    while r.step():
+        pass
+    r.lookups._known["62.0.0.1"] = (r.lookups.clock(), {"name": "lag-1.bbr01sttlwa.example.net",
+                                                        "network": "NET-A", "org": "Charter", "country": "US"})
+    r.lookups._known[target] = (r.lookups.clock(), {"name": "host.example.net"})
+    page = {"globe": {"home": HOME, "origins": []}}
+    r.onto(page, Geo(), [target])
+    hops = next(t for t in page["tables"] if t["title"] == "Routes, hop by hop")
+    rows = hops["rows"]
+    assert [row[1] for row in rows] == ["1", "2", "3", "4"]  # every hop, in order
+    assert rows[0][0] == {"text": target, "sub": "host.example.net"} and rows[1][0] == ""
+    assert rows[0][2:8] == ["62.0.0.1", "1.0 ms", "lag-1.bbr01sttlwa.example.net", "AS20115", "Charter",
+                            "NET-A, Charter, US"]
+    assert rows[1][2] == {"text": "*", "sub": "no answer"}  # the missing hop kept
+    assert rows[2][8] == {"text": "⇄ Zayo", "sub": "from Charter"} and rows[3][8] == ""  # crossed once

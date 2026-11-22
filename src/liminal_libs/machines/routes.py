@@ -41,6 +41,11 @@ TABLE_ROWS = 40  # routes in the table, the most hops placed first
 WAY = 6  # places a route's way names in the table, the first ones
 TITLE = "Routes"
 WAITING_TITLE = "Legs waiting for a line"  # 1.70.0
+# 1.74.0 (the user, 2026-11-22: "for each traceroute show every hop in order with it's IP, round trip time, reverse
+# DNS name, ASN, network operator, hostname, show RDAP ownership keep missing hops visible. finally highlight where it
+# crosses between network operators"): every hop of each route, HOP_ROWS rows at most, the routes as tabled
+HOPS_TITLE = "Routes, hop by hop"
+HOP_ROWS = 600
 WAITING_ROWS = 60
 WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a cable, a line on land or a backbone. "
                 "These legs are not known on any yet, so they are not drawn; their ends are named on the globe. They "
@@ -296,6 +301,51 @@ class Routes:
                 before = hop.address
         return out
 
+    def _hops_table(self, rows: list, geoip) -> dict:
+        """Every hop of each route, in order (the routes as the Routes table has them): its number, its address (a
+        hop that did not answer kept, as *), its time, its name by reverse DNS, its network's number and operator
+        as the GeoIP file has them, its holder by RDAP; where the operator is another than the hop's before, the
+        crossing said in the last column. The host's own name beside it, on its route's first row."""
+        out = []
+        for _placed, address, _found, route, _way, _answered, _age in rows:
+            name = self.lookups.known(address).get("name", "")
+            first, last_op, last_who = True, "", ""
+            for hop in route.hops:
+                if len(out) >= HOP_ROWS:
+                    break
+                to = ({"text": address, "sub": name} if name else address) if first else ""
+                first = False
+                if not hop.address:
+                    out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", ""])
+                    continue
+                known = self.lookups.known(hop.address)
+                try:
+                    place = geoip.lookup(hop.address) if geoip is not None else None
+                except Exception:  # noqa: BLE001 - a lookup that fails says nothing
+                    place = None
+                asn = str(getattr(place, "asn", "") or "")
+                asn = f"AS{asn}" if asn.isdigit() else asn
+                org = str(getattr(place, "org", "") or "")
+                holder = ", ".join(x for x in (known.get("network"), known.get("org"), known.get("country")) if x)
+                op = asn or org or known.get("org") or ""
+                who = org or known.get("org") or op
+                crosses = ""
+                if op and last_op and op != last_op:
+                    crosses = {"text": f"⇄ {who}", "sub": f"from {last_who}"}
+                if op:
+                    last_op, last_who = op, who
+                out.append([to, str(hop.n), hop.address, f"{hop.ms:.1f} ms" if hop.ms is not None else "–",
+                            known.get("name", ""), asn, org, holder, crosses])
+        note = ("Every hop of each route in order, the routes as tabled above: a hop that did not answer is kept, as *. "
+                "Its name is its reverse DNS, its network's number and operator are the GeoIP file's, its holder is "
+                "its registry's (RDAP); they fill in as each router is looked up. Where the operator is another than "
+                "the hop's before, the route crosses between networks: said in the last column (⇄).")
+        return {"title": HOPS_TITLE, "note": note, "empty": "No route traced yet.",
+                "columns": [{"title": "To"}, {"title": "Hop"}, {"title": "Address"}, {"title": "Time"},
+                            {"title": "Name"}, {"title": "ASN"}, {"title": "Operator"}, {"title": "Holder (RDAP)"},
+                            {"title": "Crosses"}],
+                "rows": out}
+
     @staticmethod
     def _hops(route: netpath.Trace, geoip) -> list[dict]:
         """A route's hops as the hosts database keeps them: each with the place the GeoIP file gives it."""
@@ -395,8 +445,9 @@ class Routes:
             except Exception:  # noqa: BLE001 - the heat never costs the tab its page: the routes drawn as before
                 globe.pop("heat", None)
         try:  # 1.72.0: every router of the routes kept looked up, its name and network (the lookups' own thread)
-            self.lookups.want(h.address for _, route in kept.values() for h in route.hops
-                              if h.address and h.address != route.target)
+            self.lookups.want([*(h.address for _, route in kept.values() for h in route.hops
+                                 if h.address and h.address != route.target),
+                               *kept])  # 1.74.0: and the hosts themselves, for their names
         except Exception:  # noqa: BLE001 - the lookups never cost the tab its page
             pass
         try:  # 1.71.0: what the routes say of each router, its place by the GeoIP file, and the legs waiting
@@ -435,6 +486,7 @@ class Routes:
         if not isinstance(tables, list):
             tables = page["tables"] = []
         tables.append(table)
+        tables.append(self._hops_table(rows, geoip))  # 1.74.0
         legs = (globe or {}).get("waiting")
         if isinstance(legs, list):  # 1.70.0: the legs no line is known for yet, and why
             c = self.composite.counts
