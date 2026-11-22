@@ -180,8 +180,8 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert [c["class"] for c in got["chain"]] == ["Firewall", "MachinePlugin", "PlatformPlugin", "Plugin"]
     adds = [h for h in Firewall.HOOKS if h not in MachinePlugin.HOOKS]
     # the critique's count, Firewall's 9, and 1.65.0's 10 more (the Netstat tab, the hosts' recording, the globe's
-    # filters and its layers' data sets): Firewall's 19, MachinePlugin's 5, Plugin's 2
-    assert len(adds) == 19
+    # filters and its layers' data sets), and 1.74.0's world_watching: Firewall's 20, MachinePlugin's 5, Plugin's 2
+    assert len(adds) == 20 and "world_watching" in adds
     assert [(s["class"], s["hooks"]) for s in got["standard"]] == [
         ("Firewall", adds), ("MachinePlugin", ["present", "status", "setup", "run", "instances"]),
         ("Plugin", ["scan", "settings"])]
@@ -205,7 +205,7 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert {by[h]["kind"] for h in ("hosts_recording", "hosts_forget", "world_show", "world_direction", "world_within",
                                     "world_pick", "world_layer_remove")} == {"change"}
     assert all(by[h]["line"] for h in adds), "each of the base's hooks says what it does"
-    assert got["counts"]["standard"] == 26 and got["counts"]["own"] == 1
+    assert got["counts"]["standard"] == 27 and got["counts"]["own"] == 1  # 1.74.0: world_watching
     assert got["left"] == ["present", "run", "instances", "scan", "settings"]  # MachinePlugin's defaults (CONTRACT)
 
 
