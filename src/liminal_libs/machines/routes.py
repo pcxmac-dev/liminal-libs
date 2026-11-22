@@ -86,6 +86,7 @@ class Routes:
         self.names = names_module.Names()
         self._index = None
         self._home = None
+        self._read_with = None  # the lists every known name was last read with
         self._seen: OrderedDict[str, tuple[float | None, str]] = OrderedDict()  # address -> (its time, country)
 
     def _stopping(self) -> bool:
@@ -293,6 +294,16 @@ class Routes:
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
         self._index = index  # 1.73.0: for the names' lists
+        try:  # the lists installed (or changed) since: every name known now read with them at once, asking no one
+            gazetteer = self.names.gazetteer(index)
+            if gazetteer is not None and gazetteer is not self._read_with:
+                self._read_with = gazetteer
+                claims = [(a, "name", lookups_module.NAME_WORDS, p) for a, n in self.lookups.names()
+                          for p in (self._decode(a, n),) if p]
+                if claims:
+                    self.composite.record(claims=claims)
+        except Exception:  # noqa: BLE001 - names not read cost the tab nothing
+            pass
         if isinstance(home_place, dict) and home_place.get("lat") is not None and home_place.get("lon") is not None:
             self._home = (float(home_place["lat"]), float(home_place["lon"]))
         home = _key(home_place.get("lat"), home_place.get("lon")) if isinstance(home_place, dict) else None

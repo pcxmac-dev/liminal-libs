@@ -124,3 +124,20 @@ def test_a_hop_is_placed_by_its_name_where_that_is_surer_than_the_geoip_file(mon
     best = r.composite.best("62.0.0.1")
     assert best["label"] == "Seattle, WA, US" and best["by"] == "its name (sttlwa)" and best["confidence"] == 0.6
     r.close()
+
+
+def test_names_looked_up_before_the_lists_came_are_read_with_them_once_they_come(monkeypatch):
+    class Empty:
+        def layers(self):
+            return []
+    monkeypatch.setattr(lookups, "_ptr", lambda address: "ae-1.r20.sttlwa01.us.bb.example.net")
+    r = Routes(start=lambda work: None)
+    r.lookups.want(["62.0.0.7"])
+    while r.lookups.step():
+        pass
+    page = {"globe": {"home": {"lat": 45.6, "lon": -121.2}, "origins": []}}
+    r.onto(page, None, [], index=Empty())
+    assert r.composite.best("62.0.0.7") is None  # no lists: its name read with nothing
+    r.onto(page, None, [], index=Index())
+    assert r.composite.best("62.0.0.7")["label"] == "Seattle, WA, US"  # the lists came: read at once
+    r.close()

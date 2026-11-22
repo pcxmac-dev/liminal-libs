@@ -194,6 +194,11 @@ class Lookups:
                 with self._lock:
                     self._running = False
 
+    def names(self) -> list[tuple[str, str]]:
+        """The routers' names known now: [(address, name)] (1.73.0: read again when the lists come)."""
+        with self._lock:
+            return [(a, kept[1]["name"]) for a, kept in self._known.items() if kept[1].get("name")]
+
     def close(self) -> None:
         with self._lock:
             self.closed = True

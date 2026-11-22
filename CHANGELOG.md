@@ -21,7 +21,7 @@ click; their addresses and licences are the plugins', none named here).
   ("name", weight 0.6 against the GeoIP file's 0.3); each router's best estimate is kept in memory (and read back once
   after a restart); a hop is drawn where its best estimate puts it when that is surer than the GeoIP file alone, its
   hover saying what placed it ("placed by its name (sttlwa)").
-- Not yet: a name looked up before the lists were installed is read again only at its next lookup (a day on).
+- A name looked up before the lists were installed is read with them as soon as they are (in memory, asking no one).
 
 ## 1.72.1 (2026-11-22)
 
