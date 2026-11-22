@@ -920,15 +920,16 @@ def test_on_a_machine_it_is_not_for_no_hook_records_keeps_forgets_or_removes_any
 def test_the_world_tab_reads_for_the_hosts_and_shows_them_when_chosen_with_no_capture(tmp_path):
     fw = Wall(tmp_path, placing=Placing())
     page = fw.world()  # the traffic view (the default): its capture is a stand-in
-    assert page["tables"][0]["title"] == "What the globe shows" and page["tables"][-2]["title"] == "Internet " \
-                                                                                                    "infrastructure"
+    titles = [t["title"] for t in page["tables"]]
+    assert titles[0] == "What the globe shows" and titles[-3:] == ["Internet infrastructure", "Routes",
+                                                                    "Legs waiting for a line"]  # 1.70.0: the last
     assert fw.netstat_view().book.describe()["rows"] == 4  # recorded while the tab is shown
     assert fw.world_show("hosts")["said"] == "Hosts recorded · all of them"
     fw.world_view().stop()
     hosts = plain(fw.world())
     assert hosts["globe"]["showing"] == "Hosts recorded · all of them" and not fw.world_view().running
     assert [t["title"] for t in hosts["tables"]] == ["What the globe shows", "Programs", "Ports", "Hosts",
-                                                     "Internet infrastructure", "Routes"]
+                                                     "Internet infrastructure", "Routes", "Legs waiting for a line"]
     assert fw.world_pick("port=tcp/443")["said"] == "Hosts recorded · port 443/tcp"
     assert fw.world_direction("out")["ok"] and fw.world_within("week")["ok"]
     assert fw.world()["globe"]["showing"] == "Hosts recorded · port 443/tcp · out · seen in the last 7 days"
@@ -1015,7 +1016,8 @@ def test_every_connection_to_the_internet_has_its_route_traced_while_the_tab_is_
     routes = fw.world_routes()
     assert fw.started and len(fw.started) == 1  # the thread asked for once, not run here
     assert routes.describe()["waiting"] == 3 and routes.describe()["kept"] == 0  # WEB, WEB2, V6WEB; not the LAN
-    assert page["tables"][-1]["title"] == "Routes"  # last: every table before it keeps its place
+    # last but the legs waiting for a line (1.70.0): every table before them keeps its place
+    assert [t["title"] for t in page["tables"]][-2:] == ["Routes", "Legs waiting for a line"]
     while routes.step():
         pass
     assert routes.describe() == {"kept": 3, "waiting": 0, "tracing": "", "running": False, "traced": 3}
