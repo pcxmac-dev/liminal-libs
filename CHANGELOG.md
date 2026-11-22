@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.74.0 (2026-11-22)
+
+The routes kept whole, checked once, told hop by hop; the traffic watched on a switch. The user, 2026-11-22: "all
+routes need to be saved in a database for now"; "make sure all route checks only happen once, to conclusion, and not
+every packet or connection, if there are multiple routes to a host, record all applicable routes"; "for each traceroute
+show every hop in order with it's IP, round trip time, reverse DNS name, ASN, network operator, hostname, show RDAP
+ownership keep missing hops visible. finally highlight where it crosses between network operators"; "for trace routes,
+identify exchange IPs, where operators change, try to identify the operator backbone, if it can be proved"; "lets have
+a selectable switch on firewall which allows it to run while not selected as far as monitoring traffic". The platform's
+page shows it once the platform is restarted.
+
+- **Every route saved** (hostbook.py): a new table `traces`, every trace its own row, however often a host is traced
+  again (500,000 at most, the oldest let go first), beside `routes` (the newest a host); the routes of connections
+  closed since the last ask saved too, once each.
+- **Each check once, to its end** (machines/routes.py): a check traces a host 3 times (CHECKS), each run to its end
+  (stopped only by a detach; the tab left, no other begins); every distinct route found is saved its own row, the one
+  drawn last; a host traced to its end is not traced again, nor after a restart (HostBook.routed: the hosts the
+  database has a route to); a check that failed is tried again after an hour.
+- **Routes, hop by hop**: a table after the Routes table: every hop of each route in order (one that did not answer
+  kept, as *), its address, its time, its name (reverse DNS), its network's number and operator (the GeoIP file's),
+  its holder (RDAP), what it is (an exchange point, or an operator's backbone, only where its registry's words or its
+  own name say so, and what says it shown beneath), and where the route crosses between operators (⇄, at an exchange
+  point when it is one). The hosts themselves are looked up too, for their names.
+- **Watching the traffic all the time** (machines/firewall.py): LIMINAL_TRAFFIC_WATCHING, "shown" or "always", kept
+  through the plugin's login and set from a "Watching the traffic" table and form on the World Wide Web tab (hook
+  world_watching). Always: the capture at this machine's adapter starts at once and never stops for want of an ask
+  (only a detach or the platform's stop ends it); shown: as before. The routes are still traced only while the tab is
+  shown.
+
 ## 1.73.0 (2026-11-22)
 
 Routers' names read for their places. The user, 2026-11-22, asked whether to build it after a router GeoIP put in
