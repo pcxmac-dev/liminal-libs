@@ -16,6 +16,7 @@ on its last stretch alone ("last")."""
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -45,6 +46,13 @@ WAITING_TITLE = "Legs waiting for a line"  # 1.70.0
 # DNS name, ASN, network operator, hostname, show RDAP ownership keep missing hops visible. finally highlight where it
 # crosses between network operators"): every hop of each route, HOP_ROWS rows at most, the routes as tabled
 HOPS_TITLE = "Routes, hop by hop"
+# 1.74.0 (the user: "for trace routes, identify exchange IPs, where operators change, try to identify the operator
+# backbone, if it can be proved"): a hop is an exchange point's, or a backbone's, only where its registry's words
+# (RDAP) or its own name say so, and what says it is shown
+EXCHANGE_WORDS = re.compile(r"(?i)(?:^|[^a-z])(?:ix|ixp|ixf|exchange|de-?cix|ams-?ix|linx|any2|nyiix|six|torix|"
+                            r"france-?ix|bcix|ecix|netnod|mix-?it|nl-?ix|jpnap|hkix|bbix|equinix-?ix|ix-?br)"
+                            r"(?:[^a-z]|$)")
+BACKBONE_WORDS = re.compile(r"(?i)(?:^|[^a-z])(?:bb|bbr|core|cr|ccr|backbone|bckbn)\d*(?:[^a-z]|$)")
 HOP_ROWS = 600
 WAITING_ROWS = 60
 WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a cable, a line on land or a backbone. "
@@ -316,7 +324,7 @@ class Routes:
                 to = ({"text": address, "sub": name} if name else address) if first else ""
                 first = False
                 if not hop.address:
-                    out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", ""])
+                    out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", "", ""])
                     continue
                 known = self.lookups.known(hop.address)
                 try:
@@ -329,21 +337,33 @@ class Routes:
                 holder = ", ".join(x for x in (known.get("network"), known.get("org"), known.get("country")) if x)
                 op = asn or org or known.get("org") or ""
                 who = org or known.get("org") or op
+                kind = ""
+                rdap = " ".join(x for x in (known.get("network"), known.get("org")) if x)
+                ptr = known.get("name", "")
+                if rdap and EXCHANGE_WORDS.search(rdap):
+                    kind = {"text": "exchange point", "sub": f"its registry: {rdap}"}
+                elif ptr and EXCHANGE_WORDS.search(ptr.split(".", 1)[-1] if "." in ptr else ptr):
+                    kind = {"text": "exchange point", "sub": f"its name: {ptr}"}
+                elif ptr and BACKBONE_WORDS.search(ptr):
+                    kind = {"text": f"{who}'s backbone" if who else "backbone", "sub": f"its name: {ptr}"}
                 crosses = ""
                 if op and last_op and op != last_op:
-                    crosses = {"text": f"⇄ {who}", "sub": f"from {last_who}"}
+                    at = " at an exchange point" if kind and kind["text"] == "exchange point" else ""
+                    crosses = {"text": f"⇄ {who}", "sub": f"from {last_who}{at}"}
                 if op:
                     last_op, last_who = op, who
                 out.append([to, str(hop.n), hop.address, f"{hop.ms:.1f} ms" if hop.ms is not None else "–",
-                            known.get("name", ""), asn, org, holder, crosses])
+                            known.get("name", ""), asn, org, holder, kind, crosses])
         note = ("Every hop of each route in order, the routes as tabled above: a hop that did not answer is kept, as *. "
                 "Its name is its reverse DNS, its network's number and operator are the GeoIP file's, its holder is "
                 "its registry's (RDAP); they fill in as each router is looked up. Where the operator is another than "
-                "the hop's before, the route crosses between networks: said in the last column (⇄).")
+                "the hop's before, the route crosses between networks: said in the last column (⇄). A hop is called "
+                "an exchange point's or a backbone's only where its registry's words or its own name say so, and "
+                "what says it is shown beneath.")
         return {"title": HOPS_TITLE, "note": note, "empty": "No route traced yet.",
                 "columns": [{"title": "To"}, {"title": "Hop"}, {"title": "Address"}, {"title": "Time"},
                             {"title": "Name"}, {"title": "ASN"}, {"title": "Operator"}, {"title": "Holder (RDAP)"},
-                            {"title": "Crosses"}],
+                            {"title": "What it is"}, {"title": "Crosses"}],
                 "rows": out}
 
     @staticmethod
