@@ -6,12 +6,14 @@ nodes. if there are frequency limits on sources, please hold to those limits as 
   (socket.gethostbyaddr), PTR_PER_S a second at most. A router's name often says its city or its airport
   (ae-1.r20.sttlwa01.us.bb.gin.ntt.net); reading those is next.
 - Its network: RDAP, the registries' own WHOIS over https. Which registry holds an address comes from IANA's
-  bootstrap files (BOOTSTRAP: one https GET each, kept BOOTSTRAP_S); then one https GET of that registry for the
-  address. The answer's range is kept (RANGES), so a router within one already known asks nothing. Each registry is
-  asked RDAP_PER_MIN times a minute and RDAP_PER_HOUR an hour at most: the strictest limits any registry publishes
-  (LACNIC's, without a key), held for every one; after an answer of 429 none is asked for its Retry-After's seconds
-  (BACKOFF_S without one), nor for BACKOFF_S after a refusal of 403. Only https, only the registries' own hosts (those
-  the bootstrap files name), a redirect followed only to one of them (REDIRECTS at most).
+  bootstrap files (one https GET each, kept BOOTSTRAP_S), whose addresses the plugin names (1.72.1: its
+  RDAP_BOOTSTRAP; no outside host is named in the library, and without them no registry is asked); then one https
+  GET of that registry for the address. The answer's range is kept (RANGES), so a router within one already known
+  asks nothing. Each registry is asked RDAP_PER_MIN times a minute and RDAP_PER_HOUR an hour at most: the strictest
+  limits any registry publishes (LACNIC's, without a key), held for every one; after an answer of 429 none is asked
+  for its Retry-After's seconds (BACKOFF_S without one), nor for BACKOFF_S after a refusal of 403. Only https, only
+  the registries' own hosts (those the bootstrap files name), a redirect followed only to one of them (REDIRECTS at
+  most).
 - What is found is kept in the composite database as evidence ("ptr", "rdap": with their sources' words) and handed
   to the page: each hop's name and network on its hover. Nothing is asked twice within KEEP_S; a failure is kept and
   tried again after KEEP_S.
@@ -44,7 +46,6 @@ MAX_RANGES = 4096  # registries' ranges kept, to answer the addresses within the
 REDIRECTS = 3
 TIMEOUT_HTTP_S = 15.0
 AGENT = "liminal-libs (router lookups)"
-BOOTSTRAP = ("https://data.iana.org/rdap/ipv4.json", "https://data.iana.org/rdap/ipv6.json")
 PTR_WORDS = "the DNS, as this machine's resolver answered"
 RDAP_WORDS = "the registry's RDAP answer: its terms of use"
 
@@ -129,8 +130,10 @@ class Lookups:
     """The routers' names and networks (the module's docstring). `claims(address, source, words, said)` is told each
     finding (the composite database's keeper); the stand-ins of a test are `clock`, `sleep`, `start`."""
 
-    def __init__(self, *, claims=None, clock=None, sleep=None, start=None, timeout: float = TIMEOUT_S):
+    def __init__(self, *, claims=None, clock=None, sleep=None, start=None, timeout: float = TIMEOUT_S,
+                 bootstrap: Iterable = ()):
         self._claims = claims
+        self.bootstrap = tuple(str(u) for u in bootstrap if str(u).startswith("https://"))  # the plugin's
         self.clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._start = start or self._thread
@@ -274,7 +277,7 @@ class Lookups:
         if self.clock() - self._bootstrap_at < BOOTSTRAP_S and self._bootstrap:
             return True
         found, hosts = [], set()
-        for url in BOOTSTRAP:
+        for url in self.bootstrap:
             self.asked["bootstrap"] += 1
             try:
                 status, _, doc, _ = _get(url)
@@ -308,6 +311,8 @@ class Lookups:
         net = self._in_ranges(ip)
         if net is not None:
             return net, False
+        if not self.bootstrap:  # the plugin names no bootstrap: no registry is asked
+            return {"network": "", "org": "", "country": ""}, False
         if not self._load_bootstrap():
             return {}, True
         entry = next((e for e in self._bootstrap if ip.version == e[0].version and ip in e[0]), None)

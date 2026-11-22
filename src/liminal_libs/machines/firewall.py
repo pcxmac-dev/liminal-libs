@@ -212,6 +212,9 @@ class Firewall(MachinePlugin):
     # this month's GeoIP file, {year} and {month} filled in (2026, 11): an https address of the plugin's own ("" offers
     # no download); last month's is tried when this month's is not out yet
     GEOIP_URL = ""
+    # 1.72.1: IANA's RDAP bootstrap files (IPv4, IPv6) the routers' networks are looked up from: the plugin's (no
+    # outside host is named in the library); none, and no registry is asked (the routers' names still are)
+    RDAP_BOOTSTRAP: tuple = ()
     GEOIP_LICENCE = ""  # the licence's words, shown before the download and accepted in so many words
     ATTRIBUTION: dict = {}  # {text, url}: drawn wherever places are ("IP Geolocation by DB-IP" with DB-IP's link)
     # the name servers asked for this network's public address, which places home when the user set none: each in
@@ -442,7 +445,7 @@ class Firewall(MachinePlugin):
     def make_world_routes(self) -> routes_module.Routes:
         """The Routes the tab traces with: the system's own (netpath.trace), each route kept in the hosts database
         (1.68.0). A subclass's tests hand a stand-in."""
-        return routes_module.Routes(keep=self._keep_route)
+        return routes_module.Routes(keep=self._keep_route, bootstrap=self.RDAP_BOOTSTRAP)
 
     def _keep_route(self, *route) -> None:
         """A traced route into this plugin's hosts database (hostbook.HostBook.keep_route); nothing on a machine the

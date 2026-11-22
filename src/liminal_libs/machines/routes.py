@@ -51,7 +51,7 @@ class Routes:
     """The routes of one plugin's World Wide Web tab: what waits to be traced, what was, and the thread tracing."""
 
     def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None, keep=None,
-                 wall=None):
+                 wall=None, bootstrap=()):
         # the system's tracers, stopped once the tab is left or the routes closed (review: none outlives them)
         self._tracer = tracer or (lambda address: netpath.trace(address, stop=self._stopping))
         self.clock = clock or time.monotonic
@@ -77,6 +77,7 @@ class Routes:
         self.composite = composite_module.Composite()
         # 1.72.0: each router's name (reverse DNS) and network (RDAP), within each source's limits, into it
         self.lookups = lookups_module.Lookups(
+            bootstrap=bootstrap,  # 1.72.1: RDAP's bootstrap addresses, the plugin's
             claims=lambda address, source, words, said: self.composite.record(claims=[(address, source, words, said)]))
         self._composed: set[tuple] = set()
 

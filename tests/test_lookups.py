@@ -22,6 +22,7 @@ class Clock:
 BOOT4 = {"services": [[["62.0.0.0/8"], ["https://rdap.db.ripe.net/"]],
                       [["200.0.0.0/8"], ["http://rdap.lacnic.net/rdap/", "https://rdap.lacnic.net/rdap/"]]]}
 BOOT6 = {"services": [[["2001:600::/23"], ["https://rdap.db.ripe.net/"]]]}
+BOOTSTRAP = ("https://bootstrap.example/ipv4.json", "https://bootstrap.example/ipv6.json")  # the plugin's
 
 
 def answer(name, start, end, org="Example Carrier", country="NL"):
@@ -44,9 +45,9 @@ def net(monkeypatch):
 
     def get(url):
         asked["get"].append(url)
-        if url == lookups.BOOTSTRAP[0]:
+        if url == BOOTSTRAP[0]:
             return 200, {}, BOOT4, ""
-        if url == lookups.BOOTSTRAP[1]:
+        if url == BOOTSTRAP[1]:
             return 200, {}, BOOT6, ""
         status, doc = answers.get(url, (404, None))
         headers = {"Retry-After": "120"} if status == 429 else {}
@@ -74,7 +75,8 @@ def test_a_limit_holds_to_so_many_a_window_and_waits_out_a_refusal():
 def test_a_router_gets_its_name_and_network_once_and_the_composite_its_claims(net):
     asked, _ = net
     claims = []
-    lk = Lookups(claims=lambda *c: claims.append(c), clock=Clock(), sleep=lambda s: None, start=lambda work: None)
+    lk = Lookups(claims=lambda *c: claims.append(c), clock=Clock(), sleep=lambda s: None, start=lambda work: None,
+                 bootstrap=BOOTSTRAP)
     lk.want(["62.0.0.1", "62.0.0.1", "not an address"])
     assert lk.describe()["waiting"] == 1
     assert lk.step() and not lk.step()
@@ -82,14 +84,14 @@ def test_a_router_gets_its_name_and_network_once_and_the_composite_its_claims(ne
                                     "handle": "EXAMPLE-NET-H", "org": "Example Carrier", "country": "NL",
                                     "range": "62.0.0.0 - 62.0.255.255"}
     assert [c[1] for c in claims] == ["ptr", "rdap"] and claims[1][2] == lookups.RDAP_WORDS
-    assert asked["get"] == [*lookups.BOOTSTRAP, "https://rdap.db.ripe.net/ip/62.0.0.1"]
+    assert asked["get"] == [*BOOTSTRAP, "https://rdap.db.ripe.net/ip/62.0.0.1"]
     lk.want(["62.0.0.1"])  # looked up within the day: not again
     assert lk.describe()["waiting"] == 0
 
 
 def test_a_router_within_a_range_known_asks_the_registry_nothing(net):
     asked, _ = net
-    lk = Lookups(clock=Clock(), sleep=lambda s: None, start=lambda work: None)
+    lk = Lookups(clock=Clock(), sleep=lambda s: None, start=lambda work: None, bootstrap=BOOTSTRAP)
     lk.want(["62.0.0.1", "62.0.0.2"])
     while lk.step():
         pass
@@ -100,7 +102,7 @@ def test_a_router_within_a_range_known_asks_the_registry_nothing(net):
 def test_a_registry_that_answers_429_is_not_asked_again_for_its_retry_after(net):
     asked, _ = net
     clock = Clock()
-    lk = Lookups(clock=clock, sleep=lambda s: None, start=lambda work: None)
+    lk = Lookups(clock=clock, sleep=lambda s: None, start=lambda work: None, bootstrap=BOOTSTRAP)
     lk.want(["200.1.1.1"])
     assert lk.step()  # asked: 429, the router put back to wait
     assert lk.describe()["waiting"] == 1 and lk.known("200.1.1.1") == {"name": ""}
@@ -117,7 +119,7 @@ def test_redirects_only_to_the_registries_own_hosts_and_nothing_for_a_private_ad
     asked, answers = net
     answers["https://rdap.db.ripe.net/ip/62.0.0.9"] = (302, None)
     answers["https://rdap.db.ripe.net/ip/62.0.0.9#location"] = "https://evil.example/ip/62.0.0.9"
-    lk = Lookups(clock=Clock(), sleep=lambda s: None, start=lambda work: None)
+    lk = Lookups(clock=Clock(), sleep=lambda s: None, start=lambda work: None, bootstrap=BOOTSTRAP)
     lk.want(["62.0.0.9", "192.168.1.1"])
     while lk.step():
         pass
@@ -158,7 +160,7 @@ def test_the_routes_page_asks_for_its_routers_and_shows_their_names_and_networks
     class Geo:
         def lookup(self, address):
             return {"62.0.0.1": Place(52.37, 4.9, "Amsterdam"), target: Place(51.5, -0.12, "London")}.get(address)
-    r = Routes(tracer=tracer, start=lambda work: None)
+    r = Routes(tracer=tracer, start=lambda work: None, bootstrap=BOOTSTRAP)
     r.want([target])
     while r.step():
         pass
@@ -175,3 +177,11 @@ def test_the_routes_page_asks_for_its_routers_and_shows_their_names_and_networks
     assert hop["network"] == "EXAMPLE-NET, Example Carrier, NL"
     assert [c for c in r.composite.queue() if c["kind"] == "place"] == []  # its place known: it waits for none
     r.close()
+
+
+def test_without_the_plugins_bootstrap_no_registry_is_asked_and_the_name_still_is(net):
+    asked, _ = net
+    lk = Lookups(clock=Clock(), sleep=lambda s: None, start=lambda work: None)
+    lk.want(["62.0.0.1"])
+    assert lk.step()
+    assert asked["get"] == [] and lk.known("62.0.0.1")["name"] == "ae-1.r20.amstnl02.nl.bb.example.net"

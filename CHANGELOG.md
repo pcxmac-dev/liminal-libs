@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.72.1 (2026-11-22)
+
+No outside host named in the library again. 1.72.0's lookups named IANA's RDAP bootstrap files in
+machines/lookups.py, which the charts app's boundary test (tests/test_plugin_boundary.py: no provider's host outside
+the plugins) refuses. Their addresses are now the plugin's, as its GeoIP file's are: the Firewall base's new
+`RDAP_BOOTSTRAP` (none: no registry is asked, and the routers' names are still looked up), handed through
+`Routes(bootstrap=)` to `Lookups(bootstrap=)`. Checked with the charts app's own boundary test over this library. Until
+both firewall plugins name them, the routers' networks are not looked up.
+
 ## 1.72.0 (2026-11-22)
 
 Each router's name and network, looked up within each source's limits. The user, 2026-11-22: "it will take a lot of
