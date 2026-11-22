@@ -20,10 +20,14 @@ from dataclasses import dataclass
 from .. import sockets
 from ..apps.tabs import Tab
 from ..hostbook import HOSTS_KEY
+from ..sources.keys import KeyVar
 from . import netstat, routes as routes_module, world as world_module
 from .infrastructure import DataSet, Index
 from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
+from .rulegroups import RuleGroups, Sorted
+from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
+                    TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
 
 # 1.74.0 (the user, 2026-11-22: "lets have a selectable switch on firewall which allows it to run while not selected
 # as far as monitoring traffic"): the traffic watched only while the World Wide Web tab is shown, or all the time
@@ -31,9 +35,11 @@ from .plugin import CommandError, MachinePlugin
 WATCH_HOOK, WATCH_FORM, WATCH_VAR = "world_watching", "world-watching", "LIMINAL_TRAFFIC_WATCHING"
 WATCH_WORDS = {"shown": "only while this tab is shown", "always": "all the time the platform runs"}
 WATCH_READ_S = 10.0  # the setting read again through the login this long after, at the soonest
-from .rulegroups import RuleGroups, Sorted
-from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
-                    TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
+# set on the World Wide Web tab's form, or on the plugin's page beside the hosts' recording (one of its keys)
+WATCH_KEY = KeyVar(WATCH_VAR, label="Watching the traffic", secret=False,
+                   hint="optional: always keeps the World Wide Web tab's capture at this machine's adapter running "
+                        "all the time the platform runs (its packets, ports and places counted with no page open); "
+                        "shown, or nothing, only while the tab is shown")
 
 GROUP = "Liminal"  # Windows' rule group; a rule's display name is "Liminal: <name>"
 PREFIX = "liminal"  # a Linux rule's comment (liminal:<name>) or service (liminal-<name>)
@@ -231,9 +237,10 @@ class Firewall(MachinePlugin):
     # {4: (...), 6: (...)}. () asks none: home is then the user's place, or none
     PUBLIC_DNS: tuple = ()
     WORLD_TIMEOUT = TIMEOUT_S  # watching stops this long after the tab was last asked
-    # set on the plugin's page and read through the login, both optional: LIMINAL_HOME_PLACE, the globe's home;
-    # LIMINAL_HOSTS_RECORDING (1.65.0), when the hosts are recorded: shown (nothing set) or always
-    keys = (HOME_KEY, HOSTS_KEY)
+    # set on the plugin's page and read through the login, all optional: LIMINAL_HOME_PLACE, the globe's home;
+    # LIMINAL_HOSTS_RECORDING (1.65.0), when the hosts are recorded, and LIMINAL_TRAFFIC_WATCHING (1.74.0), when the
+    # traffic is watched: shown (nothing set) or always
+    keys = (HOME_KEY, HOSTS_KEY, WATCH_KEY)
 
     # -- the backend: a subclass's -----------------------------------------------------------------
     def backend(self) -> str:
@@ -789,7 +796,7 @@ class Firewall(MachinePlugin):
 
     def settings_changed(self) -> None:
         """The platform kept one of this plugin's settings (its page's Settings): the home the user set is read anew at the
-        tab's next ask, and the hosts' recording follows its setting at once."""
+        tab's next ask, and the hosts' recording and the traffic's watching (1.74.0) follow their settings at once."""
         view = self.world_view(make=False)
         if view is not None:
             view.forget_setting()
@@ -801,6 +808,7 @@ class Firewall(MachinePlugin):
                 self.netstat_view().follow()
             except Exception:  # noqa: BLE001 - a view that cannot be made or read: its tab says why when it is asked
                 pass
+            self.world_watch_follow()  # 1.74.0 (it catches its own)
 
     def detach(self) -> None:
         """Detached by its app: the hosts' recording ended for good (NetstatView.close: its thread gone, what it read

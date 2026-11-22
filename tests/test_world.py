@@ -233,12 +233,15 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert Firewall.CANCEL_HOOKS == ("world_layer_get",) and Firewall.INFRASTRUCTURE == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
     assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())
-    # the home on the globe and when the hosts are recorded, set on the plugin's page and kept through the login
-    [home, recording] = fw.keys
+    # the home on the globe, when the hosts are recorded and (1.74.0) when the traffic is watched, set on the plugin's
+    # page and kept through the login
+    [home, recording, watching] = fw.keys
     assert (home.name, home.secret, home.pair) == ("LIMINAL_HOME_PLACE", False, "liminal-home-place")
     assert (recording.name, recording.secret, recording.pair) == ("LIMINAL_HOSTS_RECORDING", False,
                                                                   "liminal-hosts-recording")
-    assert home.hint.startswith("optional") and recording.hint.startswith("optional")
+    assert (watching.name, watching.secret, watching.pair) == ("LIMINAL_TRAFFIC_WATCHING", False,
+                                                            "liminal-traffic-watching")
+    assert all(k.hint.startswith("optional") for k in (home, recording, watching))
     assert problems(fw) == [] and problems(Walled()) == []
     assert ACCEPT_LICENCE.isidentifier() and LicenceRefused.accept == ACCEPT_LICENCE and issubclass(LicenceRefused, ValueError)
 

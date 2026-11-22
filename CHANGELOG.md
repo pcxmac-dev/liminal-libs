@@ -30,9 +30,9 @@ page shows it once the platform is restarted.
   kept in the composite database (an entity "link", its "trace" claim) for plotting the infrastructure.
 - **Watching the traffic all the time** (machines/firewall.py): LIMINAL_TRAFFIC_WATCHING, "shown" or "always", kept
   through the plugin's login and set from a "Watching the traffic" table and form on the World Wide Web tab (hook
-  world_watching). Always: the capture at this machine's adapter starts at once and never stops for want of an ask
-  (only a detach or the platform's stop ends it); shown: as before. The routes are still traced only while the tab is
-  shown.
+  world_watching) or on the plugin's page, a key beside the hosts' recording (WATCH_KEY), followed at once either
+  way. Always: the capture at this machine's adapter starts at once and never stops for want of an ask (only a
+  detach or the platform's stop ends it); shown: as before. The routes are still traced only while the tab is shown.
 
 ## 1.73.0 (2026-11-22)
 

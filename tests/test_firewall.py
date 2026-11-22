@@ -197,3 +197,16 @@ def test_the_traffic_is_watched_all_the_time_on_the_users_switch(monkeypatch):
     assert table["rows"][0][0] == "only while this tab is shown" and form["hook"] == "world_watching"
     with pytest.raises(ValueError):
         fw.world_watching("sometimes")
+    # also one of the plugin's keys, beside the hosts' recording: kept on its page, followed at once
+    key = firewall_module.WATCH_KEY
+    assert fw.keys[-1] is key and key.name == firewall_module.WATCH_VAR and not key.secret
+    assert key.hint.startswith("optional") and "all the time the platform runs" in key.hint
+    net = SimpleNamespace(forget_setting=lambda: None, follow=lambda **_: None)
+    monkeypatch.setattr(fw, "netstat_view", lambda make=True: net)
+    view.forget_setting = lambda: None
+    kept[firewall_module.WATCH_VAR] = "always"  # as the page's Settings keep it: through the login
+    fw.settings_changed()
+    assert view.watcher.timeout == float("inf") and touched == [1, 1]
+    kept[firewall_module.WATCH_VAR] = "shown"
+    fw.settings_changed()
+    assert view.watcher.timeout == 20.0 and touched == [1, 1]
