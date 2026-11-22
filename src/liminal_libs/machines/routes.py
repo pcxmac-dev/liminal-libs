@@ -46,6 +46,11 @@ WAITING_TITLE = "Legs waiting for a line"  # 1.70.0
 # DNS name, ASN, network operator, hostname, show RDAP ownership keep missing hops visible. finally highlight where it
 # crosses between network operators"): every hop of each route, HOP_ROWS rows at most, the routes as tabled
 HOPS_TITLE = "Routes, hop by hop"
+# (the user: "also for trace routes, with the local ISP, and how they connect to an exchange or private link (between
+# routers), also identify the carrier links (major hauls)"): two hops of one operator further apart than HAUL_KM, or
+# whose times differ by more than HAUL_MS, are joined by a carrier's long haul
+HAUL_KM = 500.0
+HAUL_MS = 10.0
 # 1.74.0 (the user: "for trace routes, identify exchange IPs, where operators change, try to identify the operator
 # backbone, if it can be proved"): a hop is an exchange point's, or a backbone's, only where its registry's words
 # (RDAP) or its own name say so, and what says it is shown
@@ -314,17 +319,19 @@ class Routes:
         hop that did not answer kept, as *), its time, its name by reverse DNS, its network's number and operator
         as the GeoIP file has them, its holder by RDAP; where the operator is another than the hop's before, the
         crossing said in the last column. The host's own name beside it, on its route's first row."""
-        out = []
+        out, links = [], []
         for _placed, address, _found, route, _way, _answered, _age in rows:
             name = self.lookups.known(address).get("name", "")
             first, last_op, last_who = True, "", ""
+            isp, before = "", None  # the first operator met (this machine's ISP); the last hop that answered
             for hop in route.hops:
                 if len(out) >= HOP_ROWS:
                     break
                 to = ({"text": address, "sub": name} if name else address) if first else ""
                 first = False
                 if not hop.address:
-                    out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", "", ""])
+                    out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", "", "",
+                                ""])
                     continue
                 known = self.lookups.known(hop.address)
                 try:
@@ -346,6 +353,19 @@ class Routes:
                     kind = {"text": "exchange point", "sub": f"its name: {ptr}"}
                 elif ptr and BACKBONE_WORDS.search(ptr):
                     kind = {"text": f"{who}'s backbone" if who else "backbone", "sub": f"its name: {ptr}"}
+                best = self.composite.best(hop.address)
+                if best and best["confidence"] > composite_module.SOURCES["geoip"][0] + 1e-9:
+                    where = (best["lat"], best["lon"])
+                else:
+                    lat, lon = getattr(place, "lat", None), getattr(place, "lon", None)
+                    where = (lat, lon) if lat is not None and lon is not None else None
+                isp = isp or op
+                exchange = bool(kind) and kind["text"] == "exchange point"
+                link = self._link(before, (hop.address, op, who, where, hop.ms, exchange), isp)
+                if link and before is not None:
+                    links.append((f"{before[0]}>{hop.address}", {"type": link["text"], "from": before[0],
+                                                                    "to": hop.address, "words": link.get("sub", "")}))
+                before = (hop.address, op, who, where, hop.ms, exchange)
                 crosses = ""
                 if op and last_op and op != last_op:
                     at = " at an exchange point" if kind and kind["text"] == "exchange point" else ""
@@ -353,18 +373,49 @@ class Routes:
                 if op:
                     last_op, last_who = op, who
                 out.append([to, str(hop.n), hop.address, f"{hop.ms:.1f} ms" if hop.ms is not None else "–",
-                            known.get("name", ""), asn, org, holder, kind, crosses])
+                            known.get("name", ""), asn, org, holder, kind, link, crosses])
+        if links:  # the links, as evidence of the infrastructure, for the map (the composite database)
+            try:
+                self.composite.record(links=links)
+            except Exception:  # noqa: BLE001 - the links not kept cost the tab nothing
+                pass
         note = ("Every hop of each route in order, the routes as tabled above: a hop that did not answer is kept, as *. "
                 "Its name is its reverse DNS, its network's number and operator are the GeoIP file's, its holder is "
                 "its registry's (RDAP); they fill in as each router is looked up. Where the operator is another than "
                 "the hop's before, the route crosses between networks: said in the last column (⇄). A hop is called "
                 "an exchange point's or a backbone's only where its registry's words or its own name say so, and "
-                "what says it is shown beneath.")
+                "what says it is shown beneath. The link from the hop before is your ISP's (inside the first "
+                "network met), an exchange point's or a private link (where networks meet: an exchange point where "
+                "one is proved, else a private link between their routers) or a carrier's long haul (inside one "
+                f"network, over {HAUL_KM:g} km or {HAUL_MS:g} ms); each is kept in the composite database for the map.")
         return {"title": HOPS_TITLE, "note": note, "empty": "No route traced yet.",
                 "columns": [{"title": "To"}, {"title": "Hop"}, {"title": "Address"}, {"title": "Time"},
                             {"title": "Name"}, {"title": "ASN"}, {"title": "Operator"}, {"title": "Holder (RDAP)"},
-                            {"title": "What it is"}, {"title": "Crosses"}],
+                            {"title": "What it is"}, {"title": "Link"}, {"title": "Crosses"}],
                 "rows": out}
+
+    @staticmethod
+    def _link(before, this, isp: str) -> dict | str:
+        """What joins a hop to the last one that answered (each (address, operator, its name, its place, its time,
+        whether it is an exchange point's)): "" for the first; your ISP's; an exchange point's or a private link
+        where the operators differ; a carrier link where one operator's two hops are far apart."""
+        if before is None:
+            return ""
+        _, op0, who0, where0, ms0, ix0 = before
+        _, op1, who1, where1, ms1, ix1 = this
+        if op0 and op1 and op0 != op1:
+            if ix0 or ix1:
+                return {"text": "exchange point", "sub": f"{who0} to {who1}"}
+            return {"text": "private link", "sub": f"{who0} to {who1}, no exchange point seen"}
+        far = network_module.km(where0, where1) if where0 and where1 else 0.0
+        jump = (ms1 - ms0) if ms0 is not None and ms1 is not None else 0.0
+        if far > HAUL_KM or jump > HAUL_MS:
+            said = ", ".join(x for x in (f"about {far:,.0f} km" if far else "", f"{jump:+.1f} ms" if jump else "",
+                                        who1 or who0) if x)
+            return {"text": "carrier link", "sub": said}
+        if op1 and op1 == isp:
+            return "your ISP"
+        return {"text": "inside", "sub": who1} if who1 else ""
 
     @staticmethod
     def _hops(route: netpath.Trace, geoip) -> list[dict]:

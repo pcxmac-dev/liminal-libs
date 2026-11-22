@@ -292,7 +292,15 @@ def test_every_hop_of_each_route_is_tabled_in_order_the_missing_kept_and_each_cr
     assert rows[0][2:8] == ["62.0.0.1", "1.0 ms", "lag-1.bbr01sttlwa.example.net", "AS20115", "Charter",
                             "NET-A, Charter, US"]
     assert rows[1][2] == {"text": "*", "sub": "no answer"}  # the missing hop kept
-    assert rows[2][9] == {"text": "⇄ Zayo", "sub": "from Charter"} and rows[3][9] == ""  # crossed once
+    assert rows[2][10] == {"text": "⇄ Zayo", "sub": "from Charter"} and rows[3][10] == ""  # crossed once
+    assert rows[0][9] == "" and rows[2][9] == {"text": "private link", "sub": "Charter to Zayo, no exchange point seen"}
+    assert rows[3][9]["text"] == "carrier link" and "km" in rows[3][9]["sub"]  # Chicago to Vienna, inside Zayo
+    import sqlite3
+    con = sqlite3.connect(str(r.composite.path))
+    try:  # each link kept for the map
+        assert con.execute("SELECT COUNT(*) FROM entities WHERE kind = 'link'").fetchone()[0] == 2
+    finally:
+        con.close()
     assert rows[0][8] == {"text": "Charter's backbone", "sub": "its name: lag-1.bbr01sttlwa.example.net"}
     r.lookups._known["62.0.0.2"] = (r.lookups.clock(), {"name": "ae-3.zayo.de-cix.fra.example.net", "network": "",
                                                         "org": ""})
@@ -300,4 +308,5 @@ def test_every_hop_of_each_route_is_tabled_in_order_the_missing_kept_and_each_cr
     r.onto(page, Geo(), [target])
     rows = next(t for t in page["tables"] if t["title"] == "Routes, hop by hop")["rows"]
     assert rows[2][8] == {"text": "exchange point", "sub": "its name: ae-3.zayo.de-cix.fra.example.net"}
-    assert rows[2][9] == {"text": "⇄ Zayo", "sub": "from Charter at an exchange point"}
+    assert rows[2][10] == {"text": "⇄ Zayo", "sub": "from Charter at an exchange point"}
+    assert rows[2][9] == {"text": "exchange point", "sub": "Charter to Zayo"}

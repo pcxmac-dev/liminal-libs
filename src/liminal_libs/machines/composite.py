@@ -176,7 +176,7 @@ class Composite:
         return {"lat": lead["lat"], "lon": lead["lon"], "label": str(lead.get("label") or ""),
                 "confidence": round(confidence, 4), "sources": sources, "by": by}
 
-    def record(self, routers=(), legs=None, licence: str = "", claims=()) -> bool:
+    def record(self, routers=(), legs=None, licence: str = "", claims=(), links=()) -> bool:
         """One batch, from a tab's ask: `routers` [{"address", "n", "ms", "after", "lat", "lon", "label"}] as the
         routes traced here and the GeoIP file say them (lat None: no place); `legs` {key: (what, why)} as the network
         found them ("" why: on the lines); `licence` the GeoIP file's words; `claims` more sources' [(address, source,
@@ -213,6 +213,10 @@ class Composite:
                 if self._fresh((source, address), claim, now):  # a place only where it says where (1.72.0)
                     placed = isinstance(said, dict) and said.get("lat") is not None and said.get("lon") is not None
                     rows.append(("claim", (str(address), source, words, claim, placed)))
+            for key, said in links:  # 1.74.0: the links between routers, as the routes traced here say them
+                claim = json.dumps(said, sort_keys=True)
+                if self._fresh(("link", key), claim, now):
+                    rows.append(("link", (str(key), claim)))
             for key, (what, why) in (legs or {}).items():
                 if self._fresh(("segment", key), why, now):
                     rows.append(("wait", ("segment", key, what, why, SEGMENT_LEFT)) if why
@@ -245,6 +249,12 @@ class Composite:
                         if placed:
                             touched[entity] = address
                             self._done(conn, "place", address, now)
+                    elif do == "link":
+                        key, claim = args
+                        entity = self._entity(conn, "link", key, now)
+                        conn.execute("INSERT INTO evidence (entity, source, licence, claim, first, last) VALUES (?, ?,"
+                                     " ?, ?, ?, ?) ON CONFLICT (entity, source, claim) DO UPDATE SET last ="
+                                     " excluded.last", (entity, "trace", "measured here", claim, now, now))
                     elif do == "wait":
                         kind, key, what, why, left = args
                         if kind == "place":

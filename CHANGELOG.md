@@ -23,6 +23,11 @@ page shows it once the platform is restarted.
   its holder (RDAP), what it is (an exchange point, or an operator's backbone, only where its registry's words or its
   own name say so, and what says it shown beneath), and where the route crosses between operators (⇄, at an exchange
   point when it is one). The hosts themselves are looked up too, for their names.
+- **Each link classified, for the map** (the user: "also for trace routes, with the local ISP, and how they
+  connect to an exchange or private link (between routers), also identify the carrier links (major hauls)"): the
+  hop table's Link column: your ISP's (inside the first network met), an exchange point's or a private link
+  (where networks meet), a carrier link (inside one network, over 500 km or 10 ms between two hops); each link
+  kept in the composite database (an entity "link", its "trace" claim) for plotting the infrastructure.
 - **Watching the traffic all the time** (machines/firewall.py): LIMINAL_TRAFFIC_WATCHING, "shown" or "always", kept
   through the plugin's login and set from a "Watching the traffic" table and form on the World Wide Web tab (hook
   world_watching). Always: the capture at this machine's adapter starts at once and never stops for want of an ask
