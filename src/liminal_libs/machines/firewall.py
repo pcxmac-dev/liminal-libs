@@ -10,9 +10,11 @@ firewalld or nftables) through the backend methods; this base holds the rules, t
 status and the setup."""
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 
 from .. import sockets
@@ -22,6 +24,13 @@ from . import netstat, routes as routes_module, world as world_module
 from .infrastructure import DataSet, Index
 from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
+
+# 1.74.0 (the user, 2026-11-22: "lets have a selectable switch on firewall which allows it to run while not selected
+# as far as monitoring traffic"): the traffic watched only while the World Wide Web tab is shown, or all the time
+# the platform runs; kept through the plugin's login, as the hosts' recording is
+WATCH_HOOK, WATCH_FORM, WATCH_VAR = "world_watching", "world-watching", "LIMINAL_TRAFFIC_WATCHING"
+WATCH_WORDS = {"shown": "only while this tab is shown", "always": "all the time the platform runs"}
+WATCH_READ_S = 10.0  # the setting read again through the login this long after, at the soonest
 from .rulegroups import RuleGroups, Sorted
 from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
                     TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
@@ -186,7 +195,7 @@ class Firewall(MachinePlugin):
     HOOKS = (*MachinePlugin.HOOKS, "allow", "remove", "wanted",  # what the platform may ask by name (Plugin.ask)
              "move_rules", "new_label", "rename_label", "remove_label",
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
-             WORLD_HOOK, GEOIP_HOOK,
+             WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK,  # 1.74.0: world_watching, the traffic watched all the time or not
              # 1.65.0: netstat, the Netstat tab's page (a read); hosts_recording and hosts_forget, the hosts database's
              # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
              # globe shows; world_layer, a layer's geometry (a read); world_layer_get and world_layer_remove, a data
@@ -513,10 +522,88 @@ class Firewall(MachinePlugin):
             pass
         finally:
             view.rest()  # the GeoIP file let go again unless the capture runs (WorldView.rest)
+        try:  # 1.74.0: the switch of the traffic's watching, its table and its form (kept through a login: with one)
+            if getattr(self, "login", None) is not None:
+                table, form = self._watch_table()
+                page.setdefault("tables", []).append(table)
+                page.setdefault("forms", []).append(form)
+        except Exception:  # noqa: BLE001 - the switch never costs the tab its page
+            pass
         under = world_module.under_wsl()  # inside a WSL distribution: what WSL changes for the tab, after its own tables
         if under is not None and isinstance(page.get("tables"), list):
             page["tables"].append(under)
         return page
+
+    # -- 1.74.0: the traffic watched all the time, on the user's switch -------------------------------------------
+    def world_watch_mode(self, fresh: bool = False) -> str:
+        """When the traffic is watched, as the login says (WATCH_VAR, read every WATCH_READ_S at most): "shown" (also
+        with no login or nothing set) or "always"."""
+        kept = self.__dict__.get("_watch")
+        if not fresh and kept is not None and time.monotonic() - kept[0] < WATCH_READ_S:
+            return kept[1]
+        login = getattr(self, "login", None)
+        try:
+            raw = (login.variables([WATCH_VAR]) or {}).get(WATCH_VAR) if login is not None else None
+        except Exception:  # noqa: BLE001 - a login that cannot say: shown
+            raw = None
+        mode = "always" if str(raw or "").strip().lower() == "always" else "shown"
+        self.__dict__["_watch"] = (time.monotonic(), mode)
+        return mode
+
+    def world_watch_follow(self) -> None:
+        """The watching follows its setting: always, started now and never stopped for want of an ask (only by the
+        plugin's detach or the platform's stop); shown, stopped WORLD_TIMEOUT after the tab's last ask, as before.
+        Only the capture: the routes are still traced only while the tab is shown. Nothing on a machine the plugin is
+        not for."""
+        if self.not_for_here():
+            return
+        try:
+            if self.world_watch_mode(fresh=True) == "always":
+                view = self.world_view()
+                view.watcher.timeout = math.inf
+                view.touch()
+            else:
+                view = self.world_view(make=False)
+                if view is not None:
+                    view.watcher.timeout = view.timeout
+        except Exception:  # noqa: BLE001 - a capture that cannot start: its tab says why when it is asked
+            pass
+
+    def world_watching(self, mode) -> dict:
+        """The traffic watched "shown" (only while the World Wide Web tab is shown) or "always" (all the time the
+        platform runs, with no page open), kept through the plugin's login (WATCH_VAR); the watching follows at
+        once. ValueError, in words: neither word, no login, a login that keeps nothing, a machine not for it."""
+        self._only_here()
+        word = str(mode or "").strip().lower()
+        if word not in WATCH_WORDS:
+            raise ValueError(f"the traffic is watched shown or always, not {world_module._shown(mode)}")
+        login = getattr(self, "login", None)
+        if login is None:
+            raise ValueError("no login to keep the setting through: sign in first")
+        try:
+            where = login.save(WATCH_VAR, word)
+        except Exception as e:  # noqa: BLE001 - a login that keeps nothing: its own words
+            raise ValueError(f"the setting could not be kept: {e}") from None
+        self.world_watch_follow()
+        return {"said": f"the traffic watched {WATCH_WORDS[word]}", "ok": True, "lines": [f"kept in {where}"]}
+
+    def _watch_table(self) -> tuple[dict, dict]:
+        """The World Wide Web tab's table of the switch, and its form."""
+        mode = self.world_watch_mode()
+        form = {"id": WATCH_FORM, "hook": WATCH_HOOK, "title": "Watching the traffic",
+                "fields": [{"name": "mode", "label": "Watch the traffic", "type": "choice", "value": mode,
+                            "choices": [{"value": "shown", "title": "Only while this tab is shown"},
+                                        {"value": "always", "title": "All the time the platform runs",
+                                         "note": "the capture keeps running with no page open"}]}],
+                "confirm": {"title": "Change when the traffic is watched?", "yes": "Change it", "words": (
+                    "Watching is set to {mode}. Always keeps the capture at this machine's adapter running for as long "
+                    "as the platform runs, with no page open too, counting the packets, the ports and the places as "
+                    "this tab does; nothing is sent anywhere. The routes are still traced only while this tab is "
+                    "shown. The choice is kept through your login.")}}
+        table = {"title": "Watching the traffic", "note": "Whether the capture keeps running while this tab is not "
+                 "shown (the switch is kept through your login).", "columns": [{"title": "Watched"}, {"title": ""}],
+                 "rows": [[WATCH_WORDS[mode], {"form": WATCH_FORM, "title": "Change…"}]]}
+        return table, form
 
     def world_geoip(self, accept_licence=False, log=None) -> dict:
         """The GeoIP file installed for the World Wide Web tab, on the user's word: a change, asked only from the tab's
@@ -685,6 +772,8 @@ class Firewall(MachinePlugin):
                 self.netstat_view().follow(once=bool(getattr(app, "once", False)))
             except Exception:  # noqa: BLE001 - a view that cannot be made or read: its tab says why when it is asked
                 pass
+            if not getattr(app, "once", False):
+                self.world_watch_follow()  # 1.74.0
         return out
 
     def app_stopping(self) -> None:

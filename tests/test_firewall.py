@@ -164,3 +164,36 @@ def test_a_firewall_not_for_this_machine_asks_nothing_and_changes_nothing():
                            "valid": False, "why": "for a native Linux machine", "applies": False}
     assert fw.setup(log=lambda m: None) == [{"step": "enable", "ok": False, "detail": "for a native Linux machine"}]
     assert fw.rules == {} and fw.enabled_calls == 0
+
+
+def test_the_traffic_is_watched_all_the_time_on_the_users_switch(monkeypatch):
+    """1.74.0 (the user: "lets have a selectable switch on firewall which allows it to run while not selected as far as
+    monitoring traffic"): kept through the login; always: the capture never stops for want of an ask, started at once;
+    shown: its timeout back."""
+    from types import SimpleNamespace
+    from liminal_libs.machines import firewall as firewall_module
+    kept = {}
+
+    class Login:
+        def variables(self, names):
+            return {n: kept[n] for n in names if n in kept}
+
+        def save(self, name, value):
+            kept[name] = value
+            return "the login"
+    touched = []
+    view = SimpleNamespace(timeout=20.0, watcher=SimpleNamespace(timeout=20.0), touch=lambda: touched.append(1))
+    fw = FakeFirewall()
+    fw.login = Login()
+    monkeypatch.setattr(fw, "not_for_here", lambda: "")
+    monkeypatch.setattr(fw, "world_view", lambda make=True: view)
+    assert fw.world_watch_mode() == "shown"
+    said = fw.world_watching("always")
+    assert said["ok"] and kept[firewall_module.WATCH_VAR] == "always"
+    assert view.watcher.timeout == float("inf") and touched == [1]
+    fw.world_watching("shown")
+    assert view.watcher.timeout == 20.0 and touched == [1]
+    table, form = fw._watch_table()
+    assert table["rows"][0][0] == "only while this tab is shown" and form["hook"] == "world_watching"
+    with pytest.raises(ValueError):
+        fw.world_watching("sometimes")
