@@ -124,6 +124,8 @@
   const MAX_HEAT_RUNS = 4000;  // the heat's runs drawn at most (machines/network.py's MAX_RUNS)
   const MAX_HEAT_POINTS = 250000;  // their points, the great circles filled in (the page's MAX_POINTS, and the filling)
   const HEAT_STEPS = 16;  // the heat's shades from grey to white, each drawn as one path
+  const MAX_HOPS = 512;  // routers' places drawn at most (1.69.1)
+  const HOP_NAMES = [[2, 6], [6, 16], [Infinity, 40]];  // routers' places named: up to this zoom, at most so many
   const MAX_ROUTE_POINTS = 128;  // points a route's line is drawn with at most, whatever its hops
   const LAYER_SLOTS = [4, 5, 6, 7];  // the themes' series slots the kinds leave free
   // a layer's mark, and what it marks: the exchanges globe's circle, square and diamond for points; for lines a plain
@@ -844,7 +846,8 @@
         seconds: seconds != null && seconds >= 0 ? seconds : null,
         programs: (Array.isArray(o.programs) ? o.programs.slice(0, 8) : []).map((w) => text(w, 80)).filter(Boolean),
         // 1.67.0: the route traced to it, its placed hops from home outward: its line runs through them
-        via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(placeOf).filter(Boolean),
+        // 1.69.1: each hop with its words too (the GeoIP file's place, the router's address, its hop number, its time)
+        via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(hopOf).filter(Boolean),
         // 1.69.0: where the route leaves the network (else its last hop, else home): its light travels from there
         last: Array.isArray(o.last) ? placeOf({ lat: o.last[0], lon: o.last[1] }) : null,
       });
@@ -875,8 +878,39 @@
       kinds: kinds.length ? kinds : Object.keys(KINDS), showing: text(s.showing, 200), has, ...layersOf(s.layers),
       // 1.69.0: the routes' heat (machines/network.py); null on an older server's page, whose routes are drawn as before
       heat: Array.isArray(s.heat) ? heatOf(s.heat) : null, heatBy: s.heat_by === 'bytes' ? 'bytes' : 'connections',
+      hops: hopsOf(listed),
     };
   }
+  // A route's hop as the page gives it (machines/routes.py's `via`): its place, and the words it has, made safe.
+  function hopOf(p) {
+    const q = placeOf(p);
+    if (!q) return null;
+    const n = num(p.n), ms = num(p.ms);
+    return { ...q, label: text(p.label, 80), address: text(p.address, 64), n: n != null && n >= 0 ? Math.round(n) : null,
+      ms: ms != null && ms >= 0 ? ms : null };
+  }
+  // 1.69.1 (the user, 2026-11-22: "there appears to be verticies without location names or cities, please address
+  // that"): every routers' place the routes go through, once however many routes pass it, with what is known of it:
+  // its name, the addresses seen there, their hop numbers and times, the places whose routes pass it and their
+  // connections in all; the busiest first, MAX_HOPS at most.
+  function hopsOf(origins) {
+    const by = new Map();
+    for (const o of origins) {
+      if (!o.placed) continue;
+      for (const p of o.via) {
+        const id = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+        let h = by.get(id);
+        if (!h) by.set(id, (h = { id, lat: p.lat, lon: p.lon, label: '', addresses: [], ns: [], ms: [], to: [], count: 0 }));
+        if (!h.label) h.label = p.label;
+        if (p.address && h.addresses.length < 8 && !h.addresses.includes(p.address)) h.addresses.push(p.address);
+        if (p.n != null && h.ns.length < 8 && !h.ns.includes(p.n)) h.ns.push(p.n);
+        if (p.ms != null) h.ms.push(p.ms);
+        if (!h.to.includes(o)) { h.to.push(o); h.count += o.count; }
+      }
+    }
+    return [...by.values()].sort((a, b) => b.count - a.count || (a.id < b.id ? -1 : 1)).slice(0, MAX_HOPS);
+  }
+  const hopName = (h) => (h.label ? h.label.split(',')[0] : '') || h.addresses[0] || 'a router';
   // The heat's runs as the globe draws them: each run's points as unit vectors, a stretch longer than FILL degrees
   // filled in along its great circle; MAX_HEAT_RUNS runs and MAX_HEAT_POINTS points at most, the lightest first (the
   // brightest drawn on top), and the heaviest weight, the top of the scale.
@@ -1592,7 +1626,8 @@
     // round the mark the pointer is on.
     function placesLayer(g, ratio, W, H) {
       const f = pick && pick.f, at = f && f.line == null ? `${f.x.toFixed(1)},${f.y.toFixed(1)}` : '';
-      const picked = !pick ? '' : pick.home ? 'home' : f ? `${f.l.id} ${at || f.line}` : pick.o.id;
+      const picked = !pick ? '' : pick.home ? 'home' : f ? `${f.l.id} ${at || f.line}`
+        : pick.h ? `hop ${pick.h.id}` : pick.o.id;
       const key = `${viewKey(g, W, H, ratio)}|${version}|${picked}|${infraStamp}`;
       return layer(layers.places, key, W, H, ratio, (c) => {
         if (at) {
@@ -1691,6 +1726,18 @@
 
     function drawPlaces(c, g) {
       const picked = pick && pick.o, shown = [];
+      if (data.heat) {  // 1.69.1: the routers' places the routes bend at, under the places' dots, in the heat's white
+        const hop = pick && pick.h;
+        for (const h of data.hops) {
+          const p = project(h.lon, h.lat, g);
+          if (!p.visible) continue;
+          const r = h === hop ? 4 : 2.6;
+          c.beginPath(); c.arc(p.x, p.y, r + 1.5, 0, TAU);
+          c.fillStyle = css(colours.surface); c.fill();
+          c.beginPath(); c.arc(p.x, p.y, r, 0, TAU);
+          c.fillStyle = css(colours.heat[1], h === hop ? 1 : 0.85); c.fill();
+        }
+      }
       for (const o of data.origins) {
         const p = project(o.lon, o.lat, g);
         if (p.visible) shown.push([o, p]);
@@ -1748,6 +1795,16 @@
       }
       const busiest = shown.filter(([, p]) => p.depth > 0.12).sort((a, b) => b[0].count - a[0].count).slice(0, LABELS);
       for (const [o, p] of busiest) put(text(nameOf(o), 40), p.x, p.y, dotRadius(o.count) + 2, false);
+      if (data.heat) {  // 1.69.1: the routers' places too, the busiest first, more of them the nearer the globe is
+        let left = HOP_NAMES.find(([upto]) => zoom < upto)[1];
+        for (const h of data.hops) {
+          if (left <= 0) break;
+          const p = project(h.lon, h.lat, g);
+          if (!p.visible || p.depth <= 0.12) continue;
+          put(text(hopName(h), 32), p.x, p.y, 4, false);
+          left--;
+        }
+      }
       nameLayers(c, g, boxes, shown);
       c.textBaseline = 'alphabetic';
     }
@@ -1880,6 +1937,7 @@
         return;
       }
       if (p.f) { featureTip(p.f, line); return; }
+      if (p.h) { hopTip(p.h, line); return; }
       const o = p.o, k = KINDS[o.kind];
       line('lg-tip-head', nameOf(o));
       const where = whereOf(o);
@@ -1898,6 +1956,17 @@
       if (o.programs.length) line('lg-tip-sub', o.programs.join(', '));
       if (networkOf(o)) line('lg-tip-sub', networkOf(o));
       if (o.ports.length) line('lg-tip-sub', `ports ${portsOf(o.ports)}`);
+    }
+    // 1.69.1: a router's place: where it is, what it is, the addresses seen there and their hops, the nearest time to
+    // it, the places whose routes pass it, and what placed it.
+    function hopTip(h, line) {
+      line('lg-tip-head', h.label || h.addresses[0] || 'A router');
+      const ns = [...h.ns].sort((a, b) => a - b);
+      line('lg-tip-sub', `a router on the way${ns.length ? `: hop ${ns.join(', ')}` : ''}`);
+      if (h.addresses.length) line('', h.addresses.join(', '));
+      if (h.ms.length) line('', `${Math.min(...h.ms).toFixed(1)} ms from here at its nearest`);
+      line('', `on the way to ${h.to.slice(0, 4).map(nameOf).join(', ')}${h.to.length > 4 ? ` and ${h.to.length - 4} more` : ''}`);
+      line('lg-tip-sub', 'placed by the GeoIP file on this machine: often its network\'s home, not the router itself');
     }
     // A layer's mark or line: its name, its layer, its operator and the credit of the data set it came from; a cluster:
     // its count, five of its names and their credits.
@@ -1946,7 +2015,8 @@
     function anchorTip(g) {
       if (!pick || pick.by === 'mouse') return;
       const at = pick.home ? (data.home ? project(data.home.lon, data.home.lat, g) : null)
-        : pick.f ? { x: pick.f.x, y: pick.f.y, visible: true } : project(pick.o.lon, pick.o.lat, g);
+        : pick.f ? { x: pick.f.x, y: pick.f.y, visible: true }
+          : pick.h ? project(pick.h.lon, pick.h.lat, g) : project(pick.o.lon, pick.o.lat, g);
       if (!at || !at.visible || at.x < 0 || at.y < 0 || at.x > g.w || at.y > g.h) { tip.hidden = true; anchor = ''; return; }
       const r = canvas.getBoundingClientRect(), x = r.left + at.x, y = r.top + at.y;
       const key = `${x.toFixed(1)},${y.toFixed(1)}`;
@@ -1964,7 +2034,7 @@
         if (was) changed();
         return;
       }
-      if (!was || was.o !== p.o || was.f !== p.f || !!was.home !== !!p.home || was.by !== p.by) {
+      if (!was || was.o !== p.o || was.f !== p.f || was.h !== p.h || !!was.home !== !!p.home || was.by !== p.by) {
         fillTip(p);
         changed();
       }
@@ -2250,6 +2320,13 @@
         const d = Math.hypot(p.x - x, p.y - y);
         if (p.visible && d < HOME_REACH[by] && d <= bestD) best = { home: true };
       }
+      if (!best && data.heat) {  // 1.69.1: a router's place, where no place or home is nearer
+        for (const h of data.hops) {
+          const p = project(h.lon, h.lat, g);
+          const d = Math.hypot(p.x - x, p.y - y);
+          if (p.visible && d < PLACE_REACH[by] && d < bestD) { best = { h }; bestD = d; }
+        }
+      }
       const f = best ? null : featureAt(x, y, by);
       return f ? { f } : best;
     }
@@ -2475,7 +2552,16 @@
       buildRoutes();
       layersShown = null;
       pruneLayers();  // a layer the spec no longer lists, or lists in another version, is let go
-      if (pick && !pick.f) {  // the same place in the new list (by its id) keeps its words, with its new numbers
+      if (pick && pick.h) {  // 1.69.1: the same router's place, if a route still passes it, keeps its words
+        const h = data.heat ? data.hops.find((x) => x.id === pick.h.id) : null;
+        if (!h) setPick(null);
+        else {
+          pick = { ...pick, h };
+          fillTip(pick);
+          anchor = '';
+          if (pick.by === 'mouse') placeTip(pick.x, pick.y, false);
+        }
+      } else if (pick && !pick.f) {  // the same place in the new list (by its id) keeps its words, with its new numbers
         const o = pick.o ? data.origins.find((x) => x.id === pick.o.id) : null;
         if (pick.o ? !o : !data.home) setPick(null);
         else {

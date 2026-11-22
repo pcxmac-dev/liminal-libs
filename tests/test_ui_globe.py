@@ -1572,7 +1572,7 @@ def test_a_places_line_runs_through_the_hops_of_its_traced_route(js):
     """1.67.0: a place may carry `via`, the placed hops of the route traced to it from home outward (read as places,
     MAX_VIA at most, what is no place dropped); its line runs from the place through them to home, leg by leg on great
     circles, rising once over the whole way, with a small grey-blue dot at each hop."""
-    assert "via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(placeOf).filter(Boolean)," in js
+    assert "via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(hopOf).filter(Boolean)," in js  # 1.69.1
     build = _body(js, "function buildRoutes() {")
     assert "...o.via.slice().reverse().map((p) => unit(p.lon, p.lat)), b];" in build
     assert "lift * Math.sin((Math.PI * (gone + l.d * t)) / w)" in build and "if (l.hop) hops.push(k - 1);" in build
@@ -1610,3 +1610,30 @@ def test_the_routes_are_a_heat_map_and_the_lights_travel_only_the_last_stretch(j
     render = _body(js, "function render(now) {")
     assert render.index("infraLayer(g, fr, ratio, W, H)") < render.index("heatLayer(g, fr, ratio, W, H)") \
         < render.index("drawRoutes(g, fr, now);")
+
+
+def test_the_routers_places_the_routes_bend_at_are_drawn_named_and_told_on_hover(js):
+    """1.69.1 (the user, 2026-11-22: "there appears to be verticies without location names or cities, please address
+    that"): with the heat, every router's place a route passes is drawn once, however many routes pass it, named on
+    the map with the places' names (the busiest first, more of them as the globe comes nearer) and told on hover:
+    its place, its hops and addresses, its nearest time, the places it is on the way to and what placed it."""
+    normal = _body(js, "function normal(spec) {")
+    assert ".map(hopOf).filter(Boolean)," in normal and "hops: hopsOf(listed)," in normal
+    hop = _body(js, "function hopOf(p) {")
+    assert "label: text(p.label, 80), address: text(p.address, 64)" in hop
+    hops = _body(js, "function hopsOf(origins) {")
+    assert "const id = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;" in hops  # one a place, as routes.py's _key
+    assert "if (!h.to.includes(o)) { h.to.push(o); h.count += o.count; }" in hops and ".slice(0, MAX_HOPS)" in hops
+    places = _body(js, "function drawPlaces(c, g) {")
+    assert places.index("for (const h of data.hops) {") < places.index("for (const o of data.origins) {")  # under them
+    labels = _body(js, "function drawLabels(c, g, shown) {")
+    assert "HOP_NAMES.find(([upto]) => zoom < upto)[1]" in labels and "put(text(hopName(h), 32)" in labels
+    assert labels.index("put(text(nameOf(o), 40)") < labels.index("put(text(hopName(h), 32)")  # places named first
+    hit = _body(js, "function hitAt(clientX, clientY, by) {")
+    assert "if (!best && data.heat) {" in hit and "best = { h }; bestD = d;" in hit
+    tip = _body(js, "function hopTip(h, line) {")
+    assert "a router on the way" in tip and "placed by the GeoIP file on this machine" in tip
+    assert "if (p.h) { hopTip(p.h, line); return; }" in _body(js, "function fillTip(p) {")
+    assert "was.h !== p.h" in _body(js, "function setPick(p) {")
+    assert "pick.h ? project(pick.h.lon, pick.h.lat, g)" in _body(js, "function anchorTip(g) {")
+    assert "const h = data.heat ? data.hops.find((x) => x.id === pick.h.id) : null;" in _body(js, "function update(next, more) {")

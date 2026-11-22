@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.69.1 (2026-11-22)
+
+The routers' places the routes bend at are drawn and named on the firewalls' globe. The user, 2026-11-22: "there
+appears to be verticies without location names or cities, please address that". The globe's script only: a page shows
+it once reloaded, with no app restarted.
+
+- With the heat (1.69.0), each router's place a route passes (`via`: its GeoIP place, the router's address, its hop
+  number and time) is drawn once, however many routes pass it, as a small white dot under the places' dots, and named
+  as the places are: the busiest first, never over another name, 6 of them up to 2x, 16 up to 6x and 40 nearer
+  (`HOP_NAMES`; 512 places at most, `MAX_HOPS`). Its name is the GeoIP file's city, else its country, else the
+  router's address.
+- On hover (a tap with a finger): its place, "a router on the way" with its hop numbers, the addresses seen there, the
+  nearest time to it, the places whose routes pass it, and what placed it (the GeoIP file on this machine, often the
+  network's home rather than the router). Kept through the page's next answer while a route still passes it.
+- Still to come (the Monday list, items 27 and 28): names from more sources than the GeoIP file (the nearest town, the
+  router's own name), and the hubs of the installed layers along each route.
+
 ## 1.69.0 (2026-11-20)
 
 The routes on the firewalls' World Wide Web globe follow the physical network and are drawn as a heat map. The user,
