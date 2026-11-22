@@ -109,7 +109,7 @@
   const GLIDE_MS = 700;
   const LABELS = 5;  // the busiest places named on the map (the table and the tooltips carry every one)
   const LIGHTS = 64;  // the busiest routes a light travels (the rest stand still: a frame stays cheap)
-  const MAX_LAYERS = 8;  // the infrastructure layers of a spec that are listed (how many more there were is said)
+  const MAX_LAYERS = 10;  // the infrastructure layers of a spec that are listed (how many more there were is said)
   const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
   const MAX_LAYER_VERTICES = 400000;  // a layer's line vertices kept, the ones filled in among them
   const MAX_PARTS = 16;  // the parts (one a data set) of a layer's answer that are read
@@ -889,7 +889,7 @@
     if (!q) return null;
     const n = num(p.n), ms = num(p.ms);
     return { ...q, label: text(p.label, 80), address: text(p.address, 64), name: text(p.name, 120),
-      network: text(p.network, 160), n: n != null && n >= 0 ? Math.round(n) : null,
+      network: text(p.network, 160), by: text(p.placed_by, 120), n: n != null && n >= 0 ? Math.round(n) : null,
       ms: ms != null && ms >= 0 ? ms : null };
   }
   // 1.69.1 (the user, 2026-11-22: "there appears to be verticies without location names or cities, please address
@@ -910,6 +910,7 @@
         if (p.name && h.names.length < 4 && !h.names.includes(p.name)) h.names.push(p.name);  // 1.72.0
         if (p.network && h.networks.length < 3 && !h.networks.includes(p.network)) h.networks.push(p.network);
         if (!h.label) h.label = p.label;
+        if (!h.by && p.by) h.by = p.by;  // 1.73.0: what placed it, where surer than the GeoIP file
         if (p.address && h.addresses.length < 8 && !h.addresses.includes(p.address)) h.addresses.push(p.address);
         if (p.n != null && h.ns.length < 8 && !h.ns.includes(p.n)) h.ns.push(p.n);
         if (p.ms != null) h.ms.push(p.ms);
@@ -2009,7 +2010,8 @@
       for (const n of h.networks) line('lg-tip-sub', `network: ${n}`);  // and its networks, by RDAP
       if (h.ms.length) line('', `${Math.min(...h.ms).toFixed(1)} ms from here at its nearest`);
       line('', `on the way to ${h.to.slice(0, 4).map(nameOf).join(', ')}${h.to.length > 4 ? ` and ${h.to.length - 4} more` : ''}`);
-      line('lg-tip-sub', 'placed by the GeoIP file on this machine: often its network\'s home, not the router itself');
+      line('lg-tip-sub', h.by ? `placed by ${h.by}`
+        : 'placed by the GeoIP file on this machine: often its network\'s home, not the router itself');
     }
     // A layer's mark or line: its name, its layer, its operator and the credit of the data set it came from; a cluster:
     // its count, five of its names and their credits.

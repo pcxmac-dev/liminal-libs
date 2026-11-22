@@ -85,10 +85,15 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
     ("pops", "Backbones' points of presence, about 2010-2011", "points", "circle", 4, False, 6.0),
     ("cables", "Submarine cables", "lines", "line", 6, True, 3.0),
     ("backbones", "Backbones, about 2010-2011", "lines", "line", 7, True, 4.0),
-    ("lines", "Telecom lines on land (partial)", "lines", "dash", 7, False, 6.0))
+    ("lines", "Telecom lines on land (partial)", "lines", "dash", 7, False, 6.0),
+    # 1.73.0: what routers' names are read with (machines/names.py), drawn too: the airports by their codes, the
+    # cities of the world by their names (the most people first, MAX_POINTS of them)
+    ("airports", "Airports, by their codes", "points", "diamond", 5, False, 7.0),
+    ("cities", "Cities", "points", "circle", 4, False, 4.0))
 
-FORMATS = ("overpass", "sparql", "geojson", "gml")  # what an answer is read as
-AS_WRITTEN = ("geojson", "gml")  # the formats whose query, where they have one, is sent as it is written
+FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames")  # what an answer is read as
+AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames")  # whose query, where they have one, is sent as written
+AS_BYTES = ("gml", "ourairports", "geonames")  # the formats read from the answer's bytes, not as JSON
 SCALE = 100_000  # a coordinate is kept in 1e-5 degrees, about a metre
 BUSY = (429, 502, 503, 504)  # HTTP codes of a server too busy to answer now: asked once more
 MAX_QUERY = 4000  # characters of a data set's query: it travels in the address
@@ -128,7 +133,7 @@ NAMES = ("name", "name_", "pipe_name", "cable_name")  # a GeoJSON feature's name
 OPERATORS = ("operator", "owner")  # else its operator's
 DEGREES = ("4326", "crs84")  # how a GeoJSON answer's `crs` ends when its coordinates are longitude and latitude
 ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for",
-         "gml": "the file asked for"}
+         "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -346,7 +351,7 @@ def _begins(raw) -> str:
 def _decoded(dataset: DataSet, data):
     """A data set's answer decoded: its bytes (or its text) as JSON; one decoded already as it is. A file of maps
     (gml) is read as its bytes: its text as UTF-8. InfrastructureError when it is no JSON."""
-    if dataset.format == "gml":
+    if dataset.format in AS_BYTES:
         return data.encode("utf-8") if isinstance(data, str) else bytes(data) if isinstance(data, memoryview) else data
     if not isinstance(data, (bytes, bytearray, memoryview, str)):
         return data
@@ -820,7 +825,65 @@ def _gml(doc, kept: _Kept, host: str, free: bool) -> None:
     kept.remarks.append("; ".join(said))
 
 
-_READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml}
+AIRPORT_KINDS = ("large_airport", "medium_airport")  # OurAirports' kinds kept: the ones routers are named after
+
+
+def _ourairports(doc, kept: _Kept, host: str, free: bool) -> None:
+    """OurAirports' airports.csv (1.73.0): each large or medium airport with a three-letter IATA code a point of
+    "airports", named by its code, its name, its town and its country its sub."""
+    import csv
+    text = doc.decode("utf-8-sig", "replace") if isinstance(doc, (bytes, bytearray)) else str(doc)
+    rows = csv.DictReader(io.StringIO(text))
+    if not rows.fieldnames or not {"type", "iata_code", "latitude_deg", "longitude_deg"} <= set(rows.fieldnames):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (no airports' columns: {_begins(text)})")
+    for row in rows:
+        code = (row.get("iata_code") or "").strip().upper()
+        if row.get("type") not in AIRPORT_KINDS or not re.fullmatch(r"[A-Z]{3}", code):
+            kept.drop(OTHER)
+            continue
+        try:
+            lat, lon = float(row["latitude_deg"]), float(row["longitude_deg"])
+        except (TypeError, ValueError):
+            kept.drop(OFF)
+            continue
+        where = ", ".join(x for x in ((row.get("name") or "").strip(), (row.get("municipality") or "").strip(),
+                                      (row.get("iso_country") or "").strip()) if x)
+        kept.point("airports", lon, lat, code, where)
+
+
+def _geonames(doc, kept: _Kept, host: str, free: bool) -> None:
+    """GeoNames' cities (1.73.0: cities15000.zip, the one text file in it, tab-separated): each a point of "cities",
+    the most people first (MAX_POINTS of them), named by its name in ASCII, its sub "CC-A1 · people" (its country's
+    code, its first-order division's code, as routers' names abbreviate them, and how many live there)."""
+    import zipfile
+    raw = bytes(doc)
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            names = [i for i in z.infolist() if i.filename.endswith(".txt") and not i.is_dir()]
+            if len(names) != 1 or names[0].file_size > MAX_UNPACKED:
+                raise InfrastructureError(f"{host}'s answer is not the data asked for (one text file in a zip, "
+                                          f"{size_words(MAX_UNPACKED)} at most)")
+            text = z.read(names[0]).decode("utf-8", "replace")
+    except zipfile.BadZipFile:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (no zip: {_begins(raw)})") from None
+    found = []
+    for line in text.splitlines():
+        f = line.split("\t")
+        if len(f) < 15:
+            kept.drop(OTHER)
+            continue
+        try:
+            found.append((int(f[14] or 0), float(f[5]), float(f[4]), f[2] or f[1], f[8], f[10]))
+        except ValueError:
+            kept.drop(OFF)
+    found.sort(key=lambda c: -c[0])
+    for people, lon, lat, name, country, division in found:
+        where = f"{country}-{division}" if division else country
+        kept.point("cities", lon, lat, name, f"{where} · {people:,}")
+
+
+_READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
+            "geonames": _geonames}
 
 
 def _features(dataset: DataSet, doc, free: bool) -> dict:

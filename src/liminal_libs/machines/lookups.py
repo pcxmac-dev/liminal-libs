@@ -47,6 +47,7 @@ REDIRECTS = 3
 TIMEOUT_HTTP_S = 15.0
 AGENT = "liminal-libs (router lookups)"
 PTR_WORDS = "the DNS, as this machine's resolver answered"
+NAME_WORDS = "its name, read with the airports' and the cities' lists (their licences)"  # 1.73.0
 RDAP_WORDS = "the registry's RDAP answer: its terms of use"
 
 
@@ -151,6 +152,8 @@ class Lookups:
         self._running = False
         self.closed = False
         self.asked = {"ptr": 0, "rdap": 0, "bootstrap": 0}
+        # 1.73.0: (address, name) -> where the name says it is, or None (Routes' gazetteer); asks no one
+        self.decode = None
 
     @staticmethod
     def _thread(work) -> None:
@@ -234,6 +237,13 @@ class Lookups:
                 found["name"] = ""
             if found["name"]:
                 self._claim(address, "ptr", PTR_WORDS, {"name": found["name"]})
+                place = None
+                try:
+                    place = self.decode(address, found["name"]) if self.decode is not None else None
+                except Exception:  # noqa: BLE001 - a name not read places nothing
+                    place = None
+                if place:
+                    self._claim(address, "name", NAME_WORDS, place)
         if "network" not in have:
             net, later = self._network(address)
             if later:

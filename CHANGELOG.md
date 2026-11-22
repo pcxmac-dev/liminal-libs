@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.73.0 (2026-11-22)
+
+Routers' names read for their places. The user, 2026-11-22, asked whether to build it after a router GeoIP put in
+Greenville turned out to be named lag-807-10.bbr01sttlwa.netops.charter.com (sttlwa: Seattle, Washington): "Yes, build
+it". The platform's page shows it once the platform is restarted and the two lists are installed (each the user's
+click; their addresses and licences are the plugins', none named here).
+
+- **Two data sets, two layers** (machines/infrastructure.py): the formats `ourairports` (OurAirports' airports.csv:
+  each large or medium airport with a three-letter code, a point of the new layer "airports", named by its code) and
+  `geonames` (GeoNames' cities15000.zip, its one text file: each city a point of the new layer "cities", the most
+  people first, 20,000 at most, its sub "country-division · people"). Both layers are off at first and drawn when
+  switched on: the cities of the world named on the globe as it comes nearer. The globe lists ten layers at most now.
+- **`machines/names.py`**: a router's name read with them, its domain left out: a three-letter airport code (words
+  routers' names use for their parts left out) gives the airport's town; a six-letter city-and-state code (sttlwa)
+  the largest city of that US state whose letters are in it, in order; a city's name in letters that city. A place is
+  kept only where the trace's time to the router allows it (100 km a millisecond there and back, and 300 km); the
+  router's country (its network's, else the GeoIP file's) first, then the surest way of reading, then the most people.
+- **Wired in**: a name found by the lookups is read at once, and its place is a claim in the composite database
+  ("name", weight 0.6 against the GeoIP file's 0.3); each router's best estimate is kept in memory (and read back once
+  after a restart); a hop is drawn where its best estimate puts it when that is surer than the GeoIP file alone, its
+  hover saying what placed it ("placed by its name (sttlwa)").
+- Not yet: a name looked up before the lists were installed is read again only at its next lookup (a day on).
+
 ## 1.72.1 (2026-11-22)
 
 No outside host named in the library again. 1.72.0's lookups named IANA's RDAP bootstrap files in

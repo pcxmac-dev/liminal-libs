@@ -39,6 +39,7 @@ MAX_MEMO = 20_000  # rows remembered as written, in this process
 # a source's weight, the chance its claim of a router's place is right, and what it is
 SOURCES = {
     "geoip": (0.3, "the GeoIP file on this machine: often the network's home rather than the router itself"),
+    "name": (0.6, "the router's own name, read with the airports' and the cities' lists"),  # 1.73.0
 }
 PLACE_LEFT = ("routers' names (reverse DNS: your switch)", "RIPE IPmap (your switch)", "PeeringDB (your switch)",
               "CAIDA's router-level map (your download)")
@@ -80,6 +81,8 @@ class Composite:
         self._memo: dict[tuple, tuple[float, str]] = {}  # a row's key -> (when it was written, what it said)
         self.closed = False
         self.counts = {"routers": 0, "claims": 0, "placed": 0, "waiting": 0}
+        self._best: dict[str, dict] = {}  # 1.73.0: each router's best place, as last estimated (best())
+        self._loaded = False
         self.problem = ""
 
     @property
@@ -130,8 +133,15 @@ class Composite:
         conn.execute("UPDATE queue SET done = ?, last = ? WHERE kind = ? AND key = ? AND done IS NULL",
                      (now, now, kind, key))
 
+    def best(self, address) -> dict | None:
+        """A router's best place as last estimated in this process (or read at its first batch): {"lat", "lon",
+        "label", "confidence", "sources", "by"}, or None. Asks nothing of the file."""
+        with self._lock:
+            found = self._best.get(str(address))
+        return dict(found) if found else None
+
     @staticmethod
-    def _estimate(conn, entity: int, now: float) -> None:
+    def _estimate(conn, entity: int, now: float) -> dict | None:
         """A router's best place from its claims (the module's docstring)."""
         claims = []
         for source, claim in conn.execute("SELECT source, claim FROM evidence WHERE entity = ?", (entity,)):
@@ -141,9 +151,10 @@ class Composite:
                 continue
             if isinstance(said, dict) and isinstance(said.get("lat"), (int, float)) and isinstance(
                     said.get("lon"), (int, float)):
+                said["source"] = source
                 claims.append((source, SOURCES.get(source, (0.1, ""))[0], said))
         if not claims:
-            return
+            return None
         best = None
         for _, _, said in claims:
             near = [(s, w, c) for s, w, c in claims if _km((said["lat"], said["lon"]), (c["lat"], c["lon"])) <= AGREE_KM]
@@ -160,6 +171,10 @@ class Composite:
                      " excluded.label, confidence = excluded.confidence, sources = excluded.sources, at = excluded.at",
                      (entity, lead["lat"], lead["lon"], str(lead.get("label") or ""), round(confidence, 4), sources,
                       now))
+        by = (f"its name ({lead['token']})" if lead.get("source") == "name" and lead.get("token")
+              else "the GeoIP file" if lead.get("source") == "geoip" else str(lead.get("source")))
+        return {"lat": lead["lat"], "lon": lead["lon"], "label": str(lead.get("label") or ""),
+                "confidence": round(confidence, 4), "sources": sources, "by": by}
 
     def record(self, routers=(), legs=None, licence: str = "", claims=()) -> bool:
         """One batch, from a tab's ask: `routers` [{"address", "n", "ms", "after", "lat", "lon", "label"}] as the
@@ -212,7 +227,14 @@ class Composite:
                 return False
             try:
                 conn.execute("BEGIN")
-                touched = set()
+                touched: dict[int, str] = {}  # entity -> its address
+                if not self._loaded:  # 1.73.0: the estimates of an earlier run, read once
+                    self._loaded = True
+                    for key, lat, lon, label, conf, n in conn.execute(
+                            "SELECT n.key, e.lat, e.lon, e.label, e.confidence, e.sources FROM estimates e JOIN"
+                            " entities n ON n.id = e.entity WHERE n.kind = 'router' LIMIT ?", (MAX_MEMO,)):
+                        self._best[key] = {"lat": lat, "lon": lon, "label": label, "confidence": conf,
+                                           "sources": n, "by": "kept from before"}
                 for do, args in rows:
                     if do == "claim":
                         address, source, words, claim, placed = args
@@ -221,7 +243,7 @@ class Composite:
                                      " ?, ?, ?, ?) ON CONFLICT (entity, source, claim) DO UPDATE SET last ="
                                      " excluded.last", (entity, source, words, claim, now, now))
                         if placed:
-                            touched.add(entity)
+                            touched[entity] = address
                             self._done(conn, "place", address, now)
                     elif do == "wait":
                         kind, key, what, why, left = args
@@ -230,8 +252,12 @@ class Composite:
                         self._wait(conn, kind, key, what, why, left, now)
                     else:
                         self._done(conn, *args, now)
-                for entity in touched:
-                    self._estimate(conn, entity, now)
+                for entity, address in touched.items():
+                    best = self._estimate(conn, entity, now)
+                    if best is not None:
+                        if len(self._best) >= MAX_MEMO:
+                            self._best.clear()
+                        self._best[address] = best
                 self.counts = {
                     "routers": conn.execute("SELECT COUNT(*) FROM entities WHERE kind = 'router'").fetchone()[0],
                     "claims": conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0],

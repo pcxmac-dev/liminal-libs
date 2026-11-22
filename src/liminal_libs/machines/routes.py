@@ -22,7 +22,8 @@ from collections import OrderedDict
 from typing import Iterable
 
 from .. import netpath
-from . import composite as composite_module, lookups as lookups_module, network as network_module
+from . import composite as composite_module, lookups as lookups_module, names as names_module
+from . import network as network_module
 
 KEEP_S = 3600.0  # a route is traced again after this long, while its connection is still open
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
@@ -79,7 +80,13 @@ class Routes:
         self.lookups = lookups_module.Lookups(
             bootstrap=bootstrap,  # 1.72.1: RDAP's bootstrap addresses, the plugin's
             claims=lambda address, source, words, said: self.composite.record(claims=[(address, source, words, said)]))
+        self.lookups.decode = self._decode
         self._composed: set[tuple] = set()
+        # 1.73.0: routers' names read for their places, with the installed airports and cities (names.py)
+        self.names = names_module.Names()
+        self._index = None
+        self._home = None
+        self._seen: OrderedDict[str, tuple[float | None, str]] = OrderedDict()  # address -> (its time, country)
 
     def _stopping(self) -> bool:
         """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
@@ -166,6 +173,7 @@ class Routes:
         self.network.clear()
         self.composite.close()
         self.lookups.close()
+        self.names.clear()
 
     def describe(self) -> dict:
         with self._lock:
@@ -190,11 +198,16 @@ class Routes:
                 place = geoip.lookup(hop.address) if geoip is not None else None
             except Exception:  # noqa: BLE001
                 place = None
-            key = _key(getattr(place, "lat", None), getattr(place, "lon", None))
+            lat, lon, label = getattr(place, "lat", None), getattr(place, "lon", None), getattr(place, "label", "")
+            best, by = self.composite.best(hop.address), ""
+            if best and best["confidence"] > composite_module.SOURCES["geoip"][0] + 1e-9:  # 1.73.0: surer
+                lat, lon, label, by = best["lat"], best["lon"], best["label"], best["by"]
+            key = _key(lat, lon)
             if key is None or key == last or key == end or key == home:
                 continue
-            point = {"lat": place.lat, "lon": place.lon, "label": place.label, "address": hop.address,
-                     "n": hop.n, "ms": hop.ms}
+            point = {"lat": lat, "lon": lon, "label": label, "address": hop.address, "n": hop.n, "ms": hop.ms}
+            if by:
+                point["placed_by"] = by
             known = self.lookups.known(hop.address)  # 1.72.0: its name and network, once looked up
             if known.get("name"):
                 point["name"] = known["name"]
@@ -206,6 +219,16 @@ class Routes:
             if len(points) >= MAX_VIA:
                 break
         return points
+
+    def _decode(self, address: str, name: str) -> dict | None:
+        """Where a router's name says it is (names.Gazetteer.place), bounded by the trace's time to it from home and
+        its country first (its network's, else the GeoIP file's); None without the lists."""
+        gazetteer = self.names.gazetteer(self._index)
+        if gazetteer is None:
+            return None
+        ms, country = self._seen.get(address, (None, ""))
+        country = self.lookups.known(address).get("country") or country
+        return gazetteer.place(name, home=self._home, ms=ms, country=country)
 
     def _routers(self, kept: dict, geoip) -> list[dict]:
         """The routers of the routes not yet given to the composite database, each once a trace: its address,
@@ -226,6 +249,11 @@ class Routes:
                 except Exception:  # noqa: BLE001 - a lookup that fails places nothing
                     place = None
                 lat, lon = getattr(place, "lat", None), getattr(place, "lon", None)
+                was = self._seen.get(hop.address, (None, ""))[0]
+                ms = hop.ms if was is None or (hop.ms is not None and hop.ms < was) else was
+                self._seen[hop.address] = (ms, str(getattr(place, "country", "") or ""))
+                while len(self._seen) > 4 * MAX_KEPT:
+                    self._seen.popitem(last=False)
                 out.append({"address": hop.address, "n": hop.n, "ms": hop.ms, "after": before,
                             "lat": lat, "lon": lon, "label": getattr(place, "label", "") if lat is not None else ""})
                 before = hop.address
@@ -264,6 +292,9 @@ class Routes:
         legs not known on the lines are tabled after the routes, with why (WAITING_TITLE, WAITING_ROWS at most)."""
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
+        self._index = index  # 1.73.0: for the names' lists
+        if isinstance(home_place, dict) and home_place.get("lat") is not None and home_place.get("lon") is not None:
+            self._home = (float(home_place["lat"]), float(home_place["lon"]))
         home = _key(home_place.get("lat"), home_place.get("lon")) if isinstance(home_place, dict) else None
         wanted = []  # the addresses open now that have a route: public ones, as they are traced
         for a in addresses:
