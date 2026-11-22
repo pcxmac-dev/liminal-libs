@@ -553,6 +553,7 @@ class HostBook:
         self._born: dict[str, list] = {}
         self._touched: dict[str, list] = {}
         self._routes: dict[str, tuple] = {}
+        self._traces: list[tuple] = []  # 1.74.0: every trace, its own row of `traces`
         self._n_connections = 0  # as the last count left it
         # the two ends of the keys that ended lately: (the time of the reading they ended in, the time of the next
         # reading NEAR_S or more after it, None until there is one); dropped at the reading after that next one
@@ -1017,6 +1018,8 @@ class HostBook:
             self._routes[host] = (host, at, int(bool(reached)), _clip(how, CODE * 4),
                                   json.dumps(list(hops or ())[:64], separators=(",", ":"))[:16_000],
                                   _clip(way, WHY))
+            if len(self._traces) < MAX_PENDING:
+                self._traces.append(self._routes[host])
             self._dirty = True
 
     def _up(self) -> int:
@@ -1045,7 +1048,7 @@ class HostBook:
                 self._close()
             return
         pending, back = self._pending, self._back
-        born, touched, routes = self._born, self._touched, self._routes
+        born, touched, routes, traces = self._born, self._touched, self._routes, self._traces
         changed = grew = False
         counted = self._n_rows
         tallied = self._n_connections  # the connections' rows (not `connections`: a hosts row's count is named so)
@@ -1079,7 +1082,7 @@ class HostBook:
             for cid, (last, seconds, ended) in touched.items():
                 c.execute(_CONN_TOUCH, (last, last, seconds, ended, cid))
             c.executemany(_ROUTE_KEEP, list(routes.values()))
-            c.executemany(_TRACE_KEEP, list(routes.values()))  # 1.74.0: and every trace, its own row
+            c.executemany(_TRACE_KEEP, traces)  # 1.74.0: and every trace, its own row
             if born or touched or routes:
                 changed = True
             many -= c.execute("DELETE FROM connections WHERE last < ? AND ended IS NOT NULL",
@@ -1087,7 +1090,7 @@ class HostBook:
             if many > CONNECTIONS:
                 many -= c.execute(_CONN_PRUNE, (many - (CONNECTIONS - CONNECTIONS // 100),)).rowcount
             c.execute("DELETE FROM routes WHERE traced < ?", (now - ROUTE_DAYS * 86400.0,))
-            if routes and c.execute("SELECT COUNT(*) FROM traces").fetchone()[0] > TRACES:
+            if traces and c.execute("SELECT COUNT(*) FROM traces").fetchone()[0] > TRACES:
                 c.execute("DELETE FROM traces WHERE id IN (SELECT id FROM traces ORDER BY traced LIMIT "
                           "(SELECT COUNT(*) FROM traces) - ?)", (TRACES,))
             if routes and c.execute("SELECT COUNT(*) FROM routes").fetchone()[0] > ROUTES:
@@ -1120,7 +1123,7 @@ class HostBook:
             self._error += " What was seen since is kept in memory and written at the next try."
             if len(born) > 2 * MAX_PENDING:  # memory stays bounded: what cannot be written is let go (connections)
                 self._error += f" {len(born):,} connections waiting were more than is kept so, and were let go."
-                self._born, self._touched, self._routes = {}, {}, {}
+                self._born, self._touched, self._routes, self._traces = {}, {}, {}, []
             if len(pending) > 2 * MAX_PENDING:  # ... and the hosts' rows
                 self._error += f" {len(pending):,} rows waiting were more than is kept so, and were let go."
                 self._pending = {}
@@ -1128,6 +1131,7 @@ class HostBook:
         # written: nothing of it is pending any more, whatever the count below does
         self._pending, self._back, self._dirty, self._error = {}, None, False, ""
         self._born, self._touched, self._routes, self._n_connections = {}, {}, {}, tallied
+        self._traces = []
         if changed:
             self.changes += 1
         if grew or self._recount:
@@ -1230,6 +1234,7 @@ class HostBook:
                     self._close()
             self._open, self._pending, self._ended = kept, {}, {}
             self._born, self._touched, self._routes, self._n_connections = {}, {}, {}, 0
+            self._traces = []
             self._since = self._last = now
             self._awake = self._back = None
             self._n_rows = self._n_hosts = self._n_programs = self._not_kept = 0
@@ -1272,6 +1277,10 @@ class HostBook:
                f"{_where(clauses)} GROUP BY program ORDER BY 3 DESC, 4 DESC, program LIMIT ?")
         names = ("program", "path", "hosts", "connections", "seconds", "last")
         return self._read(lambda conn: [dict(zip(names, row)) for row in conn.execute(sql, (*args, _most(limit)))], [])
+
+    def routed(self) -> set[str]:
+        """1.74.0: the hosts with a route traced and kept (their routes' rows): each is not traced again."""
+        return self._read(lambda conn: {row[0] for row in conn.execute("SELECT remote FROM routes")}, set())
 
     def ports(self, limit: int = 100, **filters) -> list[dict]:
         """The services' ports summed over the rows that pass the filters (`hosts`' own, by name), the ones with the

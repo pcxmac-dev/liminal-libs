@@ -25,7 +25,13 @@ from .. import netpath
 from . import composite as composite_module, lookups as lookups_module, names as names_module
 from . import network as network_module
 
-KEEP_S = 3600.0  # a route is traced again after this long, while its connection is still open
+KEEP_S = 3600.0  # a route that failed is traced again after this long, while its connection is still open
+# 1.74.0 (the user, 2026-11-22: "make sure all route checks only happen once, to conclusion, and not every packet
+# or connection, if there are multiple routes to a host, record all applicable routes"): a host traced to its end is
+# not traced again (nor after a restart: the hosts database's routes say which were); a check traces it CHECKS times,
+# each to its end, and keeps every distinct route found (a balancer between two paths gives both)
+CHECKS = 3
+MAX_DONE = 100_000  # hosts remembered as traced, in this process
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
 MAX_WAITING = 512  # addresses waiting to be traced at most: the rest are asked for again at the tab's next ask
 GAP_S = 0.25  # the pause between two routes
@@ -52,7 +58,7 @@ class Routes:
     """The routes of one plugin's World Wide Web tab: what waits to be traced, what was, and the thread tracing."""
 
     def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None, keep=None,
-                 wall=None, bootstrap=()):
+                 wall=None, bootstrap=(), known=None):
         # the system's tracers, stopped once the tab is left or the routes closed (review: none outlives them)
         self._tracer = tracer or (lambda address: netpath.trace(address, stop=self._stopping))
         self.clock = clock or time.monotonic
@@ -72,6 +78,11 @@ class Routes:
         self._keep = keep
         self._wall = wall or time.time
         self._saved: set[tuple] = set()
+        # 1.74.0: the hosts traced to their end (asked of `known`, the hosts database's, once), and every distinct
+        # route of each check: {address: [routes]}
+        self._known = known
+        self._done: set[str] | None = None
+        self._alternates: dict[str, list] = {}
         # 1.69.0: the network the routes are drawn on, made from the plugin's installed layers when the page asks
         self.network = network_module.Network()
         # 1.71.0: both sides kept and paired, the lookup queue with them (machines/composite.py)
@@ -90,8 +101,9 @@ class Routes:
         self._seen: OrderedDict[str, tuple[float | None, str]] = OrderedDict()  # address -> (its time, country)
 
     def _stopping(self) -> bool:
-        """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
-        return self.closed or self.clock() - self._asked > self.timeout
+        """Whether a trace under way stops: only the routes closed (1.74.0: a trace begun runs to its end; the tab
+        left, no other is begun)."""
+        return self.closed
 
     @staticmethod
     def _thread(work) -> None:
@@ -102,6 +114,14 @@ class Routes:
         traced within KEEP_S waits to be (the others are left: a name, the local network); the thread is started
         when it is not running."""
         now = self.clock()
+        if self._done is None:  # the hosts traced before (the hosts database's), asked once
+            try:
+                done = set(self._known()) if self._known is not None else set()
+            except Exception:  # noqa: BLE001 - none known: traced again, once
+                done = set()
+            with self._lock:
+                if self._done is None:
+                    self._done = done
         with self._lock:
             if self.closed:
                 return
@@ -112,7 +132,8 @@ class Routes:
                 except ValueError:
                     continue
                 kept = self._kept.get(a)
-                if (kept is not None and now - kept[0] < KEEP_S) or a in self._waiting or a == self._busy:
+                if a in self._done or (kept is not None and now - kept[0] < KEEP_S) or a in self._waiting \
+                        or a == self._busy:
                     continue
                 if len(self._waiting) >= MAX_WAITING:
                     break
@@ -136,18 +157,33 @@ class Routes:
                 return False
             address, _ = self._waiting.popitem(last=False)
             self._busy = address
-        try:
-            route = self._tracer(address)
-        except Exception as e:  # noqa: BLE001 - a trace that failed is kept as such, in words, and tried again later
-            route = netpath.Trace(address, error=f"{type(e).__name__}: {e}")
+        found: list = []  # 1.74.0: CHECKS traces, each to its end; every distinct route kept
+        for _ in range(CHECKS):
+            try:
+                one = self._tracer(address)
+            except Exception as e:  # noqa: BLE001 - a trace that failed is kept as such, in words, tried again later
+                one = netpath.Trace(address, error=f"{type(e).__name__}: {e}")
+            if one.error and found:
+                break
+            if not any(tuple(h.address for h in one.hops) == tuple(h.address for h in f.hops) for f in found):
+                found.append(one)
+            if one.error or self.closed:
+                break
+        route = max(found, key=lambda f: (not f.error, sum(1 for h in f.hops if h.address)))
         with self._lock:
             self._busy = ""
             if self.closed:
                 return False
             self._kept[address] = (self.clock(), route)
             self._kept.move_to_end(address)
+            self._alternates[address] = [f for f in found if f is not route and not f.error]
+            if not route.error:
+                if len(self._done) >= MAX_DONE:
+                    self._done.clear()
+                self._done.add(address)
             while len(self._kept) > MAX_KEPT:
-                self._kept.popitem(last=False)
+                gone, _ = self._kept.popitem(last=False)
+                self._alternates.pop(gone, None)
             self.traced += 1
         return True
 
@@ -260,11 +296,9 @@ class Routes:
                 before = hop.address
         return out
 
-    def _save(self, address: str, at: float, route: netpath.Trace, way: list, geoip, now: float) -> None:
-        """A route kept in the hosts database once (1.68.0): every hop with the place the GeoIP file gives it, the
-        places on its way in words. A keeper that fails is passed over: the route is kept at its next trace."""
-        if self._keep is None or (address, at) in self._saved:
-            return
+    @staticmethod
+    def _hops(route: netpath.Trace, geoip) -> list[dict]:
+        """A route's hops as the hosts database keeps them: each with the place the GeoIP file gives it."""
         hops = []
         for hop in route.hops:
             item = {"n": hop.n, "address": hop.address, "ms": hop.ms}
@@ -275,9 +309,21 @@ class Routes:
             if place is not None and getattr(place, "lat", None) is not None:
                 item.update(label=place.label, lat=place.lat, lon=place.lon)
             hops.append(item)
-        words = " → ".join(p["label"] or p["address"] for p in way)
-        try:
-            self._keep(address, self._wall() - (now - at), route.reached, route.how, hops, words)
+        return hops
+
+    def _save(self, address: str, at: float, route: netpath.Trace, way: list, geoip, now: float) -> None:
+        """A route kept in the hosts database once (1.68.0): every hop with the place the GeoIP file gives it, the
+        places on its way in words. A keeper that fails is passed over: the route is kept at its next trace."""
+        if self._keep is None or (address, at) in self._saved:
+            return
+        traced = self._wall() - (now - at)
+        try:  # 1.74.0: every other route of the check its own row first, the one drawn last (the host's newest)
+            for other in self._alternates.get(address, ()):
+                hops = self._hops(other, geoip)
+                words = " → ".join(dict.fromkeys(h["label"] for h in hops if h.get("label")))
+                self._keep(address, traced, other.reached, other.how, hops, words)
+            words = " → ".join(p["label"] or p["address"] for p in way)
+            self._keep(address, traced, route.reached, route.how, self._hops(route, geoip), words)
         except Exception:  # noqa: BLE001 - kept at its next trace
             return
         if len(self._saved) >= 2 * MAX_KEPT:

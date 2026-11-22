@@ -60,19 +60,43 @@ def test_only_public_addresses_wait_once_each_and_the_thread_is_asked_for_once()
     assert r.describe()["waiting"] == 3 and len(started) == 1  # still running: not asked for again
 
 
-def test_a_route_is_kept_an_hour_then_traced_again_while_its_connection_is_open():
-    tracer, asked = tracer_of({"81.2.69.142": ["192.168.1.1", "81.2.69.142"]})
+def test_a_route_traced_to_its_end_is_not_traced_again_and_one_that_failed_is_after_an_hour():
+    """1.74.0 (the user: "make sure all route checks only happen once, to conclusion"): one check, CHECKS traces of the
+    host each to its end; then never again, however long its connection stays open. A check that failed is tried
+    again KEEP_S on."""
+    tracer, asked = tracer_of({"81.2.69.142": ["192.168.1.1", "81.2.69.142"], "81.2.69.160": RuntimeError("no")})
     clock, started = Clock(), []
     r = Routes(tracer=tracer, clock=clock, start=started.append)
-    r.want(["81.2.69.142"])
-    assert r.step() and not r.step() and asked == ["81.2.69.142"]
+    r.want(["81.2.69.142", "81.2.69.160"])
+    assert r.step() and r.step() and not r.step()
+    assert asked == ["81.2.69.142"] * routes_module.CHECKS + ["81.2.69.160"]  # a failed trace ends its check
     assert r.route("81.2.69.142").reached and r.route("81.2.69.142").hops[-1].address == "81.2.69.142"
-    clock.now += routes_module.KEEP_S - 1
-    r.want(["81.2.69.142"])
-    assert r.describe()["waiting"] == 0
-    clock.now += 2
-    r.want(["81.2.69.142"])
-    assert r.describe()["waiting"] == 1 and r.step() and asked == ["81.2.69.142"] * 2
+    clock.now += routes_module.KEEP_S + 1
+    r.want(["81.2.69.142", "81.2.69.160"])
+    assert r.describe()["waiting"] == 1  # the failed one alone
+
+
+def test_a_host_the_hosts_database_has_a_route_to_is_not_traced_again_after_a_restart():
+    tracer, asked = tracer_of({})
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None, known=lambda: {"81.2.69.142"})
+    r.want(["81.2.69.142", "81.2.69.160"])
+    assert r.describe()["waiting"] == 1
+
+
+def test_every_distinct_route_of_a_check_is_saved_its_own_row_the_drawn_one_last():
+    """1.74.0 (the user: "if there are multiple routes to a host, record all applicable routes")."""
+    target, ways = "81.2.69.142", iter([["62.0.0.1", "81.2.69.142"], ["62.0.0.2", "81.2.69.142"],
+                                        ["62.0.0.1", "81.2.69.142"]])
+
+    def tracer(address):
+        hops = next(ways)
+        return netpath.Trace(address, tuple(netpath.Hop(i + 1, a, 1.0 + i) for i, a in enumerate(hops)), True, "x")
+    saved = []
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None, keep=lambda *a: saved.append(a))
+    r.want([target])
+    r.step()
+    r.onto({"globe": {"home": HOME, "origins": []}}, Geo({}), [target])
+    assert [[h["address"] for h in s[4]] for s in saved] == [["62.0.0.2", target], ["62.0.0.1", target]]
 
 
 def test_nothing_is_traced_once_the_tab_is_left_and_nothing_after_close():
@@ -83,7 +107,7 @@ def test_nothing_is_traced_once_the_tab_is_left_and_nothing_after_close():
     clock.now += 21  # the tab not asked since
     assert not r.step() and asked == [] and r.describe()["waiting"] == 2
     r.want([])  # asked again: tracing goes on
-    assert r.step() and asked == ["81.2.69.142"]
+    assert r.step() and asked == ["81.2.69.142"] * routes_module.CHECKS
     r.close()
     assert not r.step() and r.describe()["waiting"] == 0 and r.describe()["kept"] == 0
     r.want(["81.2.69.160"])
@@ -96,7 +120,8 @@ def test_the_loop_ends_when_nothing_waits_and_a_new_want_starts_it_again():
     r = Routes(tracer=tracer, clock=Clock(), sleep=slept.append, start=started.append)
     r.want(["81.2.69.142", "81.2.69.160"])
     started.pop()()  # the thread's work, run here: both traced, a pause after each, then it ends
-    assert asked == ["81.2.69.142", "81.2.69.160"] and slept == [routes_module.GAP_S] * 2
+    n = routes_module.CHECKS
+    assert asked == ["81.2.69.142"] * n + ["81.2.69.160"] * n and slept == [routes_module.GAP_S] * 2
     assert not r.describe()["running"]
     r.want(["5.6.7.8"])
     assert len(started) == 1  # ended, so asked for again
@@ -192,9 +217,9 @@ def test_the_page_gets_copies_of_its_places_and_the_tracer_is_stopped_with_the_t
     plain.step()
     assert not seen["stop"]()  # the tab is shown: the tracer goes on
     clock.now += 21
-    assert seen["stop"]()  # left: the tracer is stopped
+    assert not seen["stop"]()  # 1.74.0: left, a trace begun runs to its end (no other is begun)
     plain.close()
-    assert seen["stop"]()
+    assert seen["stop"]()  # detached: stopped
 
 
 def test_a_route_is_kept_once_in_the_hosts_database_with_every_hop_and_its_place():
