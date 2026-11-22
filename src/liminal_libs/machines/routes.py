@@ -22,7 +22,7 @@ from collections import OrderedDict
 from typing import Iterable
 
 from .. import netpath
-from . import network as network_module
+from . import composite as composite_module, network as network_module
 
 KEEP_S = 3600.0  # a route is traced again after this long, while its connection is still open
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
@@ -73,6 +73,9 @@ class Routes:
         self._saved: set[tuple] = set()
         # 1.69.0: the network the routes are drawn on, made from the plugin's installed layers when the page asks
         self.network = network_module.Network()
+        # 1.71.0: both sides kept and paired, the lookup queue with them (machines/composite.py)
+        self.composite = composite_module.Composite()
+        self._composed: set[tuple] = set()
 
     def _stopping(self) -> bool:
         """Whether a trace under way stops: the routes closed, or the tab not asked within the timeout."""
@@ -157,6 +160,7 @@ class Routes:
             self._waiting.clear()
             self._kept.clear()
         self.network.clear()
+        self.composite.close()
 
     def describe(self) -> dict:
         with self._lock:
@@ -191,6 +195,30 @@ class Routes:
                 break
         return points
 
+    def _routers(self, kept: dict, geoip) -> list[dict]:
+        """The routers of the routes not yet given to the composite database, each once a trace: its address,
+        its hop, the one before it and the time to it, and the GeoIP file's place for it (lat None: none)."""
+        out = []
+        for address, (at, route) in kept.items():
+            if (address, at) in self._composed:
+                continue
+            if len(self._composed) >= 2 * MAX_KEPT:
+                self._composed.clear()
+            self._composed.add((address, at))
+            before = ""
+            for hop in route.hops:
+                if not hop.address or hop.address == route.target:
+                    continue
+                try:
+                    place = geoip.lookup(hop.address) if geoip is not None else None
+                except Exception:  # noqa: BLE001 - a lookup that fails places nothing
+                    place = None
+                lat, lon = getattr(place, "lat", None), getattr(place, "lon", None)
+                out.append({"address": hop.address, "n": hop.n, "ms": hop.ms, "after": before,
+                            "lat": lat, "lon": lon, "label": getattr(place, "label", "") if lat is not None else ""})
+                before = hop.address
+        return out
+
     def _save(self, address: str, at: float, route: netpath.Trace, way: list, geoip, now: float) -> None:
         """A route kept in the hosts database once (1.68.0): every hop with the place the GeoIP file gives it, the
         places on its way in words. A keeper that fails is passed over: the route is kept at its next trace."""
@@ -215,7 +243,7 @@ class Routes:
             self._saved.clear()
         self._saved.add((address, at))
 
-    def onto(self, page: dict, geoip, addresses: Iterable, index=None) -> dict:
+    def onto(self, page: dict, geoip, addresses: Iterable, index=None, licence: str = "") -> dict:
         """The routes on the tab's page: each dot of the globe at a place a route ends gets that route's placed hops
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
         connections open now (`addresses`, their order kept). 1.69.0: then the routes' heat on the network of the
@@ -261,6 +289,10 @@ class Routes:
                 self.network.onto(globe, index)
             except Exception:  # noqa: BLE001 - the heat never costs the tab its page: the routes drawn as before
                 globe.pop("heat", None)
+        try:  # 1.71.0: what the routes say of each router, its place by the GeoIP file, and the legs waiting
+            self.composite.record(self._routers(kept, geoip), self.network.legs, licence)
+        except Exception:  # noqa: BLE001 - the composite never costs the tab its page
+            pass
         rows.sort(key=lambda r: (-r[0], r[1]))
         table_rows = []
         for placed, address, found, route, way, answered, age in rows[:TABLE_ROWS]:
@@ -295,7 +327,14 @@ class Routes:
         tables.append(table)
         legs = (globe or {}).get("waiting")
         if isinstance(legs, list):  # 1.70.0: the legs no line is known for yet, and why
-            tables.append({"title": WAITING_TITLE, "note": WAITING_NOTE, "empty": "None: every leg is on the lines.",
+            c = self.composite.counts
+            kept_words = (f" Kept in the composite database ({composite_module.FILE}, beside the layers): "
+                          f"{c['routers']} routers, {c['claims']} claims of them, {c['placed']} placed, "
+                          f"{c['waiting']} waiting to be looked up.")
+            if self.composite.problem:
+                kept_words += f" Not written now: {self.composite.problem}."
+            tables.append({"title": WAITING_TITLE, "note": WAITING_NOTE + kept_words,
+                           "empty": "None: every leg is on the lines.",
                            "columns": [{"title": "From"}, {"title": "To"}, {"title": "Why"}, {"title": "Straight"}],
                            "rows": [[x["from"], x["to"], x["why"], f"{x['km']:,} km"] for x in legs[:WAITING_ROWS]]})
         return page

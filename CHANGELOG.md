@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.71.0 (2026-11-22)
+
+The composite database of the firewalls' World Wide Web tab, its first part. The user, 2026-11-22: "maybe we need to
+create a composite database", "we need real world infrastructure to pair against real/virtual network maps", "so we
+need both sides to build a composite database", and of the legs not known: "lets keep that in a queue of
+places/segments to lookup". The platform's page shows it once the platform is restarted.
+
+- **`machines/composite.py`**: one SQLite file, composite.db, beside the infrastructure layers (the data folder's
+  infrastructure/; never written on another system's drive). `entities` (the routers, by address), `evidence` (every
+  source's claim, row by row: its source, its licence, what it says, first and last seen), `estimates` (each
+  router's best place: the claims within 50 km of one another make a cluster, the heaviest wins, its confidence one
+  less the chance that every source in it is wrong, each source's own weight in `SOURCES`) and `queue` (what is not
+  known yet: a router with no place, a leg with no way along the lines; with why, the sources left to try, and when
+  it was first and last seen; done when found, kept for the record).
+- Filled by the tab's asks (Routes.onto): each trace's routers once (their hop, the one before them and the time to
+  them, measured here; and the GeoIP file's place, with its licence's words, which the firewall now passes), and the
+  network's legs (network.Network.legs: on the lines, or waiting with why). Only what is new or changed is written,
+  a row again at most every 5 minutes; the file is open only while a batch is written. The "Legs waiting for a line"
+  table says what the database holds.
+- Nothing is asked of anyone yet: the GeoIP file is the only source of places. Next: routers' names (reverse DNS) and
+  their networks (RDAP, the registries' WHOIS), each within its source's published rate limits, as the user asked
+  ("if there are frequency limits on sources, please hold to those limits as not to get banned").
+
 ## 1.70.0 (2026-11-22)
 
 The routes on the firewalls' globe are drawn only along real lines, coloured violet to red by how often traffic goes

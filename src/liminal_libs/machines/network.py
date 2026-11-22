@@ -465,6 +465,7 @@ class Network:
         self._key: tuple | None = None
         self._graph: Graph | None = None
         self.built = 0  # graphs made
+        self.legs: dict[str, tuple[str, str]] = {}  # 1.71.0: the last page's legs, {key: (what, why)}
 
     def clear(self) -> None:
         with self._lock:
@@ -569,6 +570,7 @@ class Network:
         graph = self.graph(index) if home is not None and places else None
         edges: dict[int, float] = {}
         waiting: dict[tuple, dict] = {}
+        legs: dict[str, tuple[str, str]] = {}
         for o in places if home is not None else ():
             w = _number(o.get("count"))
             hops = [(p, _name(v)) for v in (o.get("via") or ()) if isinstance(v, Mapping)
@@ -577,6 +579,8 @@ class Network:
             mine, steps_last = set(), None
             for (s, sn), (e, en) in zip(stops, stops[1:]):
                 on, why = self.leg(graph, s, e, (sn, en))
+                if why or on is not None:  # 1.71.0: for the composite database's queue (a city's leg is none)
+                    legs[f"{s[0]:.3f},{s[1]:.3f}>{e[0]:.3f},{e[1]:.3f}"] = (f"{sn} to {en}", why)
                 if on is None:
                     if why:  # a leg within one city needs no line: the way before it still leads into the place
                         steps_last = None
@@ -604,4 +608,5 @@ class Network:
             heat.append({"points": [[round(lat, 4), round(lon, 4)] for lat, lon in points], "w": w})
             total += len(points)
         globe["heat"], globe["heat_by"], globe["waiting"] = heat, "connections", list(waiting.values())
+        self.legs = legs
         return globe
