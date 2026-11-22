@@ -135,8 +135,9 @@ def test_a_place_on_the_globe_gets_its_routes_placed_hops_from_home_outward():
     via = page["globe"]["origins"][0]["via"]
     assert [(p["label"], p["n"]) for p in via] == [("Amsterdam", 3), ("Frankfurt", 5)]
     assert "via" not in page["globe"]["origins"][1] and "via" not in page["globe"]["origins"][2]
-    assert [t["title"] for t in page["tables"]] == ["What the globe shows", "Internet infrastructure", "Routes"]
-    table = page["tables"][-1]
+    assert [t["title"] for t in page["tables"]] == ["What the globe shows", "Internet infrastructure", "Routes",
+                                                   "Legs waiting for a line"]  # 1.70.0
+    table = next(t for t in page["tables"] if t["title"] == "Routes")
     assert [row[0]["text"] for row in table["rows"]] == [target, other]  # the most hops placed first
     assert table["rows"][0][1] == "7 of 7 hops answered, the address reached"
     assert table["rows"][0][2] == "Amsterdam → Frankfurt" and table["rows"][1][2] == "Amsterdam"

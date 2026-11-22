@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.70.0 (2026-11-22)
+
+The routes on the firewalls' globe are drawn only along real lines, coloured violet to red by how often traffic goes
+over them. The user, 2026-11-22: "this clearly shows vectors direct to different places, what i need is real maps of
+infrastructure lines, etc, the straightlines are meaningless"; "the vector should literally follow a detailed route
+based on geographic data, if it is unknown, any segment with in the route, then lets keep that in a queue of
+places/segments to lookup"; "all known routes should have their temperature change (color) based on traffic
+frequency"; "we will use the whole color wheel from violet to red (high frequency)", "for the routes". The platform's
+page shows it once the platform is restarted (the globe's script keeps drawing an older server's page).
+
+- **Never a straight line** (machines/network.py): a leg is drawn only along the installed lines (cables, lines on
+  land, backbones). A leg not known on them is not drawn at all, and waits: `globe.waiting` lists each once, from and
+  to by name, with why ("no line layer is installed", "no line within 150 km of …", "both ends are nearest the same
+  junction of the lines", "no way along the lines within 2.5 times its distance") and its straight distance; the
+  routes table is followed by "Legs waiting for a line". A leg within one city needs no line and does not wait. The
+  stretch from a junction to a hop or a host is not drawn either: those are the named points of 1.69.1.
+- **How often, not how much**: each edge a route uses gains its place's connections once (`heat_by` is always
+  "connections").
+- **Violet to red** (liminal-globe.js): the routes' colour runs round the whole wheel, violet (270°) for the least
+  through blue, green, yellow and orange to red (0°) for the most, on a log scale, 24 steps; bright on a dark globe
+  (90% saturation, 62% lightness) and deeper on a light one (80%, 40%), so every hue shows on both. The width rises
+  with it, 1.5 to 4.5 px, and the hottest have a glow of their own colour: the scale reads without its colours too.
+  The infrastructure layers keep their grey-blue and the coasts their grey-green. The legend says "Routes by how
+  often: connections", with the least and the most, beside a violet-to-red key.
+- **Lights into the hosts along the lines**: each place's `tail`, the last 250 km of its way along the lines from the
+  junction nearest it (256 points at most), is where its light travels; none where its last leg waits. An older
+  server's page keeps its straight last stretch until the platform is restarted.
+- Checked in headless Edge over stand-ins: the hottest route drawn red (234/69/69 on the dark globe, 185/29/30 on the
+  light one), a quiet one blue (69/115/231, 34/78/187), the legend's words, nothing thrown.
+- Still to come: the composite database the plugin keeps, the lookup queue kept in it and worked through (each
+  lookup that asks anyone outside your switch), and the data sets the routes can follow (the Monday list's 24, 27-29).
+
 ## 1.69.1 (2026-11-22)
 
 The routers' places the routes bend at are drawn and named on the firewalls' globe. The user, 2026-11-22: "there

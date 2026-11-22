@@ -83,43 +83,46 @@ def globe(origins, home=(0, 0)):
 U = [run((0, 0), (10, 0)), run((10, 0), (10, 10)), run((10, 10), (0, 10))]  # up, across and down: 3 times the leg
 
 
-def test_a_leg_follows_the_network_within_its_detour_and_is_a_great_circle_past_it(monkeypatch):
+def test_a_leg_follows_the_network_within_its_detour_and_waits_past_it(monkeypatch):
+    """Past its detour a leg is not drawn at all (1.70.0: never a straight line) and waits, with why."""
     index = Index({"cables": U})
     page = Network().onto(globe([{"id": "p", "lat": 0, "lon": 10, "count": 3}]), index)
-    assert [h["points"] for h in page["heat"]] == [[[0, 0], [0, 10]]]  # past 2.5 times: straight
-    assert page["heat"][0]["w"] == 3 and page["heat_by"] == "connections"
-    assert page["origins"][0]["last"] == [0, 0]  # never on the network: its light from home
+    assert page["heat"] == [] and page["heat_by"] == "connections"
+    assert page["waiting"] == [{"from": "this machine", "to": "p", "km": 1112,
+                                "why": "no way along the lines within 2.5 times its distance"}]
+    assert "tail" not in page["origins"][0]
     monkeypatch.setattr(network, "DETOUR", 3.5)
     page = Network().onto(globe([{"id": "p", "lat": 0, "lon": 10, "count": 3}]), index)
     (heat,) = page["heat"]  # the three lines, one weight: one run
-    assert ends(heat) == {(0, 0), (0, 10)} and [10, 5] in heat["points"]
-    assert len(heat["points"]) == 61
-    assert page["origins"][0]["last"] == [0, 10]  # it leaves the network at the host itself
+    assert ends(heat) == {(0, 0), (0, 10)} and [10, 5] in heat["points"] and len(heat["points"]) == 61
+    assert heat["w"] == 3 and page["waiting"] == []
+    # its light's way: the last 250 km of the lines into it, from the junction nearest it back along them
+    assert page["origins"][0]["tail"] == [[0, 10], [0.5, 10], [1, 10], [1.5, 10], [2, 10], [2.5, 10]]
 
 
-def test_an_end_beyond_the_snap_and_a_leg_within_one_city_are_great_circles():
+def test_an_end_beyond_the_snap_waits_and_a_leg_within_one_city_needs_no_line():
     index = Index({"cables": U})
     far = {"id": "f", "lat": -5, "lon": 5, "count": 1}  # some 780 km from the nearest junction
     near = {"id": "n", "lat": 0, "lon": 0.1, "count": 1}  # 11 km from home
     page = Network().onto(globe([far, near]), index)
-    assert sorted(h["points"] for h in page["heat"]) == [[[0, 0], [-5, 5]], [[0, 0], [0, 0.1]]]
-    assert far["last"] == [0, 0] and near["last"] == [0, 0]
+    assert page["heat"] == []
+    assert page["waiting"] == [{"from": "this machine", "to": "f", "why": "no line within 150 km of f", "km": 786}]
+    assert "tail" not in far and "tail" not in near
 
 
 T = [run((0, 0), (0, 10)), run((0, 10), (0, 20)), run((0, 10), (2, 10), 4)]  # east, on east, and a branch north
 
 
-def test_stretches_shared_by_routes_are_summed_and_a_route_counts_a_stretch_once():
+def test_stretches_shared_by_routes_are_summed_by_connections_and_a_route_counts_one_once():
     index = Index({"cables": T})
     branch = {"id": "b", "lat": 2, "lon": 10, "bytes": 100, "count": 1}
     east = {"id": "e", "lat": 0, "lon": 20, "bytes": 50, "count": 9}
     page = Network().onto(globe([branch, east]), index)
-    weights = sorted((h["w"], h["points"][0], h["points"][-1]) for h in page["heat"])
-    assert page["heat_by"] == "bytes"
-    assert [w for w, _, _ in weights] == [50, 100, 150]
-    assert ([0, 0] in (weights[2][1], weights[2][2])) and ([0, 10] in (weights[2][1], weights[2][2]))
+    weights = sorted((h["w"], ends(h)) for h in page["heat"])
+    assert page["heat_by"] == "connections"  # how often, never how much (1.70.0)
+    assert [w for w, _ in weights] == [1, 9, 10] and weights[2][1] == {(0, 0), (0, 10)}
     # out east first and back to the branch: the stretch from (0, 10) to (0, 20) is gone twice, counted once
-    there_and_back = {"id": "t", "lat": 2, "lon": 10, "bytes": 7, "via": [{"lat": 0, "lon": 20}]}
+    there_and_back = {"id": "t", "lat": 2, "lon": 10, "count": 7, "via": [{"lat": 0, "lon": 20}]}
     page = Network().onto(globe([there_and_back]), index)
     assert sorted(h["w"] for h in page["heat"]) == [7, 7, 7]  # three runs (they meet at a branch), each once
 
@@ -130,19 +133,32 @@ def test_a_hop_met_by_the_network_on_both_legs_is_passed_through_at_its_junction
     page = Network().onto(globe([o]), index)
     (heat,) = page["heat"]
     assert [0.5, 10] not in heat["points"]  # no spike out to the router's place and back
-    assert ends(heat) == {(0, 0), (0, 20)} and len(heat["points"]) == 41
+    assert ends(heat) == {(0, 0), (0, 20)} and len(heat["points"]) == 41 and page["waiting"] == []
+
+
+STAR = [run((0, 0), (5 * a, 5 * b)) for a, b in ((1, 1), (-1, 1), (1, -1), (-1, -1), (1, 0))]  # five ways out
 
 
 def test_the_heaviest_runs_are_kept_within_the_caps(monkeypatch):
-    index = Index({})
-    places = [{"id": str(i), "lat": 0, "lon": 10 * i, "count": i} for i in range(1, 6)]
+    index = Index({"cables": STAR})
+    places = [{"id": str(i), "lat": line[-1][0], "lon": line[-1][1], "count": i} for i, line in enumerate(STAR, 1)]
     monkeypatch.setattr(network, "MAX_RUNS", 2)
     page = Network().onto(globe(places), index)
     assert [h["w"] for h in page["heat"]] == [5, 4]
     monkeypatch.setattr(network, "MAX_RUNS", 10)
-    monkeypatch.setattr(network, "MAX_POINTS", 5)
+    monkeypatch.setattr(network, "MAX_POINTS", 45)
     page = Network().onto(globe(places), index)
-    assert [h["w"] for h in page["heat"]] == [5, 4]  # two points each
+    assert [h["w"] for h in page["heat"]] == [5, 4]  # 21 points each
+
+
+def test_legs_waiting_are_listed_once_by_their_ends_and_why():
+    hop = {"lat": 0, "lon": 50, "label": "Somewhere, Far"}
+    places = [{"id": "a", "lat": 10, "lon": 50, "count": 1, "via": [hop]},
+              {"id": "b", "lat": -10, "lon": 50, "count": 1, "via": [hop]}]
+    page = Network().onto(globe(places), Index({}))
+    assert [(x["from"], x["to"]) for x in page["waiting"]] == [("this machine", "Somewhere, Far"),
+                                                                 ("Somewhere, Far", "a"), ("Somewhere, Far", "b")]
+    assert {x["why"] for x in page["waiting"]} == {"no line layer is installed"}
 
 
 def test_the_graph_is_made_again_when_a_layer_changes_or_goes():
@@ -154,7 +170,7 @@ def test_the_graph_is_made_again_when_a_layer_changes_or_goes():
     index.given = {}
     assert net.graph(index) is None
     page = net.onto(globe([{"id": "p", "lat": 0, "lon": 10, "count": 1}]), index)
-    assert [h["points"] for h in page["heat"]] == [[[0, 0], [0, 10]]]  # no layer: the great circle
+    assert page["heat"] == [] and page["waiting"][0]["why"] == "no line layer is installed"
     net.graph(Index({"cables": U}))
     net.clear()
     assert net._graph is None and net._key is None
@@ -169,7 +185,7 @@ def test_lines_that_do_not_read_are_passed_over():
     assert Network().graph(index) is None
 
 
-def test_the_routes_page_gets_the_heat_and_each_place_where_its_light_begins():
+def test_the_routes_page_gets_the_heat_each_places_tail_and_the_legs_waiting():
     target = "81.2.69.142"
 
     def tracer(address):
@@ -185,10 +201,11 @@ def test_the_routes_page_gets_the_heat_and_each_place_where_its_light_begins():
     page = {"globe": {"home": {"lat": 0, "lon": 0}, "origins": [{"id": "h", "lat": 0, "lon": 20, "count": 4}]}}
     r.onto(page, Geo(), [target], index=Index({"cables": T}))
     g = page["globe"]
-    assert g["origins"][0]["via"][0]["label"] == "Hop" and g["origins"][0]["last"] == [0, 20]
+    assert g["origins"][0]["via"][0]["label"] == "Hop" and g["origins"][0]["tail"][:2] == [[0, 20], [0, 19.5]]
     assert g["heat_by"] == "connections" and [h["w"] for h in g["heat"]] == [4]
     assert ends(g["heat"][0]) == {(0, 0), (0, 20)}
-    assert "times its great circle" in page["tables"][-1]["note"]
+    assert [t["title"] for t in page["tables"]] == ["Routes", "Legs waiting for a line"]
+    assert "times its straight distance" in page["tables"][0]["note"] and page["tables"][1]["rows"] == []
     r.close()
     assert r.network._graph is None
 

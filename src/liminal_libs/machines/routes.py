@@ -33,6 +33,11 @@ MAX_VIA = 32  # placed hops a place's line runs through at most
 TABLE_ROWS = 40  # routes in the table, the most hops placed first
 WAY = 6  # places a route's way names in the table, the first ones
 TITLE = "Routes"
+WAITING_TITLE = "Legs waiting for a line"  # 1.70.0
+WAITING_ROWS = 60
+WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a cable, a line on land or a backbone. "
+                "These legs are not known on any yet, so they are not drawn; their ends are named on the globe. They "
+                "are looked up again at each ask, and as more lines are installed.")
 
 
 def _key(lat, lon) -> tuple[float, float] | None:
@@ -214,8 +219,9 @@ class Routes:
         """The routes on the tab's page: each dot of the globe at a place a route ends gets that route's placed hops
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
         connections open now (`addresses`, their order kept). 1.69.0: then the routes' heat on the network of the
-        line layers `index` (the plugin's infrastructure.Index) has installed, great circles without any
-        (network.Network.onto: globe["heat"], "heat_by", each place's "last"); a heat that fails is left out."""
+        line layers `index` (the plugin's infrastructure.Index) has installed (network.Network.onto: globe["heat"],
+        "heat_by", "waiting", each place's "tail"); a heat that fails is left out. 1.70.0: never a straight line; the
+        legs not known on the lines are tabled after the routes, with why (WAITING_TITLE, WAITING_ROWS at most)."""
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
         home = _key(home_place.get("lat"), home_place.get("lon")) if isinstance(home_place, dict) else None
@@ -276,16 +282,20 @@ class Routes:
                 "Nothing is traced while the tab is not shown; a route is kept an hour, in memory only. A router's "
                 "place is where the GeoIP file puts its address, often its network's home rather than the router. "
                 "Each leg follows the cables, backbones and lines on land installed below where its way along them "
-                f"is at most {network_module.DETOUR:g} times its great circle, else it is that great circle; the "
-                "brighter a stretch, the more traffic over it.")
+                f"is at most {network_module.DETOUR:g} times its straight distance; else it is not drawn, and waits "
+                "(the next table). A route's colour runs from violet to red with how often traffic goes over it.")
         table = {"title": TITLE, "note": note, "empty": ("No route traced yet." if wanted else
                                                          "No connection to the internet is open."),
                  "columns": [{"title": "To"}, {"title": "Hops"}, {"title": "The way, from here"},
                              {"title": "Traced"}],
                  "rows": table_rows, "traced": traced}
         tables = page.get("tables")
-        if isinstance(tables, list):
-            tables.append(table)
-        else:
-            page["tables"] = [table]
+        if not isinstance(tables, list):
+            tables = page["tables"] = []
+        tables.append(table)
+        legs = (globe or {}).get("waiting")
+        if isinstance(legs, list):  # 1.70.0: the legs no line is known for yet, and why
+            tables.append({"title": WAITING_TITLE, "note": WAITING_NOTE, "empty": "None: every leg is on the lines.",
+                           "columns": [{"title": "From"}, {"title": "To"}, {"title": "Why"}, {"title": "Straight"}],
+                           "rows": [[x["from"], x["to"], x["why"], f"{x['km']:,} km"] for x in legs[:WAITING_ROWS]]})
         return page

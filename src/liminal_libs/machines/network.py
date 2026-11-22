@@ -12,16 +12,17 @@ doesn't change so more traffic over this and that, the brighter it gets, lets ke
   ends (junctions): the ways are searched between junctions and drawn through every point of their runs.
 - A leg of a route (home, its placed hops, the host: each a GeoIP point) is snapped to the graph: the nearest junction
   to each of its ends within SNAP_KM, and the shortest way between them (A*, the great circle to the far end its
-  heuristic), taken when the whole of it, the snaps included, is no longer than DETOUR times the leg's great circle;
-  else, and where no layer is installed, the leg is its great circle. A leg shorter than CITY_KM is one city's: its
-  great circle, never snapped. A hop met by the network on both its legs is passed through at its junction. The ways
-  are cached by their two junctions (MAX_WAYS) and the snaps by their points (MAX_SNAPS), with the graph they are on.
-- The heat (Network.onto): each stretch a route uses gains its place's traffic once, however often the route passes
-  it (the place's bytes where the capture counted any on the page, else its connections): the edges of the graph by
-  edge, the great circles by their ends. The page gets them as runs of one weight each, the heaviest kept first,
-  MAX_RUNS runs and MAX_POINTS points at most: globe["heat"] = [{"points": [[lat, lon], ...], "w"}], globe["heat_by"]
-  ("bytes" or "connections") and each placed origin's "last" ([lat, lon]: where its route leaves the network, else its
-  last hop, else home), where the stretch its light travels to it begins.
+  heuristic), taken when the whole of it, the snaps included, is no longer than DETOUR times the leg's great circle.
+  1.70.0: else, and where no layer is installed, the leg is not drawn at all (never a straight line): it waits, with
+  why. A leg shorter than CITY_KM is one city's and needs no line. The stretch from a junction to a hop or a host is
+  not drawn either: those are named points (the globe's script). The ways are cached by their two junctions
+  (MAX_WAYS) and the snaps by their points (MAX_SNAPS), with the graph they are on.
+- The heat (Network.onto): each edge a route uses gains its place's connections once, however often the route passes
+  it (how often traffic goes there: 1.70.0). The page gets the edges as runs of one weight each, the heaviest kept
+  first, MAX_RUNS runs and MAX_POINTS points at most: globe["heat"] = [{"points": [[lat, lon], ...], "w"}],
+  globe["heat_by"] ("connections"), globe["waiting"] (the legs not known on the lines: [{"from", "to", "why", "km"}],
+  WAITING at most) and each placed origin's "tail": the last TAIL_KM of its way along the lines, from the junction
+  nearest it back along the way, where its light travels into it (none where its last leg waits).
 - Nothing runs when unused: the graph is built when a page asks for the heat and its layers' versions changed, held
   until they change again or the plugin is detached (Network.clear); no thread, no timer, nothing read but the files."""
 from __future__ import annotations
@@ -41,9 +42,11 @@ SCALE = 100_000  # a file's coordinates are in 1e-5 degrees (infrastructure.SCAL
 JOIN_KM = 25.0  # a line's end is joined to a point of another line this near
 SNAP_KM = 150.0  # a leg's end is snapped to a junction this near, at most
 DETOUR = 2.5  # a leg follows the network when its way there is no longer than this times its great circle
-CITY_KM = 30.0  # a leg shorter than this is within one city: its great circle
-TINY_KM = 1.0  # a stretch shorter than this is drawn as none
-MAX_EXPAND = 50_000  # junctions a way's search looks on from, at most: past this, the leg is its great circle
+CITY_KM = 30.0  # a leg shorter than this is within one city: it needs no line
+WAITING = 200  # legs waiting for a line, listed at most (1.70.0)
+TAIL_KM = 250.0  # a place's light travels this much of its way at most, into it (1.70.0)
+TAIL_POINTS = 256  # and through so many points at most
+MAX_EXPAND = 50_000  # junctions a way's search looks on from, at most: past this, the leg waits
 MAX_WAYS = 4096  # ways kept, the least recently asked let go first
 MAX_SNAPS = 4096  # snaps kept, likewise
 MAX_RUNS = 4000  # runs of heat on a page, the heaviest kept
@@ -429,10 +432,28 @@ def _number(v) -> float:
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0 else 0
 
 
-def _stretch(p, q) -> tuple:
-    """A great circle's key: its two ends to about ten metres, the lesser first (one stretch whichever way it goes)."""
-    a, b = (round(p[0], 4), round(p[1], 4)), (round(q[0], 4), round(q[1], 4))
-    return (a, b) if a <= b else (b, a)
+def _name(o) -> str:
+    """A stop's name in words: its place's label, city or country, else its address or id."""
+    for key in ("label", "city", "country", "address", "id"):
+        value = o.get(key) if isinstance(o, Mapping) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:80]
+    return ""
+
+
+def _tail(graph: Graph, steps) -> list[tuple[float, float]]:
+    """The last TAIL_KM of a way along the lines, from its last junction back along it (TAIL_POINTS points at most):
+    where a place's light travels, into it."""
+    points: list[tuple[float, float]] = []
+    gone = 0.0
+    for edge, start in reversed(steps):
+        for p in graph.line(edge, start)[::-1][1 if points else 0:]:
+            if points:
+                gone += km(points[-1], p)
+            points.append(p)
+            if gone >= TAIL_KM or len(points) >= TAIL_POINTS:
+                return points
+    return points
 
 
 class Network:
@@ -454,7 +475,7 @@ class Network:
         made again when they changed, read from their files then. None without any."""
         try:
             listed = index.layers() if index is not None else []
-        except Exception:  # noqa: BLE001 - a folder that cannot be read: no layer, the great circles
+        except Exception:  # noqa: BLE001 - a folder that cannot be read: no layer, every leg waits
             listed = []
         layers = [x for x in listed if isinstance(x, Mapping) and x.get("id") in LINES and x.get("kind") == "lines"]
         key = tuple((str(x["id"]), str(x.get("version") or "")) for x in layers)
@@ -511,61 +532,68 @@ class Network:
                 graph._ways.popitem(last=False)
         return found
 
-    def leg(self, graph: Graph | None, s, e):
-        """A leg from s to e (lat, lon) on the network: (its first junction and how far from s, its last and how far
-        from e, its way: [(edge, from junction), ...]); None where it is its great circle (the module's docstring)."""
-        if graph is None:
-            return None
+    def leg(self, graph: Graph | None, s, e, names=("", "")):
+        """A leg from s to e (lat, lon) on the network: ((its first junction and how far from s, its last and how far
+        from e, its way: [(edge, from junction), ...]), "") or (None, why it is not, in words: "" for a leg within one
+        city, which needs no line). `names`: its ends' names, for the words."""
         gc = km(s, e)
         if gc < CITY_KM:
-            return None
+            return None, ""
+        if graph is None:
+            return None, "no line layer is installed"
         a, b = self._snap(graph, s), self._snap(graph, e)
-        if a is None or b is None or a[0] == b[0]:
-            return None
+        for end, name in ((a, names[0]), (b, names[1])):
+            if end is None:
+                return None, f"no line within {SNAP_KM:g} km of {name or 'its end'}"
+        if a[0] == b[0]:
+            return None, "both ends are nearest the same junction of the lines"
         limit = DETOUR * gc - a[1] - b[1]
         found = self._way(graph, a[0], b[0], limit) if limit > 0 else None
-        return None if found is None else (a, b, found[1])
+        if found is None:
+            return None, f"no way along the lines within {DETOUR:g} times its distance"
+        return (a, b, found[1]), ""
 
     def onto(self, globe: dict, index) -> dict:
-        """The heat of the routes on a page's globe (the module's docstring): its "heat", "heat_by" and each placed
-        origin's "last" set; the globe given back. The origins' `via` (Routes.onto) are read, never changed."""
+        """The heat of the routes on a page's globe (the module's docstring): its "heat", "heat_by", "waiting" and each
+        placed origin's "tail" set; the globe given back. The origins' `via` (Routes.onto) are read, never changed.
+
+        1.70.0 (the user, 2026-11-22: "the vector should literally follow a detailed route based on geographic data,
+        if it is unknown, any segment with in the route, then lets keep that in a queue of places/segments to lookup";
+        "all known routes should have their temperature change (color) based on traffic frequency"): only the lines'
+        own runs are drawn, never a straight stretch; a leg not known on them is left out and waits, with why
+        (`waiting`, WAITING at most); and the weight is how often, each place's connections."""
         origins = globe.get("origins") if isinstance(globe.get("origins"), list) else []
         home = _point(globe.get("home"))
+        home_name = (globe.get("home") or {}).get("label") if isinstance(globe.get("home"), Mapping) else ""
         places = [o for o in origins if isinstance(o, dict) and _point(o) is not None]
-        by = "bytes" if any(_number(o.get("bytes")) for o in places) else "connections"
         graph = self.graph(index) if home is not None and places else None
         edges: dict[int, float] = {}
-        loose: dict[tuple, list] = {}
+        waiting: dict[tuple, dict] = {}
         for o in places if home is not None else ():
-            w = _number(o.get("bytes" if by == "bytes" else "count"))
-            hops = [p for p in (_point(v) for v in (o.get("via") or ()) if isinstance(v, Mapping)) if p is not None]
-            stops = [home, *hops, _point(o)]
-            legs = [(s, e, self.leg(graph, s, e)) for s, e in zip(stops, stops[1:])]
-            mine, stretches, last = set(), {}, home
-            for k, (s, e, on) in enumerate(legs):
+            w = _number(o.get("count"))
+            hops = [(p, _name(v)) for v in (o.get("via") or ()) if isinstance(v, Mapping)
+                    for p in (_point(v),) if p is not None]
+            stops = [(home, str(home_name or "this machine")), *hops, (_point(o), _name(o))]
+            mine, steps_last = set(), None
+            for (s, sn), (e, en) in zip(stops, stops[1:]):
+                on, why = self.leg(graph, s, e, (sn, en))
                 if on is None:
-                    stretches[_stretch(s, e)] = (s, e)
-                    last = s
+                    if why:  # a leg within one city needs no line: the way before it still leads into the place
+                        steps_last = None
+                        if len(waiting) < WAITING:
+                            waiting.setdefault((sn, en, why), {"from": sn, "to": en, "why": why, "km": round(km(s, e))})
                     continue
-                (a, _), (b, _), steps = on
-                pa, pb = graph.place(a), graph.place(b)
-                before = legs[k - 1][2] if k else None
-                if before is None or before[1][0] != a:  # a hop the leg before met at this junction: passed through
-                    stretches[_stretch(s, pa)] = (s, pa)
-                after = legs[k + 1][2] if k + 1 < len(legs) else None
-                if after is None or after[0][0] != b:
-                    stretches[_stretch(pb, e)] = (pb, e)
-                mine.update(edge for edge, _ in steps)
-                last = pb
-            o["last"] = [round(last[0], 5), round(last[1], 5)]
+                mine.update(edge for edge, _ in on[2])
+                steps_last = on[2]
+            o.pop("last", None)
+            tail = _tail(graph, steps_last) if steps_last else []
+            if len(tail) >= 2:
+                o["tail"] = [[round(lat, 5), round(lon, 5)] for lat, lon in tail]
+            else:
+                o.pop("tail", None)
             for edge in mine:
                 edges[edge] = edges.get(edge, 0) + w
-            for key, (p, q) in stretches.items():
-                if km(p, q) >= TINY_KM:
-                    kept = loose.setdefault(key, [p, q, 0])
-                    kept[2] += w
         runs = graph.runs(edges) if graph is not None and edges else []
-        runs += [([p, q], w) for p, q, w in loose.values()]
         runs.sort(key=lambda r: -r[1])
         heat, total = [], 0
         for points, w in runs:
@@ -575,5 +603,5 @@ class Network:
                 continue
             heat.append({"points": [[round(lat, 4), round(lon, 4)] for lat, lon in points], "w": w})
             total += len(points)
-        globe["heat"], globe["heat_by"] = heat, by
+        globe["heat"], globe["heat_by"], globe["waiting"] = heat, "connections", list(waiting.values())
         return globe

@@ -123,7 +123,7 @@
   const MAX_VIA = 32;  // hops a place's line runs through at most (machines/routes.py's MAX_VIA)
   const MAX_HEAT_RUNS = 4000;  // the heat's runs drawn at most (machines/network.py's MAX_RUNS)
   const MAX_HEAT_POINTS = 250000;  // their points, the great circles filled in (the page's MAX_POINTS, and the filling)
-  const HEAT_STEPS = 16;  // the heat's shades from grey to white, each drawn as one path
+  const HEAT_STEPS = 24;  // the routes' hues from violet to red (1.70.0), each drawn as one path
   const MAX_HOPS = 512;  // routers' places drawn at most (1.69.1)
   const HOP_NAMES = [[2, 6], [6, 16], [Infinity, 40]];  // routers' places named: up to this zoom, at most so many
   const MAX_ROUTE_POINTS = 128;  // points a route's line is drawn with at most, whatever its hops
@@ -781,9 +781,8 @@
       accent: rgbOf(v('--accent'), fb.accent), muted: rgbOf(v('--muted'), fb.muted), text: rgbOf(v('--text'), fb.text),
       frame: rgbOf(v('--frame'), fb.frame), surface: surface || rgbOf(v('--card') || v('--bg'), fb.surface),
       land: rgbOf(v('--globe-land'), fb.land), network: rgbOf(v('--globe-network'), fb.network),
-      // 1.69.0: the heat's scale, from its least to its most (the user, 2026-11-20: "lets keep grey scale to white"):
-      // a mid grey to white; on a light page, where white would not show, a grey to the text's own colour
-      heat: base === 'light' ? [[150, 150, 150, 1], rgbOf(v('--text'), fb.text)] : [[110, 110, 110, 1], [255, 255, 255, 1]],
+      // 1.70.0: the routes' hues' saturation and lightness, violet to red (heatColour): every hue shows on both globes
+      heat: base === 'light' ? { s: 80, l: 40 } : { s: 90, l: 62 },
       font: cs.fontFamily || 'system-ui, sans-serif', detached: !node.isConnected,
     };
   }
@@ -850,6 +849,9 @@
         via: (Array.isArray(o.via) ? o.via.slice(0, MAX_VIA) : []).map(hopOf).filter(Boolean),
         // 1.69.0: where the route leaves the network (else its last hop, else home): its light travels from there
         last: Array.isArray(o.last) ? placeOf({ lat: o.last[0], lon: o.last[1] }) : null,
+        // 1.70.0: the last of its way along the lines into it, from the junction nearest it: its light's way
+        tail: (Array.isArray(o.tail) ? o.tail.slice(0, 256) : [])
+          .map((p) => (Array.isArray(p) ? placeOf({ lat: p[0], lon: p[1] }) : null)).filter(Boolean),
       });
     });
     all.sort((a, b) => b.count - a.count || b.bytes - a.bytes);
@@ -916,7 +918,7 @@
   // brightest drawn on top), and the heaviest weight, the top of the scale.
   function heatOf(list) {
     const runs = [], fill = FILL * rad;
-    let points = 0, most = 0;
+    let points = 0, most = 0, least = Infinity;
     for (const r of list.slice(0, MAX_HEAT_RUNS)) {
       if (!r || typeof r !== 'object' || !Array.isArray(r.points)) continue;
       const w = Math.max(0, num(r.w) ?? 0), one = [];
@@ -939,9 +941,10 @@
       points += one.length / 3;
       runs.push({ v: Float32Array.from(one), w });
       most = Math.max(most, w);
+      least = Math.min(least, w);
     }
     runs.sort((x, y) => x.w - y.w);
-    return { runs, most };
+    return { runs, most, least: runs.length ? least : 0 };
   }
   const unplacedOf = (d) => Object.keys(KINDS).reduce((n, kind) => n + d.unplaced[kind].places, 0);  // places without a point
   const nameOf = (o) => o.label || o.city || o.country || o.id;
@@ -1195,16 +1198,16 @@
     function buildRoutes() {
       routes = [];
       if (!data.home) return;
-      if (data.heat) {  // 1.69.0: the heat draws the routes; a light travels each place's last stretch alone
+      if (data.heat) {  // 1.69.0: the heat draws the routes; a light travels each place's end of its way alone
         for (const o of data.origins) {
-          if (!o.placed || !o.last) continue;
-          const s = unit(o.lon, o.lat), e = unit(o.last.lon, o.last.lat);
-          const d = Math.acos(clamp(s[0] * e[0] + s[1] * e[1] + s[2] * e[2], -1, 1));
-          if (d < 2e-4 || Math.PI - d < 1e-3) continue;  // within a kilometre or so: no stretch to travel
-          const n = clamp(Math.ceil(d / rad / 0.5), 4, 64), path = new Float64Array((n + 1) * 4);
-          for (let i = 0; i <= n; i++) path.set([...slerp(s, e, d, i / n), 0], i * 4);  // on the globe, as the heat
-          const seed = seedOf(o.id);
-          routes.push({ o, path, hops: [], screen: new Float64Array((n + 1) * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
+          if (!o.placed) continue;
+          // 1.70.0: its tail, the last of its way along the lines into it; an older page's straight last stretch
+          const pts = o.tail.length >= 2 ? o.tail.map((p) => unit(p.lon, p.lat))
+            : o.last ? [unit(o.lon, o.lat), unit(o.last.lon, o.last.lat)] : null;
+          const path = pts ? wayOf(pts) : null;
+          if (!path) continue;
+          const seed = seedOf(o.id), n = path.length / 4;
+          routes.push({ o, path, hops: [], screen: new Float64Array(n * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
         }
         routes.sort((x, y) => x.o.count - y.o.count);
         return;
@@ -1245,6 +1248,31 @@
         routes.push({ o, path, hops, screen: new Float64Array((n + 1) * 3), width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
       }
       routes.sort((x, y) => x.o.count - y.o.count);  // the busiest drawn last, on top
+    }
+    // 1.70.0: a light's way through points on the globe (unit vectors), on its surface: a stretch longer than FILL
+    // degrees filled in along its great circle, MAX_ROUTE_POINTS points at most; null for one too short to travel.
+    function wayOf(pts) {
+      const out = [];
+      let gone = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const b = pts[i];
+        if (i) {
+          const a = pts[i - 1], d = Math.acos(clamp(a[0] * b[0] + a[1] * b[1] + a[2] * b[2], -1, 1));
+          if (d < 1e-9) continue;  // the same point again
+          if (Math.PI - d < 1e-3) return null;  // from one side of the globe to the other: no one way round
+          gone += d;
+          const steps = d > FILL * rad ? Math.ceil(d / (FILL * rad)) : 1;
+          for (let s = 1; s < steps; s++) out.push(slerp(a, b, d, s / steps));
+        }
+        out.push(b);
+      }
+      if (gone < 2e-4 || out.length < 2) return null;  // within a kilometre or so: nothing to travel
+      const n = Math.min(out.length, MAX_ROUTE_POINTS), path = new Float64Array(n * 4);
+      for (let k = 0; k < n; k++) {
+        const q = out[Math.round((k * (out.length - 1)) / (n - 1))];
+        path.set([q[0], q[1], q[2], 0], k * 4);
+      }
+      return path;
     }
     function perpendicular(a) {
       const o = Math.abs(a[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
@@ -1426,8 +1454,15 @@
       }
       return layer(slot, `${viewKey(g, W, H, ratio)}|${version}`, W, H, ratio, (c) => paintHeat(c, g, fr, h));
     }
+    // 1.70.0 (the user, 2026-11-22: "all known routes should have their temperature change (color) based on traffic
+    // frequency", "we will use the whole color wheel from violet to red (high frequency)", "for the routes"): t from 0
+    // to 1 round the whole wheel, violet (270°) through blue, green, yellow and orange to red (0°), bright on a dark
+    // globe and deeper on a light one; the width rises with it, so the scale reads without its colours too.
+    function heatColour(t, alpha) {
+      return `hsla(${Math.round(270 * (1 - t))},${colours.heat.s}%,${colours.heat.l}%,${alpha})`;
+    }
     function paintHeat(c, g, fr, h) {
-      const top = Math.log1p(h.most), [least, most] = colours.heat, steps = new Map();
+      const top = Math.log1p(h.most), steps = new Map();
       for (const r of h.runs) {  // the lightest first
         const k = top > 0 ? Math.round((Math.log1p(r.w) / top) * (HEAT_STEPS - 1)) : 0;
         if (!steps.has(k)) steps.set(k, []);
@@ -1439,13 +1474,13 @@
         const t = k / (HEAT_STEPS - 1);
         c.beginPath();
         for (const v of runs) strokeUnits(c, v, g, fr);
-        if (t >= 0.6) {  // the brightest: a faint glow under
-          c.strokeStyle = css(most, 0.1 + 0.15 * t);
-          c.lineWidth = 3 + 4 * t;
+        if (t >= 0.6) {  // the hottest: a faint glow of their own colour under them
+          c.strokeStyle = heatColour(t, 0.12 + 0.18 * t);
+          c.lineWidth = 4 + 5 * t;
           c.stroke();
         }
-        c.strokeStyle = css(mix(least, most, t), 0.75 + 0.25 * t);
-        c.lineWidth = 1 + 2 * t;
+        c.strokeStyle = heatColour(t, 0.92);
+        c.lineWidth = 1.5 + 3 * t;
         c.stroke();
       }
       c.lineCap = 'butt';
@@ -1735,7 +1770,7 @@
           c.beginPath(); c.arc(p.x, p.y, r + 1.5, 0, TAU);
           c.fillStyle = css(colours.surface); c.fill();
           c.beginPath(); c.arc(p.x, p.y, r, 0, TAU);
-          c.fillStyle = css(colours.heat[1], h === hop ? 1 : 0.85); c.fill();
+          c.fillStyle = css(colours.text, h === hop ? 1 : 0.85); c.fill();
         }
       }
       for (const o of data.origins) {
@@ -2070,6 +2105,10 @@
       item('local', null, data.local ? `Local network: ${localWords()}, never placed` : '');
       item('unplaced', null, unplacedWords());
       item('grows', null, 'A dot and its route grow with its connections');
+      // 1.70.0: the routes' scale, violet to red, and the connections at its ends
+      const heat = data.heat && data.heat.runs.length ? data.heat : null;
+      item('heat', 'heat', heat ? 'Routes by how often: connections' : '',
+        heat ? `${heat.least.toLocaleString()} violet to ${heat.most.toLocaleString()} red, wider as they rise` : '');
       renderLayers();
     }
     // The layers' switches, a row at the legend's foot: a button each (its mark, its title, how many features, and its
@@ -2659,6 +2698,8 @@
 .lg-k-outbound{color:var(--series-2,#d95926)}
 .lg-k-unanswered{color:var(--series-3,#199e70);border-top-style:dashed}
 .lg-k-home{width:12px;height:12px;border:2px solid var(--accent,#2962ff);border-radius:50%;box-sizing:border-box;margin:0}
+.lg-k-heat{width:44px;height:5px;border:0;border-radius:3px;background:linear-gradient(90deg,hsl(270,85%,58%),hsl(216,85%,56%),hsl(162,80%,46%),hsl(108,75%,46%),hsl(54,90%,50%),hsl(0,85%,56%))}
+.lg-k-heat::before{display:none}
 .lg-k-home::before{left:2px;top:2px;width:4px;height:4px;background:var(--accent,#2962ff)}
 .lg-layers{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;flex-basis:100%}
 .lg-layer{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--border,#2a2e39);

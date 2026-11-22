@@ -1599,14 +1599,21 @@ def test_the_routes_are_a_heat_map_and_the_lights_travel_only_the_last_stretch(j
     assert "Math.ceil(d / fill)" in heat and "runs.sort((x, y) => x.w - y.w);" in heat  # filled in, the brightest last
     build = _body(js, "function buildRoutes() {")
     stretch = _body(build, "if (data.heat) {")
-    assert "const s = unit(o.lon, o.lat), e = unit(o.last.lon, o.last.lat);" in stretch and "return;" in stretch
+    assert "o.tail.length >= 2 ? o.tail.map((p) => unit(p.lon, p.lat))" in stretch and "return;" in stretch
+    assert "const path = pts ? wayOf(pts) : null;" in stretch  # 1.70.0: along its tail, the lines' own way
     assert "hops: []" in stretch  # no hop dots: the network is the heat's
     draw = _body(js, "function drawRoutes(g, fr, now) {")
     assert "for (const rt of routes) onScreen(rt, g, fr);\n        drawLights(picked, now);\n        return;" in draw
     paint = _body(js, "function paintHeat(c, g, fr, h) {")
     assert "Math.log1p(h.most)" in paint and "(Math.log1p(r.w) / top) * (HEAT_STEPS - 1)" in paint
-    assert "c.strokeStyle = css(mix(least, most, t), 0.75 + 0.25 * t);" in paint and "c.lineWidth = 1 + 2 * t;" in paint
-    assert "[[110, 110, 110, 1], [255, 255, 255, 1]]" in js  # grey to white (to the text's colour on a light page)
+    # 1.70.0: violet (270 degrees) to red (0), the routes only, wider as it rises (the scale reads without colour too)
+    assert "c.strokeStyle = heatColour(t, 0.92);" in paint and "c.lineWidth = 1.5 + 3 * t;" in paint
+    assert "hsla(${Math.round(270 * (1 - t))}" in _body(js, "function heatColour(t, alpha) {")
+    assert "heat: base === 'light' ? { s: 80, l: 40 } : { s: 90, l: 62 }," in js
+    legend = _body(js, "function renderLegend() {")
+    assert "item('heat', 'heat', heat ? 'Routes by how often: connections' : ''," in legend and ".lg-k-heat{" in js
+    way = _body(js, "function wayOf(pts) {")
+    assert "if (Math.PI - d < 1e-3) return null;" in way and "Math.min(out.length, MAX_ROUTE_POINTS)" in way
     render = _body(js, "function render(now) {")
     assert render.index("infraLayer(g, fr, ratio, W, H)") < render.index("heatLayer(g, fr, ratio, W, H)") \
         < render.index("drawRoutes(g, fr, now);")
