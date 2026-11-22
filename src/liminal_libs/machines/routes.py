@@ -22,7 +22,7 @@ from collections import OrderedDict
 from typing import Iterable
 
 from .. import netpath
-from . import composite as composite_module, network as network_module
+from . import composite as composite_module, lookups as lookups_module, network as network_module
 
 KEEP_S = 3600.0  # a route is traced again after this long, while its connection is still open
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
@@ -75,6 +75,9 @@ class Routes:
         self.network = network_module.Network()
         # 1.71.0: both sides kept and paired, the lookup queue with them (machines/composite.py)
         self.composite = composite_module.Composite()
+        # 1.72.0: each router's name (reverse DNS) and network (RDAP), within each source's limits, into it
+        self.lookups = lookups_module.Lookups(
+            claims=lambda address, source, words, said: self.composite.record(claims=[(address, source, words, said)]))
         self._composed: set[tuple] = set()
 
     def _stopping(self) -> bool:
@@ -161,6 +164,7 @@ class Routes:
             self._kept.clear()
         self.network.clear()
         self.composite.close()
+        self.lookups.close()
 
     def describe(self) -> dict:
         with self._lock:
@@ -188,8 +192,15 @@ class Routes:
             key = _key(getattr(place, "lat", None), getattr(place, "lon", None))
             if key is None or key == last or key == end or key == home:
                 continue
-            points.append({"lat": place.lat, "lon": place.lon, "label": place.label, "address": hop.address,
-                           "n": hop.n, "ms": hop.ms})
+            point = {"lat": place.lat, "lon": place.lon, "label": place.label, "address": hop.address,
+                     "n": hop.n, "ms": hop.ms}
+            known = self.lookups.known(hop.address)  # 1.72.0: its name and network, once looked up
+            if known.get("name"):
+                point["name"] = known["name"]
+            if known.get("network") or known.get("org"):
+                point["network"] = ", ".join(x for x in (known.get("network"), known.get("org"),
+                                                       known.get("country")) if x)
+            points.append(point)
             last = key
             if len(points) >= MAX_VIA:
                 break
@@ -289,6 +300,11 @@ class Routes:
                 self.network.onto(globe, index)
             except Exception:  # noqa: BLE001 - the heat never costs the tab its page: the routes drawn as before
                 globe.pop("heat", None)
+        try:  # 1.72.0: every router of the routes kept looked up, its name and network (the lookups' own thread)
+            self.lookups.want(h.address for _, route in kept.values() for h in route.hops
+                              if h.address and h.address != route.target)
+        except Exception:  # noqa: BLE001 - the lookups never cost the tab its page
+            pass
         try:  # 1.71.0: what the routes say of each router, its place by the GeoIP file, and the legs waiting
             self.composite.record(self._routers(kept, geoip), self.network.legs, licence)
         except Exception:  # noqa: BLE001 - the composite never costs the tab its page

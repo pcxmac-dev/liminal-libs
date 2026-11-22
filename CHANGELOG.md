@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.72.0 (2026-11-22)
+
+Each router's name and network, looked up within each source's limits. The user, 2026-11-22: "it will take a lot of
+looking over and using reverse lookups, and whois to figure out as much info as possible on the nodes. if there are
+frequency limits on sources, please hold to those limits as not to get banned", and, asked whether to start them:
+"Yes, start them". The platform's page shows it once the platform is restarted.
+
+- **`machines/lookups.py`**: for every router on the routes kept, its name by reverse DNS (this machine's own
+  resolver, 2 a second at most) and its network by RDAP, the registries' WHOIS over https: the registry from IANA's
+  bootstrap files (read once a week), then one GET of it for the address. Each registry is asked 10 times a minute and
+  1,000 an hour at most, the strictest limits any registry publishes (LACNIC's without a key) held for every one; after
+  a 429 none is asked for its Retry-After (5 minutes without one, an hour at most), nor for 5 minutes after a 403. The
+  answer's range is kept, so a router within one already known asks nothing. Only https, only the hosts the bootstrap
+  files name, a redirect followed only to one of them. Nothing is asked twice within a day; a failure is tried again
+  after it. One thread while the tab is shown, ended 20 s after its last ask and for good on detach. Only the routers'
+  addresses go out, with a User-Agent naming the library alone.
+- Each finding is kept in the composite database ("ptr", "rdap", with their sources' words); a claim with no point
+  places nothing (it no longer takes a router out of the queue). Each hop on the page carries its `name` and its
+  `network` (the network's name, its holder and its country), and its hover says them (liminal-globe.js).
+- The suite's guard refuses the real resolver and the real https GET of the lookups, and starts no thread for them.
+- Next: reading the city and airport codes in routers' names (with a public-domain list of airports, your download),
+  so that a name places its router too.
+
 ## 1.71.0 (2026-11-22)
 
 The composite database of the firewalls' World Wide Web tab, its first part. The user, 2026-11-22: "maybe we need to

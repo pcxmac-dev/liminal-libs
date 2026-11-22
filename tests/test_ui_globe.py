@@ -1644,3 +1644,16 @@ def test_the_routers_places_the_routes_bend_at_are_drawn_named_and_told_on_hover
     assert "was.h !== p.h" in _body(js, "function setPick(p) {")
     assert "pick.h ? project(pick.h.lon, pick.h.lat, g)" in _body(js, "function anchorTip(g) {")
     assert "const h = data.heat ? data.hops.find((x) => x.id === pick.h.id) : null;" in _body(js, "function update(next, more) {")
+
+
+def test_a_routers_names_and_networks_are_told_on_its_hover(js):
+    """1.72.0 (the user, 2026-11-22: "using reverse lookups, and whois to figure out as much info as possible on the
+    nodes"): a hop's name (its reverse DNS) and its network (RDAP) are read with it, gathered by its place, and said on
+    its hover after its addresses."""
+    hop = _body(js, "function hopOf(p) {")
+    assert "name: text(p.name, 120)" in hop and "network: text(p.network, 160)" in hop
+    hops = _body(js, "function hopsOf(origins) {")
+    assert "if (p.name && h.names.length < 4 && !h.names.includes(p.name)) h.names.push(p.name);" in hops
+    assert "h.networks.push(p.network)" in hops
+    tip = _body(js, "function hopTip(h, line) {")
+    assert "for (const n of h.names) line('', n);" in tip and "line('lg-tip-sub', `network: ${n}`)" in tip

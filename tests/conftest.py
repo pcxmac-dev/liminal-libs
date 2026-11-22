@@ -97,7 +97,7 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
     database and the infrastructure layers kept in the test's own folder (the module's docstring). Yields the reads
     refused, so the guard's own test can clear the one it made on purpose."""
     from liminal_libs import hostbook, netpath, sockets
-    from liminal_libs.machines import infrastructure, routes
+    from liminal_libs.machines import infrastructure, lookups, routes
 
     folder = request.getfixturevalue("tmp_path") if "tmp_path" in request.fixturenames else None
     lock = threading.Lock()
@@ -132,6 +132,15 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
     monkeypatch.setattr(netpath, "_run", tracer)
     monkeypatch.setattr(netpath, "_trace_run", lambda args, timeout=None, stop=None: (tracer(args), ""))
     monkeypatch.setattr(routes.Routes, "_thread", staticmethod(thread))
+
+    def reach(what):  # 1.72.0: a router is never looked up for real: neither its name nor its network
+        def refuse(*args, **kwargs):
+            refused.append(f"lookups {what} {args[:1]!r}"[:300])
+            raise Reached(f"the test looked a router up for real ({what}): give the lookups stand-ins")
+        return refuse
+    monkeypatch.setattr(lookups, "_ptr", reach("reverse DNS"))
+    monkeypatch.setattr(lookups, "_get", reach("RDAP"))
+    monkeypatch.setattr(lookups.Lookups, "_thread", staticmethod(lambda work: None))  # not run: a test steps it
     monkeypatch.setattr(hostbook, "path", lambda: own() / "liminal-data" / hostbook.FOLDER / hostbook.FILE)
     monkeypatch.setattr(hostbook, "_BOOKS", {})
     monkeypatch.setattr(infrastructure, "folder", lambda: own() / "liminal-data" / infrastructure.FOLDER)

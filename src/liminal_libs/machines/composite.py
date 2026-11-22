@@ -184,7 +184,7 @@ class Composite:
                     claim = json.dumps({"lat": round(float(r["lat"]), 4), "lon": round(float(r["lon"]), 4),
                                         "label": str(r.get("label") or "")[:80]}, sort_keys=True)
                     if self._fresh(("geoip", address), claim, now):
-                        rows.append(("claim", (address, "geoip", licence or "the GeoIP file's own", claim)))
+                        rows.append(("claim", (address, "geoip", licence or "the GeoIP file's own", claim, True)))
                 elif self._fresh(("place", address), "waiting", now):
                     rows.append(("wait", ("place", address, f"router {address}", "the GeoIP file has no place for it",
                                           PLACE_LEFT)))
@@ -192,11 +192,12 @@ class Composite:
                     seen = json.dumps({"n": r.get("n"), "after": r.get("after") or "", "ms": round(float(r["ms"]), 1)},
                                       sort_keys=True)
                     if self._fresh(("trace", address, seen), seen, now):
-                        rows.append(("claim", (address, "trace", "measured here", seen)))
+                        rows.append(("claim", (address, "trace", "measured here", seen, False)))
             for address, source, words, said in claims:
                 claim = json.dumps(said, sort_keys=True)
-                if self._fresh((source, address), claim, now):
-                    rows.append(("claim", (str(address), source, words, claim)))
+                if self._fresh((source, address), claim, now):  # a place only where it says where (1.72.0)
+                    placed = isinstance(said, dict) and said.get("lat") is not None and said.get("lon") is not None
+                    rows.append(("claim", (str(address), source, words, claim, placed)))
             for key, (what, why) in (legs or {}).items():
                 if self._fresh(("segment", key), why, now):
                     rows.append(("wait", ("segment", key, what, why, SEGMENT_LEFT)) if why
@@ -214,12 +215,12 @@ class Composite:
                 touched = set()
                 for do, args in rows:
                     if do == "claim":
-                        address, source, words, claim = args
+                        address, source, words, claim, placed = args
                         entity = self._entity(conn, "router", address, now)
                         conn.execute("INSERT INTO evidence (entity, source, licence, claim, first, last) VALUES (?, ?,"
                                      " ?, ?, ?, ?) ON CONFLICT (entity, source, claim) DO UPDATE SET last ="
                                      " excluded.last", (entity, source, words, claim, now, now))
-                        if source != "trace":
+                        if placed:
                             touched.add(entity)
                             self._done(conn, "place", address, now)
                     elif do == "wait":

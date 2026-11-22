@@ -888,7 +888,8 @@
     const q = placeOf(p);
     if (!q) return null;
     const n = num(p.n), ms = num(p.ms);
-    return { ...q, label: text(p.label, 80), address: text(p.address, 64), n: n != null && n >= 0 ? Math.round(n) : null,
+    return { ...q, label: text(p.label, 80), address: text(p.address, 64), name: text(p.name, 120),
+      network: text(p.network, 160), n: n != null && n >= 0 ? Math.round(n) : null,
       ms: ms != null && ms >= 0 ? ms : null };
   }
   // 1.69.1 (the user, 2026-11-22: "there appears to be verticies without location names or cities, please address
@@ -902,7 +903,12 @@
       for (const p of o.via) {
         const id = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
         let h = by.get(id);
-        if (!h) by.set(id, (h = { id, lat: p.lat, lon: p.lon, label: '', addresses: [], ns: [], ms: [], to: [], count: 0 }));
+        if (!h) {
+          h = { id, lat: p.lat, lon: p.lon, label: '', addresses: [], names: [], networks: [], ns: [], ms: [], to: [], count: 0 };
+          by.set(id, h);
+        }
+        if (p.name && h.names.length < 4 && !h.names.includes(p.name)) h.names.push(p.name);  // 1.72.0
+        if (p.network && h.networks.length < 3 && !h.networks.includes(p.network)) h.networks.push(p.network);
         if (!h.label) h.label = p.label;
         if (p.address && h.addresses.length < 8 && !h.addresses.includes(p.address)) h.addresses.push(p.address);
         if (p.n != null && h.ns.length < 8 && !h.ns.includes(p.n)) h.ns.push(p.n);
@@ -1999,6 +2005,8 @@
       const ns = [...h.ns].sort((a, b) => a - b);
       line('lg-tip-sub', `a router on the way${ns.length ? `: hop ${ns.join(', ')}` : ''}`);
       if (h.addresses.length) line('', h.addresses.join(', '));
+      for (const n of h.names) line('', n);  // 1.72.0: its names, by reverse DNS
+      for (const n of h.networks) line('lg-tip-sub', `network: ${n}`);  // and its networks, by RDAP
       if (h.ms.length) line('', `${Math.min(...h.ms).toFixed(1)} ms from here at its nearest`);
       line('', `on the way to ${h.to.slice(0, 4).map(nameOf).join(', ')}${h.to.length > 4 ? ` and ${h.to.length - 4} more` : ''}`);
       line('lg-tip-sub', 'placed by the GeoIP file on this machine: often its network\'s home, not the router itself');
