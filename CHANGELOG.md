@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.75.3 (2026-11-23)
+
+A real child's wait, its watcher's on every Python. CI failed on windows-latest with Python 3.12 alone: during a wait
+of 0.3 s for a real child (`test_a_real_childs_wait_is_its_watchers_and_looks_at_nothing_meanwhile`), its handle was
+asked with a timeout 12,344 times. time.monotonic on Windows before Python 3.13 moves by 15.6 ms (GetTickCount64;
+3.13 took QueryPerformanceCounter): the watcher's wait of 0.3 s was over before that clock said so, and the 4 ms it
+said were left were looked for on the child's handle, asked with a timeout until the clock moved. The test's
+stand-in answers at once, and so does a real handle asked for less than a millisecond (Popen.wait counts whole
+milliseconds).
+
+- **The whole wait through its watcher** (machines/children.py `Child.wait`): a real child this process started is
+  waited for through its watcher alone until its own clock says the time is over, a coarse clock's rest included;
+  only once the watcher has woken (its end seen, or its own wait failed) is what is left looked for every STEP_S, as
+  before.
+- **A clock that moves in ticks** (tests/test_children.py `Ticks`): half a second a tick, so that every Python and
+  system sees what 3.12 on Windows saw, on both systems' waits; the fix undone fails it.
+
 ## 1.75.2 (2026-11-22)
 
 JSON's nesting bounded alike on every Python. After the GitHub push of 2026-11-22, CI failed on ubuntu-latest with

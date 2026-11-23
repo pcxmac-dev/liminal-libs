@@ -909,10 +909,12 @@ class Child:
 
     # -- ending ----------------------------------------------------------------------------------------------------
     def wait(self, timeout: float | None = None) -> int | None:
-        """Until it has ended, `timeout` seconds at most (None: however long it runs): its exit code; None when it
-        still runs, or when its code is not this process's to read (an adopted child). A real child this process
-        started is waited for through its watcher, which wakes at its end alone (a boot server's `launch serve` waits
-        so for days); any other is looked at every STEP_S, on its own clock."""
+        """Until it has ended, `timeout` seconds at most on its own clock (None: however long it runs): its exit code;
+        None when it still runs, or when its code is not this process's to read (an adopted child). A real child this
+        process started is waited for through its watcher, which wakes at its end alone (a boot server's `launch
+        serve` waits so for days), until its clock says the time is over: where a coarse clock says so only after the
+        watcher's wait (time.monotonic on Windows before Python 3.13 moves by 15.6 ms), the rest is the watcher's too,
+        and nothing else is looked at meanwhile; any other is looked at every STEP_S, on its own clock."""
         if timeout is None:
             while self._look():
                 self._rest(None)
@@ -920,9 +922,13 @@ class Child:
         with self._lock:
             process, gone = self._process, self._gone
         if isinstance(process, _Popen) and gone is not None:
-            began = self._clock()
-            gone.wait(min(max(0.0, timeout), threading.TIMEOUT_MAX))
-            timeout -= self._clock() - began  # (what is left once it was woken: its end is looked for in that)
+            until = self._clock() + max(0.0, timeout)
+            left = max(0.0, timeout)
+            while not gone.wait(min(left, threading.TIMEOUT_MAX)):
+                left = until - self._clock()
+                if left <= 0:
+                    return self.code  # its watcher has not woken: it runs (an end just now is seen by this look)
+            timeout = until - self._clock()  # (what is left once it was woken: its end is looked for in that)
         self._gone_within(timeout)
         return self.code
 

@@ -237,6 +237,21 @@ class Clock:
         return self.now
 
 
+class Ticks:
+    """A clock that moves in ticks of `tick` seconds, counted from its `start`, as time.monotonic on Windows before
+    Python 3.13 moves by 15.6 ms (GetTickCount64): what it says lags the time by up to a tick."""
+
+    def __init__(self, tick):
+        self.tick = tick
+        self.start()
+
+    def start(self):
+        self.began = time.monotonic()
+
+    def __call__(self):
+        return (time.monotonic() - self.began) // self.tick * self.tick
+
+
 def make(folder, system, launch=None, starter=None, **outside):
     """A child over stand-ins, in a folder of its own: (the child, what stands in for Popen)."""
     starter = starter or Starter()
@@ -1040,6 +1055,31 @@ def test_a_real_childs_wait_is_its_watchers_and_looks_at_nothing_meanwhile(tmp_p
     began = time.monotonic()
     threading.Timer(0.1, starter.made[0].end, args=(2,)).start()
     assert child.wait(10) == 2 and time.monotonic() - began < 5 and starter.made[0].waits
+
+
+def test_a_real_childs_wait_is_its_watchers_even_on_a_clock_that_moves_in_ticks(tmp_path, monkeypatch):
+    # (1.75.3: time.monotonic on Windows before Python 3.13 moves by 15.6 ms, and a watcher's wait of 0.3 s was over
+    # before it said so; what it said was left was looked for every STEP_S, on CI its handle asked with a timeout
+    # 12,344 times. Here a tick is half a second, so that every Python and system sees it)
+    ticks = Ticks(0.5)
+    starter = Starter(kind=Real)
+    child, _ = make(tmp_path / "windows", "windows", starter=starter, clock=ticks,
+                    sleep=refusing("sleep: a real child's end is its watcher's to see"))
+    child.start()
+    ticks.start()  # (the watcher's 0.3 s are over before it moves)
+    assert child.wait(0.3) is None and ticks() >= 0.3 and child.alive  # as long as its own clock says
+    began = time.monotonic()
+    threading.Timer(0.1, starter.made[0].end, args=(3,)).start()
+    assert child.wait(10) == 3 and time.monotonic() - began < 5  # its end seen as it comes
+    assert starter.made[0].waits == []  # its handle never asked with a timeout: its watcher's wait alone
+    popen, made, events = real_linux(monkeypatch)  # Linux: nothing napped meanwhile either
+    child, _ = make(tmp_path / "linux", "linux", starter=popen, clock=ticks,
+                    sleep=refusing("sleep: a real child's end is its watcher's to see"))
+    child.start()
+    ticks.start()
+    assert child.wait(0.3) is None and ticks() >= 0.3 and child.alive
+    threading.Timer(0.1, made[0].end, args=(1,)).start()
+    assert child.wait(10) == 1 and events == [("group", 4321, children.KILL), "collected"]
 
 
 # -- its end, seen apart from its output -------------------------------------------------------------------------------
