@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.76.0 (2026-11-23)
+
+The Continuous Integration plugins' marks, and one deadline for the whole of each request through machines/endpoint.py.
+The user, 2026-11-22: a Continuous Integration class of platform plugins, with Jenkins, GoCD and Buildbot
+(plugin-platform-jenkins, plugin-platform-gocd and plugin-platform-buildbot 0.1.0). Their ICONs, "jenkins", "gocd" and
+"buildbot", were names icons.js did not have, so the tray and their pages drew the plug for them. Their reviews found
+that a request through machines/endpoint.py had no deadline for the whole of it: each socket operation waited its
+timeout, so a TLS handshake or a head given a byte at a time, each byte within that wait, could go on without end. The
+Jenkins and GoCD reviewers left that bound to the library, which sends both plugins' requests (Jenkins' client says
+so), and the Buildbot plugin keeps one of its own (a threading.Timer over its own urllib requests). No plugin's code
+has to change for either, and the plugin API stays 2.4.
+
+- **The Continuous Integration plugins' marks** (`ui/static/icons.js`): `jenkins`, `gocd` and `buildbot`, each its
+  maker's mark drawn anew in the set's line and colour from what the mark shows on its maker's own page, nothing
+  downloaded or traced. Jenkins' butler: his bald head turned a little to the right, the grey hair behind it and an
+  ear, his eyes closed and a smile, his bow tie and his shoulders. GoCD's play sign: one bold rounded stroke, left
+  open where it began. Buildbot's nut, turned as its mark has it: the top face and its hole, the near sides below.
+  Each was drawn at 15 to 24 px (the platform's lists and its tray) on the dark and the light themes, and by headless
+  Edge beside the other marks. A static file: a page shows them once reloaded, with no app restarted. The plugins'
+  own tests of their icons pass with it: Jenkins' and GoCD's were skipped until the marks came, and Buildbot's, a
+  strict xfail until then, now fails as an unexpected pass until its marker goes.
+- **One deadline for the whole of a request** (machines/endpoint.py): its connection (each address its name has, in
+  turn), a TLS handshake, the status line and the headers, and the body. An Endpoint ask's is twice its wait, the
+  bound its body already had (GoCD's looks 10 s in all, its changes 40 s); a stream's is its own `deadline`.
+  `requests_transport` takes one too (`deadline=`, new): given none, twice its timeout for an answer read whole
+  (Jenkins' requests, which wait 5 s a socket operation, 10 s in all) and none for a stream (a download, which looks
+  at its own deadline after every receive).
+- **A watchdog keeps it** (`_Watch`): a thread of the request's own ("endpoint-deadline"), stopped and waited for when
+  the reply is let go or the request fails, so that none outlives its request. Once the time is up it shuts every
+  socket the request holds: each one held from before it connects (the session's adapter dials as urllib3 does,
+  address by address: `_dial`) and, over https, the TLS one from before its handshake (through a context that holds
+  it, `_Held`, since ssl detaches the plain socket under it). Each is shut down both ways and, on Windows, closed by
+  the C socket itself: a wait there ends only once its socket is closed, and socket.close() puts that off while
+  http.client's file of the socket is open.
+- **Said as a read that waited too long** (`Overdue`, new: a TimeoutError that carries the deadline's `seconds`):
+  `trouble()` says it as it says a slow read, in the deadline's seconds ("no answer from … within N s"). Endpoint says
+  a body cut off in its bound's words ("its answer was not whole after N s: not read") and leaves a stream where it
+  is, as at its deadline before; a stream whose head has not come by then is an EndpointError. Once the watchdog has
+  fired, the nothing a shut socket reads is never taken for the body's end, so an answer that says no length is not
+  handed back cut short as if it were whole.
+- **As before**: a name being looked up is not cut short (nothing cuts getaddrinfo short): the request ends once the
+  name is found, and no address is tried after the deadline. Only the library's own transport is given the deadline:
+  a stand-in transport (the plugins' tests') is asked with the six arguments it takes. A stream given no deadline has
+  no watchdog, and its connections are urllib3's own. A running app sends as before until it is restarted.
+- **Tests**: test_endpoint (12 new) runs stand-in sockets under the whole real stack (requests, urllib3's
+  connections, http.client; TLS through a stand-in context), hung at the connection or at the TLS handshake, or
+  giving the head or the body a byte at a time, each byte within the socket's wait: the deadline holds, the errors'
+  words are checked, and no socket and no watchdog outlives a request (a fixture looks for watchdogs after every test
+  of the file). Each part of the fix undone fails its tests, and the deadline's tests passed 25 runs of 25 in Ubuntu
+  and 20 of 20 on Windows. test_icons (1 new) holds each mark to what makes it its maker's: found as a plugin's ICON
+  is, in one colour, inside the box, and its shapes (GoCD's stroke bold and open, Jenkins' head an egg with the grey
+  hair behind it and the bow tie below his chin, Buildbot's hexagon straight with the hole in it); each of 16 breaks
+  of the marks fails it.
+
 ## 1.75.3 (2026-11-22)
 
 A real child's wait, its watcher's on every Python. CI failed on windows-latest with Python 3.12 alone: during a wait
