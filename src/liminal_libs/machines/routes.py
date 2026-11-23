@@ -151,6 +151,7 @@ class Routes:
             bootstrap=bootstrap,  # 1.72.1: RDAP's bootstrap addresses, the plugin's
             claims=lambda address, source, words, said: self.composite.record(claims=[(address, source, words, said)]))
         self.lookups.decode = self._decode
+        self._seeded = False  # 1.75.1: what the lookups found before a restart put back, once (_seed_lookups)
         self._composed: set[tuple] = set()
         # 1.73.0: routers' names read for their places, with the installed airports and cities (names.py)
         self.names = names_module.Names()
@@ -158,6 +159,19 @@ class Routes:
         self._home = None
         self._read_with = None  # the lists every known name was last read with
         self._seen: OrderedDict[str, tuple[float | None, str]] = OrderedDict()  # address -> (its time, country)
+
+    def _seed_lookups(self) -> None:
+        """1.75.1: once, at the tab's first ask: the routers' names and networks found before (the composite
+        database's evidence within lookups.KEEP_S) put back, so a restart asks no registry again for them and the
+        hop table has them at once. A read that fails puts nothing back: they are looked up again."""
+        if self._seeded:
+            return
+        self._seeded = True
+        try:
+            wall = self.composite.clock()
+            self.lookups.seed(self.composite.lookups(wall - lookups_module.KEEP_S), wall)
+        except Exception:  # noqa: BLE001 - nothing put back costs the tab nothing
+            pass
 
     def _stopping(self) -> bool:
         """Whether a trace under way stops: only the routes closed (1.74.0: a trace begun runs to its end; the tab
@@ -562,6 +576,7 @@ class Routes:
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
         self._index = index  # 1.73.0: for the names' lists
+        self._seed_lookups()  # 1.75.1
         try:  # the lists installed (or changed) since: every name known now read with them at once, asking no one
             gazetteer = self.names.gazetteer(index)
             if gazetteer is not None and gazetteer is not self._read_with:

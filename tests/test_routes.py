@@ -451,3 +451,26 @@ def test_operators_are_compared_by_their_names_one_company_with_several_numbers_
     assert [bool(row[10]) for row in rows] == [False, False, True, False]  # one crossing: Charter to Zayo
     assert rows[1][9] == "your ISP" and rows[2][10]["text"] == "⇄ Zayo Bandwidth"
     r.close()
+
+
+def test_after_a_restart_the_hop_table_has_the_names_found_before_and_asks_no_one_again():
+    """1.75.1: the composite database's evidence put back at the tab's first ask, once."""
+    from liminal_libs.machines.composite import Composite
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.1", target]})
+    before = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    before.composite.record(claims=[("62.0.0.1", "ptr", "the DNS", {"name": "ae-1.r20.amstnl02.nl.bb.example.net"})])
+    path = before.composite.path
+    before.close()
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    r.composite = Composite(where=path)
+    r.want([target])
+    while r.step():
+        pass
+    page = {"globe": {"home": HOME, "origins": []}}
+    r.onto(page, Geo({}), [target])
+    rows = next(t for t in page["tables"] if t["title"] == routes_module.HOPS_TITLE)["rows"]
+    assert rows[0][4] == "ae-1.r20.amstnl02.nl.bb.example.net"  # its name at once, put back
+    assert r.lookups.describe()["asked_ptr"] == 0 and r._seeded
+    r.onto(page, Geo({}), [target])  # once: not read again
+    r.close()

@@ -124,3 +124,26 @@ def test_the_routes_page_fills_the_composite_and_says_what_it_holds():
     assert "1 placed, 3 waiting to be looked up." in note
     r.close()
     assert r.composite.closed
+
+
+def test_what_the_lookups_found_is_handed_back_within_its_day_the_newest_claim_of_each_source():
+    """1.75.1: for a restart to ask no one again."""
+    clock = Clock()
+    c = Composite(clock=clock)
+    assert c.lookups(0) == {} and not c.path.exists()  # no file: none made for a read
+    rdap = {"network": "EXAMPLE-NET", "handle": "EXAMPLE-NET-H", "org": "Example Carrier", "country": "NL",
+            "range": "62.0.0.0 - 62.0.255.255"}
+    c.record(claims=[("62.0.0.1", "ptr", "the DNS", {"name": "old.example.net"})])
+    clock.now += 600
+    c.record(claims=[("62.0.0.1", "ptr", "the DNS", {"name": "ae-1.r20.amstnl02.nl.bb.example.net"}),
+                     ("62.0.0.1", "rdap", "RDAP", rdap), ("62.0.0.2", "rdap", "RDAP", rdap),
+                     ("62.0.0.3", "name", "its name", {"lat": 52.3, "lon": 4.9, "label": "Amsterdam"})])
+    clock.now += 60
+    c.record(claims=[("62.0.0.2", "ptr", "the DNS", {"name": "two.example.net"})])
+    got = c.lookups(clock.now - 3600)
+    assert list(got) == ["62.0.0.1", "62.0.0.2"]  # a place read from a name is no lookup; the most recently said last
+    at, found = got["62.0.0.1"]
+    assert found == {"name": "ae-1.r20.amstnl02.nl.bb.example.net", **rdap} and at == clock.now - 60  # the new name's
+    assert got["62.0.0.2"] == (clock.now - 60, {"name": "two.example.net", **rdap})  # as old as its oldest part
+    assert c.lookups(clock.now - 30) == {"62.0.0.2": (clock.now, {"name": "two.example.net"})}
+    assert c.lookups(clock.now + 1) == {}

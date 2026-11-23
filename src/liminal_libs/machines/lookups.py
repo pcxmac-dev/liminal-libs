@@ -16,7 +16,8 @@ nodes. if there are frequency limits on sources, please hold to those limits as 
   most).
 - What is found is kept in the composite database as evidence ("ptr", "rdap": with their sources' words) and handed
   to the page: each hop's name and network on its hover. Nothing is asked twice within KEEP_S; a failure is kept and
-  tried again after KEEP_S.
+  tried again after KEEP_S. 1.75.1: after a restart, what was found within KEEP_S is put back from that evidence
+  (`seed`, at the tab's first ask), so no registry is asked again for it; a part not found then is still asked.
 - One thread, while the tab is shown (as the routes' tracing): started by the tab's ask, ended TIMEOUT_S after the
   last one, and for good when the plugin is detached. No user's word goes out: only the routers' addresses, to this
   machine's resolver and to the registry that holds each, with a User-Agent naming the library alone."""
@@ -179,7 +180,10 @@ class Lookups:
                 except ValueError:
                     continue
                 kept = self._known.get(a)
-                if (kept is not None and now - kept[0] < KEEP_S) or a in self._waiting:
+                # 1.75.1: a router known within KEEP_S is not asked again, unless a part of it was never asked (one
+                # put back with its name and no network, say)
+                whole = kept is not None and "name" in kept[1] and "network" in kept[1]
+                if (whole and now - kept[0] < KEEP_S) or a in self._waiting:
                     continue
                 if len(self._waiting) >= MAX_WAITING:
                     break
@@ -193,6 +197,35 @@ class Lookups:
             except Exception:  # noqa: BLE001 - no thread: started again at the next ask
                 with self._lock:
                     self._running = False
+
+    def seed(self, found: dict, wall: float) -> int:
+        """1.75.1: what was found before put back ({address: (when it was said, on the wall clock `wall` is read
+        from, what was found)}: the composite database's evidence, Composite.lookups): each said within KEEP_S kept
+        as of then, so it is not asked again before its day is out, and a part missing still is; its range answers
+        the addresses within it. Never over what this process found itself. How many were put back."""
+        now, put = self.clock(), 0
+        with self._lock:
+            if self.closed:
+                return 0
+            for address, (said, what) in (found or {}).items():
+                try:
+                    address = str(ipaddress.ip_address(str(address)))
+                    age = max(0.0, float(wall) - float(said))
+                except (TypeError, ValueError):
+                    continue
+                if age >= KEEP_S or address in self._known or not isinstance(what, dict):
+                    continue
+                self._known[address] = (now - age, dict(what))
+                put += 1
+                span = _span(what.get("range"))
+                if span is not None and (what.get("network") or what.get("org")) and span not in self._ranges:
+                    self._ranges[span] = {k: str(what.get(k) or "") for k in ("network", "handle", "org", "country",
+                                                                             "range")}
+            while len(self._known) > MAX_KNOWN:
+                self._known.popitem(last=False)
+            while len(self._ranges) > MAX_RANGES:
+                self._ranges.popitem(last=False)
+        return put
 
     def names(self) -> list[tuple[str, str]]:
         """The routers' names known now: [(address, name)] (1.73.0: read again when the lists come)."""
@@ -374,6 +407,16 @@ class Lookups:
             self._ranges[(first, last)] = dict(net)
             while len(self._ranges) > MAX_RANGES:
                 self._ranges.popitem(last=False)
+
+
+def _span(said) -> tuple[int, int] | None:
+    """1.75.1: a range as network_of says it ("62.0.0.0 - 62.0.255.255") as (first, last), or None."""
+    try:
+        start, end = (ipaddress.ip_address(p.strip()) for p in str(said or "").split(" - "))
+    except ValueError:
+        return None
+    first, last = int(start), int(end)
+    return (first, last) if start.version == end.version and first <= last else None
 
 
 def _seconds(value, default: float) -> float:

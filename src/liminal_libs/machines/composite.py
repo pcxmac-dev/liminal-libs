@@ -36,6 +36,8 @@ VERSION = 1  # the schema's (PRAGMA user_version)
 AGREE_KM = 50.0  # two claims of a place this near agree
 REWRITE_S = 300.0  # a row seen again is written again (its `last`) at most this often
 MAX_MEMO = 20_000  # rows remembered as written, in this process
+MAX_FOUND = 4096  # 1.75.1: routers whose lookups one read hands back, the newest first (lookups.MAX_KNOWN's)
+FOUND_KEYS = ("network", "handle", "org", "country", "range")  # an rdap claim's parts handed back
 # a source's weight, the chance its claim of a router's place is right, and what it is
 SOURCES = {
     "geoip": (0.3, "the GeoIP file on this machine: often the network's home rather than the router itself"),
@@ -286,6 +288,50 @@ class Composite:
                 return False
             finally:
                 conn.close()
+
+    def lookups(self, since: float) -> dict[str, tuple[float, dict]]:
+        """1.75.1: what the lookups found of each router and said since `since` (the wall clock's seconds), for a
+        restart to ask no one again: {address: (when its oldest part was last said, {"name"} and {"network",
+        "handle", "org", "country", "range"} as far as they were)}, each source's newest claim; MAX_FOUND routers at
+        most, the most recently said. Nothing for no file (none is made for a read), or one on another system's
+        drive."""
+        with self._lock:
+            if not self.path.exists() or infrastructure.foreign(self.path.parent):
+                return {}
+            conn = sqlite3.connect(str(self.path), timeout=10)
+            try:
+                rows = conn.execute(
+                    "SELECT e.key, v.source, v.claim, v.last FROM evidence v JOIN entities e ON e.id = v.entity"
+                    " WHERE e.kind = 'router' AND v.source IN ('ptr', 'rdap') AND v.last >= ? ORDER BY v.last",
+                    (float(since),)).fetchall()
+            except sqlite3.Error:
+                return {}
+            finally:
+                conn.close()
+        per: dict[str, dict[str, tuple[float, dict]]] = {}  # address -> source -> (its newest claim's time, its part)
+        for key, source, claim, last in rows:  # oldest first: a source's newer claim wins
+            try:
+                said = json.loads(claim)
+            except ValueError:
+                continue
+            if not isinstance(said, dict):
+                continue
+            if source == "ptr":
+                part = {"name": str(said.get("name") or "")[:255]} if said.get("name") else {}
+            else:
+                part = {k: str(said.get(k) or "")[:120] for k in FOUND_KEYS}
+            if not part:
+                continue
+            sources = per.pop(str(key), {})  # moved to the end: the most recently said last
+            sources[source] = (float(last), part)
+            per[str(key)] = sources
+        out: dict[str, tuple[float, dict]] = {}
+        for key, sources in list(per.items())[-MAX_FOUND:]:
+            found: dict = {}
+            for _, part in sources.values():
+                found.update(part)
+            out[key] = (min(at for at, _ in sources.values()), found)  # as old as its oldest part
+        return out
 
     def queue(self, limit: int = 100) -> list[dict]:
         """What waits to be looked up, the longest waiting first: [{"kind", "key", "what", "why", "left", "tries",

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.75.1 (2026-11-22)
+
+What the lookups found, kept across a restart. The user, 2026-11-22, asked whether the lookups should reload their
+saved answers after a restart instead of asking the registries again: "Yes, build it". The routers' names (reverse
+DNS) and networks (RDAP) were kept in memory alone, so after each restart the hop table had none of them and every
+router was asked again, at the registries' limits, though the composite database held each answer as evidence.
+
+- **Put back at the tab's first ask** (machines/composite.py, machines/lookups.py, machines/routes.py):
+  `Composite.lookups(since)` hands back each router's newest ptr and rdap claims said within lookups.KEEP_S (a day),
+  and `Lookups.seed` puts them back as of when they were said: not asked again before their day is out, their ranges
+  answering the routers within them; a part never found (a name with no network) is still asked. Read once, never over
+  what the running process found itself.
+
 ## 1.75.0 (2026-11-22)
 
 Each network's number and operator, from an ASN file beside the GeoIP file. The user, 2026-11-22, asked whether to fill

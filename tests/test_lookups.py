@@ -185,3 +185,29 @@ def test_without_the_plugins_bootstrap_no_registry_is_asked_and_the_name_still_i
     lk.want(["62.0.0.1"])
     assert lk.step()
     assert asked["get"] == [] and lk.known("62.0.0.1")["name"] == "ae-1.r20.amstnl02.nl.bb.example.net"
+
+
+def test_what_was_found_before_is_put_back_within_its_day_and_only_a_missing_part_asked(net):
+    """1.75.1: after a restart, the composite's evidence put back: a router found within the day is not asked again,
+    its range answers the routers within it, a part never found is still asked, and nothing older than KEEP_S."""
+    asked, _ = net
+    clock = Clock()
+    lk = Lookups(clock=clock, sleep=lambda s: None, start=lambda work: None, bootstrap=BOOTSTRAP)
+    wall = 2_000_000.0
+    rdap = {"network": "EXAMPLE-NET", "handle": "EXAMPLE-NET-H", "org": "Example Carrier", "country": "NL",
+            "range": "62.0.0.0 - 62.0.255.255"}
+    put = lk.seed({"62.0.0.1": (wall - 3600, {"name": "ae-1.r20.amstnl02.nl.bb.example.net", **rdap}),
+                   "62.0.0.7": (wall - 60, {"name": "seven.example.net"}),  # its name alone
+                   "62.0.0.9": (wall - lookups.KEEP_S - 1, {"name": "too-old.example.net"}),
+                   "not an address": (wall, {"name": "x"})}, wall)
+    assert put == 2 and lk.known("62.0.0.1")["network"] == "EXAMPLE-NET" and lk.known("62.0.0.9") == {}
+    lk.want(["62.0.0.1", "62.0.0.7"])
+    assert lk.describe()["waiting"] == 1  # 62.0.0.1 is whole and within its day; 62.0.0.7 has no network yet
+    while lk.step():
+        pass
+    assert asked["ptr"] == [] and lk.known("62.0.0.7")["name"] == "seven.example.net"  # its name kept, not asked
+    assert lk.known("62.0.0.7")["network"] == "EXAMPLE-NET" and lk.describe()["asked_rdap"] == 0  # its range answered
+    assert lk.seed({"62.0.0.7": (wall, {"name": "another.example.net"})}, wall) == 0  # never over what is known
+    clock.now += lookups.KEEP_S  # the day out: 62.0.0.1 is asked again
+    lk.want(["62.0.0.1"])
+    assert lk.describe()["waiting"] == 1
