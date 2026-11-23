@@ -2,6 +2,7 @@
 there by their makers' marks, a name the set lacks drawn as the plug."""
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 
@@ -12,8 +13,10 @@ MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "cl
          "digitalocean", "linode", "ec2", "vultr", "azure", "googlecloud",  # the clouds (1.49.0)
          "ebpf",  # eBPF's bee (1.60.0)
          "llamacpp", "ollama", "vllm", "opencode", "aider", "continuedev",  # the local AI plugins (1.62.0)
-         "lmdeploy", "codexcli", "pi", "cline", "goose", "mcp")  # the new top-four tools and MCP (2026-11-18)
-TOP_FOUR_AND_MCP = MARKS[-6:]
+         "lmdeploy", "codexcli", "pi", "cline", "goose", "mcp",  # the new top-four tools and MCP (2026-11-18)
+         "jenkins", "gocd", "buildbot")  # the Continuous Integration plugins (2026-11-23)
+TOP_FOUR_AND_MCP = MARKS[-9:-3]
+CONTINUOUS_INTEGRATION = MARKS[-3:]
 
 
 def _paths() -> dict[str, str]:
@@ -35,12 +38,12 @@ def _paths() -> dict[str, str]:
 
 
 _TOKEN = re.compile(r"[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)")
-_ARGS = {"M": 2, "L": 2, "H": 1, "V": 1, "Q": 4, "A": 7}
+_ARGS = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "Q": 4, "A": 7}
 
 
 def _pieces(d: str) -> list[tuple[str, tuple[float, float], tuple[float, float], list[tuple[float, float]]]]:
     """A path's pieces made absolute: (command, from, to, control points). Only the commands the marks use (M, L, H,
-    V, Q, A and Z, in either case); a move is a piece that draws nothing, and pairs after a move are lines."""
+    V, C, Q, A and Z, in either case); a move is a piece that draws nothing, and pairs after a move are lines."""
     tokens = _TOKEN.findall(d)
     out: list[tuple[str, tuple[float, float], tuple[float, float], list[tuple[float, float]]]] = []
     x = y = x0 = y0 = 0.0
@@ -157,3 +160,60 @@ def test_the_ai_plugins_of_2026_11_18_and_mcp_have_their_makers_marks_drawn_anew
     bolt, rings = [_pieces(el.get("d")) for el in ET.fromstring(f"<svg>{paths['lmdeploy']}</svg>").iter("path")]
     assert {c for c, *_ in bolt} <= {"M", "L", "H", "Z"} and len({end for _, _, end, _ in bolt}) == 6  # six corners
     assert [c for c, *_ in rings].count("A") == 3  # three rings swept round it
+
+
+def test_the_continuous_integration_plugins_marks_jenkins_butler_gocds_arrow_buildbots_nut():
+    """The user, 2026-11-22: a new class of platform plugins, "Continuous Integration", with Jenkins, GoCD and Buildbot
+    (their ICONs "jenkins", "gocd" and "buildbot"). Three makers' marks drawn anew in the set's line from what each
+    mark shows, found as a plugin's ICON is (the plugins' own tests look for `name: '` at a line's start), in the
+    page's one colour, with a stroke width of its own, inside the 24-unit box. GoCD's is one bold rounded stroke, a
+    play sign left open where it began. Jenkins' is the butler: his head an egg taller than wide, his hair grey and
+    only behind it, his bow tie two filled wings and a knot below his chin. Buildbot's is its nut, turned: a hexagon of
+    straight sides with the hole in it, its near corners carried straight down for its sides."""
+    paths = _paths()
+    js = (STATIC / "icons.js").read_text(encoding="utf-8")
+    near = lambda p, q: math.dist(p, q) < 1e-9  # noqa: E731
+    assert CONTINUOUS_INTEGRATION == ("jenkins", "gocd", "buildbot")
+    trees = {}
+    for name in CONTINUOUS_INTEGRATION:
+        assert f"    {name}: '" in js and re.search(rf"^\s*{name}:\s*'", js, re.M), name  # as a plugin's ICON is
+        trees[name] = tree = ET.fromstring(f"<svg>{paths[name]}</svg>")
+        colours = {v for el in tree.iter() for k, v in el.attrib.items() if k in ("fill", "stroke")}
+        assert colours <= {"currentColor", "none"} and "stroke-width=" in paths[name], name  # one colour, its own line
+        points = [p for el in tree.iter("path") for c, start, end, controls in _pieces(el.get("d"))
+                  for p in ((end,) if c == "M" else (start, end, *controls))]
+        for el in (*tree.iter("ellipse"), *tree.iter("circle")):  # a round shape's box, however it is turned
+            r = max(float(el.get(k)) for k in ("r", "rx", "ry") if el.get(k))
+            points += [(float(el.get("cx")) + side * r, float(el.get("cy")) + side * r) for side in (-1, 1)]
+        assert points and all(0.5 <= v <= 23.5 for p in points for v in p), name  # inside the box
+    (stroke,) = trees["gocd"]  # down to the tip, back to the corner below, then up the upright side
+    pieces = _pieces(stroke.get("d"))
+    start, tip, corner, end = (to for _, _, to, _ in pieces)
+    width = float(stroke.get("stroke-width"))
+    assert stroke.tag == "path" and stroke.get("fill") is None and [c for c, *_ in pieces] == ["M", "L", "L", "V"]
+    assert start[0] == corner[0] == end[0] < tip[0] - 10 and near(tip, (tip[0], (start[1] + corner[1]) / 2))
+    assert width >= 3 and start[1] + width < end[1] < corner[1]  # bold, and open: its two round ends do not meet
+    butler = trees["jenkins"]
+    (head,) = butler.iter("ellipse")
+    cx, cy, rx, ry = (float(head.get(k)) for k in ("cx", "cy", "rx", "ry"))
+    (hair,) = [el for el in butler.iter("path") if el.get("fill-opacity")]
+    (tie,) = [g for g in butler.iter("g") if g.get("fill") == "currentColor"]
+    wings = [piece for el in tie.iter("path") for piece in _pieces(el.get("d"))]
+    assert ry > rx and 0 < float(hair.get("fill-opacity")) < 1  # an egg; the hair grey
+    assert all(x < cx for _, _, (x, _), _ in _pieces(hair.get("d")))  # behind his head: the crown is bald
+    assert [c for c, *_ in wings].count("Z") == 2 and len(list(tie.iter("circle"))) == 1  # two wings and the knot
+    assert all(y > cy + ry for _, _, (_, y), _ in wings)  # below his chin
+    face, sides, edges = (_pieces(el.get("d")) for el in trees["buildbot"].iter("path"))
+    corners = [to for c, _, to, _ in face if c != "Z"]
+    assert {c for c, *_ in face} == {"M", "L", "Z"} and len(set(corners)) == 6  # six straight sides, closed
+    (hole,) = trees["buildbot"].iter("ellipse")
+    hx, hy = float(hole.get("cx")), float(hole.get("cy"))
+    turns = [(b[0] - a[0]) * (hy - a[1]) - (b[1] - a[1]) * (hx - a[0])
+             for a, b in zip(corners, corners[1:] + corners[:1])]
+    assert all(t > 0 for t in turns) or all(t < 0 for t in turns)  # the hole in the top face
+    below = [to for _, _, to, _ in sides]  # from the left corner down, along the bottom, up to the right corner
+    depth = below[1][1] - below[0][1]
+    assert depth > 2 and near(below[0], corners[3]) and near(below[-1], corners[0])
+    assert all(near(p, (x, y + depth)) for p, (x, y) in zip(below[1:5], corners[3::-1]))  # the near corners, lower
+    drops = [(a, b) for c, a, b, _ in edges if c == "V"]
+    assert len(drops) == 2 and all(any(near(a, k) for k in corners) and near(b, (a[0], a[1] + depth)) for a, b in drops)

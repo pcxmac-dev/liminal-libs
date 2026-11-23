@@ -255,6 +255,28 @@
     mcp: '<path stroke-width="1.3" d="M3.37 11.31 11.58 3.11A2.9 2.9 0 0 1 15.68 7.21L9.52 13.36'
       + 'M13.63 5.16 7.47 11.31A2.9 2.9 0 0 0 11.58 15.42L17.73 9.26'
       + 'M9.52 13.36 15.68 7.21A2.9 2.9 0 0 1 19.78 11.31L12.09 19A.97 .97 0 0 0 12.09 20.37L13.46 21.74"/>',
+    // The Continuous Integration plugins (the user, 2026-11-22: a new class of plugins, "Continuous Integration", with
+    // three of them: Jenkins, GoCD and Buildbot), each by its maker's mark, drawn anew in the set's line from what the
+    // mark shows, not traced from its maker's files:
+    // Jenkins' butler: his bald head turned a little to the right, the grey hair behind it and an ear, his eyes closed
+    // and a smile; his bow tie and his shoulders below
+    jenkins: '<g stroke-width="1.5"><ellipse cx="12.3" cy="8.3" rx="5.3" ry="6.5" transform="rotate(-10 12.3 8.3)"/>'
+      + '<path d="M7.1 9.2c-1.2-.3-1.9.5-1.7 1.4.2.9 1 1.3 1.9 1.1"/>'
+      + '<path d="M8.4 16.2C5.6 17.2 3.9 19.4 3.6 22.4M17.6 16.2c2.8 1 4.5 3.2 4.8 6.2"/></g>'
+      + '<path fill="currentColor" fill-opacity=".45" stroke="none"'
+      + ' d="M9.6 2.5A5.3 6.5 -10 0 0 7 8.3H8.6Q8.3 5.6 9.6 2.5z"/>'
+      + '<path stroke-width="1.1" d="M11.6 7.6q.8.8 1.6 0M14.9 7.2q.7.7 1.4 0M11.6 11.2q2.4 1.8 5 .1"/>'
+      + '<g fill="currentColor"><path stroke-width="1" d="M13 17.6 9.4 15.8v3.6zM13 17.6l3.6-1.8v3.6z"/>'
+      + '<circle cx="13" cy="17.6" r="1.1" stroke="none"/></g>',
+    // GoCD's arrow: a play sign of one rounded stroke, as bold as the mark's, its left side stopping short of where the
+    // stroke began
+    gocd: '<path stroke-width="3.2" d="M6.2 4.6 17.9 12 6.2 19.4V11.2"/>',
+    // Buildbot's nut, turned as its mark has it: the top face and its hole, the two near sides and the edge of a third
+    // below it
+    buildbot: '<g stroke-width="1.4"><path d="M21.4 8.2 19 16.6 9.6 18.8 2.6 12.6 5 4.2 14.4 2z"/>'
+      + '<path d="M2.6 12.6V15.8L9.6 22 19 19.8 21.4 11.4V8.2"/>'
+      + '<ellipse cx="12" cy="10.7" rx="4.6" ry="3.3" transform="rotate(-12 12 10.7)"/></g>'
+      + '<path stroke-width="1.1" d="M9.6 18.8V22M19 16.6V19.8"/>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 
