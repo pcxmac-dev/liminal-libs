@@ -1,19 +1,25 @@
 """A model server asked over http (liminal_libs.machines.endpoint): an address as typed and as built from its parts,
 plain http kept to this machine until its user accepts it for another, the key in no error, every answer bounded, a
 stream handed on line by line until its end, its deadline or a cancel, the OpenAI-compatible list of models as
-llama.cpp, Ollama and vLLM answer it, a chat cut, and a download's progress in words.
+llama.cpp, Ollama and vLLM answer it, a chat cut, a download's progress in words, and one deadline for the whole of
+a request, kept by its watchdog however slowly its connection, its handshake, its head or its body comes.
 
-Every ask goes to a stand-in transport; the `requests` transport is run over a stand-in adapter, and a slow sender
-over a stand-in connection under the real stack (http.client, urllib3, requests). No socket is opened and no process
+Every ask goes to a stand-in transport; the `requests` transport is run over a stand-in adapter, a slow sender over a
+stand-in connection under the real stack (http.client, urllib3, requests), and the deadline over stand-in sockets
+under the whole of it (urllib3's connections and their TLS wrapping too). No socket is connected and no process
 started: the shared guard (conftest.py, `no_outside`) fails a test that does either. No address is written whole
 here either: each is built from its parts, as the library's own are."""
 from __future__ import annotations
 
+import errno
 import http.client
 import io
 import json
+import os
 import re
 import socket
+import ssl
+import threading
 import time
 from pathlib import Path
 
@@ -838,6 +844,417 @@ def test_without_a_transport_the_requests_one_is_the_way(monkeypatch):
     assert Endpoint(HERE, timeout=1.5).get("/api/version") == {}
     assert asked == [("GET", HERE + "/api/version", 1.5, False)]
     assert Reply(204).headers == {} and list(Reply(204).chunks) == [] and Reply(204).close() is None
+
+
+# -- one deadline for the whole of a request ---------------------------------------------------------------------
+STEP_S = 0.02  # a stand-in socket's next byte comes this long after its last: within any socket's wait
+SAFETY_S = 10.0  # what a stand-in waits at most to be shut: a deadline that does not hold fails a test, never hangs it
+
+
+def watchdogs() -> list:
+    """The deadlines' watchdogs alive now (each a thread of its request's own)."""
+    return [t for t in threading.enumerate() if t.name == "endpoint-deadline"]
+
+
+@pytest.fixture(autouse=True)
+def no_watchdog_left():
+    """Every test of this file, those through the requests transport over stand-in adapters too: no deadline's
+    watchdog outlives it."""
+    yield
+    assert watchdogs() == [], "a deadline's watchdog outlived its request"
+
+
+class Feed(io.RawIOBase):
+    """What http.client reads an answer from (a socket's makefile), over a Wire."""
+
+    def __init__(self, wire: Wire):
+        super().__init__()
+        self.wire = wire
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        return self.wire.give(b)
+
+    def close(self):
+        if not self.closed:
+            self.wire.let_go()
+        super().close()
+
+
+class Wire:
+    """A socket as a stand-in under the whole real stack (requests, urllib3's connection, http.client): its answer's
+    `fast` bytes come at once, then `drip` again and again, a byte every STEP_S, for as long as it is not shut; `hangs`
+    names the step it waits at until it is shut ("connect", or as a TLS socket "handshake"). Shut down, or closed
+    (as socket.close() closes: once no file made of it is open), a connect or a handshake fails and a read gets
+    nothing, as a socket shut down reads. What was sent is kept, and how it ended (`ended`: "shutdown" and "close",
+    as they were asked)."""
+
+    def __init__(self, fast: bytes = b"", drip: bytes = b"", hangs: str = ""):
+        self.fast, self.drip, self.hangs = fast, drip, hangs
+        self.shut = threading.Event()
+        self.sent, self.given, self.handshakes, self.ended = b"", 0, 0, []
+        self.where = self.timeout = None
+        self.files, self.closing = 0, False  # the files made of it still open; close() asked
+        self.detached = False  # a TLS socket took its place (ssl detaches the plain one: it closes nothing then)
+        self.waited_out = False  # waited SAFETY_S without being shut: what a deadline that holds never lets happen
+        self.dripping = 0.0  # when its first slow byte was given
+
+    @property
+    def closed(self) -> bool:
+        """Closed for good: close() asked, and every file made of it closed too."""
+        return self.closing and self.files == 0
+
+    def detach(self) -> int:
+        self.detached = True
+        return -1
+
+    def let_go(self) -> None:
+        self.files -= 1
+        if self.closed:
+            self.shut.set()
+
+    def _wait(self) -> None:
+        if not self.shut.wait(SAFETY_S):
+            self.waited_out = True
+
+    def setsockopt(self, *option):
+        pass
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def gettimeout(self):
+        return self.timeout
+
+    def connect(self, where):
+        self.where = where
+        if self.hangs == "connect":
+            self._wait()
+        if self.shut.is_set():
+            raise ConnectionResetError(errno.ECONNRESET, "the connection was reset")
+
+    def do_handshake(self):
+        self.handshakes += 1
+        if self.hangs == "handshake":
+            self._wait()
+        if self.shut.is_set():
+            raise ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+
+    def sendall(self, data):
+        if self.shut.is_set():
+            raise BrokenPipeError(errno.EPIPE, "the connection was shut")
+        self.sent += bytes(data)
+
+    def makefile(self, mode="rb", *args, **kwargs):
+        self.files += 1
+        return io.BufferedReader(Feed(self))
+
+    def give(self, b) -> int:
+        if self.shut.is_set():
+            return 0
+        if self.given < len(self.fast):
+            n = min(len(b), len(self.fast) - self.given)
+            b[:n] = self.fast[self.given:self.given + n]
+            self.given += n
+            return n
+        if not self.drip or self.shut.wait(STEP_S):
+            return 0  # the answer's end; or shut while the next byte was waited for: nothing more
+        self.dripping = self.dripping or time.monotonic()
+        if time.monotonic() - self.dripping > SAFETY_S:  # never shut: it gives up, and the test says so
+            self.waited_out = True
+            return 0
+        k = (self.given - len(self.fast)) % len(self.drip)
+        b[:1] = self.drip[k:k + 1]
+        self.given += 1
+        return 1
+
+    def shutdown(self, how):
+        self.ended.append("shutdown")
+        self.shut.set()
+
+    def close(self):
+        self.ended.append("close")
+        self.closing = True
+        if self.closed:
+            self.shut.set()
+
+
+class Context:
+    """A TLS context as a stand-in, no ssl under it: what urllib3 sets on it and loads into it kept; its wrap_socket
+    hands back `tls`, a Wire of its own (ssl's socket takes the plain one's place, and shutting that one no longer
+    reaches it)."""
+
+    def __init__(self, tls: Wire):
+        self.tls = tls
+        self.verify_mode, self.check_hostname = ssl.CERT_NONE, True
+        self.loaded, self.alpn, self.wrapped = [], [], []
+
+    def load_verify_locations(self, *args):
+        self.loaded.append(args)
+
+    def set_alpn_protocols(self, protocols):
+        self.alpn = list(protocols)
+
+    def wrap_socket(self, sock, **kwargs):
+        self.wrapped.append((sock, kwargs))
+        sock.detach()  # as ssl takes the plain socket's place
+        return self.tls
+
+
+class Wires:
+    """What a request's connection reaches, as stand-ins: every name found at `addresses` documentation addresses
+    (`found()`, when given, is called before it is: a slow lookup), and each socket made the next Wire of `ready`
+    (kept in `made`)."""
+
+    def __init__(self):
+        self.ready, self.made, self.looked = [], [], []
+        self.addresses, self.found = 1, None
+
+    def getaddrinfo(self, host, port, family=0, kind=0, proto=0, flags=0):
+        self.looked.append((host, port))
+        if self.found is not None:
+            self.found()
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (f"192.0.2.{n + 1}", port))
+                for n in range(self.addresses)]
+
+    def socket(self, family, kind, proto):
+        self.made.append(self.ready.pop(0))
+        return self.made[-1]
+
+
+@pytest.fixture
+def wires(monkeypatch, no_outside):
+    """The name looked up and the sockets made, stood in for (after the guard's own stand-ins)."""
+    stand_in = Wires()
+    monkeypatch.setattr(socket, "getaddrinfo", stand_in.getaddrinfo)
+    monkeypatch.setattr(endpoint, "_socket", stand_in.socket)
+    return stand_in
+
+
+def timed(ask) -> tuple[BaseException | None, float]:
+    """What `ask()` raised (None: nothing), and the seconds it took."""
+    began = time.monotonic()
+    try:
+        ask()
+    except Exception as e:  # noqa: BLE001 - looked at by the test
+        return e, time.monotonic() - began
+    return None, time.monotonic() - began
+
+
+def test_a_request_hung_at_its_connection_is_cut_off_at_its_deadline(wires):
+    """A connect that outlasts the deadline (an address that answers nothing, the first of two): the watchdog shuts
+    the socket it holds from before its connect, and the ask fails at once, as one whose read waited too long, in the
+    deadline's own seconds (twice the wait); the second address is never tried, and nothing outlives the ask."""
+    wires.addresses = 2
+    wires.ready += [Wire(hangs="connect"), Wire(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")]
+    at = Endpoint(HERE, timeout=0.1, clock=Clock())  # its own clock stands still: only the watchdog can end the ask
+    late, took = timed(lambda: at.get("/api/version"))
+    assert isinstance(late, EndpointError) and late.status == 0, late
+    assert str(late) == "GET /api/version: no answer from 127.0.0.1:11434 within 0.2 s" == at.seen["error"]
+    first = wires.made[0]
+    assert 0.15 <= took < 5.0 and not first.waited_out and first.where == ("192.0.2.1", 11434)
+    assert len(wires.made) == 1 and wires.looked == [("127.0.0.1", 11434)]  # one address tried
+    assert "shutdown" in first.ended and first.closed and watchdogs() == []
+
+
+def test_a_request_hung_at_its_tls_handshake_is_cut_off_at_its_deadline(wires, monkeypatch):
+    """A handshake that never ends: the TLS socket is held from before its handshake (endpoint._Held), so the watchdog's
+    shutting reaches it (shutting the plain one under it would not), and the ask fails at its deadline. urllib3 set on
+    the context what it sets on its own (its check, its CA bundle, ALPN), and the context was asked for the address's
+    name and for no handshake of its own."""
+    plain, tls = Wire(), Wire(hangs="handshake")
+    wires.ready.append(plain)
+    context = Context(tls)
+    monkeypatch.setattr(endpoint, "_context", lambda: context)
+    at = Endpoint(SAFE, timeout=0.1, clock=Clock())
+    late, took = timed(at.models)
+    assert isinstance(late, EndpointError), late
+    assert str(late) == "GET /v1/models: no answer from models.example:443 within 0.2 s" == at.seen["error"]
+    assert 0.15 <= took < 5.0 and tls.handshakes == 1 and not tls.waited_out
+    assert "shutdown" in tls.ended and tls.closed and plain.detached and watchdogs() == []
+    (sock, kwargs), = context.wrapped
+    assert sock is plain and kwargs["server_hostname"] == "models.example"
+    assert kwargs["do_handshake_on_connect"] is False  # its own, made once the TLS socket was held
+    assert context.verify_mode == ssl.CERT_REQUIRED and len(context.loaded) == 1 and context.alpn == ["http/1.1"]
+
+
+def test_an_answer_whose_head_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires):
+    """The status line at once, then a header a byte every STEP_S: no read waits as long as the socket's timeout, and
+    before 1.76.0 nothing bounded them all. The watchdog shuts the socket at the deadline: the ask fails then, in the
+    deadline's seconds, and what http.client made of the head it had is not taken for an answer."""
+    wire = Wire(b"HTTP/1.1 200 OK\r\n", b"X-Slow: 1\r\n")
+    wires.ready.append(wire)
+    at = Endpoint(HERE, timeout=0.1, clock=Clock())
+    late, took = timed(lambda: at.get("/api/tags"))
+    assert isinstance(late, EndpointError) and str(late) == "GET /api/tags: no answer from 127.0.0.1:11434 within 0.2 s"
+    assert 0.15 <= took < 5.0 and wire.given > len(wire.fast) + 2 and not wire.waited_out  # its bytes kept coming
+    assert wire.sent.startswith(b"GET /api/tags HTTP/1.1\r\n") and "shutdown" in wire.ended and wire.closed
+    assert watchdogs() == []
+
+
+def test_an_answer_whose_body_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires):
+    """The head at once, then the body a byte every STEP_S, no length said (it ends with its connection): the watchdog
+    shuts the socket at the deadline, and the nothing a shut socket reads is not taken for the body's end (the bytes
+    so far would have been a whole answer of no JSON: None). Not whole, in its bound's words and the deadline's
+    seconds."""
+    wire = Wire(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", b"x")
+    wires.ready.append(wire)
+    at = Endpoint(HERE, timeout=0.1, clock=Clock())
+    late, took = timed(lambda: at.get("/api/tags"))
+    assert isinstance(late, EndpointError) and late.status == 0, late
+    assert str(late) == "GET /api/tags: its answer was not whole after 0.2 s: not read" == at.seen["error"]
+    assert 0.15 <= took < 5.0 and wire.given > len(wire.fast) + 2 and not wire.waited_out
+    assert "shutdown" in wire.ended and wire.closed and watchdogs() == []  # (its close was asked before: put off)
+
+
+def test_a_stream_is_left_at_its_deadline_as_a_read_waits_and_its_head_bounded_by_it(wires):
+    """A stream's deadline is the whole request's: a read waiting when it comes is ended by the watchdog, and the
+    stream left there without an error, its last line the one that came whole; an answer whose head has not come
+    by then is an EndpointError in the deadline's seconds."""
+    events = Wire(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: one\n", b".")
+    wires.ready.append(events)
+    at = Endpoint(HERE, timeout=0.1, clock=Clock())
+    got: list = []
+    late, took = timed(lambda: got.extend(at.lines("GET", "/models/sse", deadline=0.3)))
+    assert late is None and got == ["event: one"] and 0.25 <= took < 5.0 and not events.waited_out
+    assert at.seen["status"] == 200 and at.seen["error"] == ("GET /models/sse: its stream was left after 0.3 s, "
+                                                            "before its end")
+    assert "shutdown" in events.ended and events.closed and watchdogs() == []
+    head = Wire(b"HTTP/1.1 200 OK\r\n", b"X-Slow: 1\r\n")
+    wires.ready.append(head)
+    late, took = timed(lambda: list(at.lines("POST", "/api/pull", json={"model": "qwen3:8b"}, deadline=0.3)))
+    assert isinstance(late, EndpointError) and str(late) == ("POST /api/pull: no answer from 127.0.0.1:11434 within "
+                                                             "0.3 s") == at.seen["error"]
+    assert 0.25 <= took < 5.0 and b'{"model":"qwen3:8b"}' in head.sent and head.closed and watchdogs() == []
+
+
+def test_the_requests_transport_is_overdue_as_a_slow_read_is_late(wires):
+    """The transport's own deadline: twice its timeout for an answer read whole (Endpoint's bound on one, Jenkins'
+    too), or the one given. Overdue is a TimeoutError, and trouble() says it as it says a read that waited past its
+    timeout, in the deadline's own seconds; a body cut off is Overdue from its next read on, and the reply's close
+    leaves nothing behind."""
+    wires.ready += [Wire(b"HTTP/1.1 200 OK\r\n", b"X-Slow: 1\r\n"),
+                    Wire(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", b"x")]
+    late, took = timed(lambda: endpoint.requests_transport("GET", HERE + "/api/json", {}, None, 0.1, False))
+    assert isinstance(late, endpoint.Overdue) and isinstance(late, TimeoutError) and late.seconds == 0.2
+    assert str(late) == "no whole answer within 0.2 s: the request was cut off at its deadline" and 0.15 <= took < 5.0
+    assert endpoint.trouble(late, "127.0.0.1:11434", 0.1) == "no answer from 127.0.0.1:11434 within 0.2 s"
+    slow_read = TimeoutError("timed out")  # what a socket whose wait ran out raises
+    assert endpoint.trouble(slow_read, "127.0.0.1:11434", 0.1) == "no answer from 127.0.0.1:11434 within 0.1 s"
+    reply = endpoint.requests_transport("GET", HERE + "/file", {}, None, 5.0, True, deadline=0.15)
+    pieces = []
+    with pytest.raises(endpoint.Overdue) as cut:
+        for piece in reply.chunks:
+            pieces.append(piece)
+    assert cut.value.seconds == 0.15 and pieces and set(b"".join(pieces)) == {ord("x")}
+    reply.close()
+    assert watchdogs() == [] and all(w.closed and "shutdown" in w.ended for w in wires.made)
+
+
+def test_a_name_found_after_the_deadline_connects_nothing(wires):
+    """A lookup is not cut short (nothing cuts getaddrinfo short): this one ends only once the watchdog has fired and
+    is gone, by order, and the request is Overdue then, nothing made or connected."""
+    def found():  # the name found only once the deadline has passed: its watchdog waited for to the end
+        for thread in watchdogs():
+            thread.join(SAFETY_S)
+    wires.found = found
+    wires.ready.append(Wire(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"))
+    at = Endpoint(HERE, timeout=0.1, clock=Clock())
+    late, _ = timed(lambda: at.get("/api/version"))
+    assert str(late) == "GET /api/version: no answer from 127.0.0.1:11434 within 0.2 s"
+    assert wires.looked == [("127.0.0.1", 11434)] and wires.made == [] and watchdogs() == []
+
+
+def test_an_answer_in_time_through_the_watched_connections_is_whole_and_leaves_nothing(wires, monkeypatch):
+    """The same stack answering in time: whole over http, and over https through the TLS socket held before its
+    handshake (made once, by endpoint._Held); the watchdog stopped with its request, nothing shut, every socket
+    closed."""
+    answer = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{"version":"0.14.2"}'
+    plain, under, tls = Wire(answer), Wire(), Wire(answer)
+    wires.ready += [plain, under]
+    context = Context(tls)
+    monkeypatch.setattr(endpoint, "_context", lambda: context)
+    assert Endpoint(HERE, timeout=5).get("/api/version") == {"version": "0.14.2"}
+    assert Endpoint(SAFE, key=KEY, timeout=5).get("/version") == {"version": "0.14.2"}
+    assert plain.sent.startswith(b"GET /api/version HTTP/1.1\r\n") and plain.timeout == 5.0
+    assert tls.handshakes == 1 and tls.sent.startswith(b"GET /version HTTP/1.1\r\n") and under.sent == b""
+    assert f"Authorization: Bearer {KEY}".encode() in tls.sent and context.verify_mode == ssl.CERT_REQUIRED
+    assert plain.closed and under.detached and tls.closed and watchdogs() == []
+    assert not any("shutdown" in w.ended for w in (plain, under, tls))  # its watchdog stopped before its time
+
+
+def test_a_watch_shuts_what_it_holds_at_its_deadline_and_ends_with_its_request():
+    """A watch stopped first shuts nothing, and its thread is gone once stop() returns; one whose time is up shuts
+    what it holds (shut down, and on Windows closed too) and ends by itself, and shuts at once what it is handed
+    after; one longer than any wait can be waits the longest one can, until its request ends."""
+    early, held, after = Wire(), Wire(), Wire()
+    watch = endpoint._Watch(60)
+    assert watch.hold(early) is early and len(watchdogs()) == 1
+    watch.stop()
+    assert not watch.fired and early.ended == [] and watchdogs() == []
+    watch = endpoint._Watch(0.05)
+    watch.hold(held)
+    watch._thread.join(SAFETY_S)  # it fires by itself, then ends
+    assert watch.fired and held.ended == (["shutdown", "close"] if os.name == "nt" else ["shutdown"])
+    watch.hold(after)
+    assert after.ended == held.ended
+    watch.stop()
+    endless = endpoint._Watch(float("inf"))
+    endless.stop()
+    assert not endless.fired and watchdogs() == []
+
+
+def test_a_socket_is_shut_through_a_file_made_of_it():
+    """On Windows a wait on a socket ends only once the socket is closed, and socket.close() puts that off while a
+    file made of it is open (as http.client reads an answer): the watchdog closes the C socket itself. Elsewhere its
+    shutdown ends a wait, and the socket is left for its owner to close. A socket made and never connected: nothing
+    is reached."""
+    with socket.socket() as made:
+        file = made.makefile("rb")
+        endpoint._shut(made)
+        assert (made.fileno() == -1) == (os.name == "nt")
+        file.close()
+    assert made.fileno() == -1
+
+
+def test_the_librarys_own_transport_is_given_each_asks_deadline(monkeypatch):
+    """Twice its wait for an answer read whole, a stream's own deadline for a stream; a stand-in transport is asked
+    with the six it takes, as every other test here shows."""
+    asked = []
+
+    def own(method, url, headers, body, timeout, stream, deadline=None):
+        asked.append((method, timeout, stream, deadline))
+        return Reply(200, {}, [b"a\n"] if stream else [b"{}"])
+    monkeypatch.setattr(endpoint, "_OWN", own)
+    at = Endpoint(HERE, timeout=1.5, transport=own)
+    assert at.get("/x") == {} and at.post("/y", {}, timeout=20) == {}
+    assert list(at.lines("GET", "/s", deadline=90)) == ["a"]
+    assert list(at.lines("GET", "/s", deadline=-5)) == []  # a deadline past already: left at once, given none below 0
+    assert asked == [("GET", 1.5, False, 3.0), ("POST", 20.0, False, 40.0), ("GET", 1.5, True, 90.0),
+                     ("GET", 1.5, True, 0.0)]
+
+
+def test_a_stream_given_no_deadline_has_no_watchdog(adapter):
+    """A download's stream (it looks at its own deadline after every receive) is given none: no watchdog, and its
+    connections urllib3's own, as before 1.76.0. An answer read whole has one while it is asked, gone once its reply
+    is let go."""
+    seen = []
+    send = adapter.send
+
+    def watched(request, **kwargs):
+        seen.append((endpoint._WATCH.get() is not None, len(watchdogs())))
+        return send(request, **kwargs)
+    adapter.send = watched
+    adapter.answers += [(200, {}, b"abc"), (200, {}, b"{}")]
+    reply = endpoint.requests_transport("GET", SAFE + "/file", {}, None, 60.0, True, 1 << 20)
+    assert b"".join(reply.chunks) == b"abc"
+    reply.close()
+    reply = endpoint.requests_transport("GET", SAFE + "/x", {}, None, 5.0, False)
+    assert b"".join(reply.chunks) == b"{}" and len(watchdogs()) == 1
+    reply.close()
+    assert seen == [(False, 0), (True, 1)] and watchdogs() == []
 
 
 # -- the rule ----------------------------------------------------------------------------------------------------

@@ -25,6 +25,15 @@ server expected there).
   read that gets nothing ends at the socket's own wait): refused past `most` bytes, and whole within twice its wait
   or not at all. A stream's line is refused past LINE_MOST bytes; a stream is left `deadline` seconds after it was
   asked for, and ends with Cancelled once its `cancel()` says so. A chat's text is cut at ANSWER_CHARS.
+- One deadline for the whole of an ask (1.76.0): its connection (each address its name has, in turn), a TLS
+  handshake, the status line and the headers, and the body; twice its wait for an answer read whole, `deadline` for
+  a stream. The requests transport keeps it with a watchdog, a thread of the request's own that ends with it: once
+  the time is up it shuts the request's socket, so that a connect, a handshake or a read waiting on it ends then,
+  however slowly its bytes came (each within the socket's wait), and the ask fails as one whose read waited too long
+  (Overdue, a TimeoutError: "no answer from ... within N s", or for a body "its answer was not whole after N s"); a
+  stream is left where it is, as at its deadline. A name being looked up is not cut short (nothing cuts a lookup
+  short): the ask ends once the name is found. Only the library's own transport is given the deadline: a stand-in
+  has no socket to shut, and the bounds above are its asker's alone.
 - Asked only when a caller asks, with a short wait (LOOK_S): nothing is polled, and nothing is sent a second time.
   A look that failed is the next look's to repeat, and a write that got no answer may have been done.
 
@@ -33,10 +42,14 @@ api_facts() says, never an ask of its own. `Progress` says how far a download is
 """
 from __future__ import annotations
 
+import contextvars
+import functools
 import ipaddress
 import json as jsonlib
+import os
 import re
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -77,6 +90,20 @@ class EndpointError(Exception):
     def refused(self) -> bool:
         """The instance refused who asked (401, 403): it wants a key, or another one."""
         return self.status in (401, 403)
+
+
+class Overdue(TimeoutError):
+    """A request cut off at its deadline (1.76.0): the whole of it, its connection, a TLS handshake, the headers and
+    the body, took longer than `seconds`, and its socket was shut (the requests transport's watchdog). A TimeoutError,
+    as a read that waited past its socket's timeout raises one, and trouble() says it as it says that one, in these
+    seconds."""
+
+    def __init__(self, seconds: float):
+        super().__init__(float(seconds))
+        self.seconds = float(seconds)
+
+    def __str__(self) -> str:
+        return f"no whole answer within {self.seconds:g} s: the request was cut off at its deadline"
 
 
 def _nothing() -> None:
@@ -275,7 +302,9 @@ class Endpoint:
 
         Nothing is sent until the first line is asked for. `timeout`: the longest the stream may say nothing.
         `deadline`: seconds after which the stream is left where it is, without an error: `seen["error"]` then says
-        so, and the caller knows by the last line it got whether the work was done. `cancel()`: looked at before
+        so, and the caller knows by the last line it got whether the work was done. It is the whole request's
+        deadline too (the module docstring): a read waiting when it comes is ended then, and the stream left there;
+        an answer that has not begun by then is an EndpointError (no answer within it). `cancel()`: looked at before
         each read and after each line, and when a read fails; once true, Cancelled. A line past LINE_MOST bytes, a
         status that is no stream's, a connection that breaks off: EndpointError. The connection is let go at the
         end, however it ends, and when the caller stops reading early."""
@@ -292,7 +321,7 @@ class Endpoint:
             if cancel is not None and cancel():
                 raise Cancelled(CANCELLED)
             try:
-                reply = self._send(method, url, body, wait, True, "*/*")
+                reply = self._send(method, url, body, wait, True, "*/*", max(0.0, float(deadline)))
             except Exception as e:  # noqa: BLE001 - the connection's trouble, in words
                 raise self._failed(lead, self._trouble(e, wait)) from None
             status = int(reply.status)
@@ -320,6 +349,9 @@ class Endpoint:
                 except Exception as e:  # noqa: BLE001 - the connection's trouble, in words
                     if cancel is not None and cancel():  # cancelled while the read waited: that is how it ended
                         raise Cancelled(CANCELLED) from None
+                    if _overdue(e) is not None:  # its deadline came while the read waited: left there, as above
+                        error = f"{lead}: its stream was left after {float(deadline):g} s, before its end"
+                        return
                     raise self._failed(lead, f"its stream broke off: {self._trouble(e, wait)}") from None
                 rows = (kept + piece).split(b"\n")
                 kept = rows.pop()  # the line that has not ended yet (its \r may have come, its \n not)
@@ -425,10 +457,15 @@ class Endpoint:
         self.seen = {"at": time.time(), "status": int(status), "seconds": round(max(0.0, float(seconds)), 3),
                      "error": scrub(error, self._secrets)}
 
-    def _send(self, method: str, url: str, body: bytes | None, wait: float, stream: bool, accept: str = "") -> Reply:
+    def _send(self, method: str, url: str, body: bytes | None, wait: float, stream: bool, accept: str = "",
+              deadline: float | None = None) -> Reply:
+        """The ask sent. The library's own transport is given its deadline (`deadline`: seconds for the whole of it,
+        which its watchdog keeps); a stand-in is asked as it always was, with the six it takes."""
         headers = _merged(self._headers, {"Accept": self._accept or accept or "application/json"},
                           {"Content-Type": "application/json"} if body is not None else {},
                           {"Authorization": f"Bearer {self._key}"} if self._key else {})
+        if deadline is not None and self._transport is _OWN:
+            return _OWN(method, url, headers, body, wait, stream, deadline=deadline)
         return self._transport(method, url, headers, body, wait, stream)
 
     def _ask(self, method: str, path: str, json, params: Mapping | None, timeout: float | None, ok: Iterable[int],
@@ -441,7 +478,7 @@ class Endpoint:
         reply: Reply | None = None
         try:
             try:
-                reply = self._send(method, url, body, wait, False, accept)
+                reply = self._send(method, url, body, wait, False, accept, 2 * wait)  # whole within twice its wait
                 answer = self._whole(reply, started, wait, lead)
             except EndpointError:
                 raise
@@ -460,7 +497,8 @@ class Endpoint:
     def _whole(self, reply: Reply, started: float, wait: float, lead: str) -> Answer:
         """A reply's body read under the bounds, as an Answer: refused past `most` bytes (by what it says its
         length is, before a byte is read; else as it comes), and when it is not whole within twice the wait (looked
-        at after every piece, and a transport hands on a piece for every receive)."""
+        at after every piece, and a transport hands on a piece for every receive), or within the deadline its
+        transport's watchdog kept (Overdue: said in the same words, in that deadline's seconds)."""
         status, headers = int(reply.status), _lower(reply.headers)
         self._as_asked(headers, lead, status)
         said = _count(headers.get("content-length"))
@@ -469,13 +507,21 @@ class Endpoint:
                                "read of one: not read", status)
         ends = started + 2 * wait
         got, pieces = 0, []
-        for piece in reply.chunks:
-            got += len(piece)
-            if got > self._most:
-                raise self._failed(lead, f"its answer is longer than {size_words(self._most)}: not read", status)
-            if self._clock() > ends:
-                raise self._failed(lead, f"its answer was not whole after {2 * wait:g} s: not read")
-            pieces.append(piece)
+        try:
+            for piece in reply.chunks:
+                got += len(piece)
+                if got > self._most:
+                    raise self._failed(lead, f"its answer is longer than {size_words(self._most)}: not read", status)
+                if self._clock() > ends:
+                    raise self._failed(lead, f"its answer was not whole after {2 * wait:g} s: not read")
+                pieces.append(piece)
+        except EndpointError:
+            raise
+        except Exception as e:  # noqa: BLE001 - its asker says the connection's trouble; the deadline's is said here
+            late = _overdue(e)
+            if late is None:
+                raise
+            raise self._failed(lead, f"its answer was not whole after {late.seconds:g} s: not read") from None
         answer = Answer(status, headers, b"".join(pieces), self._clock() - started)
         answer.data = _json_of(answer)  # rest.py's reading: by its content type, or by how it begins
         return answer
@@ -591,12 +637,20 @@ def _chain(e: BaseException) -> list[BaseException]:
     return found
 
 
+def _overdue(e: BaseException) -> Overdue | None:
+    """The deadline that cut a request off, where `e` is one or was caused by one (Overdue); else None."""
+    return next((x for x in _chain(e) if isinstance(x, Overdue)), None)
+
+
 def trouble(e: BaseException, at: str, timeout: float | None = None, secrets: Iterable[str] = ()) -> str:
-    """Why `at` (a host and port) gave no answer, in words: nothing listens there, none in time, a name this machine
-    does not find, a certificate it does not trust; else the error's own name and words, `secrets` taken out of
-    them before they are cut."""
+    """Why `at` (a host and port) gave no answer, in words: nothing listens there, none in time (`timeout` seconds;
+    a request its deadline cut off, in the deadline's own: Overdue), a name this machine does not find, a certificate
+    it does not trust; else the error's own name and words, `secrets` taken out of them before they are cut."""
     chain = _chain(e)
     names = {type(x).__name__ for x in chain}
+    late = next((x for x in chain if isinstance(x, Overdue)), None)
+    if late is not None:  # its deadline cut it off, whatever the shut socket said: as a slow read, in those seconds
+        return f"no answer from {at} within {late.seconds:g} s"
     if any(isinstance(x, ConnectionRefusedError) for x in chain):
         return f"nothing listens at {at}"
     if any(isinstance(x, TimeoutError) or "Timeout" in type(x).__name__ for x in chain):
@@ -609,62 +663,341 @@ def trouble(e: BaseException, at: str, timeout: float | None = None, secrets: It
     return f"no answer from {at}: {type(e).__name__}: {words}"[:300]
 
 
+# -- one deadline for the whole of a request ---------------------------------------------------------------------------
+# the watch of the request this thread sends now (requests_transport sets it while its adapter sends): what the
+# request's connections hand their sockets to
+_WATCH: contextvars.ContextVar[_Watch | None] = contextvars.ContextVar("liminal_endpoint_watch", default=None)
+
+
+def _shut(sock) -> None:
+    """A socket shut so that what waits on it in another thread ends now: shut down both ways (on Linux a wait ends
+    then) and on Windows closed as well (a wait there ends only once its socket is closed), by the C socket itself,
+    since socket.close() puts that off while a file made of the socket is open (http.client reads an answer through
+    one). socket.socket's own shutdown, never an SSLSocket's, which lets go of its TLS state under the thread reading
+    it. One closed already is let be."""
+    real = isinstance(sock, socket.socket)
+    try:
+        if real:
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        else:
+            sock.shutdown(socket.SHUT_RDWR)
+    except (OSError, ValueError, AttributeError):
+        pass
+    if os.name == "nt":
+        try:
+            if real:
+                super(socket.socket, sock).close()
+            else:
+                sock.close()
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
+class _Watch:
+    """One request's deadline, kept by a watchdog: a thread of the request's own ("endpoint-deadline") that waits
+    `seconds`, then shuts every socket the request holds (hold: each from before it connects, a TLS one from before
+    its handshake), so that a connect, a handshake or a read waiting on one ends at once; `fired` says it did. stop()
+    ends it with its request: its thread is waited for, and nothing is shut after it returns. A socket held once it
+    has fired is shut at once."""
+
+    def __init__(self, seconds: float):
+        self.seconds = max(0.0, float(seconds))
+        self.fired = False
+        self._lock = threading.Lock()
+        self._held: list = []
+        self._ended = threading.Event()
+        self._thread = threading.Thread(target=self._keep, name="endpoint-deadline", daemon=True)
+        self._thread.start()
+
+    def _keep(self) -> None:
+        if self._ended.wait(min(self.seconds, threading.TIMEOUT_MAX)):
+            return  # its request ended first
+        with self._lock:
+            if self._ended.is_set():
+                return
+            self.fired = True
+            held, self._held = self._held, []
+        for sock in held:
+            _shut(sock)
+
+    def hold(self, sock):
+        """`sock` held till its request ends, shut once the time is up (at once when it is up already); `sock` back."""
+        with self._lock:
+            if not self.fired:
+                self._held.append(sock)
+                return sock
+        _shut(sock)
+        return sock
+
+    def stop(self) -> None:
+        """Its request ended: nothing is shut from now on, and its thread is gone once this returns."""
+        with self._lock:
+            self._ended.set()
+            self._held = []
+        if self._thread is not threading.current_thread():
+            self._thread.join()
+
+
+def _socket(family, kind, proto):
+    """A socket as _dial makes one (a test's stand-in)."""
+    return socket.socket(family, kind, proto)
+
+
+def _dial(host: str, port: int, timeout, source, options, watch: _Watch):
+    """A connection made as urllib3 makes one (urllib3.util.connection.create_connection: each address its name has,
+    in turn, until one answers; the socket's options, its timeout and its source address set first), every socket
+    held by `watch` from before it connects, so that the deadline cuts a connect short. Once it has fired: Overdue,
+    and no address tried after it (none at all, when the name was found after it). Else the last address's error, as
+    urllib3 raises it."""
+    from urllib3.util.connection import allowed_gai_family
+
+    if host.startswith("["):
+        host = host.strip("[]")
+    err: OSError | None = None
+    for family, kind, proto, _, where in socket.getaddrinfo(host, port, allowed_gai_family(), socket.SOCK_STREAM):
+        if watch.fired:
+            break
+        sock = None
+        try:
+            sock = watch.hold(_socket(family, kind, proto))
+            for option in options or ():
+                sock.setsockopt(*option)
+            if timeout is None or isinstance(timeout, (int, float)):  # else urllib3's "the default": none is set
+                sock.settimeout(timeout)
+            if source:
+                sock.bind(source)
+            sock.connect(where)
+            return sock
+        except OSError as e:
+            err = e
+            if sock is not None:
+                sock.close()
+    if watch.fired:
+        raise Overdue(watch.seconds)
+    if err is None:
+        raise OSError("getaddrinfo returns an empty list")
+    try:
+        raise err
+    finally:
+        err = None  # (as urllib3's: no cycle through the traceback)
+
+
+class _Held:
+    """A TLS context as a watched connection hands it to urllib3, which reads it, and sets its verify_mode and its
+    check_hostname, as it would a context of its own (each read and set on the context itself). Its wrap_socket hands
+    the TLS socket to the request's watch before its handshake, so that a handshake given a byte at a time is cut
+    short at the deadline too: the plain socket under it is the TLS one's from then on, and shutting that one no
+    longer reaches it."""
+
+    __slots__ = ("_context", "_watch")
+
+    def __init__(self, context, watch: _Watch):
+        object.__setattr__(self, "_context", context)
+        object.__setattr__(self, "_watch", watch)
+
+    def wrap_socket(self, sock, server_side=False, do_handshake_on_connect=True, suppress_ragged_eofs=True,
+                    server_hostname=None, session=None):
+        asked = {"server_side": server_side, "do_handshake_on_connect": False,
+                 "suppress_ragged_eofs": suppress_ragged_eofs, "server_hostname": server_hostname}
+        if session is not None:  # (a context of pyOpenSSL's, as urllib3 can be made to use, takes none)
+            asked["session"] = session
+        tls = self._context.wrap_socket(sock, **asked)
+        self._watch.hold(tls)
+        # pyOpenSSL's shakes hands in its wrap_socket, over the plain socket the watch holds already, and its own
+        # socket has no do_handshake
+        handshake = getattr(tls, "do_handshake", None)
+        if do_handshake_on_connect and callable(handshake):
+            try:
+                handshake()
+            except BaseException:
+                try:
+                    tls.close()  # as ssl's own wrap_socket lets go of one whose handshake failed
+                except OSError:
+                    pass
+                raise
+        return tls
+
+    def __getattr__(self, name):
+        if name in _Held.__slots__:  # (not set yet: a copy being made)
+            raise AttributeError(name)
+        return getattr(self._context, name)
+
+    def __setattr__(self, name, value):
+        if name in _Held.__slots__:  # its own (a copy being made)
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._context, name, value)
+
+
+def _context():
+    """The TLS context a watched connection goes over when it is given none: urllib3's own default, as urllib3 makes
+    one for each connection (its certificate and its host's name checked, TLS 1.2 at least; the CA bundle `requests`
+    names is loaded into it as it connects). A test's stand-in."""
+    from urllib3.util import ssl_
+
+    return ssl_.create_urllib3_context()
+
+
+@functools.lru_cache(maxsize=None)
+def _watched() -> type:
+    """requests' HTTP adapter with its connections watched, made once (urllib3 is imported then): while a request is
+    sent under a watch (_WATCH), its connection hands it its socket from before it connects (_dial), and over https
+    the TLS socket from before its handshake (_Held), each error said as urllib3 says it. Without a watch (a stream
+    given no deadline: a download), every connection is urllib3's own, as it was."""
+    import requests
+    from urllib3 import connection, connectionpool, exceptions
+
+    named = getattr(exceptions, "NameResolutionError", None)  # urllib3 2's; before it, a NewConnectionError
+
+    class Dialing:
+        def _new_conn(self):
+            watch = _WATCH.get()
+            if watch is None:
+                return super()._new_conn()
+            try:
+                sock = _dial(self._dns_host, self.port, self.timeout, self.source_address, self.socket_options, watch)
+            except Overdue:
+                raise
+            except socket.gaierror as e:
+                if named is not None:
+                    raise named(self.host, self, e) from e
+                raise exceptions.NewConnectionError(self, f"Failed to establish a new connection: {e}") from e
+            except TimeoutError as e:
+                raise exceptions.ConnectTimeoutError(
+                    self, f"Connection to {self.host} timed out. (connect timeout={self.timeout})") from e
+            except OSError as e:
+                raise exceptions.NewConnectionError(self, f"Failed to establish a new connection: {e}") from e
+            sys.audit("http.client.connect", self, self.host, self.port)
+            return sock
+
+    class Plain(Dialing, connection.HTTPConnection):
+        """http, its socket watched."""
+
+    class Tls(Dialing, connection.HTTPSConnection):
+        """https, its sockets watched: the TLS one through its context (_Held)."""
+
+        def connect(self):
+            watch = _WATCH.get()
+            if watch is not None:
+                given = self.ssl_context
+                given = given._context if isinstance(given, _Held) else given
+                self.ssl_context = _Held(given if given is not None else _context(), watch)
+            return super().connect()
+
+    class PlainPool(connectionpool.HTTPConnectionPool):
+        ConnectionCls = Plain
+
+    class TlsPool(connectionpool.HTTPSConnectionPool):
+        ConnectionCls = Tls
+
+    class Adapter(requests.adapters.HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            super().init_poolmanager(*args, **kwargs)
+            self.poolmanager.pool_classes_by_scheme = {"http": PlainPool, "https": TlsPool}
+
+    return Adapter
+
+
 # -- the transport -----------------------------------------------------------------------------------------------------
 def _session():
     """A `requests` session that takes nothing from the environment (as rest.py's: no ~/.netrc credentials added to
     a request, no proxy and no CA bundle from its variables) and adds no header of its own (not the package's name
-    and version, not its wish for a compressed body): a request goes as it was made, straight to its host."""
+    and version, not its wish for a compressed body): a request goes as it was made, straight to its host. Its way
+    out is the watched adapter (_watched), so that a request's deadline reaches its sockets."""
     import requests
 
     session = requests.Session()
     session.trust_env = False
     session.headers.clear()
+    adapter = _watched()()
+    for prefix in ("https://", "http://"):
+        session.mount(prefix, adapter)
     return session
 
 
-def _pieces(raw, piece: int) -> Iterator[bytes]:
+def _pieces(raw, piece: int, watch: _Watch | None = None) -> Iterator[bytes]:
     """An answer's body as it is on the wire (nothing unpacked: nothing packed was asked for), handed on as it comes:
     each piece what one receive gave, `piece` bytes at most (urllib3's read1, from its version 2 on; before it, reads
     of SMALL bytes at most). Whoever reads it looks at its bounds, its deadline and its cancel after every receive,
     never only once a whole piece of a slow sender has come; a read that gets nothing ends at the socket's own
-    timeout."""
+    timeout. Under a `watch` (the request's deadline), a read its watchdog ended, and any read once it has fired, is
+    Overdue: what came as the socket was shut is not handed on, nor is the nothing a shut socket reads taken for the
+    body's end."""
     one = getattr(raw, "read1", None)
-    if callable(one):
-        while True:
-            data = one(piece, decode_content=False)
-            if not data:
-                return
-            yield data
-    else:
-        yield from raw.stream(min(piece, SMALL), decode_content=False)
+    reads = iter(lambda: one(piece, decode_content=False), b"") if callable(one) else \
+        raw.stream(min(piece, SMALL), decode_content=False)
+    while True:
+        try:
+            data = next(reads, b"")
+        except Exception:  # noqa: BLE001 - the connection's trouble, its reader's to say: unless the deadline did it
+            if watch is not None and watch.fired:
+                raise Overdue(watch.seconds) from None
+            raise
+        if watch is not None and watch.fired:
+            raise Overdue(watch.seconds)
+        if not data:
+            return
+        yield data
 
 
 def requests_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float,
-                       stream: bool, piece: int = PIECE) -> Reply:
+                       stream: bool, piece: int = PIECE, deadline: float | None = None) -> Reply:
     """The transport when a caller gives none: one request through the `requests` package, its answer handed back
     with the body not read yet. No redirect is followed, and a redirect's body is never read: the request is given
     to the session's adapter itself, because Session.request, even told to follow nothing, reads a redirect's whole
     body, without a bound, to let its connection go. `timeout`: seconds each socket operation waits. `stream`: what
     the caller reads (a stream's lines, or an answer whole); the body is handed on as it comes either way, `piece`
-    bytes at most at a time."""
+    bytes at most at a time.
+
+    `deadline` (1.76.0): seconds the whole request may take once it is sent, its connection (each address its name
+    has), a TLS handshake, the status line and the headers, and the body as it is read. None: twice `timeout` for an
+    answer read whole (Endpoint's bound on one, and Jenkins'), and none for a stream, which its reader bounds itself
+    (Endpoint.lines gives its own; a download looks at its own after every receive). A watchdog keeps it (_Watch, a
+    thread of the request's own, gone once the reply is closed or the request has failed): once the time is up it
+    shuts the request's socket, so that whatever waits on it ends then, and the request is Overdue, the TimeoutError a
+    read that waited too long raises: from here for its connection and its head, from the body's next read for the
+    body (nothing that came after it is handed on, nor taken for the body's end). A name being looked up is not cut
+    short: the request ends once it is found."""
     import requests
 
     session = _session()
+    watch: _Watch | None = None
     try:
         request = session.prepare_request(requests.Request(method, url, headers=dict(headers), data=body))
-        response = session.get_adapter(url).send(request, stream=True, timeout=timeout, verify=True, cert=None,
-                                                 proxies={})
-    except BaseException:
-        session.close()
+        seconds = (None if stream else 2 * float(timeout)) if deadline is None else float(deadline)
+        watch = None if seconds is None else _Watch(seconds)
+        sending = _WATCH.set(watch)
+        try:
+            response = session.get_adapter(url).send(request, stream=True, timeout=timeout, verify=True, cert=None,
+                                                     proxies={})
+        finally:
+            _WATCH.reset(sending)
+        if watch is not None and watch.fired:  # its time was up as its answer came: cut off all the same
+            response.close()
+            raise Overdue(watch.seconds)
+    except BaseException as e:
+        cut = watch is not None and watch.fired and isinstance(e, Exception)
+        try:
+            if watch is not None:
+                watch.stop()
+        finally:
+            session.close()
+        if cut and not isinstance(e, Overdue):  # what its shut socket made of it, said as its deadline
+            raise Overdue(watch.seconds) from None
         raise
 
     def close() -> None:
         try:
+            if watch is not None:
+                watch.stop()
             response.close()
         finally:
             session.close()
 
-    return Reply(response.status_code, dict(response.headers), _pieces(response.raw, piece), close)
+    return Reply(response.status_code, dict(response.headers), _pieces(response.raw, piece, watch), close)
+
+
+_OWN = requests_transport  # the library's own transport, which an Endpoint gives each ask's deadline (Endpoint._send)
 
 
 # -- how far a download is ---------------------------------------------------------------------------------------------
