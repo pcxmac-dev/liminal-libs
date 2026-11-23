@@ -356,3 +356,42 @@ def test_a_read_back_that_fails_draws_none_and_costs_the_tab_nothing():
 def test_how_long_ago_a_route_was_traced_in_words():
     assert [routes_module._ago(s) for s in (5, 61, 3599, 3600, 7200, 86_400 * 2, 86_400 * 9)] == [
         "just now", "1 min ago", "60 min ago", "1 h ago", "2 h ago", "2 days ago", "9 days ago"]
+
+
+def test_a_link_inside_your_isp_is_said_so_and_kept_for_the_map_with_the_table_made():
+    """1.74.2: two hops of the first network met, near each other, are joined by your ISP's link (a word, not a
+    record): the hop table is made and the link kept for the map with the others (1.74.0 failed the whole table)."""
+    import json
+    import sqlite3
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.1", "62.0.0.3", "62.0.0.2", target]})
+
+    class Hop:
+        def __init__(self, lat, lon, label, asn, org):
+            self.lat, self.lon, self.label, self.asn, self.org = lat, lon, label, asn, org
+
+    class Geo:
+        def lookup(self, address):
+            return {"62.0.0.1": Hop(47.6, -122.3, "Seattle", 20115, "Charter"),
+                    "62.0.0.3": Hop(47.48, -122.21, "Renton", 20115, "Charter"),
+                    "62.0.0.2": Hop(41.9, -87.6, "Chicago", 6461, "Zayo"),
+                    target: Hop(48.2, 16.37, "Vienna", 6461, "Zayo")}.get(address)
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    r.want([target])
+    while r.step():
+        pass
+    page = {"globe": {"home": HOME, "origins": []}}
+    r.onto(page, Geo(), [target])
+    titles = [t["title"] for t in page["tables"]]
+    assert titles[-2:] == [routes_module.HOPS_TITLE, routes_module.WAITING_TITLE]  # made, and the table after it
+    rows = page["tables"][-2]["rows"]
+    assert [row[9] if isinstance(row[9], str) else row[9]["text"] for row in rows] == [
+        "", "your ISP", "private link", "carrier link"]
+    con = sqlite3.connect(str(r.composite.path))
+    try:
+        kept = [json.loads(c)["type"] for (c,) in con.execute(
+            "SELECT v.claim FROM evidence v JOIN entities e ON e.id = v.entity WHERE e.kind = 'link'")]
+    finally:
+        con.close()
+    assert sorted(kept) == ["carrier link", "private link", "your ISP"]
+    r.close()

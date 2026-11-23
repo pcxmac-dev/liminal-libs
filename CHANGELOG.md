@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.74.2 (2026-11-22)
+
+The hop table made on real routes. With 1.74.1's routes read back, the World Wide Web tab's "Routes, hop by hop" and
+"Legs waiting for a line" tables were missing from the page: a link inside your ISP (two hops of the first network
+met, near each other) is said as a word ("your ISP"), not a record like the others, and keeping it for the map read
+it as a record, failing the whole table (the tab passes over a failing table in silence). 1.74.0's test had no link
+inside the ISP.
+
+- **Every kind of link kept** (machines/routes.py): your ISP's link kept for the map as the others are, the table
+  made with it.
+
 ## 1.74.1 (2026-11-22)
 
 The routes kept read back. After 1.74.0 landed and the platform restarted, the World Wide Web tab's Routes table, its

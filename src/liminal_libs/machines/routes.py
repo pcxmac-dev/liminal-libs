@@ -429,9 +429,10 @@ class Routes:
                 isp = isp or op
                 exchange = bool(kind) and kind["text"] == "exchange point"
                 link = self._link(before, (hop.address, op, who, where, hop.ms, exchange), isp)
-                if link and before is not None:
-                    links.append((f"{before[0]}>{hop.address}", {"type": link["text"], "from": before[0],
-                                                                    "to": hop.address, "words": link.get("sub", "")}))
+                if link and before is not None:  # 1.74.2: your ISP's is a word, the others a record
+                    said = link if isinstance(link, dict) else {"text": str(link)}
+                    links.append((f"{before[0]}>{hop.address}", {"type": said["text"], "from": before[0],
+                                                                    "to": hop.address, "words": said.get("sub", "")}))
                 before = (hop.address, op, who, where, hop.ms, exchange)
                 crosses = ""
                 if op and last_op and op != last_op:
