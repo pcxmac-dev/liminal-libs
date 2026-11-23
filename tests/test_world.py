@@ -229,7 +229,9 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert hooks["world"].startswith("() ") and hooks["world_geoip"].startswith("(accept_licence=False, log=None) ")
     assert hooks["netstat"].startswith("() ") and hooks["world_layer_get"].startswith(
         "(dataset, accept_licence=False, log=None) ")  # a data set's download: a job too, which the page may cancel
-    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get") and fw.JOB_HOOKS == Firewall.JOB_HOOKS
+    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn") and fw.JOB_HOOKS == Firewall.JOB_HOOKS
+    assert hooks["world_asn"].startswith("(accept_licence=False, log=None) ")  # 1.75.0: the ASN file's, a job too
+    assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
     assert Firewall.CANCEL_HOOKS == ("world_layer_get",) and Firewall.INFRASTRUCTURE == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
     assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())
@@ -1492,4 +1494,63 @@ def test_the_data_folder_itself_on_another_systems_drive_is_that_systems(monkeyp
     assert fetched == []
     bare = fw.world_view().page(can_install=False)["globe"]["note"]  # a plugin that names no download
     assert "This plugin offers no GeoIP file to download." in bare and "offers its install" not in bare
+    fw.detach()
+
+
+@needs_reader
+def test_the_asn_file_is_offered_once_the_geoip_file_is_in_and_installed_beside_it_on_its_licence(tmp_path):
+    """1.75.0 (the user, 2026-11-22: "Yes, do it", asked whether to fill the hop table's empty ASN and Operator
+    columns from DB-IP's free ASN file): offered once the GeoIP file is in, downloaded only once its licence is
+    accepted, kept in geoip/asn/ beside the GeoIP file (neither install removes the other's), each place's network
+    read from it from then on, and a month's file never downloaded twice."""
+    from test_geo import ASNS
+    folder = tmp_path / "geoip"
+    city_url = "https://geoip.example/dbip-city-lite-2026-11.mmdb.gz"
+    november = "https://geoip.example/dbip-asn-lite-2026-11.mmdb.gz"
+    downloads = Downloads({city_url: gzip.compress(mmdb(PLACES, built=NOVEMBER)),
+                           november: gzip.compress(mmdb(ASNS, built=NOVEMBER, kind="DBIP-ASN-Lite"))})
+
+    class Named(Walled):
+        GEOIP_ASN_URL = "https://geoip.example/dbip-asn-lite-{year}-{month}.mmdb.gz"
+        GEOIP_ASN_LICENCE = "the ASN file's licence, in words"
+    fw = Named(capture_factory=Feed, geo_folder=folder, clock=Clock(), wall=Clock(NOW), fetch=downloads)
+    assert [f["id"] for f in fw.world()["forms"]] == ["world-geoip"]  # the GeoIP file first: no ASN file without it
+    fw.world_geoip(True)
+    page = fw.world()
+    form = next(f for f in page["forms"] if f["id"] == "world-asn")
+    assert form["hook"] == "world_asn" and form["hook"] in fw.interface()["hooks"] and form["job"] is True
+    assert "the ASN file's licence, in words" in form["confirm"]["words"] and "geoip.example" in form["confirm"]["words"]
+    assert {"form": "world-asn", "title": "Install the ASN file…",
+            "note": "Each network's number and operator, once you accept its licence"} in page["actions"]
+    with pytest.raises(LicenceRefused) as refused:
+        fw.ask(form["hook"], False)
+    assert refused.value.accept == "accept_licence" == form["fields"][0]["name"] and len(downloads.asked) == 1
+    out = fw.ask(form["hook"], True)  # accepted, in so many words
+    assert downloads.asked[-1] == (november, world.READ_S) and out["ok"] is True
+    assert out["said"].startswith("installed dbip-asn-lite-2026-11.mmdb (built 2026-11-01")
+    assert out["lines"][1] == f"kept in {folder / 'asn'}, beside the GeoIP file, in place of any older ASN file"
+    assert [p.name for p in folder.iterdir() if p.is_file()] == ["dbip-city-lite-2026-11.mmdb"]  # the GeoIP file kept
+    assert [p.name for p in (folder / "asn").iterdir()] == ["dbip-asn-lite-2026-11.mmdb"]
+    assert "forms" not in fw.world()  # nothing more offered
+    london = fw.world_view().geoip().lookup(LONDON)
+    assert (london.city, london.asn, london.org) == ("London", 20712, "Andrews & Arnold Ltd")
+    again = fw.world_asn(True)  # this month's is there already: not downloaded again
+    assert again["said"].startswith("dbip-asn-lite-2026-11.mmdb is installed already") and len(downloads.asked) == 2
+    fw.detach()
+
+
+@needs_reader
+def test_an_asn_file_from_before_this_month_is_offered_its_update(tmp_path):
+    from test_geo import ASNS
+    folder = tmp_path / "geoip"
+    (folder / "asn").mkdir(parents=True)
+    (folder / "dbip-city-lite-2026-11.mmdb").write_bytes(mmdb(PLACES, built=NOVEMBER))
+    (folder / "asn" / "dbip-asn-lite-2026-10.mmdb").write_bytes(mmdb(ASNS, built=OCTOBER, kind="DBIP-ASN-Lite"))
+
+    class Named(Walled):
+        GEOIP_ASN_URL = "https://geoip.example/dbip-asn-lite-{year}-{month}.mmdb.gz"
+    fw = Named(capture_factory=Feed, geo_folder=folder, clock=Clock(), wall=Clock(NOW), fetch=Downloads({}))
+    assert [f["title"] for f in fw.world()["forms"]] == ["Update the ASN file"]
+    with pytest.raises(ValueError, match="offers no ASN file"):
+        Walled(capture_factory=Feed, geo_folder=folder, clock=Clock(), wall=Clock(NOW)).world_asn(True)
     fw.detach()

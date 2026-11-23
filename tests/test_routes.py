@@ -419,3 +419,35 @@ def test_a_carrier_link_only_where_the_times_allow_its_distance():
     # far apart in 1 ms, another operator than the ISP: inside its network, no haul
     assert link(chicago, 3.0, (48.2, 16.37), 4.0, op="Zayo") == {"text": "inside", "sub": "Zayo"}
     assert routes_module.LINK_RULE == 2
+
+
+def test_operators_are_compared_by_their_names_one_company_with_several_numbers_crossing_nothing():
+    """1.75.0: with the ASN file, a route through two of Charter's AS numbers, its name spelt two ways, crosses no
+    operator there; its ASN column says each number."""
+    assert routes_module._operator("Charter Communications, Inc.") == "charter communications"
+    assert routes_module._operator("Charter Communications LLC") == "charter communications"
+    assert routes_module._operator("The Zayo Group") == "zayo group" and routes_module._operator("") == ""
+    target = "81.2.69.142"
+    tracer, _asked = tracer_of({target: ["62.0.0.1", "62.0.0.3", "62.0.0.2", target]})
+
+    class Hop:
+        def __init__(self, lat, lon, label, asn, org):
+            self.lat, self.lon, self.label, self.asn, self.org = lat, lon, label, asn, org
+
+    class Geo:
+        def lookup(self, address):
+            return {"62.0.0.1": Hop(47.6, -122.3, "Seattle", 20115, "Charter Communications Inc"),
+                    "62.0.0.3": Hop(47.48, -122.21, "Renton", 7843, "Charter Communications LLC"),
+                    "62.0.0.2": Hop(41.9, -87.6, "Chicago", 6461, "Zayo Bandwidth"),
+                    target: Hop(48.2, 16.37, "Vienna", 6461, "Zayo Bandwidth")}.get(address)
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None)
+    r.want([target])
+    while r.step():
+        pass
+    page = {"globe": {"home": HOME, "origins": []}}
+    r.onto(page, Geo(), [target])
+    rows = next(t for t in page["tables"] if t["title"] == routes_module.HOPS_TITLE)["rows"]
+    assert [row[5] for row in rows] == ["AS20115", "AS7843", "AS6461", "AS6461"]
+    assert [bool(row[10]) for row in rows] == [False, False, True, False]  # one crossing: Charter to Zayo
+    assert rows[1][9] == "your ISP" and rows[2][10]["text"] == "⇄ Zayo Bandwidth"
+    r.close()

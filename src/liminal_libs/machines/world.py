@@ -51,6 +51,10 @@ TAB = "world"  # the tab's id: its charts' keys begin with it
 HOOK = "world"  # the tab's read hook, asked with no arguments
 GEOIP_HOOK = "world_geoip"  # the change the install form asks, as a job (its progress followed on the page)
 FORM = "world-geoip"  # the install form's id
+# 1.75.0 (the user, 2026-11-22: "Yes, do it", asked whether to fill the hop table's empty ASN and Operator columns
+# from DB-IP's free ASN file): the ASN file's install, as a job, and its form
+ASN_HOOK = "world_asn"
+ASN_FORM = "world-asn"
 ACCEPT_LICENCE = "accept_licence"  # its one argument: true only through the page's second confirmation
 HOME_PLACE_VAR = "LIMINAL_HOME_PLACE"  # "lat,lon[,label]": where this machine is drawn, when the user says
 HOME_KEY = KeyVar(HOME_PLACE_VAR, label="Home on the globe", secret=False,
@@ -774,6 +778,28 @@ def geoip_form(licence: str = "", source: str = "", folder=None, update: bool = 
                               "You are asked to accept it next.")}}
 
 
+def asn_form(licence: str = "", source: str = "", folder=None, update: bool = False) -> dict:
+    """1.75.0: the ASN file's install form, as geoip_form's: asked as a job, its licence shown in the first
+    confirmation and accepted in the second (LicenceRefused until it is)."""
+    words = (licence or "").strip() or "the licence its maker publishes with it."
+    verb = "Update" if update else "Install"
+    host = _host(source)
+    whence = f" from {host}" if host else ""
+    where = f" into {folder}" if folder else " into the data folder"
+    return {
+        "id": ASN_FORM, "hook": ASN_HOOK, "title": f"{verb} the ASN file", "job": True,
+        "note": ("Each address's network, its AS number and operator, is looked up in this file, on this machine: "
+                 "no address is sent anywhere."),
+        "fields": [{"name": ACCEPT_LICENCE, "type": "accept", "title": "Accept the ASN file's licence?", "words": words,
+                    "yes": "Accept it and download"}],
+        "confirm": {"title": f"{verb} the ASN file?", "yes": "Go on",
+                    "words": (f"This month's ASN file is downloaded{whence} and unpacked{where}, beside the GeoIP "
+                              f"file and in place of any older ASN file; its progress shows in the panel below, and it "
+                              f"stops by itself after {_seconds(geo.INSTALL_S / 60)} minutes. Nothing about your traffic "
+                              "is sent: each address's network is then looked up on this machine. Its licence, first: "
+                              f"{words} You are asked to accept it next.")}}
+
+
 # -- the page's words and numbers ------------------------------------------------------------------------------------------
 def size_words(n) -> str:
     """Bytes in words, as the page's charts say them (1024 to a KB): 512 B, 1.2 MB, 135 GB."""
@@ -940,6 +966,7 @@ class WorldView:
         self._installing = threading.Lock()
         self._cutoff: _Cutoff | None = None  # the install under way's, stopped by close()
         self._progress = ""  # how far it is, in words (the tab's note)
+        self._what = ""  # 1.75.0: the file being downloaded ("GeoIP file" or "ASN file")
         self._geoip: geo.GeoIP | None = None
         self._geo_said: dict | None = None  # the GeoIP file as last open (describe), once it was let go
         self._geo_looked: float | None = None
@@ -1045,7 +1072,7 @@ class WorldView:
         if not self.watcher.running:
             self._let_go()
 
-    def install(self, template: str, log=None) -> dict:
+    def install(self, template: str, log=None, kind: str = "city") -> dict:
         """The GeoIP file downloaded and put in place, on the user's word (the plugin's world_geoip, its licence accepted).
         `template` is the plugin's https address with {year} and {month} in it: this month's file, else last month's when
         this month's is not out yet (a 404). A month's file installed already is not downloaded again.
@@ -1064,20 +1091,26 @@ class WorldView:
         panel). What was installed, in words, for the page. ValueError for an address that is no https one, maxminddb
         missing, a download under way, a view closed, or a folder on another system's drive (geo.foreign: that system's
         platform installs its own; nothing is fetched); geo.GeoError when nothing was installed (the current file stays as
-        it was)."""
+        it was).
+
+        1.75.0: `kind` "asn" installs the ASN file instead, into the GeoIP folder's asn/ (geo.asn_folder), its own
+        folder, so neither install removes the other's file; the GeoIP file is then opened again with it."""
         say = _sayer(log)
         template = str(template or "").strip()
+        what = "ASN file" if kind == "asn" else "GeoIP file"
         if not template:
-            raise ValueError("there is no GeoIP file to download: the plugin names none")
+            raise ValueError(f"there is no {what} to download: the plugin names none")
         wanted = months(self.wall())
         if any(urlsplit(month_url(template, y, m)).scheme.lower() != "https" or not _host(month_url(template, y, m))
                for y, m in wanted):
-            raise ValueError("a GeoIP file is downloaded over https only")
-        elsewhere = geo.foreign(self.folder, "Installing a GeoIP file")
+            raise ValueError(f"a {what} is downloaded over https only")
+        elsewhere = geo.foreign(self.folder, f"Installing a {what}")
         if elsewhere:
             raise ValueError(elsewhere)
         if not self._installing.acquire(blocking=False):
-            raise ValueError("a GeoIP file is being downloaded already: wait for it to finish")
+            running = self._what or what  # 1.75.0: the GeoIP file or the ASN file, one download at a time
+            raise ValueError(f"{'an' if running.startswith('ASN') else 'a'} {running} is being downloaded already: "
+                             "wait for it to finish")
         try:
             ok, why = geo.available()
             if not ok:
@@ -1086,16 +1119,16 @@ class WorldView:
             with self._lock:
                 if self.closed:
                     raise ValueError("the plugin was detached: nothing is downloaded")
-                self._cutoff, self._progress = cutoff, ""
+                self._cutoff, self._progress, self._what = cutoff, "", what
             try:
-                return self._install(template, wanted, cutoff, say)
+                return self._install(template, wanted, cutoff, say, kind)
             finally:
                 with self._lock:
-                    self._cutoff, self._progress = None, ""
+                    self._cutoff, self._progress, self._what = None, "", ""
         finally:
             self._installing.release()
 
-    def _install(self, template: str, wanted: list, cutoff: _Cutoff, say) -> dict:
+    def _install(self, template: str, wanted: list, cutoff: _Cutoff, say, kind: str = "city") -> dict:
         budget = float(geo.INSTALL_S)
         deadline = geo._clock() + budget
         took = (f"the download took more than {_seconds(budget)} s, the most an install may take, so it was stopped: "
@@ -1104,15 +1137,21 @@ class WorldView:
                 "still put in place if it passes, and the tab then shows its places")
         # the download on a thread of its own, this one waiting what is left of the time (run_download: its sockets shut
         # once the time is up or the plugin was detached)
+        folder = geo.asn_folder(self.folder) if kind == "asn" else self.folder  # 1.75.0: the ASN file's own
         path, url, fell_back, again = run_download(
-            lambda: self._download(template, wanted, cutoff, deadline, took, say), cutoff, deadline, took,
-            name=f"{self.name or 'world'}-geoip-download", stopping=lambda: DETACHED if self.closed else "", late=late)
+            lambda: self._download(template, wanted, cutoff, deadline, took, say, folder), cutoff, deadline, took,
+            name=f"{self.name or 'world'}-{'asn' if kind == 'asn' else 'geoip'}-download",
+            stopping=lambda: DETACHED if self.closed else "", late=late)
+        if kind == "asn":
+            return self._installed_asn(path, url, fell_back, again)
         return self._installed(path, url, fell_back, again)
 
-    def _download(self, template: str, wanted: list, cutoff: _Cutoff, deadline: float, took: str, say) -> tuple:
-        """On the download's thread: this month's file, else last month's, fetched and installed; (its path, the address
-        it came from, whether it was last month's, whether it was there already)."""
-        folder, tried = self.folder, []
+    def _download(self, template: str, wanted: list, cutoff: _Cutoff, deadline: float, took: str, say,
+                  folder=None) -> tuple:
+        """On the download's thread: this month's file, else last month's, fetched and installed into `folder` (the
+        GeoIP folder, or 1.75.0's asn/ in it); (its path, the address it came from, whether it was last month's,
+        whether it was there already)."""
+        folder, tried = (folder if folder is not None else self.folder), []
         for year, month in wanted:
             url = month_url(template, year, month)
             stem = file_stem(url, year, month)
@@ -1157,6 +1196,7 @@ class WorldView:
                 old.close()
             try:
                 geoip = geo.GeoIP(path)
+                geoip.asn = geo.find_asn(path.parent)  # 1.75.0: the ASN file beside it, as find() opens it
             except geo.GeoError:
                 geoip = geo.GeoIP.find(path.parent)
             if not self.closed:
@@ -1173,6 +1213,29 @@ class WorldView:
                  "places on the globe are looked up in it on this machine: no address is sent anywhere"]
         if not again:
             lines.insert(1, f"kept in {path.parent}, in place of any older copy")
+        return {"said": said + (f" ({facts})" if facts else ""), "ok": True, "lines": lines, "file": d}
+
+    def _installed_asn(self, path: Path, url: str, fell_back: bool, again: bool = False) -> dict:
+        """1.75.0: the ASN file just put in place, and what it is, in words. The GeoIP file open now is let go, so the
+        next ask opens it again with the ASN file beside it (geo.GeoIP.find)."""
+        with self._lock:
+            old, self._geoip, self._geo_looked = self._geoip, None, None
+            if old is not None:
+                old.close()
+        try:
+            with geo.GeoIP(path) as opened:
+                d = opened.describe()
+        except geo.GeoError:
+            d = {"file": path.name, "date": None, "size": None}
+        facts = ", ".join(x for x in ((f"built {d['date']}" if d.get("date") else ""),
+                                       (size_words(d["size"]) if d.get("size") else "")) if x)
+        said = (f"{d.get('file') or path.name} is installed already" if again else f"installed {d.get('file') or path.name}")
+        whence = f"downloaded from {_host(url) or url}" + (": this month's file is not out yet, so last month's"
+                                                             if fell_back else "")
+        lines = [f"kept in {path.parent}, the only copy" if again else whence,
+                 "each address's network is looked up in it on this machine: no address is sent anywhere"]
+        if not again:
+            lines.insert(1, f"kept in {path.parent}, beside the GeoIP file, in place of any older ASN file")
         return {"said": said + (f" ({facts})" if facts else ""), "ok": True, "lines": lines, "file": d}
 
     # -- home ---------------------------------------------------------------------------------------------------------------
@@ -1328,7 +1391,7 @@ class WorldView:
 
     # -- the page -------------------------------------------------------------------------------------------------------
     def page(self, *, home=None, public=None, attribution=None, can_install: bool = True, licence: str = "",
-             source: str = "") -> dict:
+             source: str = "", asn_source: str = "", asn_licence: str = "") -> dict:
         """The tab's page (apps/tabs.py's shape): its title and note; the globe (home, each place with its kind, count,
         bytes and ports, the local network's peers summed apart, the attribution of the places, when it was counted); the
         busiest ports here charted; the busiest ports here and elsewhere and the places, tabled; and the GeoIP file's
@@ -1351,13 +1414,13 @@ class WorldView:
         geoip = self.geoip() if readable else None
         try:
             return self._page(status, snap, now, charts, readable, unreadable, geoip, home, public, attribution,
-                              can_install, licence, source)
+                              can_install, licence, source, asn_source=asn_source, asn_licence=asn_licence)
         finally:
             if not self.watcher.running:  # nobody watches: nothing stays mapped until the next ask
                 self._let_go()
 
     def _page(self, status, snap, now, charts, readable, unreadable, geoip, home, public, attribution, can_install,
-              licence, source) -> dict:
+              licence, source, asn_source: str = "", asn_licence: str = "") -> dict:
         home_spec, home_note = self._home(home, public, geoip)
         here_ports = {r["port"] for r in snap["ports"]}
         there_ports = {r["port"] for r in snap["remote_ports"]}
@@ -1418,7 +1481,27 @@ class WorldView:
             out["forms"] = [geoip_form(licence, source, self.folder, update=offer == "update")]
             verb = "Update" if offer == "update" else "Install"
             out["actions"] = [{"form": FORM, "title": f"{verb} the GeoIP file…", "note": "Downloads it once you accept its licence"}]
+        asn_offer = self._asn_offer(geoip, readable, asn_source, now)  # 1.75.0: the ASN file, once the GeoIP file is in
+        if asn_offer is not None:
+            out.setdefault("forms", []).append(asn_form(asn_licence, asn_source, geo.asn_folder(self.folder),
+                                                     update=asn_offer == "update"))
+            verb = "Update" if asn_offer == "update" else "Install"
+            out.setdefault("actions", []).append({"form": ASN_FORM, "title": f"{verb} the ASN file…",
+                                                  "note": "Each network's number and operator, once you accept its licence"})
         return out
+
+    def _asn_offer(self, geoip, readable: bool, asn_source: str, now: float) -> str | None:
+        """1.75.0: whether the page offers the ASN file's download: "install" when the GeoIP file is open with no ASN
+        file beside it, "update" when the ASN file was built before this month; None when the plugin names none, the
+        GeoIP file is not in yet (it comes first), a download is under way, or the folder is another system's."""
+        if not asn_source or not readable or geoip is None or self._installing.locked() or self.elsewhere():
+            return None
+        asn = getattr(geoip, "asn", None)
+        if asn is None:
+            return "install"
+        built = (asn.describe().get("date") or "")[:7]
+        this = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m")
+        return "update" if built and built < this else None
 
     def _offer(self, geoip, readable: bool, can_install: bool, now: float) -> str | None:
         """Whether the page offers the GeoIP file's download: "install" when none is open, "update" when the one open was
@@ -1446,8 +1529,9 @@ class WorldView:
             head = "Watching starts while this tab is shown."
         if self._installing.locked():
             with self._lock:
-                progress = self._progress
-            head += " A GeoIP file is being downloaded." + (f" So far: {progress}." if progress else "")
+                progress, what = self._progress, self._what or "GeoIP file"  # 1.75.0: or the ASN file
+            head += f" {'An' if what.startswith('ASN') else 'A'} {what} is being downloaded." + (
+                f" So far: {progress}." if progress else "")
         return head + (" Only counts are kept, in memory. Places come from the GeoIP file on this machine, and no address "
                        "is sent anywhere.")
 

@@ -75,6 +75,23 @@ WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a 
                 "are looked up again at each ask, and as more lines are installed.")
 
 
+# 1.75.0: the words that end a company's name, left out when two operators' names are compared
+LEGAL = frozenset({"inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company",
+                   "plc", "gmbh", "ag", "sa", "sas", "srl", "spa", "bv", "nv", "pty", "lp", "llp", "ab",
+                   "oy", "kk", "as", "asa", "aps", "the"})
+
+
+def _operator(name: str) -> str:
+    """An operator's name as two are compared (1.75.0): lower case, words alone, the legal words at its end left
+    out ("Charter Communications, Inc." and "Charter Communications LLC" are one); "" for no name."""
+    words = re.sub(r"[^0-9a-z]+", " ", str(name or "").lower()).split()
+    while len(words) > 1 and words[-1] in LEGAL:
+        words.pop()
+    while len(words) > 1 and words[0] == "the":
+        words.pop(0)
+    return " ".join(words)
+
+
 def _ago(seconds: float) -> str:
     """How long ago a route was traced, in words (1.74.1: a route read back may be days old)."""
     if seconds < 60:
@@ -416,8 +433,11 @@ class Routes:
                 asn = f"AS{asn}" if asn.isdigit() else asn
                 org = str(getattr(place, "org", "") or "")
                 holder = ", ".join(x for x in (known.get("network"), known.get("org"), known.get("country")) if x)
-                op = asn or org or known.get("org") or ""
-                who = org or known.get("org") or op
+                who = org or known.get("org") or asn
+                # 1.75.0: operators compared by their names (one company runs several AS numbers, and the ASN file
+                # and the registry spell its name apart: "Charter Communications Inc", "... LLC"), the number alone
+                # where no name is known
+                op = _operator(org or known.get("org") or "") or asn
                 kind = ""
                 rdap = " ".join(x for x in (known.get("network"), known.get("org")) if x)
                 ptr = known.get("name", "")
@@ -456,7 +476,8 @@ class Routes:
             except Exception:  # noqa: BLE001 - the links not kept cost the tab nothing
                 pass
         note = ("Every hop of each route in order, the routes as tabled above: a hop that did not answer is kept, as *. "
-                "Its name is its reverse DNS, its network's number and operator are the GeoIP file's, its holder is "
+                "Its name is its reverse DNS, its network's number and operator are the ASN file's (where it is "
+                "installed beside the GeoIP file, else the GeoIP file's), its holder is "
                 "its registry's (RDAP); they fill in as each router is looked up. Where the operator is another than "
                 "the hop's before, the route crosses between networks: said in the last column (⇄). A hop is called "
                 "an exchange point's or a backbone's only where its registry's words or its own name say so, and "

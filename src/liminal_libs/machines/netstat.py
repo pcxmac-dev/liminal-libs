@@ -931,7 +931,7 @@ class NetstatView:
                 world.rest()
 
     def _frame(self, world, *, home=None, public=None, attribution=None, can_install: bool = True, licence: str = "",
-               source: str = "") -> dict:
+               source: str = "", asn_source: str = "", asn_licence: str = "") -> dict:
         """The tab's page with no traffic in it, from the WorldView's own words: the globe's home (the user's place, or
         this network's public address placed), its places' attribution, the notes on the GeoIP file and its install
         offered where none is (an empty count of traffic stands in, so nothing counted is read or thrown away)."""
@@ -940,7 +940,8 @@ class NetstatView:
         readable, unreadable = geo.available()
         geoip = world.geoip() if readable else None
         page = world._page(world.watcher.status(), traffic.TrafficBook().snapshot(), world.wall(), None, readable,
-                           unreadable, geoip, home, public, attribution, can_install, licence, source)
+                           unreadable, geoip, home, public, attribution, can_install, licence, source,
+                           asn_source=asn_source, asn_licence=asn_licence)  # 1.75.0: the ASN file's offer
         page["tables"] = []
         return page
 

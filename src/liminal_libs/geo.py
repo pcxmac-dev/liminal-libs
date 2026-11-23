@@ -21,6 +21,10 @@ The files are kept in the data folder's geoip/ (`data_folder`), one current copy
 there beside the old one (the bytes it reads, the bytes it unpacks and the time it takes all bounded), checks that it
 reads as a GeoIP file, puts it in place in one step and removes the older copies. `GeoIP.find` opens the newest.
 
+1.75.0: an ASN file (DB-IP's IP to ASN Lite, the same licence) may sit in geoip/asn/ (`asn_folder`), installed and
+pruned there apart from the GeoIP file. `GeoIP.find` opens it too (`find_asn`), beside the GeoIP file it opens, and
+each place the GeoIP file gives with no network of its own gets the ASN file's: its AS number and organisation.
+
 A folder on another system's drive (`foreign`: WSL's /mnt/c, a share, a network drive) holds that system's files: each
 system's platform installs its own, so none there is read or installed from here."""
 from __future__ import annotations
@@ -39,7 +43,7 @@ import weakref
 import zlib
 from collections import OrderedDict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -48,6 +52,11 @@ from . import layout
 from .netpath import kind
 
 FOLDER = "geoip"  # the GeoIP files' folder, in the data folder (layout.data_dir())
+ASN_FOLDER = "asn"  # 1.75.0: the ASN file's folder, inside FOLDER (its own: an install keeps one file a folder)
+# 1.75.0: where a record says its network: MaxMind's GeoLite2-ASN names at its top level (as DB-IP's IP to ASN Lite
+# is read), else under traits (GeoIP2's ISP and Enterprise files), else the shorter names some files use
+ASN_KEYS = ("autonomous_system_number", "asn", "as_number")
+ORG_KEYS = ("autonomous_system_organization", "as_org", "as_name", "organization", "isp")
 CACHE = 4096  # answers a GeoIP keeps; the least recently asked goes first
 TEXT = 128  # characters an answer keeps of a name, an organisation or a file's kind (none is longer in a real file)
 CODE = 8  # characters an answer keeps of a country's code (ISO 3166's have two)
@@ -300,8 +309,9 @@ class GeoIP:
     system's, never mapped from here). close() lets the file go; a GeoIP is a context manager too. An install into its
     folder lets it go as well, and then it opens the folder's newest file at its next lookup."""
 
-    def __init__(self, path, cache: int = CACHE):
+    def __init__(self, path, cache: int = CACHE, asn: GeoIP | None = None):
         self.path = Path(path)
+        self.asn = asn  # 1.75.0: the ASN file's GeoIP (find_asn), whose networks fill in each place's
         self._max = max(1, int(cache))
         elsewhere = foreign(self.path, "Reading a GeoIP file")
         if elsewhere:
@@ -334,7 +344,7 @@ class GeoIP:
             if self._reader is None and not self._reopen():
                 return None
             self.misses += 1
-            place = self._read(address)
+            place = self._with_network(self._read(address), address)
             self._cache[address] = place
             if len(self._cache) > self._max:
                 self._cache.popitem(last=False)
@@ -348,6 +358,21 @@ class GeoIP:
         except Exception:  # a broken record (maxminddb.InvalidDatabaseError) is no place
             return None
         return _place(record)
+
+    def _with_network(self, place: Place | None, address) -> Place | None:
+        """1.75.0: a place with no network of its own given the ASN file's (its AS number and organisation), where
+        one is open beside this file and has the address; the place as it was otherwise (and None stays None: the
+        ASN file places nothing)."""
+        asn = self.asn
+        if asn is None or place is None or place.asn is not None:
+            return place
+        try:
+            found = asn.lookup(address)
+        except Exception:  # noqa: BLE001 - an ASN file that cannot answer: the place without its network
+            return place
+        if found is None or (found.asn is None and not found.org):
+            return place
+        return replace(place, asn=found.asn, org=found.org or place.org)
 
     def _reopen(self) -> bool:
         """With the lock held, for a GeoIP an install let go: the folder's newest file that opens, opened in its
@@ -381,7 +406,7 @@ class GeoIP:
         kind of database, and how it is read ("mmap-ext": maxminddb's C extension; "mmap": pure Python). Also
         whether it is still open, and the answers kept."""
         with self._lock:
-            path, built, kinds, mode = self.path, self.built, self.type, self.mode
+            path, built, kinds, mode, asn = self.path, self.built, self.type, self.mode, self.asn
             cache = {"entries": len(self._cache), "max": self._max, "hits": self.hits, "misses": self.misses}
             is_open = self._reader is not None
         try:
@@ -390,7 +415,8 @@ class GeoIP:
             size = None
         built = _utc(built)
         return {"file": path.name, "path": str(path), "date": built[:10] if built else None,
-                "built": built, "size": size, "type": kinds, "mode": mode, "open": is_open, "cache": cache}
+                "built": built, "size": size, "type": kinds, "mode": mode, "open": is_open, "cache": cache,
+                "asn": asn.describe() if asn is not None else None}  # 1.75.0: the ASN file beside it
 
     def close(self) -> None:
         """The file let go, its map closed (Windows can then replace or delete it), and the answers dropped. For
@@ -407,6 +433,8 @@ class GeoIP:
                 reader.close()
         with _OPEN_LOCK:
             _OPEN.discard(self)
+        if not moved and self.asn is not None:  # 1.75.0: closed for good, the ASN file beside it too
+            self.asn.close()
 
     def __enter__(self) -> GeoIP:
         return self
@@ -425,10 +453,32 @@ class GeoIP:
         with _PLACING:  # the copies as they are between installs, never halfway through one
             for path in _copies(folder):
                 try:
-                    return cls(path, cache)
+                    found = cls(path, cache)
                 except GeoError:
                     continue
+                found.asn = find_asn(folder, cache)  # 1.75.0: the ASN file beside it, if there is one
+                return found
         return None
+
+
+def asn_folder(folder=None) -> Path:
+    """1.75.0: the ASN file's folder: ASN_FOLDER inside the GeoIP files' folder (`folder`, else the data folder's)."""
+    return (Path(folder) if folder is not None else data_folder()) / ASN_FOLDER
+
+
+def find_asn(folder=None, cache: int = CACHE) -> GeoIP | None:
+    """1.75.0: the newest ASN file beside the GeoIP files in `folder` (its asn_folder), open; None when there is
+    none, none opens, maxminddb is not here, or the folder is on another system's drive."""
+    where = asn_folder(folder)
+    if not available()[0] or foreign(where, "Reading the ASN file"):
+        return None
+    with _PLACING:
+        for path in _copies(where):
+            try:
+                return GeoIP(path, cache)
+            except GeoError:
+                continue
+    return None
 
 
 def _public(ip) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -466,12 +516,33 @@ def _place(record) -> Place | None:
     lat, lon = _degrees(location.get("latitude"), 90), _degrees(location.get("longitude"), 180)
     if lat is None or lon is None:
         lat = lon = None
-    asn = record.get("autonomous_system_number")
-    asn = asn if isinstance(asn, int) and not isinstance(asn, bool) and 0 < asn < 1 << 32 else None  # 32 bits
+    asn, org = _network(record)  # 1.75.0: under the names an ASN file may use
     place = Place(iso.upper()[:CODE] if iso else None, _name(country), _name(_part(record, "city")), lat, lon, asn,
-                  _text(record.get("autonomous_system_organization")))
+                  org)
     known = place.country or place.country_name or place.city or place.lat is not None or place.asn
     return place if known else None
+
+
+def _network(record: dict) -> tuple[int | None, str | None]:
+    """1.75.0: a record's network, (its AS number, its organisation), each None where it says none: at the record's
+    top level, else under its traits (ASN_KEYS, ORG_KEYS)."""
+    for part in (record, _part(record, "traits")):
+        asn = next((n for n in (_as_number(part.get(k)) for k in ASN_KEYS) if n is not None), None)
+        org = next((t for t in (_text(part.get(k)) for k in ORG_KEYS) if t), None)
+        if asn is not None or org:
+            return asn, org
+    return None, None
+
+
+def _as_number(value) -> int | None:
+    """An AS number from a record: a whole number, or a string of one ("AS20115", "20115"); None for anything else,
+    and outside 32 bits."""
+    if isinstance(value, str):
+        digits = value.strip()[:16].upper().removeprefix("AS")
+        value = int(digits) if digits.isascii() and digits.isdigit() else None  # "²" is a digit int() refuses
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 < value < 1 << 32 else None
 
 
 def _part(record: dict, key: str) -> dict:

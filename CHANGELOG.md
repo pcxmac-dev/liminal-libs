@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.75.0 (2026-11-22)
+
+Each network's number and operator, from an ASN file beside the GeoIP file. The user, 2026-11-22, asked whether to fill
+the hop table's empty ASN and Operator columns from DB-IP's free ASN file: "Yes, do it". DB-IP's IP to City Lite (the
+GeoIP file in use) holds no networks; its IP to ASN Lite does (485,292 ranges, 9.2 MB, CC BY 4.0, the same credit). The
+plugins name its address; the library names no outside host. The platform's page shows it once the platform is
+restarted, and the file is downloaded only on your click, its licence shown and accepted first.
+
+- **The ASN file beside the GeoIP file** (geo.py): kept in the GeoIP folder's asn/ (`asn_folder`), its own folder, so
+  neither install removes the other's file. `GeoIP.find` opens it too (`find_asn`), and a place the GeoIP file gives
+  with no network of its own gets the ASN file's AS number and organisation; the ASN file places nothing by itself. A
+  record's network is read under GeoLite2-ASN's names, GeoIP2's traits, or the shorter names (`_network`).
+- **Its install** (machines/world.py, machines/firewall.py): `Firewall.GEOIP_ASN_URL` and `GEOIP_ASN_LICENCE`, the
+  plugin's; the hook `world_asn` (a job, as `world_geoip`, refused until its licence is accepted); the World Wide Web
+  tab offers "Install the ASN file…" once the GeoIP file is in, and "Update…" once a later month's is out.
+  `WorldView.install(kind="asn")` downloads it as the GeoIP file is downloaded (one deadline, https on every hop from
+  the plugin's host) and opens the GeoIP file again with it.
+- **Operators by their names** (machines/routes.py): the hop table compares operators by their names, legal words left
+  out (`_operator`: "Charter Communications, Inc." and "Charter Communications LLC" are one), the number alone where no
+  name is known: one company runs several AS numbers, and the ASN file and the registries spell its name apart.
+
 ## 1.74.3 (2026-11-22)
 
 A carrier link only where the times allow it. On this PC's real routes, 267 of the 335 links 1.74.0 called carrier

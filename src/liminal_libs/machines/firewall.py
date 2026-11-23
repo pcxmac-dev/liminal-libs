@@ -26,8 +26,8 @@ from .infrastructure import DataSet, Index
 from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
 from .rulegroups import RuleGroups, Sorted
-from .world import (GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB, TIMEOUT_S,
-                    TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
+from .world import (ASN_HOOK, GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB,
+                    TIMEOUT_S, TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
 
 # 1.74.0 (the user, 2026-11-22: "lets have a selectable switch on firewall which allows it to run while not selected
 # as far as monitoring traffic"): the traffic watched only while the World Wide Web tab is shown, or all the time
@@ -202,6 +202,7 @@ class Firewall(MachinePlugin):
              "move_rules", "new_label", "rename_label", "remove_label",
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
              WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK,  # 1.74.0: world_watching, the traffic watched all the time or not
+             ASN_HOOK,  # 1.75.0: world_asn, the ASN file's install
              # 1.65.0: netstat, the Netstat tab's page (a read); hosts_recording and hosts_forget, the hosts database's
              # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
              # globe shows; world_layer, a layer's geometry (a read); world_layer_get and world_layer_remove, a data
@@ -219,7 +220,7 @@ class Firewall(MachinePlugin):
     # hooks the platform runs as a job (liminal-platform 0.19.0), their lines followed in the plugin's panel: the GeoIP
     # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes; and a data
     # set's download (1.65.0), which the page may ask to stop (CANCEL_HOOKS: liminal-platform 0.31.0's Cancel)
-    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK)
+    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK)  # 1.75.0: the ASN file's install, a job as the GeoIP file's
     CANCEL_HOOKS = (netstat.GET_HOOK,)
     # the internet infrastructure the globe may draw (1.65.0): the plugin's data sets, each a plain dict of
     # infrastructure.DataSet's keys (its address, query, licence and credit are the plugin's, in its apis.py); none here
@@ -231,6 +232,10 @@ class Firewall(MachinePlugin):
     # outside host is named in the library); none, and no registry is asked (the routers' names still are)
     RDAP_BOOTSTRAP: tuple = ()
     GEOIP_LICENCE = ""  # the licence's words, shown before the download and accepted in so many words
+    # 1.75.0: the ASN file the plugin names beside it (each network's AS number and organisation), and its licence's
+    # words: "" offers none
+    GEOIP_ASN_URL = ""
+    GEOIP_ASN_LICENCE = ""
     ATTRIBUTION: dict = {}  # {text, url}: drawn wherever places are ("IP Geolocation by DB-IP" with DB-IP's link)
     # the name servers asked for this network's public address, which places home when the user set none: each in
     # dns.public_address's shape, (the name, its type, the server, whose), split by the server's IP version; or
@@ -523,7 +528,8 @@ class Firewall(MachinePlugin):
             pass
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
-                 "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL}
+                 "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL,
+                 "asn_source": self.GEOIP_ASN_URL, "asn_licence": self.GEOIP_ASN_LICENCE}  # 1.75.0
         page = None
         if net.shows() == "traffic":
             view.touch()
@@ -634,6 +640,20 @@ class Firewall(MachinePlugin):
         if accept_licence is not True:
             raise LicenceRefused(LICENCE_FIRST)
         return self.world_view().install(self.GEOIP_URL, log=log)
+
+    def world_asn(self, accept_licence=False, log=None) -> dict:
+        """1.75.0: the ASN file installed beside the GeoIP file, on the user's word, as world_geoip installs that:
+        asked only from its form, run as a job, refused (world.LicenceRefused) unless `accept_licence` is exactly
+        True; then this month's file at GEOIP_ASN_URL (last month's while this month's is not out) put in the GeoIP
+        folder's asn/, and each place's network read from it from then on."""
+        here = self.not_for_here()
+        if here:
+            raise ValueError(f"not for this machine: {here}")
+        if not self.GEOIP_ASN_URL:
+            raise ValueError(f"{self.title or self.name} offers no ASN file to download")
+        if accept_licence is not True:
+            raise LicenceRefused("The ASN file is downloaded only once you accept its licence.")
+        return self.world_view().install(self.GEOIP_ASN_URL, log=log, kind="asn")
 
     # -- the Netstat tab, the hosts database and the globe's filters and layers (1.65.0; machines/netstat.py) ---------
     def netstat_view(self, make: bool = True) -> NetstatView | None:

@@ -903,3 +903,51 @@ def test_an_extended_length_spelling_is_judged_as_its_plain_one():
     for same in ("\\\\server\\share\\geoip", "C:\\geoip", "\\\\?\\Volume{0a1b2c}\\geoip", "\\\\?\\", ""):
         assert plain(same) == same
     assert geo._plain("\\\\?\\C:\\geoip", windows=False) == "\\\\?\\C:\\geoip"  # off Windows: as it is
+
+
+# 1.75.0: an ASN file's records, as DB-IP's IP to ASN Lite holds them (MaxMind's GeoLite2-ASN names), one under traits
+ASNS = [("1.1.1.0/24", {"autonomous_system_number": 9999, "autonomous_system_organization": "not this one"}),
+        ("81.2.69.0/24", {"autonomous_system_number": 20712, "autonomous_system_organization": "Andrews & Arnold Ltd"}),
+        ("175.16.199.0/24", {"traits": {"autonomous_system_number": "AS4837",
+                                        "autonomous_system_organization": "China Unicom"}})]
+
+
+@needs_reader
+def test_an_asn_file_beside_the_geoip_file_gives_each_place_its_network(tmp_path):
+    """1.75.0: GeoIP.find opens the ASN file in geoip/asn/ beside the GeoIP file; a place with no network of its own
+    gets the ASN file's, one with its own keeps it, and the ASN file places nothing by itself."""
+    from liminal_libs import geo
+    folder = tmp_path / "geoip"
+    folder.mkdir()
+    (folder / "dbip-city-lite-2026-11.mmdb").write_bytes(mmdb(PLACES))
+    with GeoIP.find(folder) as alone:
+        assert alone.asn is None and alone.lookup("81.2.69.142").asn is None and alone.describe()["asn"] is None
+    geo.asn_folder(folder).mkdir()
+    (geo.asn_folder(folder) / "dbip-asn-lite-2026-11.mmdb").write_bytes(mmdb(ASNS, kind="DBIP-ASN-Lite"))
+    g = GeoIP.find(folder)
+    try:
+        london = g.lookup("81.2.69.142")
+        assert (london.city, london.asn, london.org) == ("London", 20712, "Andrews & Arnold Ltd")
+        assert g.lookup("1.1.1.1").asn == 13335  # the GeoIP file's own network kept
+        changchun = g.lookup("175.16.199.5")
+        assert (changchun.asn, changchun.org) == (4837, "China Unicom")  # under traits, as "AS4837"
+        assert g.lookup("89.160.20.112").city == "Linköping" and g.lookup("89.160.20.112").asn is None  # none there
+        assert g.lookup("10.0.0.1") is None  # the local network: never looked up in either
+        d = g.describe()
+        assert d["asn"]["file"] == "dbip-asn-lite-2026-11.mmdb" and d["asn"]["type"] == "DBIP-ASN-Lite"
+        assert [p.name for p in folder.iterdir() if p.is_file()] == ["dbip-city-lite-2026-11.mmdb"]
+    finally:
+        g.close()
+    assert g.asn.lookup("81.2.69.142") is None  # closed for good with the GeoIP file
+
+
+def test_a_records_network_is_read_under_the_names_files_use():
+    """1.75.0: GeoLite2-ASN's names at the top, GeoIP2's under traits, the shorter ones; a number only a whole one
+    of 32 bits."""
+    from liminal_libs import geo
+    assert geo._network({"autonomous_system_number": 13335, "autonomous_system_organization": "Cloudflare, Inc."}) == (
+        13335, "Cloudflare, Inc.")
+    assert geo._network({"traits": {"autonomous_system_number": 64500, "isp": "An ISP"}}) == (64500, "An ISP")
+    assert geo._network({"asn": "AS4837", "as_org": "China Unicom"}) == (4837, "China Unicom")
+    for bad in (True, 0, -5, 1 << 32, "ASX", "12.5", "AS²", "٣", None, [1], {"n": 1}):
+        assert geo._network({"autonomous_system_number": bad}) == (None, None)
