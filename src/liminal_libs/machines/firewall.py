@@ -461,11 +461,17 @@ class Firewall(MachinePlugin):
     def make_world_routes(self) -> routes_module.Routes:
         """The Routes the tab traces with: the system's own (netpath.trace), each route kept in the hosts database
         (1.68.0). A subclass's tests hand a stand-in."""
-        return routes_module.Routes(keep=self._keep_route, bootstrap=self.RDAP_BOOTSTRAP, known=self._routed)
+        return routes_module.Routes(keep=self._keep_route, bootstrap=self.RDAP_BOOTSTRAP, known=self._routed,
+                                    stored=self._stored_routes)
 
     def _routed(self) -> set[str]:
         """1.74.0: the hosts the hosts database has a route to: each is not traced again."""
         return set() if self.not_for_here() else self.netstat_view().book.routed()
+
+    def _stored_routes(self, addresses) -> dict:
+        """1.74.1: the routes the hosts database keeps of these hosts, read back for the tab (HostBook.routes_of);
+        none on a machine the plugin is not for."""
+        return {} if self.not_for_here() else self.netstat_view().book.routes_of(addresses)
 
     def _keep_route(self, *route) -> None:
         """A traced route into this plugin's hosts database (hostbook.HostBook.keep_route); nothing on a machine the

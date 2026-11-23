@@ -1757,3 +1757,23 @@ def test_every_trace_is_kept_its_own_row_and_forgetting_lets_them_go(db):
         assert con.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 0
     finally:
         con.close()
+
+
+def test_a_hosts_kept_routes_are_handed_back_the_checks_others_first_the_drawn_one_last(db):
+    """1.74.1: routes_of, for the hosts not traced again after a restart."""
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    other = [{"n": 1, "address": "62.0.0.2", "ms": 2.0}, {"n": 2, "address": WEB, "ms": 9.0}]
+    drawn = [{"n": 1, "address": "62.0.0.1", "ms": 1.0}, {"n": 2, "address": None, "ms": None},
+             {"n": 3, "address": WEB, "ms": 8.0}]
+    b.keep_route(WEB, T0 + 1, True, "icmp", other, "")
+    b.keep_route(WEB, T0 + 1, True, "icmp", drawn, "Amsterdam")
+    b.keep_route("81.2.69.160", T0 + 2, False, "icmp", [], "")
+    b.flush()
+    got = b.routes_of([WEB, "81.2.69.160", "81.2.69.142", ""])
+    assert set(got) == {WEB, "81.2.69.160"}  # the one with none left out
+    assert [r["hops"] for r in got[WEB]] == [other, drawn] and got[WEB][-1]["traced"] == T0 + 1
+    assert got[WEB][-1]["reached"] is True and got[WEB][-1]["how"] == "icmp"
+    assert got["81.2.69.160"] == [{"traced": T0 + 2, "reached": False, "how": "icmp", "hops": []}]
+    assert b.routes_of([]) == {} and HostBook(db.parent / "none.db").routes_of([WEB]) == {}  # no file: none made
+    assert not (db.parent / "none.db").exists()

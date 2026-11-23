@@ -1053,3 +1053,22 @@ def test_the_netstat_tab_tables_every_connection_recorded_its_who_what_when_wher
     database = page["tables"][1]
     assert any(r[0] == "Connections" and "at most, each its own row" in r[1] for r in database["rows"])
     fw.detach()
+
+
+def test_the_routes_the_hosts_database_keeps_are_handed_to_the_tabs_routes(tmp_path):
+    """1.74.1: the base's routes read the hosts database's routes back (HostBook.routes_of), here only."""
+    fw = Wall(tmp_path, placing=Placing())
+    book = fw.netstat_view().book
+    book.keep_route("81.2.69.142", NOW, True, "icmp", [{"n": 1, "address": "81.2.69.142", "ms": 9.0}], "")
+    book.flush()
+    got = fw._stored_routes(["81.2.69.142"])
+    assert got["81.2.69.142"][-1]["hops"] == [{"n": 1, "address": "81.2.69.142", "ms": 9.0}]
+    routes = Firewall.make_world_routes(fw)
+    try:
+        assert routes._stored == fw._stored_routes and routes._known == fw._routed
+    finally:
+        routes.close()
+    away = Wall(tmp_path)
+    away.not_for_here = lambda: "for a Windows machine"
+    assert away._stored_routes(["81.2.69.142"]) == {}
+    fw.detach()

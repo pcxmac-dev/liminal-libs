@@ -98,6 +98,7 @@ CONNECTIONS = 500_000  # connections kept, a row each (about 150 MB with ordinar
 KEEP_DAYS = 90  # a connection that ended longer ago than this is let go
 ROUTES = 20_000  # routes kept, one a host: the ones traced longest ago pruned first
 ROUTE_DAYS = 30  # a route traced longer ago than this is let go
+ROUTES_OF = 256  # 1.74.1: the hosts whose kept routes one read hands back, at most
 # 1.74.0 (the user, 2026-11-22: "all routes need to be saved in a database for now"): every trace kept, each its
 # own row of `traces`, however often a host is traced again and however long ago; TRACES of them at most, the
 # ones traced longest ago let go first (about 2 kB a trace: some 1 GB at the most)
@@ -513,6 +514,18 @@ def _placed(place) -> tuple:
     asn = asn if isinstance(asn, int) and not isinstance(asn, bool) and 0 < asn < 1 << 32 else None
     return (_clip(get("country_name")) or code or None, code or None, _clip(get("city")) or None, lat, lon, asn,
             _clip(get("org")) or None)
+
+
+def _route_row(traced, reached, how, hops) -> dict | None:
+    """1.74.1: a kept route as routes_of hands it back; None where its hops cannot be read."""
+    try:
+        listed = json.loads(hops)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(listed, list):
+        return None
+    return {"traced": traced, "reached": bool(reached), "how": how,
+            "hops": [h for h in listed if isinstance(h, dict)]}
 
 
 def _discard(name) -> None:
@@ -1281,6 +1294,35 @@ class HostBook:
     def routed(self) -> set[str]:
         """1.74.0: the hosts with a route traced and kept (their routes' rows): each is not traced again."""
         return self._read(lambda conn: {row[0] for row in conn.execute("SELECT remote FROM routes")}, set())
+
+    def routes_of(self, remotes) -> dict[str, list[dict]]:
+        """1.74.1: the routes kept of these hosts (ROUTES_OF at most), as their last check found them, for the hosts
+        not traced again (routed): {remote: [{"traced", "reached", "how", "hops"}, ...]}, the check's other routes
+        (the traces' rows of its time) first and the one drawn (the routes' row) last; a host with none, or whose
+        hops cannot be read, left out."""
+        hosts = list(dict.fromkeys(_clip(r) for r in remotes if r))[:ROUTES_OF]
+        if not hosts:
+            return {}
+
+        def work(conn: sqlite3.Connection) -> dict[str, list[dict]]:
+            marks = ", ".join("?" * len(hosts))
+            drawn = {row[0]: row[1:] for row in conn.execute(
+                f"SELECT remote, traced, reached, how, hops FROM routes WHERE remote IN ({marks})", hosts)}
+            others: dict[str, list] = {}
+            if drawn:
+                pairs = ", ".join(["(?, ?)"] * len(drawn))
+                for remote, traced, reached, how, hops in conn.execute(
+                        "SELECT remote, traced, reached, how, hops FROM traces WHERE (remote, traced) IN "
+                        f"(VALUES {pairs}) ORDER BY id", [v for r, row in drawn.items() for v in (r, row[0])]):
+                    if hops != drawn[remote][3]:  # the drawn one is a trace too: kept once
+                        others.setdefault(remote, []).append((traced, reached, how, hops))
+            out: dict[str, list[dict]] = {}
+            for remote, row in drawn.items():
+                last = _route_row(*row)
+                if last is not None:  # its drawn route unreadable: the host left out
+                    out[remote] = [r for r in map(lambda o: _route_row(*o), others.get(remote, ())) if r] + [last]
+            return out
+        return self._read(work, {})
 
     def ports(self, limit: int = 100, **filters) -> list[dict]:
         """The services' ports summed over the rows that pass the filters (`hosts`' own, by name), the ones with the

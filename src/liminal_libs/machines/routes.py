@@ -34,6 +34,9 @@ KEEP_S = 3600.0  # a route that failed is traced again after this long, while it
 CHECKS = 3
 MAX_DONE = 100_000  # hosts remembered as traced, in this process
 MAX_KEPT = 1024  # routes kept, the least recently traced let go first
+# 1.74.1: the hosts traced before (not traced again) whose routes the hosts database keeps are read back from it
+# as they are wanted, once each, this many at one ask at most
+ROUTES_READ = 256
 MAX_WAITING = 512  # addresses waiting to be traced at most: the rest are asked for again at the tab's next ask
 GAP_S = 0.25  # the pause between two routes
 TIMEOUT_S = 20.0  # tracing stops this long after the tab was last asked (as the watching: world.TIMEOUT_S)
@@ -65,6 +68,17 @@ WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a 
                 "are looked up again at each ask, and as more lines are installed.")
 
 
+def _ago(seconds: float) -> str:
+    """How long ago a route was traced, in words (1.74.1: a route read back may be days old)."""
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{round(seconds / 60)} min ago"
+    if seconds < 2 * 86_400:
+        return f"{round(seconds / 3600)} h ago"
+    return f"{round(seconds / 86_400)} days ago"
+
+
 def _key(lat, lon) -> tuple[float, float] | None:
     """A place as the globe's dots are matched to routes: its point to about a hundred metres."""
     if lat is None or lon is None:
@@ -76,7 +90,7 @@ class Routes:
     """The routes of one plugin's World Wide Web tab: what waits to be traced, what was, and the thread tracing."""
 
     def __init__(self, *, tracer=None, clock=None, sleep=None, timeout: float = TIMEOUT_S, start=None, keep=None,
-                 wall=None, bootstrap=(), known=None):
+                 wall=None, bootstrap=(), known=None, stored=None):
         # the system's tracers, stopped once the tab is left or the routes closed (review: none outlives them)
         self._tracer = tracer or (lambda address: netpath.trace(address, stop=self._stopping))
         self.clock = clock or time.monotonic
@@ -101,6 +115,9 @@ class Routes:
         self._known = known
         self._done: set[str] | None = None
         self._alternates: dict[str, list] = {}
+        # 1.74.1: their routes read back (`stored(addresses)`: the hosts database's, HostBook.routes_of), once each
+        self._stored = stored
+        self._loaded: set[str] = set()
         # 1.69.0: the network the routes are drawn on, made from the plugin's installed layers when the page asks
         self.network = network_module.Network()
         # 1.71.0: both sides kept and paired, the lookup queue with them (machines/composite.py)
@@ -140,15 +157,24 @@ class Routes:
             with self._lock:
                 if self._done is None:
                     self._done = done
+        wanted = []
+        for a in addresses:
+            try:
+                wanted.append(netpath.traceable(a))
+            except ValueError:
+                continue
+        back: list[str] = []
         with self._lock:
             if self.closed:
                 return
             self._asked = now
-            for a in addresses:
-                try:
-                    a = netpath.traceable(a)
-                except ValueError:
-                    continue
+            if self._stored is not None:  # 1.74.1: the hosts traced before, their routes not in memory yet
+                back = [a for a in dict.fromkeys(wanted) if a in self._done and a not in self._kept
+                        and a not in self._loaded][:ROUTES_READ]
+                if len(self._loaded) + len(back) > MAX_DONE:
+                    self._loaded.clear()
+                self._loaded.update(back)
+            for a in wanted:
                 kept = self._kept.get(a)
                 if a in self._done or (kept is not None and now - kept[0] < KEEP_S) or a in self._waiting \
                         or a == self._busy:
@@ -159,6 +185,8 @@ class Routes:
             start = bool(self._waiting) and not self._running
             if start:
                 self._running = True
+        if back:
+            self._read_back(back)
         if start:
             try:
                 self._start(self._loop)
@@ -202,8 +230,47 @@ class Routes:
             while len(self._kept) > MAX_KEPT:
                 gone, _ = self._kept.popitem(last=False)
                 self._alternates.pop(gone, None)
+                self._loaded.discard(gone)  # 1.74.1: read back again when wanted again
             self.traced += 1
         return True
+
+    def _read_back(self, addresses: list[str]) -> None:
+        """1.74.1: the routes the hosts database keeps of these hosts (traced before, so not traced again) put
+        back in memory as their last check found them: drawn and tabled as if traced now, their age their own,
+        never saved again. A read that fails leaves them out (read again after a restart)."""
+        try:
+            found = self._stored(addresses) or {}
+        except Exception:  # noqa: BLE001 - nothing read back: none of them drawn, nothing else lost
+            return
+        now, wall = self.clock(), self._wall()
+        with self._lock:
+            if self.closed:
+                return
+            for address in addresses:
+                rows = found.get(address) or ()
+                if address in self._kept:
+                    continue
+                routes, traced = [], None
+                for row in rows:
+                    try:
+                        when = float(row["traced"])
+                        hops = tuple(netpath.Hop(int(h["n"]), str(h["address"]) if h.get("address") else None,
+                                                 float(h["ms"]) if h.get("ms") is not None else None)
+                                     for h in row.get("hops") or ())
+                    except (KeyError, TypeError, ValueError, AttributeError):
+                        continue
+                    routes.append(netpath.Trace(address, hops, bool(row.get("reached")), str(row.get("how") or "")))
+                    traced = when
+                if not routes or traced is None:
+                    continue
+                at = now - max(0.0, wall - traced)  # the drawn one's age (the last row's), in this clock
+                self._kept[address] = (at, routes[-1])
+                self._alternates[address] = routes[:-1]
+                self._saved.add((address, at))  # kept already: never saved again
+            while len(self._kept) > MAX_KEPT:
+                gone, _ = self._kept.popitem(last=False)
+                self._alternates.pop(gone, None)
+                self._loaded.discard(gone)
 
     def _loop(self) -> None:
         try:
@@ -435,7 +502,7 @@ class Routes:
     def _save(self, address: str, at: float, route: netpath.Trace, way: list, geoip, now: float) -> None:
         """A route kept in the hosts database once (1.68.0): every hop with the place the GeoIP file gives it, the
         places on its way in words. A keeper that fails is passed over: the route is kept at its next trace."""
-        if self._keep is None or (address, at) in self._saved:
+        if self._keep is None or (address, at) in self._saved or address in self._loaded:  # 1.74.1: read back
             return
         traced = self._wall() - (now - at)
         try:  # 1.74.0: every other route of the check its own row first, the one drawn last (the host's newest)
@@ -537,13 +604,15 @@ class Routes:
                         + (", the address reached" if route.reached else ", the address itself did not answer"))
             table_rows.append([{"text": address, "sub": where} if where else address, said,
                                " → ".join(names) if names else "no hop placed",
-                               f"{round(age / 60)} min ago" if age >= 60 else "just now"])
+                               _ago(age)])
         tracing = f" Tracing {busy} now." if busy else ""
         note = (f"Every connection open now to an address on the internet has its route traced in turn while this tab "
                 f"is shown, and a place's line on the globe runs through its route's placed hops: {len(kept)} of "
                 f"{len(wanted)} traced, {waiting} waiting.{tracing} On Windows each route is asked through its ICMP API "
                 "(small echo probes, about 16 at once, no administrator); elsewhere through traceroute or tracepath. "
-                "Nothing is traced while the tab is not shown; a route is kept an hour, in memory only. A router's "
+                "Nothing is traced while the tab is not shown. A host is traced once, to its end (each check "
+                f"{CHECKS} traces, every distinct route kept), and its routes are kept in the hosts database: after a "
+                "restart they are read back from it, not traced again. A router's "
                 "place is where the GeoIP file puts its address, often its network's home rather than the router. "
                 "Each leg follows the cables, backbones and lines on land installed below where its way along them "
                 f"is at most {network_module.DETOUR:g} times its straight distance; else it is not drawn, and waits "

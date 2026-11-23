@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.74.1 (2026-11-22)
+
+The routes kept read back. After 1.74.0 landed and the platform restarted, the World Wide Web tab's Routes table, its
+hop table and the globe's routes were empty though the hosts database kept 329 routes: 1.74.0 traces a host once,
+never again after a restart (HostBook.routed), and read none of the kept routes back.
+
+- **Read back, once each** (hostbook.py, machines/routes.py, machines/firewall.py): `HostBook.routes_of(remotes)` hands
+  back each host's kept routes as its last check found them (the check's other routes from `traces`, the one drawn
+  from `routes`, last; 256 hosts a read at most); the tab's routes read them back as the hosts are wanted, once each,
+  so they are drawn and tabled again with their own age, never traced or saved again.
+- **The Routes table** says so in its note (a host traced once, to its end; its routes kept and read back after a
+  restart), and its Traced column says hours and days too (a route read back may be days old).
+
 ## 1.74.0 (2026-11-22)
 
 The routes kept whole, checked once, told hop by hop; the traffic watched on a switch. The user, 2026-11-22: "all

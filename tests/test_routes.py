@@ -310,3 +310,49 @@ def test_every_hop_of_each_route_is_tabled_in_order_the_missing_kept_and_each_cr
     assert rows[2][8] == {"text": "exchange point", "sub": "its name: ae-3.zayo.de-cix.fra.example.net"}
     assert rows[2][10] == {"text": "⇄ Zayo", "sub": "from Charter at an exchange point"}
     assert rows[2][9] == {"text": "exchange point", "sub": "Charter to Zayo"}
+
+
+def test_a_host_traced_before_has_its_kept_routes_read_back_not_traced_or_saved_again():
+    """1.74.1: after a restart the hosts database's routes are drawn and tabled again, read back once each."""
+    tracer, asked = tracer_of({})
+    target = "81.2.69.142"
+    drawn = [{"n": 1, "address": "62.0.0.1", "ms": 1.0}, {"n": 2, "address": None, "ms": None},
+             {"n": 3, "address": target, "ms": 9.0}]
+    other = [{"n": 1, "address": "62.0.0.2", "ms": 2.0}, {"n": 2, "address": target, "ms": 8.0}]
+    reads, saved = [], []
+
+    def stored(addresses):
+        reads.append(list(addresses))
+        return {target: [{"traced": 1_000.0, "reached": True, "how": "icmp", "hops": other},
+                         {"traced": 1_000.0, "reached": True, "how": "icmp", "hops": drawn}]}
+    r = Routes(tracer=tracer, clock=Clock(), start=lambda work: None, known=lambda: {target, "81.2.69.160"},
+               stored=stored, keep=lambda *a: saved.append(a), wall=lambda: 1_000.0 + 3 * 3600)
+    r.want([target, "81.2.69.160", "10.0.0.1"])
+    assert reads == [[target, "81.2.69.160"]] and r.describe()["waiting"] == 0  # read back, nothing to trace
+    route = r.route(target)
+    assert [h.address for h in route.hops] == ["62.0.0.1", None, target] and route.reached and route.how == "icmp"
+    assert [[h.address for h in f.hops] for f in r._alternates[target]] == [["62.0.0.2", target]]
+    page = {"globe": {"home": HOME, "origins": []}}
+    r.onto(page, Geo({}), [target, "81.2.69.160"])
+    table = next(t for t in page["tables"] if t["title"] == routes_module.TITLE)
+    assert [row[0] for row in table["rows"]] == [target] and table["rows"][0][3] == "3 h ago"
+    assert "read back" in table["note"]
+    hops = next(t for t in page["tables"] if t["title"] == routes_module.HOPS_TITLE)
+    assert [row[2] if isinstance(row[2], str) else row[2]["text"] for row in hops["rows"]] == ["62.0.0.1", "*", target]
+    r.want([target, "81.2.69.160"])
+    r.onto(page, Geo({}), [])  # the connection closed: kept already, never saved again
+    assert reads == [[target, "81.2.69.160"]] and saved == [] and asked == []
+
+
+def test_a_read_back_that_fails_draws_none_and_costs_the_tab_nothing():
+    def stored(addresses):
+        raise OSError("the disk is gone")
+    r = Routes(tracer=tracer_of({})[0], clock=Clock(), start=lambda work: None, known=lambda: {"81.2.69.142"},
+               stored=stored)
+    r.want(["81.2.69.142"])
+    assert r.route("81.2.69.142") is None and r.describe()["waiting"] == 0
+
+
+def test_how_long_ago_a_route_was_traced_in_words():
+    assert [routes_module._ago(s) for s in (5, 61, 3599, 3600, 7200, 86_400 * 2, 86_400 * 9)] == [
+        "just now", "1 min ago", "60 min ago", "1 h ago", "2 h ago", "2 days ago", "9 days ago"]
