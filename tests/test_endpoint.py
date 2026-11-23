@@ -6,16 +6,16 @@ a request, kept by its watchdog however slowly its connection, its handshake, it
 
 Every ask goes to a stand-in transport; the `requests` transport is run over a stand-in adapter, a slow sender over a
 stand-in connection under the real stack (http.client, urllib3, requests), and the deadline over stand-in sockets
-under the whole of it (urllib3's connections and their TLS wrapping too). No socket is connected and no process
-started: the shared guard (conftest.py, `no_outside`) fails a test that does either. No address is written whole
-here either: each is built from its parts, as the library's own are."""
+under the whole of it (urllib3's connections and their TLS wrapping too), each shut both as Windows shuts a socket
+and as Linux does, whichever system runs them. No socket is connected and no process started: the shared guard
+(conftest.py, `no_outside`) fails a test that does either. No address is written whole here either: each is built
+from its parts, as the library's own are."""
 from __future__ import annotations
 
 import errno
 import http.client
 import io
 import json
-import os
 import re
 import socket
 import ssl
@@ -864,6 +864,15 @@ def no_watchdog_left():
     assert watchdogs() == [], "a deadline's watchdog outlived its request"
 
 
+@pytest.fixture(params=[True, False], ids=["windows", "linux"])
+def closes(request, monkeypatch):
+    """A test of the deadline run as each system shuts a socket, whichever system this is: as Windows does, where a
+    wait ends only once its socket is closed (the watchdog closes a plain socket as well as shutting it down, and a
+    call on it then finds no socket: ENOTSOCK), and as Linux does (shut down alone: a read then gets nothing)."""
+    monkeypatch.setattr(endpoint, "_CLOSES", request.param)
+    return request.param
+
+
 class Feed(io.RawIOBase):
     """What http.client reads an answer from (a socket's makefile), over a Wire."""
 
@@ -886,25 +895,38 @@ class Feed(io.RawIOBase):
 class Wire:
     """A socket as a stand-in under the whole real stack (requests, urllib3's connection, http.client): its answer's
     `fast` bytes come at once, then `drip` again and again, a byte every STEP_S, for as long as it is not shut; `hangs`
-    names the step it waits at until it is shut ("connect", or as a TLS socket "handshake"). Shut down, or closed
-    (as socket.close() closes: once no file made of it is open), a connect or a handshake fails and a read gets
-    nothing, as a socket shut down reads. What was sent is kept, and how it ended (`ended`: "shutdown" and "close",
-    as they were asked)."""
+    names the step it waits at until it is shut ("connect", its peer silent; or as a TLS socket "handshake", its peer
+    still sending within each wait), or is "connected": a connect made just in time, its deadline coming and going as
+    it ends. What was sent is kept, and how it ended (`ended`: "shutdown" and "close", as they were asked).
+
+    Shut as the system endpoint._CLOSES names shuts a socket (each test of the deadline runs both, on any system).
+    Shut down where that ends a wait (Linux): a connect or a handshake fails, and a read gets nothing. Shut down where
+    it ends none (Windows): a wait ends at its peer's next byte, which resets the connection, and every later call
+    fails (ESHUTDOWN). Its C socket closed (the watchdog's close, at once whatever files made of it are open, as it
+    closes a plain socket on Windows; or its owner's, once no file made of it is open, as socket.close() puts it off):
+    a wait ends then, and every call fails as one on a socket that is no more does (ENOTSOCK), each counted in
+    `notsock`: on a TLS socket, a call OpenSSL would have made through a freed number, the next socket's made."""
 
     def __init__(self, fast: bytes = b"", drip: bytes = b"", hangs: str = ""):
         self.fast, self.drip, self.hangs = fast, drip, hangs
-        self.shut = threading.Event()
-        self.sent, self.given, self.handshakes, self.ended = b"", 0, 0, []
+        self.woken = threading.Event()  # what waits on it ends: shut down where that ends a wait, or closed
+        self.down = self.killed = False  # shut down; its C socket closed by the watchdog
+        self.sent, self.given, self.handshakes, self.ended, self.notsock = b"", 0, 0, [], 0
         self.where = self.timeout = None
-        self.files, self.closing = 0, False  # the files made of it still open; close() asked
+        self.files, self.closing = 0, False  # the files made of it still open; its owner's close() asked
         self.detached = False  # a TLS socket took its place (ssl detaches the plain one: it closes nothing then)
         self.waited_out = False  # waited SAFETY_S without being shut: what a deadline that holds never lets happen
         self.dripping = 0.0  # when its first slow byte was given
 
     @property
     def closed(self) -> bool:
-        """Closed for good: close() asked, and every file made of it closed too."""
+        """Closed for good by its owner: close() asked, and every file made of it closed too."""
         return self.closing and self.files == 0
+
+    @property
+    def gone(self) -> bool:
+        """Its C socket closed: by the watchdog, or by its owner for good."""
+        return self.killed or self.closed
 
     def detach(self) -> int:
         self.detached = True
@@ -913,11 +935,25 @@ class Wire:
     def let_go(self) -> None:
         self.files -= 1
         if self.closed:
-            self.shut.set()
+            self.woken.set()
 
-    def _wait(self) -> None:
-        if not self.shut.wait(SAFETY_S):
-            self.waited_out = True
+    def _wait(self, sending: bool) -> None:
+        """Until it is shut: woken; or, its peer `sending` (a byte within each wait), shut down by the time the next
+        byte comes, which ends a wait where a shutdown does not (Windows: the byte resets the connection)."""
+        began = time.monotonic()
+        while not self.woken.wait(STEP_S) and not (sending and self.down):
+            if time.monotonic() - began > SAFETY_S:
+                self.waited_out = True
+                return
+
+    def _check(self) -> None:
+        """A call on it as it is now: OSError once its C socket is closed (ENOTSOCK, counted), and on Windows once it
+        is shut down (ESHUTDOWN)."""
+        if self.gone:
+            self.notsock += 1
+            raise OSError(errno.ENOTSOCK, "an operation was attempted on something that is not a socket")
+        if self.down and endpoint._CLOSES:
+            raise OSError(errno.ESHUTDOWN, "a call on the socket after it was shut down")
 
     def setsockopt(self, *option):
         pass
@@ -930,20 +966,27 @@ class Wire:
 
     def connect(self, where):
         self.where = where
+        if self.hangs == "connected":  # made: its deadline comes, and its watchdog is done, as the connect ends
+            for thread in watchdogs():
+                thread.join(SAFETY_S)
+            return
         if self.hangs == "connect":
-            self._wait()
-        if self.shut.is_set():
+            self._wait(sending=False)
+        self._check()
+        if self.down:
             raise ConnectionResetError(errno.ECONNRESET, "the connection was reset")
 
     def do_handshake(self):
         self.handshakes += 1
         if self.hangs == "handshake":
-            self._wait()
-        if self.shut.is_set():
+            self._wait(sending=True)
+        self._check()
+        if self.down:
             raise ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
 
     def sendall(self, data):
-        if self.shut.is_set():
+        self._check()
+        if self.down:
             raise BrokenPipeError(errno.EPIPE, "the connection was shut")
         self.sent += bytes(data)
 
@@ -952,15 +995,19 @@ class Wire:
         return io.BufferedReader(Feed(self))
 
     def give(self, b) -> int:
-        if self.shut.is_set():
-            return 0
+        self._check()
+        if self.down:
+            return 0  # (a socket shut down reads nothing)
         if self.given < len(self.fast):
             n = min(len(b), len(self.fast) - self.given)
             b[:n] = self.fast[self.given:self.given + n]
             self.given += n
             return n
-        if not self.drip or self.shut.wait(STEP_S):
-            return 0  # the answer's end; or shut while the next byte was waited for: nothing more
+        if not self.drip:
+            return 0  # the answer's end
+        if self.woken.wait(STEP_S) or self.down:  # shut while the next byte was waited for: as a shut socket reads
+            self._check()
+            return 0
         self.dripping = self.dripping or time.monotonic()
         if time.monotonic() - self.dripping > SAFETY_S:  # never shut: it gives up, and the test says so
             self.waited_out = True
@@ -972,24 +1019,31 @@ class Wire:
 
     def shutdown(self, how):
         self.ended.append("shutdown")
-        self.shut.set()
+        self.down = True
+        if not endpoint._CLOSES:  # (on Windows a shutdown ends no wait: the peer's next byte does, or a close)
+            self.woken.set()
 
     def close(self):
         self.ended.append("close")
-        self.closing = True
-        if self.closed:
-            self.shut.set()
+        if threading.current_thread().name == "endpoint-deadline":  # the watchdog's: the C socket itself, at once
+            self.killed = True
+        else:  # its owner's: put off while a file made of it is open, as socket.close() puts it off
+            self.closing = True
+        if self.gone:
+            self.woken.set()
 
 
 class Context:
     """A TLS context as a stand-in, no ssl under it: what urllib3 sets on it and loads into it kept; its wrap_socket
-    hands back `tls`, a Wire of its own (ssl's socket takes the plain one's place, and shutting that one no longer
-    reaches it)."""
+    takes the plain socket's number as ssl does (`taking()`, when given, is called as it is taken), notes whether that
+    number was closed under it meanwhile (`freed`: the TLS socket's would then be the next socket's made), and hands
+    back `tls`, a Wire of its own (ssl's socket takes the plain one's place, and shutting that one no longer reaches
+    it)."""
 
-    def __init__(self, tls: Wire):
-        self.tls = tls
+    def __init__(self, tls: Wire, taking=None):
+        self.tls, self.taking = tls, taking
         self.verify_mode, self.check_hostname = ssl.CERT_NONE, True
-        self.loaded, self.alpn, self.wrapped = [], [], []
+        self.loaded, self.alpn, self.wrapped, self.freed = [], [], [], []
 
     def load_verify_locations(self, *args):
         self.loaded.append(args)
@@ -999,14 +1053,17 @@ class Context:
 
     def wrap_socket(self, sock, **kwargs):
         self.wrapped.append((sock, kwargs))
+        if self.taking is not None:
+            self.taking()
+        self.freed.append(sock.gone)
         sock.detach()  # as ssl takes the plain socket's place
         return self.tls
 
 
 class Wires:
     """What a request's connection reaches, as stand-ins: every name found at `addresses` documentation addresses
-    (`found()`, when given, is called before it is: a slow lookup), and each socket made the next Wire of `ready`
-    (kept in `made`)."""
+    (`found()`, when given, is called before it is: a slow lookup, or one that fails), and each socket made the next
+    Wire of `ready` (kept in `made`)."""
 
     def __init__(self):
         self.ready, self.made, self.looked = [], [], []
@@ -1043,7 +1100,7 @@ def timed(ask) -> tuple[BaseException | None, float]:
     return None, time.monotonic() - began
 
 
-def test_a_request_hung_at_its_connection_is_cut_off_at_its_deadline(wires):
+def test_a_request_hung_at_its_connection_is_cut_off_at_its_deadline(wires, closes):
     """A connect that outlasts the deadline (an address that answers nothing, the first of two): the watchdog shuts
     the socket it holds from before its connect, and the ask fails at once, as one whose read waited too long, in the
     deadline's own seconds (twice the wait); the second address is never tried, and nothing outlives the ask."""
@@ -1059,11 +1116,13 @@ def test_a_request_hung_at_its_connection_is_cut_off_at_its_deadline(wires):
     assert "shutdown" in first.ended and first.closed and watchdogs() == []
 
 
-def test_a_request_hung_at_its_tls_handshake_is_cut_off_at_its_deadline(wires, monkeypatch):
+def test_a_request_hung_at_its_tls_handshake_is_cut_off_at_its_deadline(wires, monkeypatch, closes):
     """A handshake that never ends: the TLS socket is held from before its handshake (endpoint._Held), so the watchdog's
-    shutting reaches it (shutting the plain one under it would not), and the ask fails at its deadline. urllib3 set on
-    the context what it sets on its own (its check, its CA bundle, ALPN), and the context was asked for the address's
-    name and for no handshake of its own."""
+    shutting reaches it (shutting the plain one under it would not), and the ask fails at its deadline. The watchdog
+    only shuts it down, on Windows too (where its peer's next byte then ends the wait), and its owner closes it once
+    its handshake has failed: OpenSSL never reads or writes through a number closed under it. urllib3 set on the
+    context what it sets on its own (its check, its CA bundle, ALPN), and the context was asked for the address's name
+    and for no handshake of its own."""
     plain, tls = Wire(), Wire(hangs="handshake")
     wires.ready.append(plain)
     context = Context(tls)
@@ -1073,14 +1132,42 @@ def test_a_request_hung_at_its_tls_handshake_is_cut_off_at_its_deadline(wires, m
     assert isinstance(late, EndpointError), late
     assert str(late) == "GET /v1/models: no answer from models.example:443 within 0.2 s" == at.seen["error"]
     assert 0.15 <= took < 5.0 and tls.handshakes == 1 and not tls.waited_out
-    assert "shutdown" in tls.ended and tls.closed and plain.detached and watchdogs() == []
+    assert tls.ended == ["shutdown", "close"] and tls.notsock == 0 and tls.closed  # shut down; closed by its owner
+    assert plain.detached and context.freed == [False] and watchdogs() == []
     (sock, kwargs), = context.wrapped
     assert sock is plain and kwargs["server_hostname"] == "models.example"
     assert kwargs["do_handshake_on_connect"] is False  # its own, made once the TLS socket was held
     assert context.verify_mode == ssl.CERT_REQUIRED and len(context.loaded) == 1 and context.alpn == ["http/1.1"]
 
 
-def test_an_answer_whose_head_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires):
+def test_a_plain_socket_is_let_go_before_a_tls_socket_takes_its_number(wires, monkeypatch, closes):
+    """ssl copies the plain socket's number for OpenSSL, which reads and writes through it from then on, and detaches
+    the plain socket: the watch lets that one go first and holds the TLS one in its place, so that a deadline that
+    comes as the number is taken closes nothing under it (on Windows a closed number goes to the next socket made, and
+    the TLS socket's reads and writes would go on in that one's connection). A deadline that came before the TLS
+    context was asked hands it nothing. Either way the ask is cut off at its deadline, and nothing outlives it."""
+    def deadline():  # the deadline comes, and its watchdog is done
+        for thread in watchdogs():
+            thread.join(SAFETY_S)
+    contexts: list = []
+    monkeypatch.setattr(endpoint, "_context", lambda: contexts[-1])
+    at = Endpoint(SAFE, timeout=0.1, clock=Clock())
+    plain, tls = Wire(), Wire()
+    wires.ready.append(plain)
+    contexts.append(Context(tls, taking=deadline))  # it comes as ssl takes the plain socket's number
+    late, took = timed(at.models)
+    assert str(late) == "GET /v1/models: no answer from models.example:443 within 0.2 s" == at.seen["error"]
+    assert contexts[0].freed == [False] and plain.detached and plain.ended == ["close"]  # by its owner alone
+    assert tls.ended == ["shutdown", "close"] and tls.notsock == 0 and tls.closed and 0.15 <= took < 5.0
+    early = Wire(hangs="connected")  # its deadline comes as its connect ends: before the TLS context is asked
+    wires.ready.append(early)
+    contexts.append(Context(Wire()))
+    late, took = timed(at.models)
+    assert str(late) == "GET /v1/models: no answer from models.example:443 within 0.2 s" == at.seen["error"]
+    assert contexts[1].wrapped == [] and early.closed and 0.15 <= took < 5.0 and watchdogs() == []
+
+
+def test_an_answer_whose_head_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires, closes):
     """The status line at once, then a header a byte every STEP_S: no read waits as long as the socket's timeout, and
     before 1.76.0 nothing bounded them all. The watchdog shuts the socket at the deadline: the ask fails then, in the
     deadline's seconds, and what http.client made of the head it had is not taken for an answer."""
@@ -1094,10 +1181,11 @@ def test_an_answer_whose_head_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(
     assert watchdogs() == []
 
 
-def test_an_answer_whose_body_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires):
+def test_an_answer_whose_body_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(wires, closes):
     """The head at once, then the body a byte every STEP_S, no length said (it ends with its connection): the watchdog
-    shuts the socket at the deadline, and the nothing a shut socket reads is not taken for the body's end (the bytes
-    so far would have been a whole answer of no JSON: None). Not whole, in its bound's words and the deadline's
+    shuts the socket at the deadline, and what the read waiting on it then gets is the deadline's: not the body's end
+    where it gets nothing (Linux; the bytes so far would have been a whole answer of no JSON: None), nor a connection
+    that broke off where it fails, its socket closed (Windows). Not whole, in its bound's words and the deadline's
     seconds."""
     wire = Wire(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", b"x")
     wires.ready.append(wire)
@@ -1109,10 +1197,11 @@ def test_an_answer_whose_body_comes_a_byte_at_a_time_is_cut_off_at_its_deadline(
     assert "shutdown" in wire.ended and wire.closed and watchdogs() == []  # (its close was asked before: put off)
 
 
-def test_a_stream_is_left_at_its_deadline_as_a_read_waits_and_its_head_bounded_by_it(wires):
-    """A stream's deadline is the whole request's: a read waiting when it comes is ended by the watchdog, and the
-    stream left there without an error, its last line the one that came whole; an answer whose head has not come
-    by then is an EndpointError in the deadline's seconds."""
+def test_a_stream_is_left_at_its_deadline_as_a_read_waits_and_its_head_bounded_by_it(wires, closes):
+    """A stream's deadline is the whole request's: a read waiting when it comes is ended by the watchdog (it gets
+    nothing, or fails as its socket is closed: either is the deadline's), and the stream left there without an error,
+    its last line the one that came whole; an answer whose head has not come by then is an EndpointError in the
+    deadline's seconds."""
     events = Wire(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: one\n", b".")
     wires.ready.append(events)
     at = Endpoint(HERE, timeout=0.1, clock=Clock())
@@ -1130,7 +1219,7 @@ def test_a_stream_is_left_at_its_deadline_as_a_read_waits_and_its_head_bounded_b
     assert 0.25 <= took < 5.0 and b'{"model":"qwen3:8b"}' in head.sent and head.closed and watchdogs() == []
 
 
-def test_the_requests_transport_is_overdue_as_a_slow_read_is_late(wires):
+def test_the_requests_transport_is_overdue_as_a_slow_read_is_late(wires, closes):
     """The transport's own deadline: twice its timeout for an answer read whole (Endpoint's bound on one, Jenkins'
     too), or the one given. Overdue is a TimeoutError, and trouble() says it as it says a read that waited past its
     timeout, in the deadline's own seconds; a body cut off is Overdue from its next read on, and the reply's close
@@ -1167,6 +1256,27 @@ def test_a_name_found_after_the_deadline_connects_nothing(wires):
     assert wires.looked == [("127.0.0.1", 11434)] and wires.made == [] and watchdogs() == []
 
 
+def test_a_name_not_found_once_the_deadline_has_passed_is_said_as_one(wires):
+    """A name this machine does not find is said as one whenever its lookup fails, at once or once the deadline has
+    passed (a DNS server that does not answer: Windows' resolver gives up after some 10 s): the lookup is not cut
+    short and no socket was shut, so the failure is the lookup's own, not the deadline's, and it is not said as an
+    answer that came too slowly."""
+    def unknown():
+        raise socket.gaierror(socket.EAI_NONAME, "no such name")
+
+    def unknown_late():  # the name not found only once the deadline has passed: its watchdog waited for to the end
+        for thread in watchdogs():
+            thread.join(SAFETY_S)
+        unknown()
+    at = Endpoint(THERE, plain=True, timeout=0.1, clock=Clock())
+    for found in (unknown, unknown_late):
+        wires.found = found
+        late, _ = timed(lambda: at.get("/api/version"))
+        assert isinstance(late, EndpointError) and late.status == 0, late
+        assert str(late) == "GET /api/version: gpu-box.example:8000 is no name this machine finds" == at.seen["error"]
+    assert wires.looked == [("gpu-box.example", 8000)] * 2 and wires.made == [] and watchdogs() == []
+
+
 def test_an_answer_in_time_through_the_watched_connections_is_whole_and_leaves_nothing(wires, monkeypatch):
     """The same stack answering in time: whole over http, and over https through the TLS socket held before its
     handshake (made once, by endpoint._Held); the watchdog stopped with its request, nothing shut, every socket
@@ -1185,38 +1295,54 @@ def test_an_answer_in_time_through_the_watched_connections_is_whole_and_leaves_n
     assert not any("shutdown" in w.ended for w in (plain, under, tls))  # its watchdog stopped before its time
 
 
-def test_a_watch_shuts_what_it_holds_at_its_deadline_and_ends_with_its_request():
+def test_a_watch_shuts_what_it_holds_at_its_deadline_and_ends_with_its_request(closes):
     """A watch stopped first shuts nothing, and its thread is gone once stop() returns; one whose time is up shuts
-    what it holds (shut down, and on Windows closed too) and ends by itself, and shuts at once what it is handed
-    after; one longer than any wait can be waits the longest one can, until its request ends."""
-    early, held, after = Wire(), Wire(), Wire()
+    what it holds (a plain socket shut down, and closed too where a shutdown ends no wait; a TLS one only shut down,
+    on every system) and ends by itself, and shuts at once what it is handed after; a socket let go before its time
+    is up is never reached, and one let go after it is Overdue; one longer than any wait can be waits the longest one
+    can, until its request ends."""
+    early, held, tls, freed, after = Wire(), Wire(), Wire(), Wire(), Wire()
     watch = endpoint._Watch(60)
     assert watch.hold(early) is early and len(watchdogs()) == 1
     watch.stop()
     assert not watch.fired and early.ended == [] and watchdogs() == []
     watch = endpoint._Watch(0.05)
     watch.hold(held)
+    watch.hold(freed)
+    watch.release(freed)  # (a TLS socket is to take its number)
+    assert watch.hold(tls, tls=True) is tls
     watch._thread.join(SAFETY_S)  # it fires by itself, then ends
-    assert watch.fired and held.ended == (["shutdown", "close"] if os.name == "nt" else ["shutdown"])
+    assert watch.fired and held.ended == (["shutdown", "close"] if closes else ["shutdown"])
+    assert tls.ended == ["shutdown"] and freed.ended == []
     watch.hold(after)
     assert after.ended == held.ended
+    with pytest.raises(endpoint.Overdue):
+        watch.release(after)
     watch.stop()
     endless = endpoint._Watch(float("inf"))
     endless.stop()
     assert not endless.fired and watchdogs() == []
 
 
-def test_a_socket_is_shut_through_a_file_made_of_it():
-    """On Windows a wait on a socket ends only once the socket is closed, and socket.close() puts that off while a
-    file made of it is open (as http.client reads an answer): the watchdog closes the C socket itself. Elsewhere its
-    shutdown ends a wait, and the socket is left for its owner to close. A socket made and never connected: nothing
-    is reached."""
+def test_a_socket_is_shut_through_a_file_made_of_it(closes):
+    """Where a wait on a socket ends only once it is closed (Windows), and socket.close() puts that off while a file
+    made of it is open (as http.client reads an answer), the watchdog closes a plain socket's C socket itself: a call
+    on it then finds no socket. Elsewhere its shutdown ends a wait, and the socket is left for its owner to close. A
+    TLS socket is only shut down on every system, its number its own until its owner closes it: OpenSSL reads and
+    writes through that number, which a close would free for the next socket made. Sockets made and never connected,
+    no handshake: nothing is reached."""
     with socket.socket() as made:
         file = made.makefile("rb")
         endpoint._shut(made)
-        assert (made.fileno() == -1) == (os.name == "nt")
+        assert (made.fileno() == -1) == closes
         file.close()
     assert made.fileno() == -1
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with context.wrap_socket(socket.socket(), server_hostname="models.example", do_handshake_on_connect=False) as tls:
+        number = tls.fileno()
+        endpoint._shut(tls)
+        assert isinstance(tls, ssl.SSLSocket) and tls.fileno() == number != -1
+    assert tls.fileno() == -1
 
 
 def test_the_librarys_own_transport_is_given_each_asks_deadline(monkeypatch):

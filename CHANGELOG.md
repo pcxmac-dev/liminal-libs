@@ -31,28 +31,38 @@ has to change for either, and the plugin API stays 2.4.
   the reply is let go or the request fails, so that none outlives its request. Once the time is up it shuts every
   socket the request holds: each one held from before it connects (the session's adapter dials as urllib3 does,
   address by address: `_dial`) and, over https, the TLS one from before its handshake (through a context that holds
-  it, `_Held`, since ssl detaches the plain socket under it). Each is shut down both ways and, on Windows, closed by
-  the C socket itself: a wait there ends only once its socket is closed, and socket.close() puts that off while
-  http.client's file of the socket is open.
+  it, `_Held`, since ssl detaches the plain socket under it). Each is shut down both ways and, on Windows, a plain
+  one is closed as well, by the C socket itself: a wait there ends only once its socket is closed, and socket.close()
+  puts that off while http.client's file of the socket is open. A TLS socket is only ever shut down, on Windows too:
+  OpenSSL reads and writes through the number it was given, which a close would free for the next socket the process
+  makes (Windows gives a number out again at once), and a read or a write waiting in OpenSSL would then go on in that
+  socket's connection. A call on it after that ends at once, and one already waiting on Windows ends at its peer's
+  next byte or at its own timeout, one wait past the deadline at most. The plain socket is let go before ssl takes
+  its number, and the TLS one held in its place.
 - **Said as a read that waited too long** (`Overdue`, new: a TimeoutError that carries the deadline's `seconds`):
   `trouble()` says it as it says a slow read, in the deadline's seconds ("no answer from … within N s"). Endpoint says
   a body cut off in its bound's words ("its answer was not whole after N s: not read") and leaves a stream where it
   is, as at its deadline before; a stream whose head has not come by then is an EndpointError. Once the watchdog has
-  fired, the nothing a shut socket reads is never taken for the body's end, so an answer that says no length is not
-  handed back cut short as if it were whole.
+  fired, what a shut socket reads is the deadline's: the nothing it reads is never taken for the body's end, so an
+  answer that says no length is not handed back cut short as if it were whole, and a read that fails on a socket it
+  closed (Windows) is not said as a connection that broke off.
 - **As before**: a name being looked up is not cut short (nothing cuts getaddrinfo short): the request ends once the
-  name is found, and no address is tried after the deadline. Only the library's own transport is given the deadline:
-  a stand-in transport (the plugins' tests') is asked with the six arguments it takes. A stream given no deadline has
-  no watchdog, and its connections are urllib3's own. A running app sends as before until it is restarted.
-- **Tests**: test_endpoint (12 new) runs stand-in sockets under the whole real stack (requests, urllib3's
+  name is found, and no address is tried after the deadline; a name not found is said as one ("… is no name this
+  machine finds"), even when its lookup fails only once the deadline has passed (Windows' resolver gives up after some
+  10 s), since no socket was shut for it. Only the library's own transport is given the deadline: a stand-in
+  transport (the plugins' tests') is asked with the six arguments it takes. A stream given no deadline has no
+  watchdog, and its connections are urllib3's own. A running app sends as before until it is restarted.
+- **Tests**: test_endpoint (14 new) runs stand-in sockets under the whole real stack (requests, urllib3's
   connections, http.client; TLS through a stand-in context), hung at the connection or at the TLS handshake, or
-  giving the head or the body a byte at a time, each byte within the socket's wait: the deadline holds, the errors'
-  words are checked, and no socket and no watchdog outlives a request (a fixture looks for watchdogs after every test
-  of the file). Each part of the fix undone fails its tests, and the deadline's tests passed 25 runs of 25 in Ubuntu
-  and 20 of 20 on Windows. test_icons (1 new) holds each mark to what makes it its maker's: found as a plugin's ICON
-  is, in one colour, inside the box, and its shapes (GoCD's stroke bold and open, Jenkins' head an egg with the grey
-  hair behind it and the bow tie below his chin, Buildbot's hexagon straight with the hole in it); each of 16 breaks
-  of the marks fails it.
+  giving the head or the body a byte at a time, each byte within the socket's wait, and each shut both as Windows
+  shuts a socket (a plain one closed: a call on it then fails) and as Linux does (shut down: a read gets nothing),
+  whichever system runs them: the deadline holds, the errors' words are checked, a TLS socket is never closed under
+  OpenSSL nor given a number closed under it, a name not found after the deadline is said as one, and no socket and
+  no watchdog outlives a request (a fixture looks for watchdogs after every test of the file). Each part of the fix
+  undone fails its tests, and the deadline's tests passed 25 runs of 25 in Ubuntu and 20 of 20 on Windows. test_icons
+  (1 new) holds each mark to what makes it its maker's: found as a plugin's ICON is, in one colour, inside the box,
+  and its shapes (GoCD's stroke bold and open, Jenkins' head an egg with the grey hair behind it and the bow tie below
+  his chin, Buildbot's hexagon straight with the hole in it); each of 16 breaks of the marks fails it.
 
 ## 1.75.3 (2026-11-22)
 

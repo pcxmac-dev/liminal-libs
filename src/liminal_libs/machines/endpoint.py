@@ -31,9 +31,12 @@ server expected there).
   the time is up it shuts the request's socket, so that a connect, a handshake or a read waiting on it ends then,
   however slowly its bytes came (each within the socket's wait), and the ask fails as one whose read waited too long
   (Overdue, a TimeoutError: "no answer from ... within N s", or for a body "its answer was not whole after N s"); a
-  stream is left where it is, as at its deadline. A name being looked up is not cut short (nothing cuts a lookup
-  short): the ask ends once the name is found. Only the library's own transport is given the deadline: a stand-in
-  has no socket to shut, and the bounds above are its asker's alone.
+  stream is left where it is, as at its deadline. On Windows a TLS socket is only shut down, never closed under
+  OpenSSL, which reads and writes through its number (closed, that number goes to the next socket made): a wait
+  there ends at its peer's next byte or at its own timeout, one wait past the deadline at most. A name being looked
+  up is not cut short (nothing cuts a lookup short): the ask ends once the name is found, and a name not found is
+  said as one, even once the deadline has passed. Only the library's own transport is given the deadline: a
+  stand-in has no socket to shut, and the bounds above are its asker's alone.
 - Asked only when a caller asks, with a short wait (LOOK_S): nothing is polled, and nothing is sent a second time.
   A look that failed is the next look's to repeat, and a write that got no answer may have been done.
 
@@ -49,6 +52,7 @@ import json as jsonlib
 import os
 import re
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -642,6 +646,12 @@ def _overdue(e: BaseException) -> Overdue | None:
     return next((x for x in _chain(e) if isinstance(x, Overdue)), None)
 
 
+def _unfound(e: BaseException) -> bool:
+    """Whether `e` is a name this machine does not find, or was caused by one (socket.gaierror, or urllib3's
+    NameResolutionError)."""
+    return any(isinstance(x, socket.gaierror) or type(x).__name__ == "NameResolutionError" for x in _chain(e))
+
+
 def trouble(e: BaseException, at: str, timeout: float | None = None, secrets: Iterable[str] = ()) -> str:
     """Why `at` (a host and port) gave no answer, in words: nothing listens there, none in time (`timeout` seconds;
     a request its deadline cut off, in the deadline's own: Overdue), a name this machine does not find, a certificate
@@ -655,7 +665,7 @@ def trouble(e: BaseException, at: str, timeout: float | None = None, secrets: It
         return f"nothing listens at {at}"
     if any(isinstance(x, TimeoutError) or "Timeout" in type(x).__name__ for x in chain):
         return f"no answer from {at} within {timeout:g} s" if timeout else f"no answer from {at} in time"
-    if any(isinstance(x, socket.gaierror) for x in chain) or "NameResolutionError" in names:
+    if _unfound(e):
         return f"{at} is no name this machine finds"
     if "SSLCertVerificationError" in names:
         return f"the certificate {at} shows is not one this machine trusts"
@@ -667,14 +677,25 @@ def trouble(e: BaseException, at: str, timeout: float | None = None, secrets: It
 # the watch of the request this thread sends now (requests_transport sets it while its adapter sends): what the
 # request's connections hand their sockets to
 _WATCH: contextvars.ContextVar[_Watch | None] = contextvars.ContextVar("liminal_endpoint_watch", default=None)
+# where a wait on a socket ends only once the socket is closed, not once it is shut down (Windows): _shut closes a
+# plain socket there as well (the tests shut their stand-ins both ways, on any system)
+_CLOSES = os.name == "nt"
 
 
-def _shut(sock) -> None:
-    """A socket shut so that what waits on it in another thread ends now: shut down both ways (on Linux a wait ends
-    then) and on Windows closed as well (a wait there ends only once its socket is closed), by the C socket itself,
-    since socket.close() puts that off while a file made of the socket is open (http.client reads an answer through
-    one). socket.socket's own shutdown, never an SSLSocket's, which lets go of its TLS state under the thread reading
-    it. One closed already is let be."""
+def _shut(sock, tls: bool = False) -> None:
+    """A socket shut so that what waits on it in another thread ends: shut down both ways (on Linux a wait ends then)
+    and, where a wait ends only once its socket is closed (_CLOSES: Windows), closed as well, by the C socket itself,
+    since socket.close() puts that off while a file made of it is open (http.client reads an answer through one): a
+    call on it then finds no socket, as CPython looks its number up again before each one. socket.socket's own
+    shutdown, never an SSLSocket's, which lets go of its TLS state under the thread reading it. One closed already is
+    let be.
+
+    A TLS socket (ssl's, or one held as one: `tls`) is only ever shut down: OpenSSL reads and writes through the
+    number it was given, and closing it would free that number for the next socket this process makes (Windows gives
+    it out again at once), whose connection a read or a write waiting in OpenSSL would then read from and write to.
+    A call on it after that ends at once, and one already waiting ends then on Linux; on Windows that one ends at its
+    peer's next byte (which resets the connection) or at its own timeout, one wait past the deadline at most. Its
+    owner closes it then."""
     real = isinstance(sock, socket.socket)
     try:
         if real:
@@ -683,7 +704,7 @@ def _shut(sock) -> None:
             sock.shutdown(socket.SHUT_RDWR)
     except (OSError, ValueError, AttributeError):
         pass
-    if os.name == "nt":
+    if _CLOSES and not tls and not isinstance(sock, ssl.SSLSocket):
         try:
             if real:
                 super(socket.socket, sock).close()
@@ -696,15 +717,15 @@ def _shut(sock) -> None:
 class _Watch:
     """One request's deadline, kept by a watchdog: a thread of the request's own ("endpoint-deadline") that waits
     `seconds`, then shuts every socket the request holds (hold: each from before it connects, a TLS one from before
-    its handshake), so that a connect, a handshake or a read waiting on one ends at once; `fired` says it did. stop()
+    its handshake), so that a connect, a handshake or a read waiting on one ends (_shut); `fired` says it did. stop()
     ends it with its request: its thread is waited for, and nothing is shut after it returns. A socket held once it
-    has fired is shut at once."""
+    has fired is shut at once; one let go (release: a TLS socket is to take its number) is never reached."""
 
     def __init__(self, seconds: float):
         self.seconds = max(0.0, float(seconds))
         self.fired = False
         self._lock = threading.Lock()
-        self._held: list = []
+        self._held: list[tuple] = []  # (a socket, whether it is a TLS one), as they were held
         self._ended = threading.Event()
         self._thread = threading.Thread(target=self._keep, name="endpoint-deadline", daemon=True)
         self._thread.start()
@@ -717,17 +738,27 @@ class _Watch:
                 return
             self.fired = True
             held, self._held = self._held, []
-        for sock in held:
-            _shut(sock)
+        for sock, tls in held:
+            _shut(sock, tls)
 
-    def hold(self, sock):
-        """`sock` held till its request ends, shut once the time is up (at once when it is up already); `sock` back."""
+    def hold(self, sock, tls: bool = False):
+        """`sock` held till its request ends, shut once the time is up (at once when it is up already); `sock` back.
+        `tls`: a TLS socket, which is only ever shut down (_shut)."""
         with self._lock:
             if not self.fired:
-                self._held.append(sock)
+                self._held.append((sock, tls))
                 return sock
-        _shut(sock)
+        _shut(sock, tls)
         return sock
+
+    def release(self, sock) -> None:
+        """`sock` held no longer, before a TLS socket takes its number (and is held in its place): nothing the watchdog
+        does reaches it from now on. Overdue when the time is up already: it was shut, or is being shut (on Windows
+        closed), and nothing is to take its number."""
+        with self._lock:
+            if self.fired:
+                raise Overdue(self.seconds)
+            self._held = [(held, tls) for held, tls in self._held if held is not sock]
 
     def stop(self) -> None:
         """Its request ended: nothing is shut from now on, and its thread is gone once this returns."""
@@ -786,8 +817,9 @@ class _Held:
     """A TLS context as a watched connection hands it to urllib3, which reads it, and sets its verify_mode and its
     check_hostname, as it would a context of its own (each read and set on the context itself). Its wrap_socket hands
     the TLS socket to the request's watch before its handshake, so that a handshake given a byte at a time is cut
-    short at the deadline too: the plain socket under it is the TLS one's from then on, and shutting that one no
-    longer reaches it."""
+    short at the deadline too, and lets the plain socket under it go first, before ssl takes its number for OpenSSL:
+    that number is the TLS socket's from then on, which the watchdog only shuts down, never closes (_shut), and
+    shutting the plain one would no longer reach it."""
 
     __slots__ = ("_context", "_watch")
 
@@ -801,10 +833,11 @@ class _Held:
                  "suppress_ragged_eofs": suppress_ragged_eofs, "server_hostname": server_hostname}
         if session is not None:  # (a context of pyOpenSSL's, as urllib3 can be made to use, takes none)
             asked["session"] = session
+        self._watch.release(sock)  # (Overdue when the time is up already: the plain socket is shut, or being shut)
         tls = self._context.wrap_socket(sock, **asked)
-        self._watch.hold(tls)
-        # pyOpenSSL's shakes hands in its wrap_socket, over the plain socket the watch holds already, and its own
-        # socket has no do_handshake
+        self._watch.hold(tls, tls=True)
+        # pyOpenSSL's (urllib3's only where ssl has no SNI) shakes hands in its wrap_socket, over the plain socket let
+        # go, within that socket's own waits; and its own socket has no do_handshake
         handshake = getattr(tls, "do_handshake", None)
         if do_handshake_on_connect and callable(handshake):
             try:
@@ -954,10 +987,11 @@ def requests_transport(method: str, url: str, headers: Mapping[str, str], body: 
     answer read whole (Endpoint's bound on one, and Jenkins'), and none for a stream, which its reader bounds itself
     (Endpoint.lines gives its own; a download looks at its own after every receive). A watchdog keeps it (_Watch, a
     thread of the request's own, gone once the reply is closed or the request has failed): once the time is up it
-    shuts the request's socket, so that whatever waits on it ends then, and the request is Overdue, the TimeoutError a
-    read that waited too long raises: from here for its connection and its head, from the body's next read for the
-    body (nothing that came after it is handed on, nor taken for the body's end). A name being looked up is not cut
-    short: the request ends once it is found."""
+    shuts the request's socket, so that whatever waits on it ends then (on Windows, a TLS one's within one wait of it:
+    _shut), and the request is Overdue, the TimeoutError a read that waited too long raises: from here for its
+    connection and its head, from the body's next read for the body (nothing that came after it is handed on, nor
+    taken for the body's end). A name being looked up is not cut short: the request ends once it is found, and a name
+    not found is said as one (requests' ConnectionError, as before), even once the deadline has passed."""
     import requests
 
     session = _session()
@@ -976,13 +1010,15 @@ def requests_transport(method: str, url: str, headers: Mapping[str, str], body: 
             response.close()
             raise Overdue(watch.seconds)
     except BaseException as e:
-        cut = watch is not None and watch.fired and isinstance(e, Exception)
+        # what its shut socket made of it is said as its deadline; a name not found is its lookup's own failure, which
+        # no socket was shut for (nothing cuts a lookup short), and is said as it is
+        cut = watch is not None and watch.fired and isinstance(e, Exception) and not _unfound(e)
         try:
             if watch is not None:
                 watch.stop()
         finally:
             session.close()
-        if cut and not isinstance(e, Overdue):  # what its shut socket made of it, said as its deadline
+        if cut and not isinstance(e, Overdue):
             raise Overdue(watch.seconds) from None
         raise
 
