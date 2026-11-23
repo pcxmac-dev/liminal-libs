@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.75.3 (2026-11-23)
+## 1.75.3 (2026-11-22)
 
 A real child's wait, its watcher's on every Python. CI failed on windows-latest with Python 3.12 alone: during a wait
 of 0.3 s for a real child (`test_a_real_childs_wait_is_its_watchers_and_looks_at_nothing_meanwhile`), its handle was
