@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.74.3 (2026-11-22)
+
+A carrier link only where the times allow it. On this PC's real routes, 267 of the 335 links 1.74.0 called carrier
+links (major hauls) joined hops whose round trips rule their distance out: GeoIP puts many routers at their network's
+home, thousands of km from where they are (two Kennewick routers 0.3 ms apart were called a 3,805 km haul). The links
+are kept for plotting the infrastructure on the map, so a false haul would draw a line that is not there.
+
+- **The times bound the distance** (machines/routes.py `_link`): two hops of one network are joined by a carrier link
+  where the round trip grows by over 10 ms (HAUL_MS), or where they are over 500 km apart (HAUL_KM) and the added
+  time allows it (KM_PER_MS 100 km a ms, and SLACK_KM 300 km for the places' own error, as names.py bounds a router
+  name's place). A distance the times rule out is not said.
+- **The links' rule in their claims**: each link kept in the composite database now says `"rule": 2` (LINK_RULE); the
+  claims kept before it (1.74.0 to 1.74.2, no rule) used the distance alone, and whatever plots the links can pass
+  them over. Nothing kept is changed or removed.
+
 ## 1.74.2 (2026-11-22)
 
 The hop table made on real routes. With 1.74.1's routes read back, the World Wide Web tab's "Routes, hop by hop" and

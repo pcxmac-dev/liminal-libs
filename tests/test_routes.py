@@ -294,7 +294,7 @@ def test_every_hop_of_each_route_is_tabled_in_order_the_missing_kept_and_each_cr
     assert rows[1][2] == {"text": "*", "sub": "no answer"}  # the missing hop kept
     assert rows[2][10] == {"text": "⇄ Zayo", "sub": "from Charter"} and rows[3][10] == ""  # crossed once
     assert rows[0][9] == "" and rows[2][9] == {"text": "private link", "sub": "Charter to Zayo, no exchange point seen"}
-    assert rows[3][9]["text"] == "carrier link" and "km" in rows[3][9]["sub"]  # Chicago to Vienna, inside Zayo
+    assert rows[3][9] == {"text": "inside", "sub": "Zayo"}  # Chicago to Vienna in 1 ms: the times rule it out
     import sqlite3
     con = sqlite3.connect(str(r.composite.path))
     try:  # each link kept for the map
@@ -386,12 +386,36 @@ def test_a_link_inside_your_isp_is_said_so_and_kept_for_the_map_with_the_table_m
     assert titles[-2:] == [routes_module.HOPS_TITLE, routes_module.WAITING_TITLE]  # made, and the table after it
     rows = page["tables"][-2]["rows"]
     assert [row[9] if isinstance(row[9], str) else row[9]["text"] for row in rows] == [
-        "", "your ISP", "private link", "carrier link"]
+        "", "your ISP", "private link", "inside"]  # 1.74.3: Chicago to Vienna in 1 ms is no haul
     con = sqlite3.connect(str(r.composite.path))
     try:
         kept = [json.loads(c)["type"] for (c,) in con.execute(
             "SELECT v.claim FROM evidence v JOIN entities e ON e.id = v.entity WHERE e.kind = 'link'")]
     finally:
         con.close()
-    assert sorted(kept) == ["carrier link", "private link", "your ISP"]
+    assert sorted(kept) == ["inside", "private link", "your ISP"]
     r.close()
+
+
+def test_a_carrier_link_only_where_the_times_allow_its_distance():
+    """1.74.3: GeoIP puts many routers at their network's home; two hops' distance is believed only where their round
+    trips allow it (about 100 km a ms, and 300 km for the places' own error), and a long added time is a haul alone.
+    Each case is one seen on this PC's routes."""
+    from liminal_libs.machines import network as network_module
+    seattle, kennewick_said, boise, chicago = (47.6, -122.3), (38.6, -90.2), (43.6, -116.2), (41.9, -87.6)
+
+    def link(where0, ms0, where1, ms1, op="Charter"):
+        return Routes._link(("62.0.0.1", op, op, where0, ms0, False), ("62.0.0.2", op, op, where1, ms1, False),
+                            "Charter")
+    # two Kennewick routers, one placed by GeoIP at its network's home 2,600 km away, 0.3 ms apart: your ISP's
+    assert network_module.km(seattle, kennewick_said) > routes_module.HAUL_KM
+    assert link(seattle, 14.4, kennewick_said, 14.1) == "your ISP"
+    # a long added time is a haul however near the places are said to be (and its distance not said when ruled out)
+    got = link(seattle, 14.1, kennewick_said, 37.2)
+    assert got["text"] == "carrier link" and "km" not in got["sub"] and "+23.1 ms" in got["sub"]
+    # a distance the times allow: a haul, its distance said
+    got = link(seattle, 10.0, boise, 15.0)
+    assert 500 < network_module.km(seattle, boise) < 800 and got["text"] == "carrier link" and "km" in got["sub"]
+    # far apart in 1 ms, another operator than the ISP: inside its network, no haul
+    assert link(chicago, 3.0, (48.2, 16.37), 4.0, op="Zayo") == {"text": "inside", "sub": "Zayo"}
+    assert routes_module.LINK_RULE == 2

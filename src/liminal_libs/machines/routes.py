@@ -54,6 +54,13 @@ HOPS_TITLE = "Routes, hop by hop"
 # whose times differ by more than HAUL_MS, are joined by a carrier's long haul
 HAUL_KM = 500.0
 HAUL_MS = 10.0
+# 1.74.3: two hops' distance is believed only where their times allow it: a round trip's added time bounds the
+# fibre between them (KM_PER_MS a ms, as names.py bounds a name's place, and SLACK_KM for the places' own error).
+# GeoIP puts many routers at their network's home, thousands of km from where they are: on this PC's routes 267
+# of 335 links 1.74.0 called carrier links were between hops whose times rule their distance out
+KM_PER_MS = 100.0
+SLACK_KM = 300.0
+LINK_RULE = 2  # in each link's claim: the claims kept before it (1.74.0-1.74.2, no rule) used the distance alone
 # 1.74.0 (the user: "for trace routes, identify exchange IPs, where operators change, try to identify the operator
 # backbone, if it can be proved"): a hop is an exchange point's, or a backbone's, only where its registry's words
 # (RDAP) or its own name say so, and what says it is shown
@@ -432,7 +439,8 @@ class Routes:
                 if link and before is not None:  # 1.74.2: your ISP's is a word, the others a record
                     said = link if isinstance(link, dict) else {"text": str(link)}
                     links.append((f"{before[0]}>{hop.address}", {"type": said["text"], "from": before[0],
-                                                                    "to": hop.address, "words": said.get("sub", "")}))
+                                                                    "to": hop.address, "words": said.get("sub", ""),
+                                                                    "rule": LINK_RULE}))
                 before = (hop.address, op, who, where, hop.ms, exchange)
                 crosses = ""
                 if op and last_op and op != last_op:
@@ -455,7 +463,9 @@ class Routes:
                 "what says it is shown beneath. The link from the hop before is your ISP's (inside the first "
                 "network met), an exchange point's or a private link (where networks meet: an exchange point where "
                 "one is proved, else a private link between their routers) or a carrier's long haul (inside one "
-                f"network, over {HAUL_KM:g} km or {HAUL_MS:g} ms); each is kept in the composite database for the map.")
+                f"network: its round trip over {HAUL_MS:g} ms longer, or its hops over {HAUL_KM:g} km apart where the "
+                f"times allow it, about {KM_PER_MS:g} km a ms, as a GeoIP file often puts a router at its network's "
+                "home); each is kept in the composite database for the map.")
         return {"title": HOPS_TITLE, "note": note, "empty": "No route traced yet.",
                 "columns": [{"title": "To"}, {"title": "Hop"}, {"title": "Address"}, {"title": "Time"},
                             {"title": "Name"}, {"title": "ASN"}, {"title": "Operator"}, {"title": "Holder (RDAP)"},
@@ -466,7 +476,8 @@ class Routes:
     def _link(before, this, isp: str) -> dict | str:
         """What joins a hop to the last one that answered (each (address, operator, its name, its place, its time,
         whether it is an exchange point's)): "" for the first; your ISP's; an exchange point's or a private link
-        where the operators differ; a carrier link where one operator's two hops are far apart."""
+        where the operators differ; a carrier link where one operator's two hops are far apart: their round trip
+        over HAUL_MS longer, or their places over HAUL_KM apart where the times allow it (1.74.3)."""
         if before is None:
             return ""
         _, op0, who0, where0, ms0, ix0 = before
@@ -477,9 +488,10 @@ class Routes:
             return {"text": "private link", "sub": f"{who0} to {who1}, no exchange point seen"}
         far = network_module.km(where0, where1) if where0 and where1 else 0.0
         jump = (ms1 - ms0) if ms0 is not None and ms1 is not None else 0.0
-        if far > HAUL_KM or jump > HAUL_MS:
-            said = ", ".join(x for x in (f"about {far:,.0f} km" if far else "", f"{jump:+.1f} ms" if jump else "",
-                                        who1 or who0) if x)
+        allowed = far <= KM_PER_MS * max(jump, 0.0) + SLACK_KM  # the times allow the places this far apart
+        if jump > HAUL_MS or (far > HAUL_KM and allowed):
+            said = ", ".join(x for x in (f"about {far:,.0f} km" if far and allowed else "",
+                                        f"{jump:+.1f} ms" if jump else "", who1 or who0) if x)
             return {"text": "carrier link", "sub": said}
         if op1 and op1 == isp:
             return "your ISP"
