@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.75.2 (2026-11-22)
+
+JSON's nesting bounded alike on every Python. After the GitHub push of 2026-11-22, CI failed on ubuntu-latest with
+Python 3.15 alone: two tests sent JSON 100,000 levels deep, which every other Python's reader refused by its
+RecursionError, and 3.15 on Linux, whose guard measures the C stack itself, read whole.
+
+- **`jsonread`** (a new module): `depth`, `too_deep` and `loads`, MAX_DEPTH (512) levels of arrays and objects counted
+  outside strings with the bytes' own methods before anything is parsed (never counted for a text with fewer openings
+  than the bound); a text past it is refused as no JSON (ValueError), and so is one the parser's stack cannot read.
+- **Used by the readers of what comes from outside**: an app's request bodies (apps/app.py: still "the body is not
+  JSON", 400), the classification lists and their manifest (classify.py), the infrastructure's downloads
+  (machines/infrastructure.py). The infrastructure's kept files, its own and read at every layer the globe loads, are
+  read as before.
+
 ## 1.75.1 (2026-11-22)
 
 What the lookups found, kept across a restart. The user, 2026-11-22, asked whether the lookups should reload their

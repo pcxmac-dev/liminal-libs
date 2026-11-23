@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .. import jsonread
 from .. import web
 from ..ui import STATIC as UI_STATIC
 from . import asking
@@ -654,8 +655,8 @@ def make_handler(app: App):
             data = self.rfile.read(length) if length else b""
             body: dict = {}
             if data:
-                try:
-                    body = json.loads(data)
+                try:  # 1.75.2: nested past jsonread.MAX_DEPTH is refused alike on every Python
+                    body = jsonread.loads(data)
                 except (ValueError, RecursionError):  # nested too deep to read is not JSON here either (1.66.0)
                     return web.send_json(self, {"error": "the body is not JSON"}, HTTPStatus.BAD_REQUEST)
                 if not isinstance(body, dict):

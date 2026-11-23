@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlsplit
 
+from .. import jsonread
 from .. import geo, layout
 from . import world
 from .world import LicenceRefused, size_words
@@ -357,6 +358,8 @@ def _decoded(dataset: DataSet, data):
         return data
     raw = bytes(data) if isinstance(data, memoryview) else data
     try:
+        if jsonread.too_deep(raw):  # 1.75.2: alike on every Python (3.15 on Linux reads far deeper)
+            raise ValueError("nested too deeply")
         return json.loads(raw, object_pairs_hook=_pairs) if dataset.format == "overpass" else json.loads(raw)
     except (ValueError, RecursionError):
         raise InfrastructureError(f"{dataset.host}'s answer is not the data asked for (it is no JSON: "

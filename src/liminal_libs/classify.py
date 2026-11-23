@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unicodedata import ucd_3_2_0
 
+from . import jsonread
 from . import layout
 from .dns import valid_name
 
@@ -412,8 +413,11 @@ def _json(value):
     RecursionError, which is no ValueError)."""
     if value is None or isinstance(value, (dict, list)):
         return value
+    text = _text(value)
+    if jsonread.too_deep(text):  # 1.75.2: alike on every Python (3.15 on Linux reads far deeper)
+        raise ValueError("JSON nested too deeply to be read")
     try:
-        return json.loads(_text(value))
+        return json.loads(text)
     except RecursionError:
         raise ValueError("JSON nested too deeply to be read") from None
 
@@ -582,6 +586,8 @@ def read_manifest(folder) -> list[dict]:
         text = _read_bytes(path, MAX_JSON).decode("utf-8-sig")
     except FileNotFoundError:
         return []
+    if jsonread.too_deep(text):  # 1.75.2
+        raise ValueError(f"{MANIFEST}: nested too deeply to be read")
     try:
         data = json.loads(text) if text.strip() else []
     except RecursionError:
