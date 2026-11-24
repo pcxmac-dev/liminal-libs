@@ -133,6 +133,65 @@ def test_a_feed_of_another_market_is_no_evidence(store):
     assert _sweep(store, feeds=feeds).series(row).holes == 0 and store.findings() == []
 
 
+SAME_MARKET = {n: FeedProfile(n, PLAN, frozenset({"stock"}), venues={"stock": "sip"}) for n in ("fake", "other")}
+
+
+def test_a_missing_day_is_a_hole_only_if_that_same_day_has_a_witness(store):
+    # Tuesday to Friday missing in both frames; another feed of the market holds bars on Thursday alone (1.77.0:
+    # before, that one bar made all four days one hole, as Alpaca's two years made 5,612 days of Massive's ABXL)
+    row = _series(store, days=(MON,), dailies=(MON,))
+    store.upsert_bars("other", "AAA", "minute", 1, [_minute(THU)])
+    visit = _sweep(store, feeds=SAME_MARKET).series(row)
+    assert visit.holes == 2 and _findings(store) == [("hole", "day", THU, FRI, 1, "open"),
+                                                     ("hole", "minute", THU, FRI, 1, "open")]
+    assert {f["detail"]["evidence"] for f in store.findings()} == {"other holds bars there"}
+
+
+def test_witnessed_days_next_to_each_other_are_one_hole_and_the_others_none(store):
+    row = _series(store, days=(MON,), dailies=(MON,))
+    store.upsert_bars("other", "AAA", "minute", 1, [_minute(TUE), _minute(WED)])
+    _sweep(store, feeds=SAME_MARKET).series(row)
+    assert _findings(store, kind="hole") == [("hole", "day", TUE, THU, 2, "open"), ("hole", "minute", TUE, THU, 2, "open")]
+
+
+def test_a_span_holding_nothing_is_an_empty_span_only_if_every_day_of_it_has_a_witness(store):
+    store.watch("fake", ["AAA"], "minute")
+    store.upsert_bars("fake", "AAA", "day", 1, [_daily(d) for d in (TUE, WED)])  # it traded on those two days alone
+    store.add_coverage("fake", "AAA", "minute", MON, SAT)
+    visit = _sweep(store).series(store.watchlist("fake", "AAA")[0])
+    assert visit.holes == 1 and _findings(store) == [("hole", "minute", TUE, THU, 2, "open")]
+    assert store.findings()[0]["detail"] == {"days": 2, "evidence": "its own daily bar shows it traded"}
+
+
+def test_a_finding_kept_wider_than_its_witnessed_days_is_put_in_their_place_in_its_own_state(store):
+    row = _series(store, days=(MON,), dailies=(MON,))
+    store.upsert_bars("other", "AAA", "minute", 1, [_minute(THU)])
+    wide = {"days": 4, "evidence": "other holds bars there"}  # as the sweep kept them before 1.77.0
+    open_ = store.finding_put("hole", "fake", "AAA", "minute", TUE, SAT, count=4, detail=dict(wide))
+    asked = store.finding_put("hole", "fake", "AAA", "day", TUE, SAT, count=4, detail=dict(wide), state="asked")
+    visit = _sweep(store, feeds=SAME_MARKET).series(row)
+    assert (visit.holes, visit.closed, visit.absent) == (0, 2, 1)
+    assert _findings(store) == [("hole", "day", TUE, SAT, 4, "closed"), ("hole", "day", THU, FRI, 1, "absent"),
+                                ("hole", "minute", TUE, SAT, 4, "closed"), ("hole", "minute", THU, FRI, 1, "open")]
+    by = {(f["timespan"], f["start_ms"]): f for f in store.findings()}
+    assert by["minute", TUE]["detail"]["settled"] == "judged day by day: 1 of its 4 days have a witness of their own"
+    assert by["minute", THU]["detail"] == {"days": 1, "evidence": "other holds bars there", "from": open_}
+    assert by["day", THU]["detail"]["from"] == asked  # asked for the whole and still empty: absent, as the whole was
+    assert [r["start_ms"] for r in auditing.repulls(store, "fake", "AAA", 5)] == [THU]  # only the witnessed day asked
+    again = _sweep(store, feeds=SAME_MARKET).series(store.watchlist("fake", "AAA")[0])  # judged so: it stands
+    assert (again.holes, again.closed) == (0, 0) and len(store.findings()) == 4
+
+
+def test_a_finding_kept_of_which_no_day_has_a_witness_is_closed(store):
+    row = _series(store, days=(MON,), dailies=(MON,))
+    store.finding_put("hole", "fake", "AAA", "minute", TUE, SAT, count=4, detail={"days": 4, "evidence": "x"})
+    visit = _sweep(store).series(row)
+    (f,) = store.findings()
+    assert (visit.closed, f["state"]) == (1, "closed")
+    assert f["detail"]["settled"] == "judged day by day: no day of it has a witness of its own"
+    assert auditing.repulls(store, "fake", "AAA", 5) == []
+
+
 def test_a_span_said_to_be_held_that_holds_nothing_is_an_empty_span(store):
     store.watch("fake", ["AAA"], "minute")
     store.upsert_bars("fake", "AAA", "day", 1, [_daily(d) for d in (MON, TUE, WED, THU, FRI)])

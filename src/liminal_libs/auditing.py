@@ -799,8 +799,9 @@ class Sweep:
     coverage ledger says the feed holds is looked for in its bars, and the month the round has come to is read whole
     and put to data.py's rules (assess, integrity).
 
-    A day without a single bar is a **hole** only with evidence that bars should be there: the feed's own daily bar
-    of that day shows it traded (or its own finer bars do, for a missing daily bar), another feed of the same market
+    A day without a single bar is a **hole** only with evidence that bars should be there that very day (1.77.0: a
+    run of missing days is never judged by evidence elsewhere in it): the feed's own daily bar of that day shows it
+    traded (or its own finer bars do, for a missing daily bar), another feed of the same market
     holds bars that day, the feed's ticks do, or a pull that was cut off covers it. A thin stock's quiet days and a
     market's closed hours are no holes. A span said to be held that holds no bar at all is an **empty span**, and a
     finding by the same rule: only with evidence that bars should be there. The ledger's word is no such evidence:
@@ -1003,12 +1004,52 @@ class Sweep:
             return "its own ticks are there"
         return ""
 
+    @staticmethod
+    def _runs(missing: list[int], days: list[int]) -> list[list[int]]:
+        """The missing days in runs of session days next to each other (`days`: every session day, in order)."""
+        place = {d: i for i, d in enumerate(days)}
+        out: list[list[int]] = []
+        for d in missing:
+            if out and place[d] == place[out[-1][-1]] + 1:
+                out[-1].append(d)
+            else:
+                out.append([d])
+        return out
+
+    def _witnessed(self, conn, row: dict, timespan: str, days: list[int], cut: list[dict]) -> list[tuple[list[int], str]]:
+        """Of a run of session days next to each other that hold no bar, the runs of those days that each have a
+        witness of their own, with what witnesses them: [(days, why)]. A day is judged by that very day's evidence,
+        never by evidence somewhere else in the run (1.77.0: one bar of another feed anywhere in 5,612 missing days
+        had made all of them one finding). The run as a whole is asked first: with nothing anywhere in it, no day of
+        it can have a witness, and the days are not asked one by one."""
+        if not days:
+            return []
+        whole = self._evidence(conn, row, timespan, days[0], days[-1] + DAY_MS, cut)
+        if not whole:
+            return []
+        if len(days) == 1:
+            return [(days, whole)]
+        out: list[tuple[list[int], str]] = []
+        run: list[int] = []
+        whys: list[str] = []
+        for d in [*days, None]:
+            why = self._evidence(conn, row, timespan, d, d + DAY_MS, cut) if d is not None else ""
+            if why:
+                run.append(d)
+                if why not in whys:
+                    whys.append(why)
+            elif run:
+                out.append((run, "; ".join(whys)))
+                run, whys = [], []
+        return out
+
     def _days(self, conn, row: dict, timespan: str, spans: list, data, exchange, cut: list[dict], visit: Visit) -> None:
         """Every session day inside the spans the feed is said to hold, looked for in its bars; the holes and the
-        empty spans kept as findings, and the findings of before brought up to date."""
+        empty spans kept as findings, and the findings of before brought up to date. A missing day is a hole only if
+        that same day has a witness (`_witnessed`); a span is an empty span only if every day of it has one."""
         store, feed, ticker = self.store, row["source"], row["ticker"]
         horizon = self.now_ms - SETTLE_MS
-        runs: list[tuple[int, int, int, str]] = []  # (from, to, days, kind)
+        runs: list[tuple[list[int], str]] = []  # (the days, kind)
         for a, b in spans:
             b = min(b, horizon)
             days = [int(d) for d in data.slots("day", a, b, exchange=exchange) if a <= d and d + DAY_MS <= b]
@@ -1017,35 +1058,58 @@ class Sweep:
             visit.days += len(days)
             missing = [d for d in days if not self._has_bar(conn, ticker, timespan, d, d + DAY_MS)]
             if len(missing) == len(days):
-                runs.append((days[0], days[-1] + DAY_MS, len(days), "empty-span"))
-                continue
-            place = {d: i for i, d in enumerate(days)}
-            run: list[int] = []
-            for d in [*missing, None]:
-                if run and (d is None or place[d] != place[run[-1]] + 1):  # the run of days next to each other ends
-                    runs.append((run[0], run[-1] + DAY_MS, len(run), "hole"))
-                    run = []
-                if d is not None:
-                    run.append(d)
-        known = [f for kind in HOLE_KINDS for f in store.findings(feed=feed, ticker=ticker, kind=kind)
-                 if f["timespan"] == timespan and f["state"] != "closed"]
-        for f in known:  # a finding of before: filled since, or asked again and still empty
-            empty = [d for d in data.slots("day", f["start_ms"], f["end_ms"], exchange=exchange)
-                     if not self._has_bar(conn, ticker, timespan, int(d), int(d) + DAY_MS)]
-            if not empty:
-                store.finding_set(f["id"], "closed")
-                visit.closed += 1
-            elif f["state"] == "asked":
+                runs.append((days, "empty-span"))
+            else:
+                runs.extend((run, "hole") for run in self._runs(missing, days))
+        known: list[dict] = []
+        for f in [f for kind in HOLE_KINDS for f in store.findings(feed=feed, ticker=ticker, kind=kind)
+                  if f["timespan"] == timespan and f["state"] != "closed"]:
+            known.extend(self._judged_again(conn, row, timespan, f, data, exchange, cut, visit))
+        for f in known:  # asked again and still empty
+            if f["state"] == "asked":
                 store.finding_set(f["id"], "absent")
                 visit.absent += 1
-        for lo, hi, n, kind in runs:
+        for days, kind in runs:
+            lo, hi = days[0], days[-1] + DAY_MS
             if any(f["start_ms"] < hi and f["end_ms"] > lo for f in known):
                 continue  # known already: open, asked or absent
-            why = self._evidence(conn, row, timespan, lo, hi, cut)
-            if not why:
-                continue  # nothing says bars should be there: a quiet day, the time before a ticker existed
-            store.finding_put(kind, feed, ticker, timespan, lo, hi, count=n, detail={"days": n, "evidence": why})
-            visit.holes += 1
+            for some, why in self._witnessed(conn, row, timespan, days, cut):
+                # (nothing witnessing a day: a quiet day, the time before a ticker existed)
+                n = len(some)
+                store.finding_put(kind if some == days else "hole", feed, ticker, timespan, some[0], some[-1] + DAY_MS,
+                                  count=n, detail={"days": n, "evidence": why})
+                visit.holes += 1
+
+    def _judged_again(self, conn, row: dict, timespan: str, f: dict, data, exchange, cut: list[dict],
+                      visit: Visit) -> list[dict]:
+        """A finding of before, judged by today's rule on the days of it still without a bar: filled since, it is
+        closed; still so, it stays; wider than the days that have a witness (a finding kept before 1.77.0, judged as
+        a whole run), it is closed and the runs that do have one are kept in its place, in its state. Returns what
+        stands for it now (each as the store keeps a finding)."""
+        store, feed, ticker = self.store, row["source"], row["ticker"]
+        days = [int(d) for d in data.slots("day", f["start_ms"], f["end_ms"], exchange=exchange)]
+        empty = [d for d in days if not self._has_bar(conn, ticker, timespan, d, d + DAY_MS)]
+        if not empty:
+            store.finding_set(f["id"], "closed")
+            visit.closed += 1
+            return []
+        found = [w for run in self._runs(empty, days) for w in self._witnessed(conn, row, timespan, run, cut)]
+        if len(found) == 1 and found[0][0][0] == f["start_ms"] and found[0][0][-1] + DAY_MS == f["end_ms"]:
+            return [f]
+        had = (f.get("detail") or {}).get("days") or len(days)
+        witnessed = sum(len(some) for some, _ in found)
+        store.finding_set(f["id"], "closed", detail={**(f.get("detail") or {}), "settled": (
+            f"judged day by day: {witnessed:,} of its {had:,} days have a witness of their own" if found
+            else "judged day by day: no day of it has a witness of its own")})
+        visit.closed += 1
+        out = []
+        for some, why in found:
+            n = len(some)
+            kind = "empty-span" if f["kind"] == "empty-span" and n == len(days) else "hole"
+            new = store.finding_put(kind, feed, ticker, timespan, some[0], some[-1] + DAY_MS, pull=f.get("pull"),
+                                    count=n, state=f["state"], detail={"days": n, "evidence": why, "from": f["id"]})
+            out.append({**f, "id": new, "kind": kind, "start_ms": some[0], "end_ms": some[-1] + DAY_MS, "count": n})
+        return out
 
     def _month(self, conn, row: dict, timespan: str, spans: list, data, exchange, visit: Visit) -> None:
         """The month the round has come to, of this series, read whole and put to data.py's rules. The newest month

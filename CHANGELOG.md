@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.77.0 (2026-11-24)
+
+The sweep judges a missing day by that day's own witness. Its second run over the user's data (2026-11-19: 12,994
+series, 931 findings) judged a run of missing days as a whole: one bar of another feed anywhere in the run made all
+of it one finding (Massive's ABXL: 5,612 days, because Alpaca holds two years of it). Now:
+
+- **A missing day is a hole only if that very day has a witness** (auditing.py `Sweep._witnessed`): its own daily
+  bar shows it traded (or its own finer bars are there, for a missing daily bar), a pull cut off covers it, another
+  feed of the same market or its own ticks hold bars that day. Witnessed days next to each other are one hole; the
+  days between them without a witness are none. The run as a whole is asked first, so a run nothing speaks for is not
+  asked day by day.
+- **An empty span only if every day of it has a witness**; otherwise its witnessed runs are holes.
+- **The findings kept before are judged again by the same rule** (`Sweep._judged_again`): one wider than its
+  witnessed days is closed ("judged day by day: N of its M days have a witness of their own") and the runs that do
+  have one are kept in its place, in its state (an asked one still empty becomes absent, as the whole would have),
+  each naming the finding it came `from`; one of which no day has a witness is closed. Only witnessed days are asked
+  of the feed again.
+- Five tests (tests/test_auditors.py); each fails with the change undone.
+
 ## 1.76.0 (2026-11-23)
 
 The Continuous Integration plugins' marks, and one deadline for the whole of each request through machines/endpoint.py.
