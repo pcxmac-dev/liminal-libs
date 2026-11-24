@@ -15,6 +15,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
 
+from . import proctree
+
 CONTEXT_VAR = "LIMINAL_DOCKER_CONTEXT"  # a docker context's name (`docker context ls`): where the containers run
 HOST_VAR = "LIMINAL_DOCKER_HOST"  # or a Docker host outright: ssh://user@vps, tcp://host:2376, npipe:////./pipe/docker_engine
 COMMAND_VAR = "LIMINAL_DOCKER_COMMAND"  # the command: docker (Docker Desktop, Rancher Desktop's dockerd), nerdctl (Rancher's containerd), podman
@@ -138,8 +140,8 @@ class Docker:
                 raise DockerError(f"{self.name} is not installed on this machine (Docker Desktop or Rancher Desktop give the docker "
                                   f"command; Rancher's containerd gives nerdctl: {COMMAND_VAR}=nerdctl), and no context or host names "
                                   f"another ({CONTEXT_VAR}, {HOST_VAR})")
-            try:
-                done = subprocess.run(full, capture_output=True, text=True, timeout=timeout, input=stdin, **_no_window())
+            try:  # a timeout ends the command with what it started (1.80.0: a helper of a pull, a build)
+                done = proctree.run(full, timeout, input=stdin, text=True)
             except subprocess.TimeoutExpired:
                 raise DockerError(f"{self.name} {' '.join(args[:2])} took more than {timeout:g} s on {self.where}") from None
             except OSError as e:

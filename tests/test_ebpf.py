@@ -71,7 +71,7 @@ MAPDUMP = [{"key": ["0x0a", "0x00"], "value": ["0x01"]}]
 
 def _tail(args):
     a = list(args)
-    return a[2:] if a[:2] == ["sudo", "-n"] else a
+    return a[3:] if a[:3] == ["sudo", "-n", "--"] else a
 
 
 def linux_runner(replies=None):
@@ -117,22 +117,22 @@ def test_linux_runtime_reads_status_programs_maps_and_links():
     assert ["uname", "-r"] in seen and ["cat", "/proc/sys/kernel/unprivileged_bpf_disabled"] in seen
     assert rt.programs() == PROGS and rt.maps() == MAPS and rt.links() == LINKS
     assert rt.program(12) == PROGS[0] and rt.dump_map(5) == MAPDUMP
-    assert ["sudo", "-n", "bpftool", "-j", "prog", "show"] in seen
+    assert ["sudo", "-n", "--", "bpftool", "-j", "prog", "show"] in seen
 
 
 def test_linux_runtime_builds_the_confirmed_change_commands():
     runner, seen = linux_runner()
     rt = LinuxRuntime(Shell("local", runner=runner), system="linux", release="6.8.0-48-generic", env={})
     rt.load("/tmp/track.o", type="sock_ops")  # pinned as Liminal's own unless said: /sys/fs/bpf/liminal_<stem>
-    assert ["sudo", "-n", "bpftool", "prog", "load", "/tmp/track.o", "/sys/fs/bpf/liminal_track", "type", "sock_ops"] in seen
+    assert ["sudo", "-n", "--", "bpftool", "prog", "load", "/tmp/track.o", "/sys/fs/bpf/liminal_track", "type", "sock_ops"] in seen
     rt.attach(kind="connect4", target="/sys/fs/cgroup", pin="/sys/fs/bpf/track")
-    assert ["sudo", "-n", "bpftool", "cgroup", "attach", "/sys/fs/cgroup", "connect4", "pinned", "/sys/fs/bpf/track"] in seen
+    assert ["sudo", "-n", "--", "bpftool", "cgroup", "attach", "/sys/fs/cgroup", "connect4", "pinned", "/sys/fs/bpf/track"] in seen
     rt.attach(kind="xdp", target="eth0", prog_id=12)
-    assert ["sudo", "-n", "bpftool", "net", "attach", "xdp", "id", "12", "dev", "eth0"] in seen
+    assert ["sudo", "-n", "--", "bpftool", "net", "attach", "xdp", "id", "12", "dev", "eth0"] in seen
     rt.detach(link_id=2)
-    assert ["sudo", "-n", "bpftool", "link", "detach", "id", "2"] in seen
+    assert ["sudo", "-n", "--", "bpftool", "link", "detach", "id", "2"] in seen
     rt.unload(pin="/sys/fs/bpf/track")
-    assert ["sudo", "-n", "rm", "-f", "/sys/fs/bpf/track"] in seen
+    assert ["sudo", "-n", "--", "rm", "-f", "/sys/fs/bpf/track"] in seen
     with pytest.raises(CommandError):
         rt.attach(kind="connect4", target="/sys/fs/cgroup")  # no program named
     with pytest.raises(CommandError):

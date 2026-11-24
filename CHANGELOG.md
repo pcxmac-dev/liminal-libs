@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.80.0 (2026-11-24)
+
+- The review of 2026-11-21 (Monday list item 26), its findings 8 to 13. A cancel is never undone: `request_update`
+  moves only an open request, in one statement, so the fetcher's or the auditors' write after the user's cancel
+  leaves it cancelled. An ended request keeps its ending (done and failed too: no caller moves or rewrites one; a
+  symbol asked again is a new request). The request it returns says `applied` (False: nothing was written); callers
+  that ignore it go on as before.
+- The rate window kept is never looser than the plugin's own (`sources/plugin.py` `within`): the server's limits
+  only lower it, by rate and by burst. A server's 10 a second made a plugin's 200 a minute 9 a second (540 a
+  minute). `HttpClient.tighten` refuses a window of a higher rate, and one of a lower rate in a larger burst keeps
+  the burst it had, at the new rate.
+- AI answers (`assistants/assistant.py`, `sources/http.py`): an assistant's POST waits 300 s for its answer
+  (`ANSWER_TIMEOUT_S`, an Assistant's `answer_timeout`; `HttpClient(post_timeout=)`), not a GET's 30 s: a reasoning
+  model's answer was cut off there and could still be billed. A POST is never sent again on a 5xx either: a
+  gateway's 502 or 504 may come after the vendor ran it. A 429 is still waited out and sent again.
+- Dynamic DNS (`machines/ddns.py`, the Keeper, every cloud plugin's): the record is read again just before the write,
+  and written only if it still holds what was read first; else nothing is written and the host's result says the
+  record changed during the pass (the next pass judges it as usual: a foreign address is left as it is).
+- A timeout ends the whole tree (`proctree.py`, new): PowerShell, the Linux shell, wsl.exe and the docker command
+  run through `proctree.run`. On Windows taskkill /T /F by pid (windowless); on Linux the child starts in its own
+  session and its group is sent SIGTERM (which sudo passes on to the root command it may not be sent from here),
+  then SIGKILL after 5 s. Not reachable from here, and said so: an elevated process (UAC) and the Linux side of
+  wsl.exe. `machines/windows.py` `TimedOut` (a CommandError) names a timeout.
+- `run_elevated` past its wait: the error says the change may still be applied and to look before trying again (it
+  said the change failed). Its output file is no longer removed before the elevated script may write it; it is
+  removed once the script has ended, and one left by a script that outlived its wait is swept by a later run once
+  six hours old.
+- `machines/linux.py` Shell's sudo prefix is `sudo -n --`, so a command beginning with a dash (-u, say) is never read
+  as sudo's option (asked for by the session building the children supervisor). Plugins' tests that match
+  `["sudo", "-n", <command>]` see `"--"` after `-n` now.
+
 ## 1.79.0 (2026-11-24)
 
 - The review of 2026-11-21 on your desktop (Monday list item 26), checked against the checkout: a series' weeks, months and years outlived the daily bars they were built from. `Builder.chain`

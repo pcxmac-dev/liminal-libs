@@ -104,7 +104,14 @@ class RequestStore:
     def request_update(self, request_id: int, state: str | None = None, plan=None, detail: str | None = None,
                        now: datetime | None = None) -> dict | None:
         """A request moved on: its state (collecting, done, failed, cancelled), its plan (the
-        assessment, kept as JSON) and what is happening to it."""
+        assessment, kept as JSON) and what is happening to it. Returns the request, with `applied`:
+        False when it had ended already, and nothing was written (1.80.0).
+
+        An ended request (done, failed, cancelled) keeps its ending: only an open one is moved. The
+        review of 2026-11-21, item 26 (its 11th): the user's cancel was undone by whoever wrote next
+        (the fetcher's assessment ending, a feed's run serving the symbol, the auditors settling an
+        audit), each of which read the request open a moment before. No caller moves an ended request
+        on, and none rewrites one: a request asked again once it ended is a new one (request_put)."""
         if state is not None and state not in STATES:
             raise ValueError(f"not a request state: {state!r}")
         sets, args = [], []
@@ -121,10 +128,15 @@ class RequestStore:
         if detail is not None:
             sets.append("detail=?")
             args.append(detail[:400])
+        applied = True
         if sets:
-            with self.conn:
-                self.conn.execute(f"UPDATE fetch_requests SET {', '.join(sets)} WHERE id=?", [*args, int(request_id)])
-        return self.request_get(request_id)
+            with self.conn:  # the state read and written in one statement: a cancel between them cannot be lost
+                applied = self.conn.execute(f"UPDATE fetch_requests SET {', '.join(sets)} WHERE id=? AND {_IS_OPEN}",
+                                            [*args, int(request_id)]).rowcount > 0
+        r = self.request_get(request_id)
+        if r is not None:
+            r["applied"] = applied
+        return r
 
     def request_cancel(self, request_id: int, now: datetime | None = None) -> bool:
         """An open request taken back (cancelled). False: it was not open."""

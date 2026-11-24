@@ -13,9 +13,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
+from .. import proctree
 from .plugin import CommandError
 
 TIMEOUT_S = 120.0
@@ -26,6 +28,13 @@ PRELUDE = ("$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyCont
 DENIED = ("access is denied", "access denied", "0x80070005", "requires elevation", "run as administrator",
           "administrator privileges", "permission denied", "not have permission")
 SINGLE_QUOTES = "'‘’‚‛"  # what PowerShell takes for a single quote: ' and the typographic four
+ELEVATED_PREFIX = "liminal-elevated-"  # an elevated script's output file in the temporary folder (run_elevated)
+ELEVATED_SWEEP_S = 6 * 3600.0  # one left this long by an elevated script that outlived its wait is removed by the next
+
+
+class TimedOut(CommandError):
+    """PowerShell ran past its timeout (1.80.0): it was ended with what it started (proctree), except what runs
+    elevated, which this process may not end."""
 
 
 def quote(text) -> str:
@@ -114,14 +123,17 @@ class PowerShell:
         """The script's output; CommandError with its own words (denied when it needed an administrator)."""
         args = self.args(script)
         if self._runner is not None:
-            code, out, err = self._runner(args, timeout)
+            try:
+                code, out, err = self._runner(args, timeout)
+            except subprocess.TimeoutExpired:  # a stand-in's timeout, said as a real one is
+                raise TimedOut(f"PowerShell took more than {timeout:g} s (ended, with what it had started)") from None
         else:
             if not self.here:
                 raise CommandError("Windows PowerShell is not here (this is not Windows)")
-            try:
-                done = subprocess.run(args, capture_output=True, timeout=timeout, **_no_window())
+            try:  # a timeout ends powershell.exe with what it started (a Hyper-V job's, an installer): 1.80.0
+                done = proctree.run(args, timeout)
             except subprocess.TimeoutExpired:
-                raise CommandError(f"PowerShell took more than {timeout:g} s") from None
+                raise TimedOut(f"PowerShell took more than {timeout:g} s (ended, with what it had started)") from None
             except OSError as e:
                 raise CommandError(f"PowerShell could not run: {e}") from None
             code, out, err = done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
@@ -142,12 +154,18 @@ class PowerShell:
     def run_elevated(self, script: str, timeout: float = 600.0) -> str:
         """The script run with an administrator's rights: Windows asks the user once (UAC); its output comes
         back through a file in the temporary folder. CommandError when the user declines or the script fails, and at
-        once, denied, where Windows cannot ask (no desktop: a boot service's platform)."""
+        once, denied, where Windows cannot ask (no desktop: a boot service's platform).
+
+        Past `timeout` (1.80.0; the review of 2026-11-21, item 26, its 8th) the elevated script is not this process's
+        to end (UAC's: an unelevated taskkill is refused), so it may still make the change: TimedOut says so, and to
+        look before trying again. Its output file is then left to it (removed earlier, it was made again when the
+        script wrote) and swept by a later run once old (ELEVATED_SWEEP_S)."""
         if not self.can_ask():
             raise CommandError("Windows cannot ask you (UAC) here: this platform runs on no desktop (a boot service, before "
                                "anyone signs in); make the change from the platform at your logon, or run this one as "
                                "administrator", denied=True)
-        out_file = Path(tempfile.gettempdir()) / f"liminal-elevated-{uuid.uuid4().hex}.txt"
+        _sweep_elevated(Path(tempfile.gettempdir()))
+        out_file = Path(tempfile.gettempdir()) / f"{ELEVATED_PREFIX}{uuid.uuid4().hex}.txt"
         inner = (PRELUDE + "try {\n& {\n" + script + "\n} *>&1 | Out-File -FilePath " + quote(out_file) + " -Encoding utf8\n"
                  "} catch { ('" + ERROR_MARK + "' + $_.Exception.Message) | Out-File -FilePath " + quote(out_file) + " -Encoding utf8; exit 1 }")
         outer = ("$p = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList "
@@ -155,12 +173,17 @@ class PowerShell:
                  "[Console]::Out.WriteLine('exit ' + $p.ExitCode)")
         try:
             status = self.run(outer, timeout)
+        except TimedOut:
+            raise TimedOut(f"the elevated script took more than {timeout:g} s and may not have been ended (it runs as administrator, "
+                           "out of this platform's reach): the change may still be applied. Look at what it changes before "
+                           "trying again.") from None
+        except CommandError:
+            _unlink(out_file)  # it ended (declined, or failed to start): nothing writes the file any more
+            raise
+        try:  # Start-Process -Wait returned: the elevated script has ended, so its file is complete and no more written
             text = out_file.read_text(encoding="utf-8-sig") if out_file.exists() else ""
         finally:
-            try:
-                out_file.unlink()
-            except OSError:
-                pass
+            _unlink(out_file)
         failed = next((line[len(ERROR_MARK):].strip() for line in text.splitlines() if line.startswith(ERROR_MARK)), "")
         if failed or "exit 0" not in status:
             raise CommandError(failed or f"the elevated script ended with {status.strip() or 'no answer'}")
@@ -179,6 +202,29 @@ class PowerShell:
                 return self.run_elevated(script, max(timeout, 600.0))
             raise CommandError(f"this needs an administrator: run the platform as administrator, or set {ELEVATE_VAR}=prompt "
                                f"to be asked (UAC) when a step needs it ({e})", denied=True) from None
+
+
+def _unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _sweep_elevated(folder: Path, now: float | None = None) -> None:
+    """Output files of elevated scripts that outlived their wait (TimedOut), removed once ELEVATED_SWEEP_S old: by then
+    the script has long ended (one still writing holds its file open, and Windows refuses the removal)."""
+    now = time.time() if now is None else now
+    try:
+        found = list(folder.glob(ELEVATED_PREFIX + "*.txt"))
+    except OSError:
+        return
+    for f in found:
+        try:
+            if now - f.stat().st_mtime >= ELEVATED_SWEEP_S:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def _clean(err: str) -> str:

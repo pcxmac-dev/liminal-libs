@@ -57,7 +57,9 @@ class Recorder:
 def _bare(args) -> list[str]:
     """The command without its sudo prefix, for matching: `sudo -n ...`, `sudo -n -l -- ...`, `sudo -S -k -p "" --`."""
     a = list(args)
-    if a[:2] == ["sudo", "-n"]:
+    if a[:3] == ["sudo", "-n", "--"]:  # Shell.prefix's, with -- since 1.80.0
+        a = a[3:]
+    elif a[:2] == ["sudo", "-n"]:
         a = a[2:]
         if a[:2] == ["-l", "--"]:
             a = a[2:]
@@ -119,7 +121,7 @@ def test_without_a_password_the_reading_is_sudo_n_as_before(monkeypatch):
     not_root(monkeypatch)
     rec = Recorder()
     Shell("local", runner=rec).run("nft", "list", "ruleset")
-    assert rec.argv[-1] == ["sudo", "-n", "nft", "list", "ruleset"] and rec.stdins[-1] is None
+    assert rec.argv[-1] == ["sudo", "-n", "--", "nft", "list", "ruleset"] and rec.stdins[-1] is None
 
 
 def test_a_refused_password_is_its_own_error_and_says_so(monkeypatch):
@@ -392,7 +394,7 @@ def test_revoke_runs_the_take_back_helper_without_a_password(monkeypatch):
     rec = Recorder()
     revoke(Shell("local", runner=rec), "firewall-linux")
     argv, stdin = rec.calls[-1]
-    assert argv == ["sudo", "-n", f"{LIBEXEC}/firewall-linux/{TAKE_BACK}"] and stdin is None
+    assert argv == ["sudo", "-n", "--", f"{LIBEXEC}/firewall-linux/{TAKE_BACK}"] and stdin is None
 
 
 def test_revoke_falls_back_to_the_password_when_the_helper_is_gone(monkeypatch):

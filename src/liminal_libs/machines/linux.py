@@ -29,6 +29,7 @@ import sys
 import time
 from dataclasses import dataclass
 
+from .. import proctree
 from .plugin import LIMINAL_PREFIX, CommandError, liminal_scoped
 
 TIMEOUT_S = 120.0
@@ -268,7 +269,8 @@ class Shell:
 
     def prefix(self, root: bool = True) -> list[str]:
         if self.target == "local":
-            return ["sudo", "-n"] if root and not self.root() else []
+            # -- (1.80.0): a command beginning with a dash (-u, say) is the command's, never read as sudo's option
+            return ["sudo", "-n", "--"] if root and not self.root() else []
         # --exec: the arguments reach the command as they are (with --, the distribution's default shell would
         # expand $variables and split words before the command ran)
         return ["wsl", *(("-d", self.distribution) if self.distribution else ()), *(("-u", "root") if root else ()), "--exec"]
@@ -327,9 +329,8 @@ class Shell:
         else:
             if not self.here:
                 raise CommandError(f"no {self.where} to reach from here")
-            try:
-                done = subprocess.run(args, capture_output=True, timeout=timeout,
-                                      input=feed.encode() if feed is not None else None, **_no_window())
+            try:  # a timeout ends the command with what it started, sudo's command asked to stop through sudo (1.80.0)
+                done = proctree.run(args, timeout, input=feed.encode() if feed is not None else None)
             except subprocess.TimeoutExpired:
                 raise CommandError(f"{command[0]} took more than {timeout:g} s on {self.where}") from None
             except OSError as e:

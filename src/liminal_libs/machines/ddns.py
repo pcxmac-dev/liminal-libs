@@ -13,7 +13,7 @@ address the keeper last set or found there as this network's (its own: kept curr
 over (`take_over`, after the page's confirmation, which says what the record holds and that it will point here). Any
 other record (another address, or several) is left as it is and said so ("holds 198.51.100.7, not this network's
 address"), with a Take over… on the page; several addresses are never cut to one unasked. Just before a write the
-address is asked again, and nothing is written if it changed meanwhile. What the keeper holds as its own and what it
+address is asked again and the record read again, and nothing is written if either changed meanwhile. What the keeper holds as its own and what it
 was let take over is kept in a small JSON file the plugin names (`state`: its folder under the platform's), so a
 restart after the network's address changed still knows its own record.
 
@@ -368,6 +368,23 @@ class Keeper:
             return
         if stop is not None and stop.is_set():  # detached while the address was asked again: nothing written (1.49.4)
             st.checked_at, st.ok, st.result = now, False, "not updated: the plugin was detached: nothing written"
+            return
+        # the record read again just before the write (1.80.0; the review of 2026-11-21, item 26, its 10th): asking the
+        # address again takes seconds, and a record the user changed meanwhile was overwritten, its result naming the old
+        # address. Written only while it holds what was read first (in any order).
+        try:
+            now_held, why = self._read(h), ""
+        except Exception as e:  # noqa: BLE001 - not known what it holds now: nothing written
+            now_held, why = None, f": {e}"
+        if now_held is None:
+            st.checked_at, st.ok, st.result = now, False, f"not updated: its record could not be read again before the write{why}"
+            return
+        now_held = [str(a) for a in now_held]
+        if sorted(now_held) != sorted(held):
+            st.checked_at, st.ok = now, False
+            st.holds, st.address = tuple(now_held), (now_held[0] if now_held else None)
+            st.result = (f"its record changed during the pass (it holds {', '.join(now_held) or 'nothing'} now, "
+                         f"{', '.join(held) or 'nothing'} before): nothing written (looked at again on the next pass)")
             return
         try:
             done = self._write(h, ip)

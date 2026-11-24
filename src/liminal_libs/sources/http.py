@@ -62,6 +62,7 @@ class HttpClient:
         timeout: float = 30.0,
         sleep: Callable[[float], None] = time.sleep,
         request_budget: int | None = None,
+        post_timeout: float | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._host = urlparse(self.base_url).netloc
@@ -75,6 +76,9 @@ class HttpClient:
         self._refused: dict[str, SourceError] = {}
         self._max_retries = max_retries
         self._timeout = timeout
+        # What a POST waits for its answer (1.80.0): an AI assistant's (AssistantClient) is written as it is asked, a
+        # reasoning model's for minutes, and one cut off at a GET's 30 s may still be billed. None: `timeout`.
+        self._post_timeout = timeout if post_timeout is None else post_timeout
         self._sleep = sleep
         # Hard cap on requests this client may send, retries included.
         self.request_budget = request_budget
@@ -98,10 +102,20 @@ class HttpClient:
     def tighten(self, n: int | None, seconds: float) -> bool:
         """Keep a tighter window from now on (a capability scan found its server's lower limit while
         this client runs: it went on at the old one until the next run); never a looser one. Returns
-        whether it changed."""
+        whether it changed. Looser by rate is refused, and a burst larger than the one kept is cut to it at the
+        new rate (1.80.0; the review of 2026-11-21, item 26, its 13th: 9 a second replaced 200 a minute, its
+        burst being smaller, so 540 a minute were sent)."""
         lim = self._limiter
-        if n is None or (lim.max_calls and lim.max_calls / lim.period <= n / seconds + 1e-9 and lim.max_calls <= n):
+        if n is None or not seconds or n < 1:
             return False
+        if lim.max_calls:
+            rate, kept = n / seconds, lim.max_calls / lim.period
+            if rate > kept + 1e-9:
+                return False  # a higher rate: looser, whatever its burst
+            if n > lim.max_calls:  # a lower rate in a larger burst: the burst kept, at the new rate
+                n, seconds = lim.max_calls, lim.max_calls / rate
+            if n == lim.max_calls and abs(seconds - lim.period) < 1e-9:
+                return False
         lim.max_calls, lim.period = n, float(seconds)
         return True
 
@@ -163,7 +177,8 @@ class HttpClient:
                 self.on_request(self.requests_made)
             try:
                 if method == "POST":
-                    resp = self._session.post(url, params=params, json=json, headers=self._headers, timeout=self._timeout)
+                    resp = self._session.post(url, params=params, json=json, headers=self._headers,
+                                              timeout=self._post_timeout)
                 elif streamed:
                     resp = self._session.get(url, params=params, headers=self._headers, timeout=self._timeout, stream=True)
                 else:
@@ -189,7 +204,10 @@ class HttpClient:
             if self.limit_prefixes:
                 self.limits_seen.update({str(h): str(v) for h, v in sent.items() if str(h).lower().startswith(self.limit_prefixes)})
             self.last_headers = {str(h): str(v) for h, v in sent.items()}
-            retryable = (resp.status_code == 429 or resp.status_code >= 500) and not self._final(resp)
+            # A POST is not sent again on a 5xx either (1.80.0; the review of 2026-11-21, item 26, its 12th): a gateway's
+            # 502 or 504 may come after the vendor ran it, and a second send is billed again. A 429 was refused before
+            # anything was done: waited out and sent again, as a GET's.
+            retryable = (resp.status_code == 429 or (resp.status_code >= 500 and method != "POST")) and not self._final(resp)
             if not retryable or attempt == self._max_retries:
                 break
             delay = retry_delay(resp, attempt)

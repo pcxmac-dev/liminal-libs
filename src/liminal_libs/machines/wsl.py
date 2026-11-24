@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import layout
+from .. import layout, proctree
 from ..docker import Instance
 from .plugin import LIMINAL_PREFIX, MachinePlugin, liminal_scoped
 from .services import SCRIPT as SCAN_SCRIPT, Scan, parse as parse_scan
@@ -232,9 +232,8 @@ class Wsl:
             raise WslError("WSL is not here: this is not Windows, or the wsl command is missing")
         if out is not None:
             return self._stream(args, timeout, stdin, out)
-        try:
-            done = subprocess.run(args, capture_output=True, timeout=timeout, input=stdin.encode() if stdin is not None else None,
-                                  **_no_window())
+        try:  # a timeout ends wsl.exe with what it started on Windows (1.80.0); what it runs in Linux is beyond reach
+            done = proctree.run(args, timeout, input=stdin.encode() if stdin is not None else None)
         except subprocess.TimeoutExpired:
             raise WslError(f"{' '.join(args[:3])} took more than {timeout:g} s") from None
         except OSError as e:
@@ -255,7 +254,7 @@ class Wsl:
             except OSError:
                 pass
         killed = threading.Event()
-        timer = threading.Timer(timeout, lambda: (killed.set(), proc.kill()))
+        timer = threading.Timer(timeout, lambda: (killed.set(), proctree.kill_tree(proc)))
         timer.daemon = True
         timer.start()
         decode, got = codecs.getincrementaldecoder("utf-8")("replace"), bytearray()

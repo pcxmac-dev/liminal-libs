@@ -643,10 +643,14 @@ def within(n: int | None, seconds: float, limits: list[tuple[float, float]]) -> 
     """A window (n requests in `seconds`; n None: no limit) kept within SERVER_SHARE of each server
     limit (requests, seconds): on average under the lowest rate of them, and n at once under each
     shorter window's. Unchanged when it already is. A few a second becomes one in a longer window,
-    never rounded up to one a second (that was twice a server's 30 a minute)."""
+    never rounded up to one a second (that was twice a server's 30 a minute). Never looser than the window
+    itself, by rate or by burst (1.80.0; the review of 2026-11-21, item 26, its 13th): a server's 10 a second
+    made the plugin's own 200 a minute 9 a second, 540 a minute."""
     if not limits:
         return n, seconds
     rate = min(q / w for q, w in limits) * SERVER_SHARE  # requests a second
+    if n is not None and seconds:
+        rate = min(rate, n / seconds)  # the plugin's own rate a ceiling too (a shorter window's n then stays under its n)
     if n is not None and n / seconds <= rate + 1e-9 and all(n <= q * SERVER_SHARE for q, w in limits if w <= seconds):
         return n, seconds
     seconds = min(seconds or 60.0, min(w for _, w in limits))

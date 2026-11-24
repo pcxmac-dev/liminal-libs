@@ -137,17 +137,26 @@ def _json_or_none(resp):
     return body
 
 
+# What an answer is waited for (1.80.0; the review of 2026-11-21, item 26, its 12th): until then a POST had a GET's 30 s,
+# and a reasoning model at a high effort, or a long answer, often takes longer; one cut off there is no answer here,
+# though the vendor may still bill it. Five minutes holds the vendors' slow answers (their own SDKs wait ten) and
+# still ends a request that hangs. A vendor's Assistant may set its own (answer_timeout).
+ANSWER_TIMEOUT_S = 300.0
+
+
 class AssistantClient(HttpClient):
     """One vendor host (plugin API 2.0): the key in its headers, POST through the contract's client
-    (sources/http.py: no transport retry on a POST, a timed-out answer may have been billed; 429 and
-    5xx tried again), every error scrubbed of the key and the account, the vendor's rate-limit
-    headers kept (limits_seen), its error mapping and what is final from its Assistant."""
+    (sources/http.py: no transport retry on a POST, a timed-out answer may have been billed; a 429
+    waited out and tried again, a 5xx not since 1.80.0: a gateway's 504 may come after the vendor ran
+    it), every error scrubbed of the key and the account, the vendor's rate-limit headers kept
+    (limits_seen), its error mapping and what is final from its Assistant. A POST waits
+    `answer_timeout` s for its answer (ANSWER_TIMEOUT_S unless its Assistant says otherwise)."""
 
     def __init__(self, base_url: str, headers: dict, secrets: tuple[str, ...], assistant: "Assistant",
                  rate_limiter: RateLimiter | None = None, request_budget: int | None = None, session=None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, answer_timeout: float | None = None):
         super().__init__(base_url, headers, rate_limiter=rate_limiter, session=session, request_budget=request_budget,
-                         sleep=sleep)
+                         sleep=sleep, post_timeout=ANSWER_TIMEOUT_S if answer_timeout is None else answer_timeout)
         self._secrets = tuple(s for s in secrets if s)
         self._assistant = assistant
         self.limit_prefixes = tuple(assistant.limit_prefixes)
@@ -207,6 +216,7 @@ class Assistant:
     request_id_header: str = "x-request-id"
     limit_prefixes: tuple[str, ...] = ()  # the vendor's rate-limit headers, by prefix (kept in limits_seen)
     probe_tokens: int = 16  # what a full connect's answer may be, tokens (the smallest the vendors take)
+    answer_timeout: float = ANSWER_TIMEOUT_S  # what a POST waits for its answer, s (the client's)
 
     def __init__(self, plugin: "AssistantPlugin", settings: AssistantSettings, session=None,
                  now: Callable[[], datetime] | None = None, sleep: Callable[[float], None] = time.sleep):
@@ -220,7 +230,7 @@ class Assistant:
         limiter = RateLimiter(*self.window())
         limiter.share(self.requests)
         self.client = AssistantClient(self.base_url, self.headers(key) if key else {}, (key, settings.account), self,
-                                      rate_limiter=limiter, session=session, sleep=sleep)
+                                      rate_limiter=limiter, session=session, sleep=sleep, answer_timeout=self.answer_timeout)
         self.client.take_day = lambda: self.requests.take_day(settings.caps.requests_per_day, self.now())
 
     # -- the hooks: a vendor's plugin fills them ---------------------------------------------------

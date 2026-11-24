@@ -106,7 +106,7 @@ def test_linux_commands_run_as_root_here_or_in_wsl(monkeypatch):
         return 0, b"ok\n", b""
     monkeypatch.setattr(linux.os, "geteuid", lambda: 1000, raising=False)
     local = Shell("local", runner=runner)
-    assert local.where == "this machine" and not local.root() and local.run("ufw", "status") == "ok\n" and got[-1] == ["sudo", "-n", "ufw", "status"]
+    assert local.where == "this machine" and not local.root() and local.run("ufw", "status") == "ok\n" and got[-1] == ["sudo", "-n", "--", "ufw", "status"]
     assert local.run("id", root=False) and got[-1] == ["id"]
     with pytest.raises(CommandError) as e:
         local.run("needs-password")
