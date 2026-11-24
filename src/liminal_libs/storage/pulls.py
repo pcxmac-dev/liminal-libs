@@ -33,13 +33,14 @@ import secrets
 import shutil
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
 from .. import spool
-from .common import _now, read_only, write_transaction
+from .common import _now, busy, read_only, write_transaction
 
 CACHE = "cache"  # the folder, beside the main file
 SWITCH = "LIMINAL_FETCH_CACHE"  # off: nothing is cached (the step's switch)
@@ -75,13 +76,97 @@ def _plain(e: BaseException) -> str:
     return _QUERY.sub("?...", f"{type(e).__name__}: {e}")[:300]
 
 
-def _ledger(write, *args, **kw):
-    """A write of the cache's own ledger. One the database refuses (busy past its wait, a full disk) is the cache's
-    failure, spool.CacheFailed: the run stops on it without a strike, as on a cache file that cannot be written."""
+LEDGER_TRIES = 3  # a write of the ledger the database is too busy for is tried this many times before it gives up
+LEDGER_PAUSES = (2.0, 10.0)  # seconds between the tries (each try itself waits the connection's BUSY_TIMEOUT_S)
+_pause = time.sleep  # (the tests' stand-in: nothing in them waits)
+
+
+def _waited(write, *args, what: str = "", notes: list | None = None, store=None, **kw):
+    """A write of the ledger, tried again while the database is busy (1.78.0): another connection holding the
+    main file's write lock past this one's wait (a burst of work after a restart: the sweep, the closed months'
+    copy, the extras all starting) is waited out, up to LEDGER_TRIES tries, rather than stopping a run over it.
+    What a failed try left of its transaction is rolled back first, so a try is made from nothing. Any other
+    error, and the last busy one, is raised as it came, with what was at work on the database then said in its
+    `liminal_at_work` (`what`: the write in words, for the notes and the caller's message). A write that went
+    through only after waiting says so in `notes`. `store`: whose connection it is (else the method's own)."""
+    store = store if store is not None else getattr(write, "__self__", None)
+    began = time.monotonic()
+    for attempt in range(1, LEDGER_TRIES + 1):
+        try:
+            got = write(*args, **kw)
+        except sqlite3.Error as e:
+            _rolled_back(store)
+            if not busy(e):
+                raise
+            if attempt == LEDGER_TRIES:
+                e.liminal_tries = attempt
+                e.liminal_waited = time.monotonic() - began
+                e.liminal_at_work = at_work(store)
+                raise
+            _pause(LEDGER_PAUSES[min(attempt, len(LEDGER_PAUSES)) - 1])
+            continue
+        if attempt > 1 and notes is not None:
+            notes.append(f"the ledger waited out a busy database {attempt - 1} time{'s' if attempt > 2 else ''} "
+                         f"({time.monotonic() - began:.0f} s{f', {what}' if what else ''})")
+        return got
+
+
+def _rolled_back(store) -> None:
+    """A transaction a failed write left open (a commit refused as busy keeps it) ended, so the next try starts
+    from nothing and does not find its own first insert there already."""
+    conn = getattr(store, "conn", None)
     try:
-        return write(*args, **kw)
+        if conn is not None and getattr(conn, "in_transaction", False):
+            conn.rollback()
+    except sqlite3.Error:
+        pass
+
+
+def at_work(store) -> str:
+    """What else was at work on a store's main file just then, in words: every process that said so in the
+    claims (claims.present, a feed's run, a symbol, the sweep...), with what it holds, this process's own claims
+    apart. SQLite does not say who holds its write lock; the claims are what the processes say of themselves.
+    "" when nothing can be read (a store in memory, a file from before claims)."""
+    path = getattr(store, "path", None)
+    if path is None or str(path) == ":memory:":
+        return ""
+    try:
+        from .. import claims
+
+        holders = claims.held(path)
+    except Exception:  # noqa: BLE001 - only words for a message: never a second failure on top of the first
+        return ""
+    others: dict[tuple[str, int], list] = {}
+    for h in holders:
+        if not h.own:
+            others.setdefault((h.instance, h.pid), []).append(h)
+    if not others:
+        mine = sum(1 for h in holders if h.own)
+        return (f"no other process said it was at work on it (this one holds {mine} claim{'s' if mine != 1 else ''})"
+                if holders else "no process said it was at work on it")
+    words = []
+    for (inst, pid), held_ in sorted(others.items())[:6]:
+        said = next((h.what for h in held_ if h.key.startswith(claims.PROCESS) and h.what), "")
+        keys = [h.key for h in held_ if not h.key.startswith(claims.PROCESS)]
+        words.append(f"{inst} process {pid}" + (f" ({said})" if said else "")
+                     + (f" holding {', '.join(keys[:4])}{' ...' if len(keys) > 4 else ''}" if keys else ""))
+    more = len(others) - len(words)
+    return "; ".join(words) + (f"; {more} more" if more > 0 else "")
+
+
+def _ledger(write, *args, what: str = "", notes: list | None = None, store=None, **kw):
+    """A write of the cache's own ledger, a busy database waited out (_waited). One the database still refuses
+    (busy through every try, a full disk) is the cache's failure, spool.CacheFailed: the run stops on it without a
+    strike, as on a cache file that cannot be written, and says which write it was and what else was at work."""
+    try:
+        return _waited(write, *args, what=what, notes=notes, store=store, **kw)
     except sqlite3.Error as e:
-        raise spool.CacheFailed(f"the fetch cache's ledger could not be written ({type(e).__name__}: {e})") from e
+        tries = getattr(e, "liminal_tries", 1)
+        where = f" ({what})" if what else ""
+        after = f" after {tries} tries over {getattr(e, 'liminal_waited', 0.0):.0f} s" if tries > 1 else ""
+        others = getattr(e, "liminal_at_work", "")
+        raise spool.CacheFailed(f"the fetch cache's ledger could not be written{where}{after} "
+                                f"({type(e).__name__}: {e}){f'; at work on the database then: {others}' if others else ''}") from e
 
 
 def _emptied(folder: Path) -> bool:
@@ -162,7 +247,8 @@ class Pull:
         with _live_lock:
             _live.add(self.id)  # before its row is there: a recover in this process never sees the row without it
         try:
-            _ledger(self.store._pull_made, self)
+            _ledger(self.store._pull_made, self, what=f"opening pull {self.id} of {self.feed}", notes=self._notes,
+                    store=self.store)
         except BaseException:
             with _live_lock:
                 _live.discard(self.id)
@@ -170,7 +256,8 @@ class Pull:
         self.made = True
 
     def _record(self, seq: int, kind: str, written: spool.Written, **facts) -> None:
-        _ledger(self.store._pull_file, self.id, seq, kind, written, **facts)
+        _ledger(self.store._pull_file, self.id, seq, kind, written, what=f"recording {kind} file {seq} of pull {self.id}",
+                notes=self._notes, store=self.store, **facts)
         self._since += written.bytes
 
     def room(self) -> None:
@@ -234,7 +321,8 @@ class Pull:
         the cache's failure: the run stops before the page is recorded as held, and the file, still marked as not
         loaded, is loaded again by the next run (the same bars: nothing changes) and its span recorded then."""
         if seq is not None:
-            _ledger(self.store._pull_loaded, self.id, seq)
+            _ledger(self.store._pull_loaded, self.id, seq, what=f"marking rows file {seq} of pull {self.id} loaded",
+                    notes=self._notes, store=self.store)
 
     # -- its end -------------------------------------------------------------------------------------------------
     def close(self, state: str = "complete", note: str = "") -> None:
@@ -248,9 +336,10 @@ class Pull:
                 return
             words = "; ".join(w for w in (note, *self._notes) if w)[:400]
             if state == "complete" and not self.rows_files and not self.unspooled:
-                self.store.pull_drop(self.id)
+                _waited(self.store.pull_drop, self.id, what=f"forgetting pull {self.id}", store=self.store)
                 return
-            self.store._pull_closed(self.id, state, words)
+            _waited(self.store._pull_closed, self.id, state, words, what=f"closing pull {self.id} as {state}",
+                    store=self.store)
         finally:
             # live until its ledger says how it ended (or could not be told): a recover on another thread of this
             # process never finds it open in the ledger and not open here

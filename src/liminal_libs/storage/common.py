@@ -92,6 +92,12 @@ def owners_layout(conn, path, behind: str = "") -> Iterator[None]:
         conn.execute("PRAGMA query_only=OFF")
 
 
+def busy(e: BaseException) -> bool:
+    """Whether an error is the database being busy (another connection holding its write lock past this one's
+    wait), not a fault of what was asked."""
+    return isinstance(e, sqlite3.OperationalError) and any(w in str(e).lower() for w in ("locked", "busy"))
+
+
 def add_column(conn: sqlite3.Connection, table: str, column: str, kind: str) -> None:
     """ALTER TABLE ADD COLUMN unless the column is there (inside the caller's write transaction:
     two processes opening an old file at once both found it missing, and the second failed)."""

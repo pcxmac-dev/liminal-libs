@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.78.0 (2026-11-24)
+
+- The fetch cache waits out a busy database (storage/pulls.py `_waited`). A write of its ledger that the main
+  file's lock refuses past the connection's 30 s wait is tried again, up to three tries, two and then ten seconds
+  apart. What a failed try left of its transaction is rolled back first. A pull that only went through after
+  waiting says so in its note. A pull's close and its forgetting wait the same way.
+- A ledger write still refused after every try stops the run as before (spool.CacheFailed, no strike), and now
+  says which write it was (opening a pull, recording a file, marking one loaded), how many tries over how long,
+  and what else said it was at work on the database then: each other process's claims (`pulls.at_work`). SQLite
+  does not say who holds its lock; the claims are what the processes say of themselves.
+- `storage.common.busy(e)`: whether an error is the database being busy (the auditors' `_busy` uses it).
+- Monday list item 2: the stop at 08:22:27 on 2026-11-19 ("the fetch cache's ledger could not be written
+  (database is locked)") would have been waited out, or said who else was at work.
+
 ## 1.77.0 (2026-11-24)
 
 The sweep judges a missing day by that day's own witness. Its second run over the user's data (2026-11-19: 12,994

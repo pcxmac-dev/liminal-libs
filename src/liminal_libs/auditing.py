@@ -54,7 +54,7 @@ from typing import Callable, Iterator, Mapping
 from . import spool
 from .sources.plugin import IntegratorPlugin
 from .storage import pulls
-from .storage.common import own_files, read_only
+from .storage.common import busy, own_files, read_only
 
 Log = Callable[[str], None]
 
@@ -617,7 +617,7 @@ def audit_pulls(store, feed: str | None = None, ticker: str | None = None, polic
 
 def _busy(e: BaseException) -> bool:
     """Whether an error is the database being busy (locked past its wait), not one pull's own trouble."""
-    return isinstance(e, sqlite3.OperationalError) and any(w in str(e).lower() for w in ("locked", "busy"))
+    return busy(e)
 
 
 def recover(store, feed: str | None = None, log: Log | None = None) -> int:

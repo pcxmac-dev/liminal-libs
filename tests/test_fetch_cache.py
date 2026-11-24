@@ -50,6 +50,15 @@ def store(tmp_path):
         yield s
 
 
+_PAUSES: list[float] = []  # the ledger's waits for a busy database, as asked (nothing in the tests waits)
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    _PAUSES.clear()
+    monkeypatch.setattr(pulls, "_pause", _PAUSES.append)
+
+
 @pytest.fixture(autouse=True)
 def the_defaults(monkeypatch):
     """Every test starts on the default policy, with the cache on, writing."""
@@ -1194,3 +1203,79 @@ def test_the_processs_policy_is_set_once_and_the_defaults_stand_without_a_plugin
     assert auditing.policy() is mine
     auditing.set_policy(None)
     assert auditing.policy() == auditing.Policy()
+
+
+# -- a busy database waited out (1.78.0) --------------------------------------------------------------------------------
+def _busy_for(store, name, times, monkeypatch, *, error="database is locked", before=None):
+    """The store's ledger write `name` refused as busy `times` times (then written), `before` run first each time."""
+    import sqlite3
+
+    real, calls = getattr(store, name), []
+
+    def flaky(*a, **k):
+        calls.append(a)
+        if len(calls) <= times:
+            if before is not None:
+                before(*a)
+            raise sqlite3.OperationalError(error)
+        return real(*a, **k)
+
+    monkeypatch.setattr(store, name, flaky)
+    return calls
+
+
+def test_a_ledger_write_the_database_is_busy_for_is_tried_again_and_the_pull_says_it_waited(store, monkeypatch):
+    calls = _busy_for(store, "_pull_file", 2, monkeypatch)
+    with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+        store.upsert_bars("fake", "AAA", "minute", 1, _minutes(10))
+    assert len(calls) == 3 and _PAUSES == list(pulls.LEDGER_PAUSES)  # two waits, then written
+    assert len(_stored(store)) == 10 and len(store.pull_files(p.id)) == 1
+    row = store.pull(p.id)
+    assert row["state"] == "complete" and "waited out a busy database 2 times" in row["note"]
+    assert "recording rows file 1 of pull" in row["note"]
+
+
+def test_a_ledger_busy_through_every_try_says_which_write_and_what_else_was_at_work(store, monkeypatch):
+    other = claims.Claims.open(store.path, me="linux::Ubuntu", pid=4242, started=1, alive=lambda *_: True)
+    try:
+        other.take(f"{claims.PROCESS}linux::Ubuntu:4242", what="the auditors' sweep")
+        other.take(claims.feed_key("massive"), what="a feed's run")
+        calls = _busy_for(store, "_pull_file", 99, monkeypatch)
+        with pytest.raises(StopRun) as stopped:
+            _fill(store, Feed([_minutes(10)]))
+    finally:
+        other.close()
+    said = str(stopped.value)
+    assert len(calls) == pulls.LEDGER_TRIES and stopped.value.strike is False and _stored(store) == []
+    assert "recording rows file 1 of pull" in said and f"after {pulls.LEDGER_TRIES} tries" in said
+    assert "database is locked" in said
+    assert "at work on the database then: linux::Ubuntu process 4242 (the auditors' sweep) holding feed:massive" in said
+
+
+def test_a_try_that_left_its_transaction_open_is_rolled_back_before_the_next(store, monkeypatch):
+    def half_written(pull):  # a commit refused as busy: the insert made, its transaction still open
+        store.conn.execute("INSERT INTO pulls (id, feed, kind, state, opened_at) VALUES (?, ?, 'bars', 'open', ?)",
+                           (pull.id, pull.feed, "2026-11-24T00:00:00+00:00"))
+
+    calls = _busy_for(store, "_pull_made", 1, monkeypatch, before=half_written)
+    with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+        store.upsert_bars("fake", "AAA", "minute", 1, _minutes(5))
+    assert len(calls) == 2 and store.pull(p.id)["state"] == "complete" and len(_stored(store)) == 5
+
+
+def test_a_ledger_error_that_is_not_a_busy_database_is_not_tried_again(store, monkeypatch):
+    calls = _busy_for(store, "_pull_file", 99, monkeypatch, error="disk I/O error")
+    with pytest.raises(StopRun, match="disk I/O error") as stopped:
+        _fill(store, Feed([_minutes(10)]))
+    assert len(calls) == 1 and _PAUSES == [] and "tries" not in str(stopped.value)
+
+
+def test_a_close_the_database_is_busy_for_is_waited_out_too(store, monkeypatch):
+    _busy_for(store, "_pull_closed", 2, monkeypatch)
+    with pulls.pulling(store, "fake", "bars", ticker="AAA", asset="stock", timespan="minute") as p:
+        store.upsert_bars("fake", "AAA", "minute", 1, _minutes(5))
+    assert store.pull(p.id)["state"] == "complete" and len(_PAUSES) == 2
+
+
+def test_what_was_at_work_is_said_plainly_when_nothing_else_was():
+    assert pulls.at_work(object()) == ""  # a store in memory, or one that has no path
