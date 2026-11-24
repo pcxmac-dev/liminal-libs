@@ -280,6 +280,7 @@ def machine_caps(client, name: str, settings: "Settings", key: str | None = None
     machine = MachineLedger(name, key)
     cap = settings.for_source(name).max_requests_per_day
     client.take_day = lambda: machine.take_day(cap)
+    client.give_day = lambda: machine.charge_day(-1)  # one counted and not sent (a pause in the window's wait)
     return client
 
 

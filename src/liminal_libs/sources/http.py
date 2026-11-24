@@ -93,6 +93,8 @@ class HttpClient:
         # Asked as each request goes, counting it: False once the machine's requests on this key
         # today have reached the daily cap (every database on the machine counts: MachineLedger).
         self.take_day: Callable[[], bool] | None = None
+        # Gives back a request take_day counted and that was not sent (paused in the window's wait), when set.
+        self.give_day: Callable[[], None] | None = None
         # The rate-limit headers its server last sent (LIMIT_HEADERS, and any starting with one of
         # `limit_prefixes`: the AI vendors' own): the capability scan checks the rate kept against them.
         self.limits_seen: dict[str, str] = {}
@@ -166,12 +168,16 @@ class HttpClient:
                 pull.room()  # the cache at its cap (spool.CacheFull): nothing is asked that it could not take
             if self.request_budget is not None and self.requests_made >= self.request_budget:
                 raise BudgetExhausted(f"request cap of {self.request_budget} reached")
+            # The daily cap is asked before the window: one it refuses takes no place there (1.81.0; the review of
+            # 2026-11-21, Monday list item 4: the place was spent for nothing and slowed the next requests).
+            if self.take_day is not None and not self.take_day():
+                raise BudgetExhausted("the daily request cap is reached on this machine (all its databases together)")
             (self.class_limiters.get(self.class_of(url), self._limiter) if self.class_of else self._limiter).acquire()
             reason = self.should_stop() if self.should_stop else None  # paused during the window's wait
             if reason:
+                if self.take_day is not None and self.give_day is not None:
+                    self.give_day()  # counted for the day, never sent
                 raise Paused(reason)
-            if self.take_day is not None and not self.take_day():
-                raise BudgetExhausted("the daily request cap is reached on this machine (all its databases together)")
             self.requests_made += 1  # counted before it goes: one that times out may have reached the server
             if self.on_request:
                 self.on_request(self.requests_made)

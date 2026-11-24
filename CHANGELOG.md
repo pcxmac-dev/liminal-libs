@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.81.0 (2026-11-24)
+
+- The review of 2026-11-21 (Monday list item 4), its five faults. The second-feed audit's queue (`queue_audit`)
+  still keeps one entry per series and owner, but a span queued while another waits widens it to cover both (the
+  lower start to the higher end): the newer replaced the older, and a span downloaded and not yet audited was never
+  audited. `dequeue_audit(end_ms=)` takes off only the span audited, so one widened meanwhile waits on; the
+  Auditor audits a queued span from its history floor up (a widened span may reach below it).
+- An audit that could not run (`audit_span` returned None: the feed refused or did not answer) stays queued for the
+  next pass, its try counted against the run's `queued`, until QUEUE_MAX_AGE expires it; it left the queue as if
+  audited. One the second feed had nothing for is recorded as before (verdict no-data) and leaves it.
+- An exchange feed's quality (`composite.feed_quality`) is the bar-weighted mean of every ticker's leave-one-out
+  score, each ticker's stats and score kept in the details' `tickers`; the last ticker judged set it alone.
+- `HttpClient` asks the daily cap (`take_day`) before the rate window: a request it refuses takes no place in the
+  window. One counted for the day and paused in the window's wait is given back (`give_day`, set by the feeds'
+  `machine_caps` and the assistants: `MachineLedger.charge_day(-1)`).
+- A dataset file (`datasets._keep`) is written to a part file beside it, fsynced and renamed into its name
+  (spool's `_part` and `_finish`), so it is never found cut off under its finished name; one of the wrong size
+  (cut off before) is written again.
+
 ## 1.80.0 (2026-11-24)
 
 - The review of 2026-11-21 (Monday list item 26), its findings 8 to 13. A cancel is never undone: `request_update`

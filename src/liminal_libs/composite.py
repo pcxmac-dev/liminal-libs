@@ -159,6 +159,23 @@ def score(stats: dict) -> float:
     return round(math.exp(-m / QUALITY_SCALE_BPS) * (1 - stats["outlierShare"]) * math.sqrt(stats["completeness"]), 4)
 
 
+def feed_quality(store, feed: str, asset: str, ticker: str, stats: dict, derivation: int | None = None) -> float:
+    """A feed's quality of an asset class from every ticker judged: each ticker's leave-one-out
+    score kept in the score's details (`tickers`: its stats and score), this ticker's replaced, and
+    the feed's score their mean weighted by the bars each was judged on. Returns the score (1.81.0;
+    the review of 2026-11-21, Monday list item 4: the last ticker's score was the feed's alone)."""
+    q = store.quality(feed, asset)
+    kept = (q or {}).get("details", {}).get("tickers") if q and q["details"].get("basis") == "leave-one-out" else None
+    tickers = dict(kept or {})
+    tickers[ticker] = {**stats, "score": score(stats)}
+    weight = {t: max(1, int(s.get("bars") or 0)) for t, s in tickers.items()}
+    total = sum(weight.values())
+    value = round(sum(s["score"] * weight[t] for t, s in tickers.items()) / total, 4)
+    store.set_quality(feed, asset, value, {"basis": "leave-one-out", "weighting": "bars", "bars": total,
+                                           "ticker": ticker, "tickers": tickers}, derivation)
+    return value
+
+
 def _venue_bars(store, feed_of: dict[str, str], ticker: str, timespan: str, lo: int, hi: int) -> dict[str, pd.DataFrame]:
     out = {}
     for feed, venue in feed_of.items():
@@ -254,9 +271,8 @@ def refresh(store, feeds: dict, now: datetime, log=print, rebuild_days: int = 2)
                 "score": "exp(-(0.5 close + 0.25 high + 0.25 low) / scale) x (1 - outlier share) x sqrt(completeness)"},
                 {"exchanges": feed_of, "ticker": ticker}, (hi - QUALITY_DAYS * DAY_MS, hi), len(stats))
             for f, v in feed_of.items():
-                if v in stats:
-                    store.set_quality(f, asset, score(stats[v]), {**stats[v], "ticker": ticker, "basis": "leave-one-out"},
-                                      derivation)
+                if v in stats:  # the feed's score from all its tickers', this one's among them (feed_quality)
+                    feed_quality(store, f, asset, ticker, stats[v], derivation)
             store.kv_set(key, now.isoformat())
             if stats:
                 log(f"{ticker}: exchange quality " + ", ".join(

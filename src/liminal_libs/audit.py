@@ -264,14 +264,22 @@ class Auditor:
         """Spot-audit other feeds' data with this feed: first spans queued after their downloads, then
         random sessions of their stored history, each by one random hour (`spot`). Only spans this
         feed can serve on its plan; with `requests`, no more audits once they have used that many.
-        Returns audits done."""
+        Returns audits done.
+
+        A queued span is audited from this feed's history floor up (the part below it it can never
+        serve: a span widened by queue_audit may reach below it) and waits while its end is past the
+        frontier. An audit that could not run (audit_span's None: the feed refused or did not answer,
+        or does not watch the symbol) stays queued for the next pass, its try counted against
+        `queued`; QUEUE_MAX_AGE ends its tries a week after its last queuing. One the second feed had
+        nothing for is a result (verdict no-data, saved) and leaves the queue (1.81.0; the review of
+        2026-11-21, Monday list item 4: every None left it, as if audited)."""
         source, store, me, feeds, now, rng = self.source, self.store, self.me, self.feeds, self.now, self.rng
-        done = 0
+        done = tried = 0
         start = source.requests_made
         spent = lambda: requests is not None and source.requests_made - start >= requests  # noqa: E731
         store.expire_audits(now - QUEUE_MAX_AGE)  # once, whatever this run audits (it was a row at a time, while done < queued)
         for q in store.audit_queue(exclude_owner=me.name):
-            if done >= queued or spent():
+            if tried >= queued or spent():
                 break
             w = self.mine.get(q["ticker"])
             if w is None or not source.serves(w["asset"]) or is_foreign(w.get("exchange")):
@@ -281,11 +289,14 @@ class Auditor:
             if not same_market(feeds, q["owner"], me.name, w["asset"]):
                 continue  # another market: the composite compares it, an audit would not
             lo, hi = self.window(w["asset"], q["timespan"])
-            if not (lo <= q["start_ms"] and q["end_ms"] <= hi):
+            a = max(q["start_ms"], lo)  # below the floor: never on this feed's plan
+            if not (a < q["end_ms"] <= hi):
                 continue  # not on this feed's plan yet (e.g. end of day): a later run
-            s0, s1 = spot(q["start_ms"], q["end_ms"], rng, q["timespan"])
-            self.span(q["ticker"], q["timespan"], s0, s1, q["owner"], "after-download")
-            store.dequeue_audit(q["ticker"], q["timespan"], q["start_ms"], q["owner"])
+            s0, s1 = spot(a, q["end_ms"], rng, q["timespan"])
+            tried += 1
+            if self.span(q["ticker"], q["timespan"], s0, s1, q["owner"], "after-download") is None:
+                continue  # it could not run: queued still, for the next pass
+            store.dequeue_audit(q["ticker"], q["timespan"], q["start_ms"], q["owner"], q["end_ms"])
             done += 1
         for _ in range(random_count):
             if spent():

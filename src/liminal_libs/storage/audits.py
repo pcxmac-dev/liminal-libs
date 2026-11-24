@@ -76,11 +76,18 @@ class AuditStore:
 
     def queue_audit(self, ticker: str, timespan: str, start_ms: int, end_ms: int, owner: str) -> None:
         """Queue [start, end) of a series for another feed's audit. One entry per series and owner
-        waits at a time, the newest (it replaces one still waiting): a row added per fetch per symbol
-        grew the queue to a week of backlog, some 10^5 rows, read whole on every audit pass."""
+        waits at a time: a row added per fetch per symbol grew the queue to a week of backlog, some
+        10^5 rows, read whole on every audit pass. A span queued while another still waits widens it
+        to cover both, from the lower start to the higher end (1.81.0; the review of 2026-11-21,
+        Monday list item 4: the newer replaced the older, so a span downloaded and not yet audited
+        was never audited, and a wider wait could become a narrower one). The entry's time is the
+        newest queuing's (QUEUE_MAX_AGE expires it a week after the last download it covers). The
+        old entry is taken out and the new one put in in one transaction (DELETE ... RETURNING)."""
         with self.conn:
-            self.conn.execute("DELETE FROM audit_queue WHERE ticker=? AND timespan=? AND owner=?",
-                              (ticker.upper(), timespan, owner))
+            for lo, hi in self.conn.execute(
+                    "DELETE FROM audit_queue WHERE ticker=? AND timespan=? AND owner=? RETURNING start_ms, end_ms",
+                    (ticker.upper(), timespan, owner)).fetchall():
+                start_ms, end_ms = min(start_ms, lo), max(end_ms, hi)
             self.conn.execute("INSERT OR REPLACE INTO audit_queue VALUES (?, ?, ?, ?, ?, ?)",
                               (ticker.upper(), timespan, start_ms, end_ms, owner, _now()))
 
@@ -102,7 +109,12 @@ class AuditStore:
             return self.conn.execute("DELETE FROM audit_queue WHERE queued_at < ?",
                                      (before.astimezone(timezone.utc).isoformat(timespec="seconds"),)).rowcount
 
-    def dequeue_audit(self, ticker: str, timespan: str, start_ms: int, owner: str) -> None:
+    def dequeue_audit(self, ticker: str, timespan: str, start_ms: int, owner: str, end_ms: int | None = None) -> None:
+        """The entry audited taken off the queue. With `end_ms`, only while it is still the span that was audited:
+        one widened meanwhile (queue_audit, another process's download) waits on (1.81.0)."""
+        sql, args = "DELETE FROM audit_queue WHERE ticker=? AND timespan=? AND start_ms=? AND owner=?", \
+            (ticker.upper(), timespan, start_ms, owner)
+        if end_ms is not None:
+            sql, args = sql + " AND end_ms=?", (*args, end_ms)
         with self.conn:
-            self.conn.execute("DELETE FROM audit_queue WHERE ticker=? AND timespan=? AND start_ms=? AND owner=?",
-                              (ticker.upper(), timespan, start_ms, owner))
+            self.conn.execute(sql, args)

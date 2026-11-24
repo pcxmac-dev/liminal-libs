@@ -327,15 +327,25 @@ def _published_at(resp) -> datetime | None:
 
 
 def _keep(store, ds: Dataset, file: str, blob: bytes, sha: str) -> Path | None:
-    """Keep this version of a downloaded file: <data>/sources/datasets/<provider>/<name>.<sha12><ext>."""
+    """Keep this version of a downloaded file: <data>/sources/datasets/<provider>/<name>.<sha12><ext>.
+    Written to a part file beside it (spool's: .<name>.part), flushed to the disk and renamed into
+    its name, so a reader finds no file or the whole one; a part file a crash left is written over
+    by the next keep. One under its name of another size (cut off before 1.81.0) is written again
+    (1.81.0; the review of 2026-11-21, Monday list item 4: write_bytes could leave a cut-off file
+    under its finished name, and it was never written again)."""
+    from .spool import _finish, _part
+
     if store.datasets_dir is None:
         return None
     base = store.datasets_dir.parent / downloads(ds.provider)
     f = Path(file)
     dest = base / f"{f.stem}.{sha[:12]}{f.suffix}"
-    if not dest.exists():
+    if not dest.exists() or dest.stat().st_size != len(blob):
         base.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(blob)
+        part = _part(dest)
+        with open(part, "wb") as handle:
+            handle.write(blob)
+            _finish(handle, part, dest)
     return dest
 
 

@@ -232,6 +232,7 @@ class Assistant:
         self.client = AssistantClient(self.base_url, self.headers(key) if key else {}, (key, settings.account), self,
                                       rate_limiter=limiter, session=session, sleep=sleep, answer_timeout=self.answer_timeout)
         self.client.take_day = lambda: self.requests.take_day(settings.caps.requests_per_day, self.now())
+        self.client.give_day = lambda: self.requests.charge_day(-1, self.now())
 
     # -- the hooks: a vendor's plugin fills them ---------------------------------------------------
 
