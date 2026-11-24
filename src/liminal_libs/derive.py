@@ -59,6 +59,11 @@ KEY = "derive:v3:{}:{}:{}"  # source, ticker, base -> base bars stored after thi
 # held (the other chains' are not built again). Seconds: 10 s added 2026-10-28.
 CHAIN_VERSIONS = {"second": 2}
 PROGRESS_KEY = "derive:progress"
+
+
+def chain_key(source: str, ticker: str, base: str) -> str:
+    """The kv key holding how far a series' chain above `base` was built (KEY, with its chain's version)."""
+    return KEY.format(source, ticker, base) + (f":c{CHAIN_VERSIONS[base]}" if base in CHAIN_VERSIONS else "")
 CHUNK_DAYS = {"second": 5, "minute": 60}
 SLACK_MS = 60_000  # writers' stored_at can commit out of order: look back a minute
 DAY_MS = 86_400_000  # the base bars read either side of a chunk: a bin's whole extent (a CME session is 23 h)
@@ -291,12 +296,12 @@ class Builder:
         changed since the last build. Returns bars stored."""
         store = self.store
         frames = dict(CHAINS)[base]
-        key = KEY.format(source, ticker, base) + (f":c{CHAIN_VERSIONS[base]}" if base in CHAIN_VERSIONS else "")
+        key = chain_key(source, ticker, base)
         started = int(time_module.time() * 1000)
         built_to = int(store.kv_get(key) or -1)
         edges = store.bar_edges(source, ticker, base)
         if edges is None:
-            return 0
+            return self._emptied(source, ticker, base, frames, key, built_to, started)
         dirty = take_dirty(store, source, ticker, base)  # bad data pruned there: what was built over it goes (done_dirty)
         if built_to < 0:  # a first build covers everything held (bars from before stored_at have none)
             lo, hi = edges
@@ -343,6 +348,26 @@ class Builder:
         done_dirty(store, source, ticker, base, dirty)
         return stored
 
+    def _emptied(self, source: str, ticker: str, base: str, frames, key: str, built_to: int, started: int) -> int:
+        """A base frame that holds no bar now, built from before (1.79.0; the review of 2026-11-21, item 26): its last
+        bars went (a composite dropped, a series moved out) after the frames above were built from them. Those
+        frames are built from nothing now, so what was built goes, and a dirty mark taken is cleared. Until then
+        the build returned at once and the weeks, months and years built from the bars that went stayed. Nothing
+        is done for a frame never built, or when nothing changed since its last build."""
+        store = self.store
+        dirty = take_dirty(store, source, ticker, base)
+        if built_to < 0 and dirty is None:
+            return 0
+        if dirty is None and store.changed_span(source, ticker, base, built_to) is None:
+            return 0
+        dropped = sum(store.drop_built_frame(source, ticker, timespan, multiplier, 0, 2**62)
+                      for timespan, multiplier in frames)
+        if dropped:
+            self.log(f"derive {source}:{ticker}: no {label(base)} bars left; {dropped:,} bars built from them removed")
+        store.kv_set(key, str(started - SLACK_MS))
+        done_dirty(store, source, ticker, base, dirty)
+        return 0
+
     def symbol(self, source: str, ticker: str, asset: str = "stock", progress: tuple[int, int] = (1, 1),
                exchange: str | None = None) -> int:
         """Every frame above every base frame one series holds (CHAINS: seconds, then minutes, then
@@ -370,8 +395,8 @@ class Builder:
             log(f"bad data {source}:{ticker}: check failed ({type(e).__name__}: {e})")
         total = 0
         for base, frames in CHAINS:
-            if store.bar_edges(source, ticker, base) is None:
-                continue
+            if store.bar_edges(source, ticker, base) is None and store.kv_get(chain_key(source, ticker, base)) is None                     and take_dirty(store, source, ticker, base) is None:
+                continue  # never built: nothing to build, nothing built to remove
             store.kv_set(PROGRESS_KEY, json.dumps({
                 "source": source, "ticker": ticker, "from": label(base), "to": [label(t, m) for t, m in frames],
                 "n": progress[0], "of": progress[1], "at": int(time_module.time() * 1000)}))

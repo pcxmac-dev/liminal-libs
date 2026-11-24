@@ -210,3 +210,31 @@ def test_the_scanner_judges_what_changed_through_the_modules_rules(store, monkey
     monkeypatch.setattr(baddata, "scan_series", lambda *a, **k: 7)  # the scan of one series stands in through the module
     store.upsert_bars("fake", "AAA", "minute", 1, _minutes(start + timedelta(minutes=10), 1))
     assert baddata.scan_symbol(store, "fake", "AAA") == 7
+
+
+def test_the_frames_built_from_a_base_frame_whose_last_bar_went_go_with_it(store, monkeypatch):
+    """The review of 2026-11-21 (item 26): a build returned at once when its base frame held no bar, before it read
+    the dirty mark, so the weeks, months and years built from a series' last daily bar stayed after that bar went.
+    Built from one daily bar; the bar then removed and its span marked dirty, as a prune does; built again."""
+    from liminal_libs.storage import feeds as stored
+
+    day = ms(datetime(2026, 10, 20, tzinfo=ET))
+    builder = derive.Builder(store, lambda m: None)
+    with monkeypatch.context() as m:
+        m.setattr(stored, "_stored_ms", lambda: 1_000)
+        store.upsert_bars("fake", "AAA", "day", 1, [{"t": day, "o": 10.0, "h": 11.0, "l": 9.0, "c": 10.5, "v": 100}])
+        assert builder.chain("fake", "AAA", "day") == 3  # its week, month and year
+
+    def built() -> int:
+        return store._bars("fake").execute("SELECT COUNT(*) FROM built_bars WHERE ticker='AAA'").fetchone()[0]
+
+    assert built() == 3
+    conn = store._bars("fake")
+    with conn:
+        conn.execute("DELETE FROM bars WHERE ticker='AAA' AND timespan='day'")
+    derive.mark_dirty(store, "fake", "AAA", "day", day, day + derive.DAY_MS)
+    assert store.bar_edges("fake", "AAA", "day") is None
+    assert builder.symbol("fake", "AAA") == 0
+    assert built() == 0 and derive.take_dirty(store, "fake", "AAA", "day") is None
+    assert builder.chain("fake", "AAA", "day") == 0 and built() == 0  # nothing changed since: nothing done
+    assert builder.chain("fake", "BBB", "day") == 0  # a series never built: nothing to do

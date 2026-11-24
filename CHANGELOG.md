@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.79.0 (2026-11-24)
+
+- The review of 2026-11-21 on your desktop (Monday list item 26), checked against the checkout: a series' weeks, months and years outlived the daily bars they were built from. `Builder.chain`
+  returned at once when its base frame held no bar, before reading the dirty mark, and `Builder.symbol` skipped
+  such a frame altogether. So once a series' last base bars went (a composite dropped as one exchange's copy, a
+  composite's stale bars removed), what was built from them stayed. Now a base frame that was built from before and
+  holds nothing has its built frames above removed and its dirty mark cleared (`Builder._emptied`). Nothing is done
+  for a frame never built, or when nothing changed since. `derive.chain_key` names a chain's kv key.
+
 ## 1.78.0 (2026-11-24)
 
 - The fetch cache waits out a busy database (storage/pulls.py `_waited`). A write of its ledger that the main
