@@ -14,9 +14,11 @@ MARKS = ("ubuntu", "fedora", "gentoo", "wallfire", "wallglobe", "namecheap", "cl
          "ebpf",  # eBPF's bee (1.60.0)
          "llamacpp", "ollama", "vllm", "opencode", "aider", "continuedev",  # the local AI plugins (1.62.0)
          "lmdeploy", "codexcli", "pi", "cline", "goose", "mcp",  # the new top-four tools and MCP (2026-11-18)
-         "jenkins", "gocd", "buildbot")  # the Continuous Integration plugins (2026-11-23)
-TOP_FOUR_AND_MCP = MARKS[-9:-3]
-CONTINUOUS_INTEGRATION = MARKS[-3:]
+         "jenkins", "gocd", "buildbot",  # the Continuous Integration plugins (2026-11-23)
+         "git", "github", "gitlab", "subversion", "mercurial")  # the Source Control plugins (1.97.0)
+TOP_FOUR_AND_MCP = MARKS[-14:-8]
+CONTINUOUS_INTEGRATION = MARKS[-8:-5]
+SOURCE_CONTROL = MARKS[-5:]
 
 
 def _paths() -> dict[str, str]:
@@ -217,3 +219,35 @@ def test_the_continuous_integration_plugins_marks_jenkins_butler_gocds_arrow_bui
     assert all(near(p, (x, y + depth)) for p, (x, y) in zip(below[1:5], corners[3::-1]))  # the near corners, lower
     drops = [(a, b) for c, a, b, _ in edges if c == "V"]
     assert len(drops) == 2 and all(any(near(a, k) for k in corners) and near(b, (a[0], a[1] + depth)) for a, b in drops)
+
+
+def test_the_source_control_plugins_marks_are_their_makers_drawn_anew():
+    """1.97.0 (Monday list item 35): Git, GitHub, GitLab, Subversion and Mercurial (their ICONs "git", "github",
+    "gitlab", "subversion" and "mercurial"), each its maker's mark drawn anew in the set's line, found as a plugin's
+    ICON is, in the page's one colour, with a stroke width of its own, inside the 24-unit box. Git's is a closed
+    diamond with its three commits; GitHub's cat sits in its ring; GitLab's tanuki is one closed head of straight
+    lines; Subversion's is an S of two arcs with an arrow's head at each end; Mercurial's a closed drop holding two."""
+    paths = _paths()
+    js = (STATIC / "icons.js").read_text(encoding="utf-8")
+    assert SOURCE_CONTROL == ("git", "github", "gitlab", "subversion", "mercurial")
+    trees = {}
+    for name in SOURCE_CONTROL:
+        assert re.search(rf"^\s*{name}:\s*'", js, re.M), name  # as a plugin's ICON is looked for
+        trees[name] = tree = ET.fromstring(f"<svg>{paths[name]}</svg>")
+        colours = {v for el in tree.iter() for k, v in el.attrib.items() if k in ("fill", "stroke")}
+        assert colours <= {"currentColor", "none"} and "stroke-width=" in paths[name], name
+        points = [p for el in tree.iter("path") for c, start, end, controls in _pieces(el.get("d"))
+                  for p in ((end,) if c == "M" else (start, end, *controls))]
+        points += [(float(c.get("cx")) + side * float(c.get("r")), float(c.get("cy")) + side * float(c.get("r")))
+                   for c in tree.iter("circle") for side in (-1, 1)]
+        assert points and all(0.5 <= v <= 23.5 for p in points for v in p), name  # inside the box
+    diamond = next(trees["git"].iter("path")).get("d")
+    assert diamond.rstrip().endswith("z") and len(list(trees["git"].iter("circle"))) == 3
+    ring = next(trees["github"].iter("circle"))
+    assert float(ring.get("r")) > 9 and len(list(trees["github"].iter("path"))) == 2
+    head = _pieces(next(trees["gitlab"].iter("path")).get("d"))
+    assert {c for c, *_ in head} <= {"M", "L", "H", "Z"} and head[-1][0] == "Z"
+    s, heads = (_pieces(el.get("d")) for el in trees["subversion"].iter("path"))
+    assert [c for c, *_ in s].count("A") == 2 and [c for c, *_ in heads].count("M") == 2
+    drop = next(trees["mercurial"].iter("path")).get("d")
+    assert drop.rstrip().endswith("z") and len(list(trees["mercurial"].iter("circle"))) == 2

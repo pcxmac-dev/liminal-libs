@@ -277,6 +277,27 @@
       + '<path d="M2.6 12.6V15.8L9.6 22 19 19.8 21.4 11.4V8.2"/>'
       + '<ellipse cx="12" cy="10.7" rx="4.6" ry="3.3" transform="rotate(-12 12 10.7)"/></g>'
       + '<path stroke-width="1.1" d="M9.6 18.8V22M19 16.6V19.8"/>',
+    // The Source Control plugins (Monday list item 35: Git, GitHub, GitLab, Subversion and Mercurial; liminal-libs
+    // 1.97.0), each by its maker's mark, drawn anew in the set's line from what the mark shows:
+    // Git's diamond standing on a corner, its branch inside: a line down with a fork off it, three commits
+    git: '<g stroke-width="1.5"><path d="M10.6 2.8a2 2 0 0 1 2.8 0l7.8 7.8a2 2 0 0 1 0 2.8l-7.8 7.8a2 2 0 0 1-2.8 0'
+      + 'L2.8 13.4a2 2 0 0 1 0-2.8z"/><path d="M7.6 5.8 10.2 8.4V15.6M10.2 8.4 14.4 12.6"/></g>'
+      + '<g fill="currentColor" stroke="none"><circle cx="10.2" cy="8.4" r="1.4"/><circle cx="10.2" cy="15.6" r="1.4"/>'
+      + '<circle cx="14.4" cy="12.6" r="1.4"/></g>',
+    // GitHub's Octocat in its ring: the cat's head with its two ears, its body below, its tail curling to the left
+    github: '<g stroke-width="1.4"><circle cx="12" cy="12" r="9.6"/>'
+      + '<path d="M9.2 20.6V18C6.6 17.5 5.2 15.9 5.2 13.2 5.2 12 5.6 11 6.4 10.2 6.1 9.3 6.2 8.2 6.6 7.4'
+      + 'Q8 7.4 9.2 8.4A8 8 0 0 1 14.8 8.4Q16 7.4 17.4 7.4C17.8 8.2 17.9 9.3 17.6 10.2 18.4 11 18.8 12 18.8 13.2'
+      + 'C18.8 15.9 17.4 17.5 14.8 18V20.6"/><path d="M9.2 18.6C7.6 19 6.6 18.4 5.8 17.2"/></g>',
+    // GitLab's tanuki: the fox's head of its mark, its two ears standing up, the face's three faces inside
+    gitlab: '<g stroke-width="1.4"><path d="M12 21.2 2.8 14.4 4.2 9.8 6.4 3.2 8.6 9.8H15.4L17.6 3.2 19.8 9.8 21.2 14.4z"/>'
+      + '<path d="M4.2 9.8H8.6L12 21.2 15.4 9.8H19.8"/></g>',
+    // Subversion's swirl: an S of two arcs, an arrow's head at each end (a change going out, and coming back)
+    subversion: '<g stroke-width="1.6"><path d="M17 6.6A5.4 5.4 0 0 0 7 8.4C7 12 17 11.6 17 15.6A5.4 5.4 0 0 1 7 17.4"/>'
+      + '<path d="M17 2.8V6.6H13.2M7 21.2V17.4H10.8"/></g>',
+    // Mercurial's drop of quicksilver, two smaller drops shining inside it
+    mercurial: '<path stroke-width="1.5" d="M12 2.6C9 7 5.6 10.4 5.6 14.4A6.4 6.4 0 0 0 18.4 14.4C18.4 10.4 15 7 12 2.6z"/>'
+      + '<g fill="currentColor" stroke="none"><circle cx="9.6" cy="15.4" r="1.7"/><circle cx="14.2" cy="12.2" r="1"/></g>',
   };
   const icon = (name, size = 16, cls = '') => SVG(PATHS[name] || PATHS.plug, cls, size);  // a name it lacks: the plug
 
