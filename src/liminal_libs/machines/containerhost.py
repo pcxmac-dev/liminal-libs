@@ -1055,7 +1055,7 @@ class ContainerHost(MachinePlugin):
         if fit.differs():
             accepts.append(Accept(ACCEPT_DIFFERS, "Done differently: accept it?", "; ".join(fit.differs()),
                                   "Accept the difference"))
-        facts = self._facts(rt, spec, sid)
+        facts = self._plan_facts(rt, spec, sid)
         facts["target"] = {"id": t.id, "state": t.state}
         if act in ("start", "restart", "expose"):
             self._check_built(rt, sid, spec)
@@ -1202,7 +1202,7 @@ class ContainerHost(MachinePlugin):
         said.append("It starts and stops with the platform; nothing restarts it after a crash.")
         return " ".join(said)
 
-    def _facts(self, rt: Runtime, spec: ServiceSpec | None, sid: str) -> dict:
+    def _plan_facts(self, rt: Runtime, spec: ServiceSpec | None, sid: str) -> dict:
         """What a plan rests on (Runtime.facts), with 1.97.0's: a part built here is "on this engine" when its engine
         built the same pins before (its image found by its tag and its context's digest)."""
         facts = rt.facts(spec, sid)
@@ -1611,7 +1611,7 @@ class ContainerHost(MachinePlugin):
         taken: list[Plan] = []
 
         def ready() -> None:
-            facts = self._facts(rt, spec, p.subject)
+            facts = self._plan_facts(rt, spec, p.subject)
             facts["target"] = {"id": t.id, "state": t.state}
             facts["network"] = [n["plan"] for n in p.extra.get("network") or []]
             if p.extra.get("options", {}).get("choice") == "backup":
