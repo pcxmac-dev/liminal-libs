@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS futures_contracts (
     last_trade  TEXT,
     PRIMARY KEY (source, ticker)
 );
+-- a product's contracts by their first trade (1.85.0): contracts(source, product) had only the primary key, so each
+-- of the symbol list's ~1,500 asks scanned a feed's 21,903 contracts and sorted them (6.8 s of its 13 s on the data)
+CREATE INDEX IF NOT EXISTS futures_contracts_product ON futures_contracts (source, product, first_trade);
 
 CREATE TABLE IF NOT EXISTS futures_rolls (
     source   TEXT NOT NULL,

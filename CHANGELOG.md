@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.85.0 (2026-11-24)
+
+- An index for a product's futures contracts, `futures_contracts_product (source, product, first_trade)`, made when
+  the main file is opened (additive: `CREATE INDEX IF NOT EXISTS`). `Store.contracts(source, product)` had only the
+  primary key `(source, ticker)` to go by, so each ask scanned every contract of the feed and sorted them. The charts'
+  symbol list asks it once per watched future: on the real data, 1,536 asks over 21,903 contracts took 6.8 s of the
+  list's 13 s (Monday list item 16, profiled reading only).
+
 ## 1.84.0 (2026-11-24)
 
 - Set-based reads for the charts' symbol list (Monday list item 16). It read a symbol at a time, about seven
