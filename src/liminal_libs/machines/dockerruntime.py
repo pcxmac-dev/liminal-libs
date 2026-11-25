@@ -14,6 +14,10 @@ What it runs, and nothing else (the plugin's API card names the same):
 - read: `info --format {{json .DockerRootDir}}` (where its data lives, 1.95.0, when read_root), `ps -a --filter label=liminal=service -q`, `inspect --type container`, `volume ls --filter label=liminal=volume`,
   `volume inspect`, `network ls --filter label=liminal=segment -q`, `network inspect`, `image inspect`, `logs --tail
   --timestamps`, `exec <c> cat <path>` (a running container's readable file) and `cp <c>:<path> -` (a stopped one's);
+- 1.97.0, opted into (`builds=True`): `build --pull=false --network=default --tag liminal/<owner>-<part>:<version>
+  --label liminal=build --label liminal.build-sha=<its context's digest> -f Dockerfile -`, its context a tar on
+  standard input holding the pinned files alone and the Dockerfile (nothing of this PC's), inside an approved work;
+  `exec <c> <words>` for a command its service's recipe declares (hosted_run);
 - change, inside an approved plan's work alone: `pull <ref>@<digest>`, `volume create --label ...`, `network create
   --driver bridge --subnet --gateway --ip-range -o com.docker.network.bridge.name=lim-... -o
   com.docker.network.bridge.trusted_host_interfaces=eth0 --label ...`, `create --name --label ... --restart no --memory
@@ -41,6 +45,8 @@ READ_S = 60.0
 CHANGE_S = 300.0
 PULL_S = 1800.0
 BACKUP_S = 3600.0
+BUILD_S = 3600.0
+BUILD_LINES = 400  # a build's last lines given to its work
 ARGV_MOST = 30000  # characters of one command line at most (Windows holds one to 32,767)
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) ?(.*)$")
 LEAST = (28, 2, 0)  # trusted_host_interfaces: the route from this machine reaches a published port
@@ -84,7 +90,7 @@ class DockerRuntime(Runtime):
 
     def __init__(self, prefix, runner: Callable, streamer: Callable | None = None, *, version: str = "",
                  arch: str = "amd64", wsl: bool = False, trusted=("eth0",), lan=("direct", ""),
-                 where_data: str = "in the engine's own disk", read_root: bool = False):
+                 where_data: str = "in the engine's own disk", read_root: bool = False, builds: bool = False):
         self.prefix = [str(a) for a in prefix]
         self._runner, self._streamer = runner, streamer
         self.version, self.arch, self.wsl = str(version or ""), str(arch or "amd64"), bool(wsl)
@@ -92,6 +98,7 @@ class DockerRuntime(Runtime):
         self.lan_path, self.lan_words = lan
         self.where_data = where_data
         self.read_root = bool(read_root)  # 1.95.0: data_root asks docker info (opted into: a 1.93.0 plugin's card names no info)
+        self.builds = bool(builds)  # 1.97.0: an image built here (opted into: a plugin's card names docker build)
 
     # -- the runner ----------------------------------------------------------------------------------------------------
     def _argv(self, *args) -> list[str]:
@@ -177,7 +184,9 @@ class DockerRuntime(Runtime):
                 "state": str(state.get("Status") or ""), "exit": state.get("ExitCode"),
                 "health": str((state.get("Health") or {}).get("Status") or ""),
                 "image": image.split("@", 1)[0], "digest": image.split("@", 1)[1] if "@" in image else "",
-                "since": str(state.get("StartedAt") or "")}
+                "since": str(state.get("StartedAt") or ""),
+                # 1.97.0: the image ID it runs, and (a part built here) the ID it was made with
+                "image_id": str(c.get("Image") or ""), "built": str(labels.get("liminal.built") or "")}
 
     def hosted(self) -> list[dict]:
         """Liminal's services here by their labels. The service's spec is its current containers' newest whole one
@@ -336,6 +345,65 @@ class DockerRuntime(Runtime):
             digests = []
         found = [d.split("@", 1)[1] for d in digests or [] if isinstance(d, str) and "@" in d]
         return pin.digest if pin.digest in found else (found[0] if found else "")
+
+    # -- 1.97.0: an image built here, and a recipe's command in a running part ------------------------------------------
+    def can_build(self) -> bool:
+        return self.builds
+
+    def built_image(self, build) -> str:
+        """The ID of the image tagged as `build` says, when it is labelled with the same context's digest ("" else)."""
+        code, out, _ = self.run("image", "inspect", "--format", "{{json .}}", build.tag, check=False)
+        if code != 0:
+            return ""
+        try:
+            got = json.loads(str(out or "").strip() or "{}")
+        except ValueError:
+            return ""
+        got = got[0] if isinstance(got, list) and got else got
+        if not isinstance(got, dict):
+            return ""
+        labels = (got.get("Config") or {}).get("Labels") or {}
+        ident = str(got.get("Id") or "")
+        return ident if labels.get("liminal.build-sha") == build.context() and C.DIGEST.match(ident) else ""
+
+    def build(self, build, context: Path, line, cancelled) -> str:
+        """`docker build` of its context (the pinned files alone, each checked already, and the Dockerfile) as a tar on
+        standard input; its base pulled by digest first (--pull=false: never another); BuildKit's cache the engine's.
+        Its last lines given to `line` once it ends; a Cancel is taken before it begins and after it ends (a build
+        ended early tags no image)."""
+        if not self.builds:
+            raise Refusal(C.BUILD_NOT_YET)
+        if cancelled():
+            from .plans import Cancelled
+
+            raise Cancelled(f"the build of {build.tag} was cancelled before it began")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, raw in [("Dockerfile", build.dockerfile.encode("utf-8")),
+                              *((f.name, (Path(context) / f.name).read_bytes()) for f in build.files)]:
+                info = tarfile.TarInfo(name)
+                info.size, info.mode, info.mtime = len(raw), 0o644, 0
+                tar.addfile(info, io.BytesIO(raw))
+        code, out, err = self.run("build", "--pull=false", "--network=default", "--tag", build.tag, "--label",
+                                  "liminal=build", "--label", f"liminal.build-sha={build.context()}", "-f",
+                                  "Dockerfile", "-", timeout=BUILD_S, check=False, stdin=buf.getvalue())
+        said = [x for x in (str(out or "") + "\n" + str(err or "")).splitlines() if x.strip()]
+        for x in said[-BUILD_LINES:]:
+            line(x)
+        if code != 0:
+            raise DockerFailed(said[-1] if said else f"docker build of {build.tag} failed ({code})")
+        _, ident, _ = self.run("image", "inspect", "--format", "{{.Id}}", build.tag)
+        ident = str(ident or "").strip()
+        if cancelled():
+            from .plans import Cancelled
+
+            raise Cancelled(f"the build of {build.tag} was cancelled: {ident[:19]} is kept, used by nothing")
+        return ident
+
+    def exec(self, container: str, argv, timeout: float) -> tuple[int, str]:
+        """`docker exec <container> <its words>`: no shell added, no -u, no -e, no -t."""
+        code, out, err = self.run("exec", container, *[str(w) for w in argv], timeout=float(timeout), check=False)
+        return code, "\n".join(x for x in (str(out or ""), str(err or "")) if x.strip())
 
     def make_volume(self, name: str, labels: Mapping) -> bool:
         found = self._inspect("volume", name)

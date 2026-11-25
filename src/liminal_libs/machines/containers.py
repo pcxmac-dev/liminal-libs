@@ -28,8 +28,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from dataclasses import asdict, dataclass, field, fields
-from typing import Mapping
+from typing import Callable, Mapping
+from urllib.parse import urlsplit
 
 from ..instances import Refusal
 
@@ -59,7 +61,8 @@ MEMORY_LEAST = 256 << 20  # every part has a memory limit, at least this
 FILE_MOST = 64 << 10  # bytes hosted_file gives at most
 LOG_MOST = 2000  # lines hosted_logs gives at most
 SEED_MOST = 64 << 10
-MOST = {"parts": 8, "ports": 16, "volumes": 8, "env": 32, "secrets": 8, "seeds": 16, "readable": 8, "command": 32}
+MOST = {"parts": 8, "ports": 16, "volumes": 8, "env": 32, "secrets": 8, "seeds": 16, "readable": 8, "command": 32,
+        "commands": 8}
 BACKUPS_KEPT = 2
 
 # the hooks' names, so that neither side spells them
@@ -70,6 +73,9 @@ GRANT, REVOKE, FORGET_VOLUME, SEGMENTS = "grant_service", "revoke_service", "for
 # and those a container plugin asks of others: the firewalls' (machines/segments.py), the WSL plugins', the model servers'
 LAN_OPEN, HOLD, LET_GO, SERVING = "lan_open", "hold", "let_go", "serving"
 EXCLUDED = "excluded_ports"  # {"ranges": [[low, high], ...]}: the port ranges this system keeps (a firewall plugin's)
+# 1.97.0: a fixed command of the service's own recipe run in a running part, asked by its owner alone (opted into by a
+# container plugin whose runtime runs one: ContainerHost.RUN_HOOKS)
+HOSTED_RUN = "hosted_run"
 
 NAME = re.compile(r"^[a-z][a-z0-9-]{0,15}$")  # an owner's, a service's, a port's name
 PART = re.compile(r"^[a-z][a-z0-9-]{0,11}$")  # a part's, a volume's, a readable's
@@ -402,14 +408,24 @@ class Part:
     command: tuple = ()
     health: Health | None = None
     stop_s: int = 30
+    commands: tuple = ()  # 1.97.0: Command, the fixed commands its owner may run in it (hosted_run)
+    build: "BuildPin | None" = None  # 1.97.0: an image built here (its `image` is the one this pin makes)
 
     def as_dict(self) -> dict:
-        return {"name": self.name, "image": self.image.as_dict(), "ports": [p.as_dict() for p in self.ports],
-                "volumes": [v.as_dict() for v in self.volumes], "env": dict(self.env),
-                "secrets": [s.as_dict() for s in self.secrets], "seeds": [s.as_dict() for s in self.seeds],
-                "readable": [r.as_dict() for r in self.readable], "memory": self.memory, "cpus": self.cpus,
-                "shm": self.shm, "hostname": self.hostname, "command": list(self.command),
-                "health": self.health.as_dict() if self.health is not None else None, "stop_s": self.stop_s}
+        d = {"name": self.name, "image": self.image.as_dict(), "ports": [p.as_dict() for p in self.ports],
+             "volumes": [v.as_dict() for v in self.volumes], "env": dict(self.env),
+             "secrets": [s.as_dict() for s in self.secrets], "seeds": [s.as_dict() for s in self.seeds],
+             "readable": [r.as_dict() for r in self.readable], "memory": self.memory, "cpus": self.cpus,
+             "shm": self.shm, "hostname": self.hostname, "command": list(self.command),
+             "health": self.health.as_dict() if self.health is not None else None, "stop_s": self.stop_s}
+        if self.commands:  # 1.97.0's words left out unless said: a 1.96.0 spec's sha stays what it was
+            d["commands"] = [c.as_dict() for c in self.commands]
+        if self.build is not None:
+            d["build"] = self.build.as_dict()
+        return d
+
+    def command_of(self, name: str) -> "Command | None":
+        return next((c for c in self.commands if c.name == name), None)
 
     @classmethod
     def of(cls, m, path: str = "part") -> "Part":
@@ -419,10 +435,18 @@ class Part:
             raise Refusal(f"{path}.name is lowercase letters, digits and dashes, 12 at most, not {name[:40]!r}")
         img = m.get("image")
         if isinstance(img, Mapping) and "steps" in img:
-            raise Refusal(f"{path}: an image built here (a Build) comes later (decision 14): pin a maker's image by "
-                          "digest")
-        image = ImagePin.of(img, f"{path}.image")
-        lists = {k: _list(m, k, path) for k in ("ports", "volumes", "secrets", "seeds", "readable", "command")}
+            raise Refusal(f"{path}: an image built here says `build` (a BuildPin), not steps in its image")
+        build = None
+        if m.get("build") is not None:
+            build = BuildPin.of(m.get("build"), f"{path}.build")
+            image = build.image()
+            if img is not None and ImagePin.of(img, f"{path}.image") != image:
+                raise Refusal(f"{path}: a part built here says `build` in place of `image` (its image is the one its "
+                              "pins make)")
+        else:
+            image = ImagePin.of(img, f"{path}.image")
+        lists = {k: _list(m, k, path) for k in ("ports", "volumes", "secrets", "seeds", "readable", "command",
+                                                 "commands")}
         for k, items in lists.items():
             if len(items) > MOST[k]:
                 raise Refusal(f"{path}: {MOST[k]} {k} at most, not {len(items)}")
@@ -464,7 +488,8 @@ class Part:
                    tuple(Seed.of(x, f"{path}.seeds[{i}]") for i, x in enumerate(lists["seeds"])),
                    tuple(Readable.of(x, f"{path}.readable[{i}]") for i, x in enumerate(lists["readable"])),
                    memory, cpus, shm, hostname, command,
-                   Health.of(health, f"{path}.health") if health is not None else None, stop_s)
+                   Health.of(health, f"{path}.health") if health is not None else None, stop_s,
+                   tuple(Command.of(x, f"{path}.commands[{i}]") for i, x in enumerate(lists["commands"])), build)
 
 
 @dataclass(frozen=True)
@@ -525,8 +550,11 @@ class ServiceSpec:
         _texts({k: v for k, v in m.items() if k != "parts"}, "spec", out)
         for i, part in enumerate(_list(m, "parts", "spec")):
             if isinstance(part, Mapping):
-                _texts({k: v for k, v in part.items() if k != "seeds"}, f"spec.parts[{i}]", out)
+                _texts({k: v for k, v in part.items() if k not in ("seeds", "build")}, f"spec.parts[{i}]", out)
                 _texts(part.get("seeds", ()), f"spec.parts[{i}].seeds", out, keep_newlines=True)
+                if isinstance(part.get("build"), Mapping):  # 1.97.0: its Dockerfile keeps its lines; BuildPin.of
+                    _texts({k: v for k, v in part["build"].items() if k != "dockerfile"}, f"spec.parts[{i}].build",
+                           out)
         if out:
             raise Refusal(out[0])
         v = _int(m, "v", SPEC_V, "spec")
@@ -590,10 +618,322 @@ class ServiceSpec:
             if part.health is not None and part.health.port and part.health.port not in {p.name for p in part.ports}:
                 raise Refusal(f"spec: {part.name}'s health names the port {part.health.port}, which it does not "
                               "publish")
+            if len({c.name for c in part.commands}) != len(part.commands):
+                raise Refusal(f"spec: {part.name} names a command twice")
+            if part.build is not None:
+                want = f"liminal/{self.owner}-{part.name}:{part.build.version}"
+                if part.build.tag != want:
+                    raise Refusal(f"spec: {part.name}'s image built here is tagged {want}, not {part.build.tag[:80]}")
             seen_env |= envs
         for made in (container_name(self.sid, max(seen_parts, key=len)) + "-previous",):
             if len(made) > 63:
                 raise Refusal(f"spec: the names made from it would be longer than 63 characters ({made})")
+
+
+# -- 1.97.0: a fixed command its owner may run in a running part -----------------------------------------------------
+ARG_KINDS = ("name", "number", "choice")
+ARG_NAME = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
+ARG_WORD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # a name's value: never a leading dash, a space or a /
+PLACE = re.compile(r"\{([a-z][a-z0-9_]{0,15})\}")
+RUN_NOT_YET = "not yet: this container plugin runs no command in a running part"
+
+
+@dataclass(frozen=True)
+class Arg:
+    """One argument of a Command, parsed by its kind, never free text: a name (letters, digits, . _ and -, not
+    beginning with -), a whole number, or one of its choices."""
+
+    name: str
+    label: str
+    kind: str = "name"
+    choices: tuple = ()
+    about: str = ""
+
+    def as_dict(self) -> dict:
+        d = asdict(self)
+        d["choices"] = list(self.choices)
+        return d
+
+    @classmethod
+    def of(cls, m, path: str = "arg") -> "Arg":
+        _exact_keys(cls, m, path)
+        name, kind = _str(m, "name", "", path), _str(m, "kind", "name", path)
+        if not ARG_NAME.match(name) or kind not in ARG_KINDS:
+            raise Refusal(f"{path} is named a-z, 0-9 and _ and is one of {', '.join(ARG_KINDS)}")
+        choices = tuple(str(c) for c in _list(m, "choices", path))
+        if kind == "choice" and (not choices or any(not ARG_WORD.match(c) for c in choices)):
+            raise Refusal(f"{path}: a choice's values are words (letters, digits, . _ and -)")
+        return cls(name, _str(m, "label", name, path, 80), kind, choices, _str(m, "about", "", path))
+
+    def parse(self, value) -> str:
+        v = str("" if value is None else value).strip()
+        if self.kind == "number":
+            ok = bool(re.fullmatch(r"[0-9]{1,9}", v))
+        elif self.kind == "choice":
+            ok = v in self.choices
+        else:
+            ok = bool(ARG_WORD.match(v))
+        if not ok:
+            want = {"number": "a whole number", "choice": "one of " + ", ".join(self.choices[:12]),
+                    "name": "a name of letters, digits, . _ and - (64 at most, not beginning with -)"}[self.kind]
+            raise Refusal(f"{self.label} is {want}, not {v[:40]!r}")
+        return v
+
+
+@dataclass(frozen=True)
+class Command:
+    """A command of the service's own recipe (its release's, fixed), run in a running part by its owner's page alone,
+    each run confirmed: its words as given (no shell is added), each {arg} replaced by that argument parsed."""
+
+    name: str
+    title: str
+    argv: tuple
+    args: tuple = ()
+    about: str = ""
+    timeout_s: int = 60
+
+    def as_dict(self) -> dict:
+        return {"name": self.name, "title": self.title, "argv": list(self.argv), "args": [a.as_dict() for a in self.args],
+                "about": self.about, "timeout_s": self.timeout_s}
+
+    @classmethod
+    def of(cls, m, path: str = "command") -> "Command":
+        _exact_keys(cls, m, path)
+        name = _str(m, "name", "", path)
+        if not PART.match(name):
+            raise Refusal(f"{path}.name is lowercase letters, digits and dashes, 12 at most, not {name[:40]!r}")
+        argv = tuple(_list(m, "argv", path))
+        if not 1 <= len(argv) <= 32 or any(not isinstance(w, str) or not w or len(w) > 256 for w in argv):
+            raise Refusal(f"{path}.argv is 1 to 32 words, each 256 characters at most")
+        args = tuple(Arg.of(x, f"{path}.args[{i}]") for i, x in enumerate(_list(m, "args", path)))
+        if len(args) > 8 or len({a.name for a in args}) != len(args):
+            raise Refusal(f"{path}: 8 arguments at most, each named once")
+        used = {p for w in argv for p in PLACE.findall(w)}
+        if PLACE.search(argv[0]):
+            raise Refusal(f"{path}: its program ({argv[0][:40]}) is fixed, never an argument")
+        if used != {a.name for a in args}:
+            raise Refusal(f"{path}: its words name {', '.join(sorted(used)) or 'no argument'}, and it declares "
+                          f"{', '.join(a.name for a in args) or 'none'}: each argument is used, and only those")
+        timeout = _int(m, "timeout_s", 60, path)
+        if not 1 <= timeout <= 600:
+            raise Refusal(f"{path}.timeout_s is 1 to 600 seconds")
+        return cls(name, _str(m, "title", name, path, 80), argv, args, _str(m, "about", "", path), timeout)
+
+    def argv_for(self, values) -> list[str]:
+        """Its words with each argument parsed (a Refusal in words when one is not of its kind, or the count is
+        another): never a word that is not the recipe's own or a parsed argument."""
+        values = list(values or ())
+        if len(values) != len(self.args):
+            raise Refusal(f"{self.title} takes {len(self.args)} argument{'s' if len(self.args) != 1 else ''}"
+                          + (f" ({', '.join(a.label for a in self.args)})" if self.args else "")
+                          + f", not {len(values)}")
+        parsed = {a.name: a.parse(v) for a, v in zip(self.args, values)}
+        return [PLACE.sub(lambda m: parsed[m.group(1)], w) for w in self.argv]
+
+
+# -- 1.97.0: an image built here (SERVICE-INTERFACE.md §10) -------------------------------------------------------------
+UNREAD_DIGEST = "sha256:" + "0" * 64  # containedservice.UNREAD: a pin not read yet
+UNREAD_SHA = "0" * 64
+ACCEPT_BUILD = "accept_build"
+BUILD_WORDS = ("an image is built here from these downloads: its steps run inside a container on this engine, with the "
+               "engine's network during the build")
+BUILD_NOT_YET = "not yet: this container plugin builds no image"
+BUILD_FILES_MOST, BUILD_BYTES_MOST, DOCKERFILE_MOST = 4, 256 << 20, 16 << 10
+FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TAG_VERSION = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$")
+DOCKERFILE_OK = ("FROM", "RUN", "COPY", "ADD", "ENV", "USER", "WORKDIR", "EXPOSE", "CMD", "ENTRYPOINT", "VOLUME",
+                 "STOPSIGNAL", "HEALTHCHECK", "SHELL")
+# a RUN naming one of these reaches the network (pip alone with --no-index)
+NETWORK_WORDS = ("curl", "wget", "apt", "apt-get", "aptitude", "apk", "dnf", "yum", "microdnf", "zypper", "git", "npm",
+                 "yarn", "gem")
+
+
+@dataclass(frozen=True)
+class PinnedFile:
+    """One file of a build's context, pinned in the plugin's release: fetched by the approved work alone (https, never
+    redirected to another host, `size` bytes at most), its sha256 checked before it is kept."""
+
+    name: str
+    url: str
+    sha256: str
+    size: int
+    licence: str = ""
+    page: str = ""
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def host(self) -> str:
+        return urlsplit(self.url).hostname or ""
+
+    @classmethod
+    def of(cls, m, path: str = "file") -> "PinnedFile":
+        _exact_keys(cls, m, path)
+        name, url = _str(m, "name", "", path, 200), _str(m, "url", "", path, 1000)
+        if not FILE_NAME.match(name) or name in ("Dockerfile", ".dockerignore"):
+            raise Refusal(f"{path}.name is a file's name (no /, not Dockerfile), not {name[:60]!r}")
+        u = urlsplit(url)
+        if u.scheme != "https" or not u.hostname or "@" in u.netloc or any(c in url for c in " \\\"'<>"):
+            raise Refusal(f"{path}.url is an https address of its maker's, not {url[:80]!r}")
+        sha = _str(m, "sha256", "", path, 64)
+        if not SHA256.match(sha):
+            raise Refusal(f"{path}.sha256 is 64 lowercase hexadecimal digits")
+        size = _int(m, "size", 0, path)
+        if not 1 <= size <= BUILD_BYTES_MOST:
+            raise Refusal(f"{path}.size is 1 to {BUILD_BYTES_MOST >> 20} MB")
+        return cls(name, url, sha, size, _str(m, "licence", "", path), _str(m, "page", "", path))
+
+
+def _logical_lines(text: str) -> list[str]:
+    out, cur = [], ""
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.rstrip()
+        if not cur and (not line.strip() or line.lstrip().startswith("#")):
+            if re.match(r"^\s*#\s*syntax\s*=", line, re.I):
+                out.append("#SYNTAX")
+            continue
+        if line.endswith("\\"):
+            cur += line[:-1] + " "
+            continue
+        cur += line
+        out.append(cur.strip())
+        cur = ""
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def _sources(rest: str) -> tuple[list[str], list[str]]:
+    """COPY's and ADD's (flags, sources) of their arguments (its JSON form too); the last word is where they go."""
+    rest = rest.strip()
+    if rest.startswith("["):
+        try:
+            words = [str(w) for w in json.loads(rest)]
+        except ValueError:
+            words = []
+        flags = []
+    else:
+        words = shlex.split(rest)
+        flags = [w for w in words if w.startswith("--")]
+        words = [w for w in words if not w.startswith("--")]
+    return flags, words[:-1]
+
+
+def dockerfile_problems(text: str, base: ImagePin, names) -> list[str]:
+    """What a build's Dockerfile does that a pinned build may not ([] when nothing): exactly one FROM naming its base
+    by digest; COPY and ADD of the pinned files alone (no address, no other image); no RUN that reaches the network
+    by name (curl, wget, a package manager, pip without --no-index), no RUN --mount or --network; none of ARG, LABEL,
+    ONBUILD or a syntax directive (a frontend pulled)."""
+    out: list[str] = []
+    names = set(names)
+    froms = 0
+    bare = base.ref.rsplit(":", 1)[0] if ":" in base.ref.rsplit("/", 1)[-1] else base.ref
+    for line in _logical_lines(text):
+        if line == "#SYNTAX":
+            out.append("a syntax directive pulls a builder's frontend image: none is allowed")
+            continue
+        word, _, rest = line.partition(" ")
+        inst = word.upper()
+        if inst not in DOCKERFILE_OK:
+            out.append(f"{inst[:20]} is not allowed in a pinned build (" + ", ".join(DOCKERFILE_OK) + ")")
+            continue
+        if inst == "FROM":
+            froms += 1
+            if rest.strip() not in (base.pinned, f"{bare}@{base.digest}"):
+                out.append(f"its FROM names {rest.strip()[:80]!r}, not its base {base.pinned}")
+        elif inst in ("COPY", "ADD"):
+            flags, srcs = _sources(rest)
+            if any(f.split("=", 1)[0] not in ("--chown", "--chmod") for f in flags):
+                out.append(f"{inst} takes --chown and --chmod alone (no --from: no other image)")
+            for s in srcs:
+                if "://" in s or s.startswith("git@"):
+                    out.append(f"{inst} of an address ({s[:60]}): every download is a pinned file")
+                elif s not in names:
+                    out.append(f"{inst} of {s[:60]!r}, which is not one of its pinned files")
+        elif inst == "RUN":
+            lead = re.match(r"^((?:--\S+\s+)*)", rest + " ").group(1)
+            if re.search(r"--(mount|network|security)\b", lead):
+                out.append("RUN --mount, --network and --security are not allowed")
+            words = [w for w in re.split(r"[\s;&|()`$\"'<>]+", rest) if w]
+            bad = [w for w in words if w.rsplit("/", 1)[-1] in NETWORK_WORDS]
+            if bad:
+                out.append(f"a RUN names {bad[0]}, which reaches the network: every download is a pinned file")
+            pip = any(w.rsplit("/", 1)[-1] in ("pip", "pip3") for w in words)
+            if pip and "--no-index" not in words:
+                out.append("a RUN runs pip without --no-index: every download is a pinned file")
+    if froms != 1:
+        out.append(f"a pinned build has exactly one FROM, not {froms}")
+    return out
+
+
+@dataclass(frozen=True)
+class BuildPin:
+    """An image built here (1.97.0; the user, 2026-11-25: "Build one here"), every field read once for the plugin's
+    release: its base pinned by its platform's own manifest digest, the files of its context pinned by sha256, the
+    Dockerfile that joins them (nothing in it reaching the network), the tag it is built as. The part's `image` is
+    the one this makes: its digest is the context's (`context()`), what a release's new pins change."""
+
+    base: ImagePin
+    files: tuple
+    dockerfile: str
+    tag: str
+    version: str
+    licence: str = ""
+    page: str = ""
+    tar: bool = True
+
+    def as_dict(self) -> dict:
+        return {"base": self.base.as_dict(), "files": [f.as_dict() for f in self.files], "dockerfile": self.dockerfile,
+                "tag": self.tag, "version": self.version, "licence": self.licence, "page": self.page, "tar": self.tar}
+
+    def context(self) -> str:
+        """The context's digest (64 hex): its base, its Dockerfile and its files' sha256s."""
+        raw = json.dumps({"base": self.base.pinned, "dockerfile": self.dockerfile,
+                          "files": sorted([f.name, f.sha256, f.size] for f in self.files)},
+                         sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def image(self) -> ImagePin:
+        """The part's image: the tag, by the context's digest (never pulled: built)."""
+        return ImagePin(self.tag, "sha256:" + self.context(), self.base.system, self.base.platforms,
+                        self.base.os_build, self.version, 0, self.licence, self.page, self.tar)
+
+    def unread(self) -> list[str]:
+        """What of it is not read yet (an UNREAD base digest, a file whose sha256 is 64 zeros)."""
+        return ([self.base.ref] if self.base.digest == UNREAD_DIGEST else []) + [
+            f.name for f in self.files if f.sha256 == UNREAD_SHA]
+
+    @classmethod
+    def of(cls, m, path: str = "build") -> "BuildPin":
+        _exact_keys(cls, m, path)
+        base = ImagePin.of(m.get("base"), f"{path}.base")
+        if len(base.platforms) != 1:
+            raise Refusal(f"{path}.base is pinned by one platform's own manifest digest (one platform), not an index's")
+        raw = _list(m, "files", path)
+        if len(raw) > BUILD_FILES_MOST:
+            raise Refusal(f"{path}: {BUILD_FILES_MOST} files at most, not {len(raw)}")
+        files = tuple(PinnedFile.of(x, f"{path}.files[{i}]") for i, x in enumerate(raw))
+        if len({f.name for f in files}) != len(files):
+            raise Refusal(f"{path}: a file's name twice")
+        if sum(f.size for f in files) > BUILD_BYTES_MOST:
+            raise Refusal(f"{path}: its files are {BUILD_BYTES_MOST >> 20} MB in all at most")
+        dockerfile = _str(m, "dockerfile", "", path, DOCKERFILE_MOST)
+        if len(dockerfile.encode("utf-8")) > DOCKERFILE_MOST or any(
+                (ord(c) < 32 and c not in "\n\r\t") or ord(c) == 127 for c in dockerfile):
+            raise Refusal(f"{path}.dockerfile is plain text of {DOCKERFILE_MOST >> 10} KB at most")
+        problems = dockerfile_problems(dockerfile, base, [f.name for f in files])
+        if problems:
+            raise Refusal(f"{path}.dockerfile: {problems[0]}")
+        tag, version = _str(m, "tag", "", path, 255), _str(m, "version", "", path, 96)
+        if not TAG_VERSION.match(version) or not REF.match(tag) or not tag.startswith("liminal/"):
+            raise Refusal(f"{path}: it is tagged liminal/<owner>-<part>:<version>, not {tag[:80]!r}")
+        for k in ("licence", "page"):
+            if _controls(_str(m, k, "", path)):
+                raise Refusal(f"{path}.{k} holds a control character")
+        return cls(base, files, dockerfile, tag, version, _str(m, "licence", "", path), _str(m, "page", "", path),
+                   _bool(m, "tar", True, path))
 
 
 # -- the names and labels every runtime gives what it makes ------------------------------------------------------------
@@ -631,12 +971,19 @@ def rule_name(sid: str) -> str:
     return f"svc-{_flat(sid)}"
 
 
-def labels(spec: ServiceSpec, part: str, role: str, platform: str, made: str, lifecycle: str = "page") -> dict:
-    """The labels a service's container carries: what the runtime reads back as the truth."""
-    return {"liminal": "service", "liminal.service": spec.sid, "liminal.owner": spec.owner, "liminal.part": part,
-            "liminal.role": role, "liminal.lifecycle": lifecycle, "liminal.made": made, "liminal.platform": platform,
-            "liminal.spec": json.dumps(spec.as_dict(), sort_keys=True, separators=(",", ":")),
-            "liminal.spec-sha": spec.sha()}
+def labels(spec: ServiceSpec, part: str, role: str, platform: str, made: str, lifecycle: str = "page",
+           built: str = "") -> dict:
+    """The labels a service's container carries: what the runtime reads back as the truth. A part built here
+    (1.97.0) carries its built image's ID (`liminal.built`, checked as drift) and its context's digest."""
+    out = {"liminal": "service", "liminal.service": spec.sid, "liminal.owner": spec.owner, "liminal.part": part,
+           "liminal.role": role, "liminal.lifecycle": lifecycle, "liminal.made": made, "liminal.platform": platform,
+           "liminal.spec": json.dumps(spec.as_dict(), sort_keys=True, separators=(",", ":")),
+           "liminal.spec-sha": spec.sha()}
+    p = spec.part(part)
+    if p is not None and p.build is not None:
+        out["liminal.built"] = built
+        out["liminal.build-sha"] = p.build.context()
+    return out
 
 
 def volume_labels(sid: str, volume: str, platform: str, made: str) -> dict:
@@ -776,12 +1123,24 @@ class Setting:
     kind: str = "text"
     per_service: bool = False  # one value per service on that target (a claim's size)
     required: bool = True
-    choices: tuple = ()
+    # what may be picked; 1.97.0: or a callable answering them, read only when a value is checked or the choices are
+    # drawn (a cluster's storage classes: no read per target_settings call)
+    choices: tuple | Callable = ()
     example: str = ""
 
-    def as_dict(self) -> dict:
-        d = asdict(self)
-        d["choices"] = list(self.choices)
+    def choice_list(self) -> tuple:
+        """The choices, read now when they are a callable (none when that read fails)."""
+        if callable(self.choices):
+            try:
+                return tuple(str(x) for x in (self.choices() or ()))
+            except Exception:  # noqa: BLE001 - a read that fails: no choice is known
+                return ()
+        return tuple(self.choices)
+
+    def as_dict(self, lazy: bool = False) -> dict:
+        """Its words; `lazy`: a callable's choices are not read (left out as [])."""
+        d = {f.name: getattr(self, f.name) for f in fields(self)}
+        d["choices"] = [] if lazy and callable(self.choices) else list(self.choice_list())
         return d
 
     @classmethod
@@ -789,7 +1148,8 @@ class Setting:
         if isinstance(m, Setting):
             return m
         _exact_keys(cls, m, "setting")
-        s = cls(**{**dict(m), "choices": tuple(m.get("choices") or ())})
+        raw = m.get("choices") or ()
+        s = cls(**{**dict(m), "choices": raw if callable(raw) else tuple(raw)})
         if not SETTING_NAME.match(s.name) or s.kind not in SETTING_KINDS:
             raise Refusal(f"a setting is named a-z, 0-9 and _ and is one of {', '.join(SETTING_KINDS)}: not "
                           f"{s.name[:32]!r} ({s.kind[:16]!r})")

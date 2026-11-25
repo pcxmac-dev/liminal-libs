@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.97.0 (2026-11-25)
+
+The service interface's last library pass (INTERFACE-GAPS.md P1 to P5 and S1 to S5) and an image built here
+(SERVICE-INTERFACE.md §10). Additive: every new hook has a default and every new word is left out of a spec unless
+said, so a 1.96.0 plugin runs as it did and a 1.96.0 spec's sha is unchanged; nothing renamed or removed.
+- **P1 (a bug):** an update's pull goes through `_pulled`, as an install's and an addition's do: `PULLED_BY_ENGINE` is
+  said as such, any other digest still refused (1.95.0 compared the digest itself, so a cluster's update failed).
+- **P2:** "shared" and "not the service's own" are two words. A network named for the service (a Docker bridge, a
+  cluster's NetworkPolicy) is its own and dropped with it (Remove, an install's undo) even on a shared prefix; one its
+  engine has under another name (Windows' nat) is never dropped.
+- **P3:** `Want.found` may be a list (a multi-node cluster's pod range per node): the first is the segment's, the
+  others `found_more`; each is reserved, checked against every other service's (theirs, `Allocation.prefixes`), and
+  avoided by the pool. Left out of the Want unless said.
+- **P4:** `unset_settings(target, sid, spec=None)`: a per-service size is not asked of a spec without volumes. A 1.95.0
+  override taking (target, sid) is still asked as it was.
+- **P5:** a Setting's `choices` may be a callable, read only when a value is checked (`choice_list()`); hosting's rows
+  and the page do not read it (`as_dict(lazy=True)`).
+- **S1:** `ContainedService.WEB_PORT` (a port's name) or `WEB_PART` (its first port): `address()` and `web_port()` name
+  the web port instead of the first kept (the login keeps them sorted: GitLab's ssh before web). Neither: as before.
+- **S2:** a fixed command in a running part. A recipe's part declares `commands` (`containers.Command`: its words,
+  each `{arg}` an `Arg` parsed by its kind, name, number or choice, never free text; its program never an argument).
+  The service plugin's page-only `service_run(name, command, confirm, *args)` (opted into: `ContainedService.RUN_HOOKS`
+  spread into HOOKS and PAGE_ONLY_HOOKS) asks a second confirmation naming the words each time, then the container
+  plugin's owner-only `hosted_run(sid, part, command, *args)` (opted into: `ContainerHost.RUN_HOOKS`), which checks the
+  command and its arguments again against the spec its container is labelled with, refuses a part that is not running
+  and any run while a work runs on that target, and masks the output. `Runtime.exec` refuses by default;
+  DockerRuntime runs `docker exec <container> <words>`. The page draws a Commands table and a Run… form per command.
+- **S3:** `ContainedService.READY_S` per plugin (GitLab's first start).
+- **S4:** `after_expose(hosted)` / `after_close(hosted)` answer {part: {setting: value}}: the Expose's plan carries
+  them (options `env`), says them as a step, and makes the containers with them inside its own approved work. Only
+  settings the part has already, plain text, never a secret's name or one of Liminal's.
+- **S5:** the makers' marks of git, github, gitlab, subversion and mercurial in ui/static/icons.js.
+- **§10, an image built here** (the user, 2026-11-25: "Build one here"). A part says `build` (`containers.BuildPin`)
+  in place of `image`: its base pinned by its platform's own manifest digest (one platform), up to four
+  `PinnedFile`s (https, sha256, size; 256 MB in all), its Dockerfile (16 KB at most: exactly one FROM naming its base by
+  digest; COPY and ADD of the pinned files alone, no address, no --from; no RUN naming curl, wget, git, a package
+  manager or pip without --no-index; no RUN --mount or --network; no ARG, LABEL, ONBUILD or syntax directive) and its
+  tag (liminal/<owner>-<part>:<version>). Its `image` is derived: the tag by the context's digest (`context()`), which
+  a release's new pins change. An UNREAD base or a file of 64 zeros is refused before any plan (`unread_pins` too).
+  The plan says the base pulled by digest, each file fetched (host, size, sha256, licence) and the Dockerfile whole, and
+  asks `accept_build` every time an image is built (listed last in approve_args, after the plugin's own). Nothing is
+  fetched or built before the approval. The work (`ContainerHost._built`, machines/builds.py) uses an image built
+  before from the same pins as it is; otherwise pulls the base by digest, fetches each file into
+  `<platform folder>/containers/build/<owner>-<part>/<context digest>/` (https, no redirect to another host, `size`
+  bytes at most, its sha256 checked before it is kept; one found there checked again; one that differs deleted and the
+  work fails; the last two contexts kept, 0700 off Windows), then asks `Runtime.build`. The built image's ID is kept
+  on the containers' labels (`liminal.built`, `liminal.build-sha`) and in the placement (image[part], with
+  build[part] the context's digest); a container running another image is drift, said on its row and refused at a
+  start, restart or expose plan and again at a start's work. A release's new pins make Update… a rebuild (backup
+  first, the previous container kept, Roll back… as for a pulled image); the same pins are never built twice.
+  `Runtime.can_build()` is False by default, and a target that builds nothing is not offered such a recipe (`fit`:
+  "not yet: this container plugin builds no image"). DockerRuntime (opted into: `builds=True`) runs `docker build
+  --pull=false --network=default --tag ... --label liminal=build --label liminal.build-sha=... -f Dockerfile -`, its
+  context a tar on standard input holding the pinned files and the Dockerfile alone. `Outside.fetch` is the transport
+  (builds.https_fetch by default); `standins.FakeFetch`, FakeDocker's `build`, `exec` and `built`, and
+  `ServiceWorld(files=...)` stand in for them; StandInHost builds and opts into hosted_run.
+
 ## 1.96.0 (2026-11-25)
 
 The firewall side of the services' networking, and the WSL plugins' hold: the last piece before a service installs

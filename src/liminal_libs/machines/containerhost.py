@@ -42,6 +42,12 @@ target, a `Runtime` (containers.py); this base answers the hooks and holds every
 - **Parts added** (1.95.0): an update whose spec adds a part and changes no other is planned as that part's addition
   alone (its own steps and accepts: nothing stopped, nothing backed up); one that also changes another part is refused
   (two plans: the update, then the addition); one that drops a part is refused.
+- **An image built here** (1.97.0, SERVICE-INTERFACE.md §10): a part with `build` (containers.BuildPin) is built on
+  its engine inside the approved work alone, from its base pulled by digest and its pinned files fetched and checked by
+  sha256 (machines/builds.py), asked `accept_build` each time; its built image's ID labelled and checked as drift; a
+  release's new pins rebuild it as an Update…. A target whose runtime builds nothing is not offered it.
+- **A recipe's command** (1.97.0, opted into: RUN_HOOKS): hosted_run runs a command the service's labelled spec
+  declares, its arguments parsed by their kinds, in a running part, asked by its owner alone.
 
 The honest limit: these gates keep an honest plugin, or one with a bug, from doing what you did not approve. They are
 not a wall against hostile code in the same process."""
@@ -107,6 +113,9 @@ class Outside:
     folder: Path | None = None
     sleep: Callable[[float], None] = time.sleep
     env: Mapping | None = None
+    # 1.97.0: a build's pinned file fetched, inside an approved work alone: fetch(url, most) -> its bytes in chunks
+    # (machines/builds.py's https_fetch by default: https, no redirect to another host, `most` bytes at most)
+    fetch: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -126,10 +135,11 @@ class Create:
     aliases: tuple = ()
     add_hosts: tuple = ()
     restart: str = "no"
+    image: str = ""  # 1.97.0: a part built here runs its built image's ID (sha256:...), never a tag
 
     @property
     def pinned(self) -> str:
-        return self.part.image.pinned
+        return self.image or self.part.image.pinned
 
 
 class Runtime:
@@ -201,6 +211,26 @@ class Runtime:
 
     def make_network(self, name: str, grant: Mapping, labels: Mapping) -> bool:
         raise NotImplementedError
+
+    # -- 1.97.0: an image built here, and a fixed command run in a running part (each refused here by default) --------
+    def can_build(self) -> bool:
+        """Whether this engine builds an image here (a recipe with `build` is not offered where it does not)."""
+        return False
+
+    def built_image(self, build) -> str:
+        """The ID of an image this engine built before from the same pins (its tag, labelled with the same context's
+        digest), "" when there is none: the same context is never built again."""
+        return ""
+
+    def build(self, build, context: Path, line, cancelled) -> str:
+        """The image built from `build` (containers.BuildPin) with `context` (a folder holding its pinned files alone,
+        each checked by its sha256), its base pulled by digest already; its lines to `line`: the built image's ID."""
+        raise Refusal(C.BUILD_NOT_YET)
+
+    def exec(self, container: str, argv: list[str], timeout: float) -> tuple[int, str]:
+        """A fixed command (its words as given, no shell added) run in a running container: (its exit code, what it
+        printed)."""
+        raise Refusal(C.RUN_NOT_YET)
 
     def create(self, c: Create) -> None:
         raise NotImplementedError
@@ -296,6 +326,9 @@ class ContainerHost(MachinePlugin):
     # 1.95.0: its own second confirmations (accept_<word>), added to a plan by more_accepts and taken by approve_plan
     # after the base's, in this order
     MORE_ACCEPTS: tuple = ()
+    # 1.97.0: hosted_run (a fixed command of the service's recipe run in a running part, asked by its owner alone):
+    # opted into by a plugin whose runtime runs one (spread into its HOOKS and its PLUGIN_ONLY_HOOKS)
+    RUN_HOOKS = (C.HOSTED_RUN,)
     ASKS = (("", C.LAN_OPEN, "whether this machine's firewall lets a service's ports in from your network now"),
             ("", NETWORK_HOST, "which firewall routes and names a target's stack"),
             ("", NET_PLAN, "a service's network: its prefix, addresses, route and names, in the firewall's plan"),
@@ -447,12 +480,15 @@ class ContainerHost(MachinePlugin):
             return str(v.get(sid, "")) if sid else ""
         return str(v or "")
 
-    def unset_settings(self, target: Target, sid: str = "") -> list:
+    def unset_settings(self, target: Target, sid: str = "", spec: ServiceSpec | None = None) -> list:
         """The required settings of a target not set yet (per-service ones only when `sid` is named). A plugin that
-        keeps its settings its own way (Kubernetes' set_cluster) answers this one from them."""
+        keeps its settings its own way (Kubernetes' set_cluster) answers this one from them. 1.97.0: `spec`, the
+        service's spec when a plan names one: a per-service size is not asked of a spec that has no volume."""
         out = []
         for s in self.target_settings(target):
             if not s.required or (s.per_service and not sid):
+                continue
+            if s.per_service and s.kind == "size" and spec is not None and not spec.volumes():
                 continue
             if not self.setting_value(target.id, s.name, sid if s.per_service else ""):
                 out.append(s)
@@ -486,8 +522,9 @@ class ContainerHost(MachinePlugin):
                 raise Refusal(f"{s.label} is a whole number, not {v[:20]!r}")
             if s.kind == "size":
                 C.size_bytes(v)
-            if s.choices and v not in s.choices:
-                raise Refusal(f"{s.label} is one of {', '.join(map(str, s.choices[:12]))}, not {v[:40]!r}")
+            choices = s.choice_list()  # 1.97.0: a callable's read now, at the check alone
+            if choices and v not in choices:
+                raise Refusal(f"{s.label} is one of {', '.join(map(str, choices[:12]))}, not {v[:40]!r}")
             lines += list(self.check_target_setting(t, s, v, sid, confirm is True) or [])
         try:
             data = json.loads(Store(self._settings_var(), lambda: self.login).text() or "{}")
@@ -510,8 +547,20 @@ class ContainerHost(MachinePlugin):
         said = f"{s.label}{whose} on {t.id} is {v}" if v else f"{s.label}{whose} on {t.id} is not set any more"
         return {"said": said, "ok": True, "lines": [x for x in lines if x]}
 
-    def _settings_refusal(self, t: Target, sid: str = "") -> None:
-        missing = self.unset_settings(t, sid)
+    def _unset(self, t: Target, sid: str = "", spec: ServiceSpec | None = None) -> list:
+        """unset_settings asked with the spec when it takes one (a 1.95.0 plugin's override takes target and sid)."""
+        import inspect
+
+        try:
+            params = inspect.signature(self.unset_settings).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "spec" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return list(self.unset_settings(t, sid, spec=spec))
+        return list(self.unset_settings(t, sid))
+
+    def _settings_refusal(self, t: Target, sid: str = "", spec: ServiceSpec | None = None) -> None:
+        missing = self._unset(t, sid, spec)
         if missing:
             raise Refusal(f"set {', '.join(s.label for s in missing)} for {t.id}"
                           + (f" ({sid})" if any(s.per_service for s in missing) else "")
@@ -621,11 +670,13 @@ class ContainerHost(MachinePlugin):
         else:
             state = "stopped"
         ports = []
-        for p in (spec.ports() if spec else []):
-            path, words = rt.lan(p.host, p.protocol) if p.lan else ("none", "on this machine alone")
-            ports.append({"name": p.name, "host": p.host, "container": p.container, "protocol": p.protocol,
-                          "bind": "every address" if p.lan else "this machine", "lan": p.lan,
-                          "here": f"http://{rt.here(p.host)}", "path": path, "lan_words": words})
+        for q in (spec.parts if spec else ()):
+            for p in q.ports:
+                path, words = rt.lan(p.host, p.protocol) if p.lan else ("none", "on this machine alone")
+                ports.append({"name": p.name, "host": p.host, "container": p.container, "protocol": p.protocol,
+                              "bind": "every address" if p.lan else "this machine", "lan": p.lan,
+                              "here": f"http://{rt.here(p.host)}", "path": path, "lan_words": words,
+                              "part": q.name})  # 1.97.0: its part (ContainedService.WEB_PART)
         sid = str(r.get("sid", ""))
         owner, name = (sid.split("/", 1) + [""])[:2]
         exits = [f"{p.get('name')} exited with {p.get('exit')}" for p in current if p.get("state") == "exited"
@@ -634,14 +685,42 @@ class ContainerHost(MachinePlugin):
                 "plugin": self.name, "target": t.id, "state": state, "why": "; ".join(exits),
                 "lifecycle": r.get("lifecycle", "page"), "platform": r.get("platform", ""),
                 "mine": r.get("platform", "") == mine, "made": r.get("made", ""), "spec": r.get("spec_sha", ""),
-                "drift": "" if not spec or not current or all(p.get("digest") in ("", None, (spec.part(p.get("name")) or
-                                                                                    spec.parts[0]).image.digest)
-                                                             for p in current) else "a container runs another image",
+                "drift": self._drift(spec, current),
                 "parts": current, "ports": ports,
                 "volumes": [{"name": v.name, "volume": C.volume_name(sid, v.name), "path": v.path, "holds": v.holds,
                              "where": t.where_data} for v in (spec.volumes() if spec else [])],
                 "previous": {"parts": previous} if previous else None,
                 "work": next((w.work for w in self._svc.works.running() if w.sid == sid), None)}
+
+    @staticmethod
+    def _drift(spec: ServiceSpec | None, current: list) -> str:
+        """Whether a container runs another image than its spec's ("" when none does): a pulled part by its digest; a
+        part built here (1.97.0) by its image's ID against its liminal.built label."""
+        if not spec or not current:
+            return ""
+        for p in current:
+            sp = spec.part(p.get("name")) or spec.parts[0]
+            if sp.build is not None:
+                built, runs = str(p.get("built") or ""), str(p.get("image_id") or "")
+                if not built or (runs and runs != built):
+                    return f"{p.get('container')} runs another image than the one built here for it"
+            elif p.get("digest") not in ("", None, sp.image.digest):
+                return "a container runs another image"
+        return ""
+
+    def _check_built(self, rt: Runtime, sid: str, spec: ServiceSpec | None) -> None:
+        """1.97.0: a part built here whose container runs another image than its liminal.built is drift: refused, as
+        a pulled image's other digest is."""
+        if spec is None or not any(p.build is not None for p in spec.parts):
+            return
+        current = []
+        for p in spec.parts:
+            st = rt.state(C.container_name(sid, p.name))
+            if st is not None:
+                current.append({**st, "name": p.name, "container": C.container_name(sid, p.name)})
+        said = self._drift(spec, current)
+        if said:
+            raise Refusal(f"{said}: drift (Remove… and Install… again)")
 
     def hosting(self, owner: str = "", specs=None) -> dict:
         """Its targets, each with its fit for the asker's spec of that target's system (`specs`: {"linux": ...,
@@ -671,7 +750,7 @@ class ContainerHost(MachinePlugin):
                 row["fit"] = said.as_dict() if isinstance(said, Fit) else None
             try:
                 unset = self.unset_settings(t)
-                row["settings"] = [{**s.as_dict(), "value": self.setting_value(t.id, s.name)}
+                row["settings"] = [{**s.as_dict(lazy=True), "value": self.setting_value(t.id, s.name)}
                                    for s in self.target_settings(t)]
             except Exception:  # noqa: BLE001 - not read: none said
                 unset, row["settings"] = [], []
@@ -687,10 +766,15 @@ class ContainerHost(MachinePlugin):
             return Fit({"target": Aspect("cannot", t.why or "it is not on this machine: its data would live there")},
                        t.why or "it is not on this machine")
         try:
-            fit = self.runtime_of(t).fit(spec) if t.ready else Fit()
+            rt = self.runtime_of(t) if t.ready else None
+            fit = rt.fit(spec) if rt is not None else Fit()
+            builds = rt is not None and spec is not None and any(p.build is not None for p in spec.parts)
+            can_build = bool(rt.can_build()) if builds else True
         except Exception as e:  # noqa: BLE001 - a fit that cannot be read: not offered, in words
             return Fit({"target": Aspect("cannot", str(e)[:200])}, str(e)[:200])
         parts = dict(fit.parts)
+        if not can_build:  # 1.97.0: a recipe whose image is built here is not offered where nothing builds one
+            parts["build"] = Aspect("cannot", C.BUILD_NOT_YET)
         if t.wsl and not self._wsl_holds(t):
             parts["lifecycle"] = (Aspect("differs", f"{t.wsl} cannot be held up while the service runs (its "
                                                             "WSL plugin has no hold yet): it may stop when nothing "
@@ -775,8 +859,15 @@ class ContainerHost(MachinePlugin):
         them so). Asked by the page or the plan's owner."""
         p = self._svc.plans.get(plan)
         self._page_or(C.PLAN_WORDS, p.owner)
-        return {**p.as_dict(self.out.clock()), "approve_args": [*self.APPROVE_ARGS, *self.MORE_ACCEPTS],
+        builds = any(a.name == C.ACCEPT_BUILD for a in p.accepts)
+        return {**p.as_dict(self.out.clock()), "approve_args": [*self.APPROVE_ARGS, *self.MORE_ACCEPTS,
+                                                                 *((C.ACCEPT_BUILD,) if builds else ())],
                 "plugin": self.name}
+
+    def _extra_accepts(self) -> tuple:
+        """approve_plan's accepts after the base's six: the plugin's own (MORE_ACCEPTS), then 1.97.0's accept_build
+        (last, so that a 1.95.0 plugin's own keep their places; listed in approve_args by a plan that builds)."""
+        return (*self.MORE_ACCEPTS, C.ACCEPT_BUILD)
 
     def service_work(self, work: str, after: int = 0) -> dict:
         """A work's lines after `after`, whether it is done, and its answer: asked by the plan's owner alone."""
@@ -881,7 +972,9 @@ class ContainerHost(MachinePlugin):
                 base = new_spec or labelled
                 if base is None:
                     raise Refusal(f"{sid}'s spec cannot be read back from its labels: plan a remove and an install")
-                new_spec = replace(base, parts=tuple(replace(p, ports=tuple(replace(x, lan=lan) for x in p.ports))
+                env = self._expose_env(sid, base, opts.get("env"))
+                new_spec = replace(base, parts=tuple(replace(p, ports=tuple(replace(x, lan=lan) for x in p.ports),
+                                                             env={**p.env, **env.get(p.name, {})})
                                                      for p in base.parts))
             else:
                 new_spec = labelled
@@ -893,12 +986,40 @@ class ContainerHost(MachinePlugin):
         if not t.ready:
             raise Refusal(f"{t.title} is {t.state}: {t.why or 'not ready'}. Nothing here starts it: start it on its "
                           "own page" + (f" ({t.wsl}'s WSL plugin)" if t.wsl else ""))
-        self._settings_refusal(t, sid)
+        self._settings_refusal(t, sid, new_spec)
+        if new_spec is not None:
+            unread = [x for p in new_spec.parts if p.build is not None for x in p.build.unread()]
+            if unread:
+                raise Refusal(f"{', '.join(unread)}: not pinned yet (read for the plugin's release): nothing is built "
+                              "from a pin not read")
         if not self.granted(who, t.id):
             raise Refusal(f"{who} may not plan on {t.id} yet: let it on {self.title or self.name}'s page first "
                           "(Service plugins, Let it…)")
         rt = self.runtime_of(t)
         return self._planned(act, sid, who, t, rt, new_spec, opts)
+
+    def _expose_env(self, sid: str, spec: ServiceSpec, raw) -> dict:
+        """1.97.0 (S4): what a service plugin changes of its own settings with an Expose (GitLab's external_url), as
+        {part: {setting: value}}: only settings its parts have already, plain text, never a secret's name or one of
+        Liminal's; made with its containers inside the Expose's own approved work, and said on its plan."""
+        if raw in (None, {}):
+            return {}
+        if not isinstance(raw, Mapping):
+            raise Refusal("an Expose's settings are {part: {setting: value}}")
+        out: dict = {}
+        for pname, changes in raw.items():
+            part = spec.part(str(pname))
+            if part is None or not isinstance(changes, Mapping):
+                raise Refusal(f"{sid} has no part {str(pname)[:20]!r} whose settings an Expose changes")
+            secret_envs = {s.env for s in part.secrets}
+            for k, v in changes.items():
+                if not isinstance(k, str) or k not in part.env or k in secret_envs or k.startswith("LIMINAL_"):
+                    raise Refusal(f"an Expose changes only {part.name}'s own settings it has already, not "
+                                  f"{str(k)[:40]!r}")
+                if not isinstance(v, str) or len(v) > C.ENV_CHARS or C._controls(v):
+                    raise Refusal(f"{part.name}'s {k} is plain text of {C.ENV_CHARS:,} characters at most")
+                out.setdefault(part.name, {})[k] = v
+        return out
 
     def _parts_added(self, sid: str, labelled: ServiceSpec, new: ServiceSpec) -> dict:
         """1.95.0: an update's parts against those it runs: {} for a plain update; {"adds": [names]} for one that adds
@@ -934,8 +1055,17 @@ class ContainerHost(MachinePlugin):
         if fit.differs():
             accepts.append(Accept(ACCEPT_DIFFERS, "Done differently: accept it?", "; ".join(fit.differs()),
                                   "Accept the difference"))
-        facts = rt.facts(spec, sid)
+        facts = self._facts(rt, spec, sid)
         facts["target"] = {"id": t.id, "state": t.state}
+        if act in ("start", "restart", "expose"):
+            self._check_built(rt, sid, spec)
+        builds = self._to_build(act, spec, opts, facts)
+        if builds:  # 1.97.0: an image built here, asked every time one is built
+            accepts.append(Accept(C.ACCEPT_BUILD, "An image built here: accept it?",
+                                  C.BUILD_WORDS + ": " + "; ".join(
+                                      f"{p.build.tag} from {p.build.base.pinned} and "
+                                      + (", ".join(f"{f.name} ({f.host})" for f in p.build.files) or "no file")
+                                      for p in builds), "Build it"))
         lan_words = []
         adds = list(opts.get("adds") or []) if act == "update" else []
         new_parts = [p for p in spec.parts if p.name in adds] if spec is not None else []
@@ -1007,6 +1137,8 @@ class ContainerHost(MachinePlugin):
         elif act == "expose":
             steps = ["stop it, make its container again with its ports " + ("on every address" if opts["lan"] else
                      "on this machine alone") + ", and start it again (a short restart)"]
+            for pname, changes in sorted(dict(opts.get("env") or {}).items()):
+                steps.append(f"its own settings changed with it, as its plugin asks: {pname}'s " + ", ".join(f"{k} = {v[:300]}" for k, v in sorted(changes.items())))
         elif act == "remove":
             names = sorted(facts.get("containers", {}))
             if not names:
@@ -1070,14 +1202,53 @@ class ContainerHost(MachinePlugin):
         said.append("It starts and stops with the platform; nothing restarts it after a crash.")
         return " ".join(said)
 
+    def _facts(self, rt: Runtime, spec: ServiceSpec | None, sid: str) -> dict:
+        """What a plan rests on (Runtime.facts), with 1.97.0's: a part built here is "on this engine" when its engine
+        built the same pins before (its image found by its tag and its context's digest)."""
+        facts = rt.facts(spec, sid)
+        for p in (spec.parts if spec else ()):
+            if p.build is not None:
+                try:
+                    have = bool(rt.built_image(p.build))
+                except Exception:  # noqa: BLE001 - not read: built again
+                    have = False
+                facts.setdefault("images", {})[p.image.digest] = have
+        return facts
+
+    def _to_build(self, act: str, spec: ServiceSpec | None, opts: dict, facts: dict) -> list:
+        """1.97.0: the parts whose image this plan builds here: those with `build` an install, an update or an
+        addition makes, unless their engine built the same pins before (facts' images: the context's digest)."""
+        if spec is None or act not in ("install", "update"):
+            return []
+        adds = list(opts.get("adds") or []) if act == "update" else []
+        images = facts.get("images", {})
+        return [p for p in spec.parts if p.build is not None and (not adds or p.name in adds)
+                and not images.get(p.image.digest)]
+
+    def _image_step(self, p: Part, images: Mapping, verb: str = "pull") -> str:
+        """A part's image on a plan: pulled by digest, or (1.97.0) built here, its downloads and Dockerfile said
+        whole."""
+        pin = p.image
+        if p.build is None:
+            size = f"{pin.size / 1e6:,.0f} MB" if pin.size else "its size not pinned"
+            here = "on this engine already" if images.get(pin.digest) else "not on this engine yet"
+            return f"{verb} {pin.pinned} ({size}{', ' + pin.licence if pin.licence else ''}; {here})"
+        b = p.build
+        if images.get(pin.digest):
+            return f"use {b.tag}, built here before from the same pins (its context {b.context()[:12]})"
+        base = b.base
+        files = "; ".join(f"fetch {f.name} from {f.host} ({f.size / 1e6:,.1f} MB, sha256 {f.sha256}"
+                          + (f", {f.licence}" if f.licence else "") + ") and check it" for f in b.files)
+        return (f"build {b.tag} here: pull its base {base.pinned} by digest ("
+                + (f"{base.size / 1e6:,.0f} MB" if base.size else "its size not pinned")
+                + (f", {base.licence}" if base.licence else "") + ")" + (f"; {files}" if files else "")
+                + f"; then build it from this Dockerfile, its context those files alone: {b.dockerfile.strip()}")
+
     def _install_words(self, sid, t: Target, rt: Runtime, spec: ServiceSpec, facts: dict):
         steps, keeps = [], []
         images = facts.get("images", {})
         for p in spec.parts:
-            pin = p.image
-            size = f"{pin.size / 1e6:,.0f} MB" if pin.size else "its size not pinned"
-            here = "on this engine already" if images.get(pin.digest) else "not on this engine yet"
-            steps.append(f"pull {pin.pinned} ({size}{', ' + pin.licence if pin.licence else ''}; {here})")
+            steps.append(self._image_step(p, images))
         found = {v["volume"]: v for v in self._volumes_of(rt, sid)}
         for v in spec.volumes():
             name = C.volume_name(sid, v.name)
@@ -1106,10 +1277,7 @@ class ContainerHost(MachinePlugin):
         for p in spec.parts:
             if p.name not in adds:
                 continue
-            pin = p.image
-            size = f"{pin.size / 1e6:,.0f} MB" if pin.size else "its size not pinned"
-            here = "on this engine already" if images.get(pin.digest) else "not on this engine yet"
-            steps.append(f"pull {pin.pinned} ({size}{', ' + pin.licence if pin.licence else ''}; {here})")
+            steps.append(self._image_step(p, images))
             for v in p.volumes:
                 name = C.volume_name(sid, v.name)
                 steps.append(f"use the volume {name} from before: {v.holds}" if v.name in found else
@@ -1149,8 +1317,12 @@ class ContainerHost(MachinePlugin):
                                  f"{self._backups_of(sid)})")
                 else:
                     steps.append(f"back up the volume {C.volume_name(sid, v.name)} into {self._backups_of(sid)}")
+        images = facts.get("images", {})
         for p in spec.parts:
-            steps.append(f"pull {p.image.pinned}" + (f" ({p.image.size / 1e6:,.0f} MB)" if p.image.size else ""))
+            if p.build is not None:  # 1.97.0: a rebuild is an update (its backup first, the previous container kept)
+                steps.append(self._image_step(p, images).replace("build ", "rebuild ", 1))
+            else:
+                steps.append(f"pull {p.image.pinned}" + (f" ({p.image.size / 1e6:,.0f} MB)" if p.image.size else ""))
         steps += ["stop it, and keep the current container as …-previous", "make a new container on the same volumes "
                   "and choices, start it, and wait for it: undone if it is not healthy in time"]
         keeps = ["the previous container and its image, until the next update or Remove",
@@ -1175,7 +1347,7 @@ class ContainerHost(MachinePlugin):
     def _more_accepts(self, act, sid, t, rt, spec, facts) -> list[Accept]:
         got = list(self.more_accepts(act, sid, t, rt, spec, facts) or [])
         for a in got:
-            if a.name not in self.MORE_ACCEPTS or a.name in C.ACCEPTS or not C.MORE_ACCEPT.match(a.name):
+            if a.name not in self.MORE_ACCEPTS or a.name in (*C.ACCEPTS, C.ACCEPT_BUILD) or not C.MORE_ACCEPT.match(a.name):
                 raise Refusal(f"{self.name} asks an accept it does not declare ({a.name[:40]}): MORE_ACCEPTS names "
                               "each of its own")
         return got
@@ -1351,10 +1523,15 @@ class ContainerHost(MachinePlugin):
         return {k: got[k] for k in ("network", "found", "assigns", "shared", "route", "behind") if k in got}
 
     def _net_name(self, rt: Runtime, spec, sid: str) -> tuple[str, bool]:
-        """(the network the service's containers join, whether it is the service's own: dropped with it)."""
+        """(the network the service's containers join, whether it is the service's own: dropped with it).
+
+        1.97.0 (P2): "shared" and "not the service's own" are two words. A network named for the service
+        (containers.network_name: a Docker bridge, a cluster's NetworkPolicy) is its own, and dropped with it, even
+        when the prefix it sits on is shared (a cluster's pods: the Want's `shared` is the firewall's word for the
+        prefix); one its engine has under another name (Windows' nat) is never dropped."""
         want = self._net_want(rt, spec, sid)
         name = str(want.get("network") or C.network_name(sid))
-        return name, name == C.network_name(sid) and not want.get("shared")
+        return name, name == C.network_name(sid)
 
     def _network_plans(self, act: str, sid: str, who: str, t: Target, spec, opts, rt: Runtime | None = None) -> list[dict]:
         """The firewall's plans this plan rests on (N2: two approvals). No firewall answering for the target's stack
@@ -1389,12 +1566,13 @@ class ContainerHost(MachinePlugin):
         is exactly True. Used once, until the plan expires. The plugin's own accepts (MORE_ACCEPTS) come after the
         base's, in that order (`more`), or by name."""
         self._need_page(C.APPROVE)
-        unknown = [k for k in named if k not in self.MORE_ACCEPTS]
-        if unknown or len(more) > len(self.MORE_ACCEPTS):
+        extra = self._extra_accepts()
+        unknown = [k for k in named if k not in extra]
+        if unknown or len(more) > len(extra):
             raise Refusal(f"{self.name}'s approve_plan takes no {', '.join(unknown) or 'more accepts'}")
         answers = {ACCEPT_LAN: accept_lan, ACCEPT_KEPT_SECRET: accept_kept_secret, ACCEPT_DIFFERS: accept_differs,
                    C.ACCEPT_BOOT: accept_boot, ACCEPT_NO_BACKUP: accept_no_backup, ACCEPT_DATA: accept_data}
-        answers.update(dict(zip(self.MORE_ACCEPTS, more)))
+        answers.update(dict(zip(extra, more)))
         answers.update(named)
         p = self._svc.plans.approve(plan, answers)
         return {"said": f"approved: {p.title}", "ok": True, "plan": p.plan}
@@ -1433,7 +1611,7 @@ class ContainerHost(MachinePlugin):
         taken: list[Plan] = []
 
         def ready() -> None:
-            facts = rt.facts(spec, p.subject)
+            facts = self._facts(rt, spec, p.subject)
             facts["target"] = {"id": t.id, "state": t.state}
             facts["network"] = [n["plan"] for n in p.extra.get("network") or []]
             if p.extra.get("options", {}).get("choice") == "backup":
@@ -1507,9 +1685,11 @@ class ContainerHost(MachinePlugin):
         return dict(n) if n else {}
 
     def _create(self, t: Target, rt: Runtime, sid: str, spec: ServiceSpec, part: Part, grant: dict, role: str,
-                name: str | None = None) -> str:
+                name: str | None = None, built: str = "") -> str:
         cname = name or C.container_name(sid, part.name)
-        labels = C.labels(spec, part.name, role, self._platform(), self._now())
+        if part.build is not None and not C.DIGEST.match(str(built or "")):
+            raise Refusal(f"{cname}: no image was built here for it (its build's ID is not known): nothing is made")
+        labels = C.labels(spec, part.name, role, self._platform(), self._now(), built=str(built or ""))
         secret_env = self._read_secrets(replace(spec, parts=(part,)))
         missing = [s.variable for s in part.secrets if not secret_env.get(s.env)]
         if missing:
@@ -1520,7 +1700,8 @@ class ContainerHost(MachinePlugin):
         rt.create(Create(cname, part, labels, tuple((C.volume_name(sid, v.name), v.path) for v in part.volumes),
                          tuple(part.ports), dict(part.env), secret_env, self._net_name(rt, spec, sid)[0],
                          str((grant.get("addresses") or {}).get(part.name, "")), part.hostname or part.name,
-                         tuple(aliases_for(sid, part.name, first)) if grant else (), (), "no"))
+                         tuple(aliases_for(sid, part.name, first)) if grant else (), (), "no",
+                         str(built or "") if part.build is not None else ""))
         return cname
 
     def _wait_healthy(self, work: Work, t: Target, rt: Runtime, spec: ServiceSpec, part: Part, cname: str) -> None:
@@ -1574,17 +1755,80 @@ class ContainerHost(MachinePlugin):
 
     def _pulled(self, work: Work, t: Target, rt: Runtime, part: Part) -> None:
         """A part's image on its engine: found, or pulled and its digest checked; a runtime whose engine pulls by
-        digest itself answers containers.PULLED_BY_ENGINE, said as such (1.95.0). Any other digest is refused."""
-        if rt.has_image(part.image):
-            work.line(f"{part.image.pinned} is on {t.id} already")
+        digest itself answers containers.PULLED_BY_ENGINE, said as such (1.95.0). Any other digest is refused. Every
+        work that pulls (install, an addition, and since 1.97.0 an update) asks this one."""
+        self._pulled_pin(work, t, rt, part.image)
+
+    def _pulled_pin(self, work: Work, t: Target, rt: Runtime, pin: ImagePin) -> None:
+        if rt.has_image(pin):
+            work.line(f"{pin.pinned} is on {t.id} already")
             return
-        got = rt.pull(part.image, work.line, work.cancelled)
+        got = rt.pull(pin, work.line, work.cancelled)
         if got == C.PULLED_BY_ENGINE:
-            work.line(f"{part.image.ref}: pulled by its engine by its digest when it is made (not checked here)")
+            work.line(f"{pin.ref}: pulled by its engine by its digest when it is made (not checked here)")
             return
-        if got != part.image.digest:
-            raise Refusal(f"{part.image.ref} came as {got}, not its pinned {part.image.digest}")
-        work.line(f"{part.image.ref}: the digest checked")
+        if got != pin.digest:
+            raise Refusal(f"{pin.ref} came as {got}, not its pinned {pin.digest}")
+        work.line(f"{pin.ref}: the digest checked")
+
+    def _images(self, work: Work, t: Target, rt: Runtime, sid: str, parts) -> dict:
+        """Each part's image on its engine (1.97.0): pulled by digest (_pulled), or built here (_built): {part: the
+        built image's ID} for the parts built."""
+        built = {}
+        for part in parts:
+            work.check()
+            if part.build is not None:
+                built[part.name] = self._built(work, t, rt, sid, part)
+            else:
+                self._pulled(work, t, rt, part)
+        return built
+
+    def _build_root(self, sid: str, part: str) -> Path:
+        owner, _ = C.split_sid(sid)
+        base = self.out.folder
+        if base is None:
+            from .ai import platform_folder
+
+            base = platform_folder(self.out.env)
+        return Path(base) / "containers" / "build" / f"{owner}-{part}"
+
+    def _built(self, work: Work, t: Target, rt: Runtime, sid: str, part: Part) -> str:
+        """1.97.0 (SERVICE-INTERFACE.md §10): a part's image built here, inside the approved work alone: found built
+        from the same pins before (used as it is), or its base pulled by digest, each pinned file fetched into the
+        context folder and checked by its sha256 (one found there already checked again first), then built from the
+        context of those files alone. The built image's ID is answered."""
+        from . import builds
+
+        b = part.build
+        have = rt.built_image(b)
+        if have:
+            work.line(f"{b.tag} was built here before from the same pins: used as it is ({have[:19]}…)")
+            return have
+        self._pulled_pin(work, t, rt, b.base)
+        context = self._build_root(sid, part.name) / b.context()
+        builds.make_private(context)
+        fetch = self.out.fetch or builds.https_fetch
+        for f in b.files:
+            work.check()
+            builds.fetched(context, f, fetch, work.line, work.cancelled)
+        builds.prune(context.parent, keep=context.name)
+        work.check()
+        got = str(rt.build(b, context, work.line, work.cancelled) or "")
+        if not C.DIGEST.match(got):
+            raise Refusal(f"{b.tag}: its engine answered no image ID ({got[:40]!r}) after its build")
+        work.line(f"{b.tag} built here: {got}")
+        return got
+
+    def _runs_image(self, rt: Runtime, sid: str, part: Part, container: str | None = None) -> str:
+        """What a throwaway container of the part runs (a backup's, a restore's): its pin, or (1.97.0) the image built
+        here that its container runs."""
+        if part.build is None:
+            return part.image.pinned
+        st = rt.state(container or C.container_name(sid, part.name)) or {}
+        got = str(st.get("built") or st.get("image_id") or "")
+        if not got:
+            raise Refusal(f"{C.container_name(sid, part.name)}: the image built here for it is not known")
+        return got
 
     def _volumes_made(self, work: Work, rt: Runtime, sid: str, volumes) -> set:
         new_volumes = set()
@@ -1605,9 +1849,7 @@ class ContainerHost(MachinePlugin):
         grant = self._grant_of(p)
         network, own_network = self._net_name(rt, spec, sid)
         try:
-            for part in spec.parts:
-                work.check()
-                self._pulled(work, t, rt, part)
+            built = self._images(work, t, rt, sid, spec.parts)
             new_volumes = self._volumes_made(work, rt, sid, spec.volumes())
             work.check()
             if grant:
@@ -1617,7 +1859,7 @@ class ContainerHost(MachinePlugin):
                           f" ({grant.get('subnet')})" + ("" if own_network else ": its engine's own, shared"))
             for part in spec.parts:
                 work.check()
-                cname = self._create(t, rt, sid, spec, part, grant, "current")
+                cname = self._create(t, rt, sid, spec, part, grant, "current", built=built.get(part.name, ""))
                 made_containers.append(cname)
                 work.line(f"{cname} made, --restart no")
                 seeds = [(f"{v.path.rstrip('/')}/{s.path}", s, v.owner) for s in part.seeds
@@ -1662,13 +1904,11 @@ class ContainerHost(MachinePlugin):
         grant = self._grant_of(p) or self._grant_from_hosted(rt, sid)
         parts = [x for x in spec.parts if x.name in adds]
         try:
-            for part in parts:
-                work.check()
-                self._pulled(work, t, rt, part)
+            built = self._images(work, t, rt, sid, parts)
             new_volumes = self._volumes_made(work, rt, sid, [v for x in parts for v in x.volumes])
             for part in parts:
                 work.check()
-                cname = self._create(t, rt, sid, spec, part, grant, "current")
+                cname = self._create(t, rt, sid, spec, part, grant, "current", built=built.get(part.name, ""))
                 made.append(cname)
                 work.line(f"{cname} made, --restart no")
                 seeds = [(f"{v.path.rstrip('/')}/{s.path}", s, v.owner) for s in part.seeds
@@ -1700,6 +1940,7 @@ class ContainerHost(MachinePlugin):
 
     def _do_start(self, work, p, t, rt, spec):
         sid = p.subject
+        self._check_built(rt, sid, spec)  # 1.97.0: checked again at every start
         self._apply_network(work, p)
         self._hold(work, t, sid)
         try:
@@ -1760,7 +2001,7 @@ class ContainerHost(MachinePlugin):
                 for v in part.volumes:
                     work.check()
                     old = labelled.part(part.name) if labelled else None
-                    pinned = (old or part).image.pinned
+                    pinned = self._runs_image(rt, sid, old or part)
                     n = rt.backup(C.volume_name(sid, v.name), pinned, backup_dir / f"{v.name}.tar", work.line,
                                   work.cancelled)
                     if kinds[part.name] == "snapshot" or isinstance(n, str):
@@ -1770,12 +2011,9 @@ class ContainerHost(MachinePlugin):
                     else:
                         work.line(f"the volume {C.volume_name(sid, v.name)} backed up: {n:,} bytes in {backup_dir}")
             self._prune_backups(sid)
-        for part in spec.parts:
-            work.check()
-            if not rt.has_image(part.image):
-                got = rt.pull(part.image, work.line, work.cancelled)
-                if got != part.image.digest:
-                    raise Refusal(f"{part.image.ref} came as {got}, not its pinned {part.image.digest}")
+        # 1.97.0 (P1): through _pulled, as an install's (PULLED_BY_ENGINE said, any other digest refused); a part built
+        # here is built again from its release's new pins (a rebuild is an update)
+        built = self._images(work, t, rt, sid, spec.parts)
         grant = self._grant_from_hosted(rt, sid)
         renamed: list[tuple[str, str]] = []
         made: list[str] = []
@@ -1793,7 +2031,7 @@ class ContainerHost(MachinePlugin):
                 rt.rename(cname, prev)
                 renamed.append((cname, prev))
                 work.line(f"{cname} kept as {prev}")
-                self._create(t, rt, sid, spec, part, grant, "current")
+                self._create(t, rt, sid, spec, part, grant, "current", built=built.get(part.name, ""))
                 made.append(cname)
                 rt.start(cname)
                 self._wait_healthy(work, t, rt, spec, part, cname)
@@ -1859,7 +2097,8 @@ class ContainerHost(MachinePlugin):
                     source = latest / f"{v.name}.tar"
                     if not source.exists() and (latest / f"{v.name}.snapshot.json").exists():
                         source = latest / f"{v.name}.snapshot.json"  # 1.95.0: the engine's own snapshot
-                    n = rt.restore(C.volume_name(sid, v.name), part.image.pinned, source, work.line, work.cancelled)
+                    n = rt.restore(C.volume_name(sid, v.name), self._runs_image(rt, sid, part), source, work.line,
+                                   work.cancelled)
                     work.line(f"the volume {C.volume_name(sid, v.name)} put back from {latest.name} ("
                               + (f"{n:,} bytes" if isinstance(n, int) else str(n)) + ")")
         labelled = self._found(sid)[3] or spec
@@ -1881,7 +2120,7 @@ class ContainerHost(MachinePlugin):
             if st.get("state") in ("running", "restarting", "paused"):
                 rt.stop(cname, part.stop_s)
             rt.remove(cname)
-            self._create(t, rt, sid, spec, part, grant, "current")
+            self._create(t, rt, sid, spec, part, grant, "current", built=str(st.get("built") or ""))
             work.line(f"{cname} made again with its ports " + ("on every address" if any(x.lan for x in part.ports)
                                                                   else "on this machine alone"))
         self._apply_network(work, p)
@@ -1943,6 +2182,33 @@ class ContainerHost(MachinePlugin):
         v = next(x for x in p.volumes if x.name == r.volume)
         raw = rt.read(C.container_name(sid, p.name), f"{v.path.rstrip('/')}/{r.path}", C.FILE_MOST)
         return {"sid": sid, "part": p.name, "readable": r.name, "text": raw[:C.FILE_MOST].decode("utf-8", "replace")}
+
+    def hosted_run(self, sid, part, command, *args) -> dict:
+        """1.97.0 (S2): a command its service's own recipe declares (the part's `commands`, as labelled on its
+        container: never words the asker types), its arguments parsed by their kinds, run in that running part. Asked
+        by the service's owner alone (whose page asks it of you, confirmed each time), never while a work of this
+        plugin runs on that target; its output masked of the service's secrets."""
+        owner, _ = C.split_sid(sid)
+        self._need_owner(C.HOSTED_RUN, owner)
+        t, rt, row, spec = self._found(sid)
+        p = spec.part(str(part)) if spec is not None else None
+        if p is None:
+            raise Refusal(f"{sid} has no part {str(part)[:20]!r}")
+        cmd = p.command_of(str(command))
+        if cmd is None:
+            raise Refusal(f"{sid}'s {p.name} declares no command {str(command)[:20]!r}: "
+                          + (", ".join(c.name for c in p.commands) or "none"))
+        argv = cmd.argv_for(args)
+        if any(w.key == t.id for w in self._svc.works.running()):
+            raise Refusal(f"a work of {self.title or self.name} runs on {t.id} now: run it once that work ends")
+        cname = C.container_name(sid, p.name)
+        if (rt.state(cname) or {}).get("state") != "running":
+            raise Refusal(f"{cname} is not running: start it first (a command runs in a running part alone)")
+        self._read_secrets(spec)
+        code, out = rt.exec(cname, argv, float(cmd.timeout_s))
+        lines = [self._mask(x) for x in str(out or "").splitlines() if x.strip()][-200:]
+        return {"said": f"{cmd.title} in {cname}: " + ("done" if code == 0 else f"it ended with {code}"),
+                "ok": code == 0, "code": code, "argv": [self._mask(w) for w in argv], "lines": lines}
 
     def release_owned(self) -> dict:
         """Stops the asker's "page" services (asked when you turn that plugin off)."""
@@ -2115,7 +2381,8 @@ class ContainerHost(MachinePlugin):
             (ACCEPT_NO_BACKUP, "No backup?", "Update without a backup", "No backup can be made first."),
             (ACCEPT_DATA, "Data deleted or replaced?", "Go on", "Data is deleted or put back: it cannot be undone."),
             *((n, f"{n[len('accept_'):].replace('_', ' ').capitalize()}?", "Accept", "Asked by this plugin's own plan.")
-              for n in self.MORE_ACCEPTS))]
+              for n in self.MORE_ACCEPTS),
+            (C.ACCEPT_BUILD, "An image built here?", "Build it", C.BUILD_WORDS + "."))]
         forms = [
             {"id": "approve", "hook": C.APPROVE, "title": "Approve a plan", "submit": "Review",
              "fields": [{"name": "plan", "label": "Plan", "type": "fixed"}, *accept],

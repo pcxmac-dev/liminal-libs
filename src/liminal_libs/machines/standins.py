@@ -14,6 +14,7 @@ plugin's tests and no test starts a process, pulls an image, opens a port or run
 - `login(pairs)`: a login holding only the pairs given (EnvironmentLogin over its own variables)."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import secrets as _secrets
@@ -76,6 +77,12 @@ class FakeDocker:
         self.pulled_as: dict[str, str] = {}  # a pinned ref -> the digest a pull finds instead
         self.logs: dict[str, list[str]] = {}
         self.root = "/var/lib/docker"  # docker info's DockerRootDir
+        # 1.97.0: images built here (tag -> {"Id", "labels"}), each build's context as it came (`builds`), and the
+        # commands run in a container (`execs`, each answered from `exec_answers` by its words: (code, output))
+        self.built: dict[str, dict] = {}
+        self.builds: list[dict] = []
+        self.execs: list[dict] = []
+        self.exec_answers: dict[tuple, tuple] = {}
 
     # -- the runner -------------------------------------------------------------------------------------------------
     def _words(self, argv) -> list[str]:
@@ -134,7 +141,7 @@ class FakeDocker:
         nets = {}
         if c.get("network"):
             nets[c["network"]] = {"IPAddress": c.get("ip", "")}
-        return {"Id": c["id"], "Name": "/" + c["name"],
+        return {"Id": c["id"], "Name": "/" + c["name"], "Image": c.get("image_id", ""),
                 "Config": {"Labels": dict(c["labels"]), "Image": c["image"], "Env": list(c["env_names"])},
                 "State": {"Status": c["state"], "ExitCode": c.get("exit", 0), "StartedAt": c.get("started", "")},
                 "Mounts": [{"Type": "volume", "Name": v, "Destination": p} for v, p in c["mounts"]],
@@ -215,6 +222,13 @@ class FakeDocker:
                 return 1, "", f"Error: network {name} not found"
             del self.networks[name]
             return 0, "", ""
+        if key == "image inspect" and args[-1] in self.built:
+            b = self.built[args[-1]]
+            if "{{.Id}}" in args:
+                return 0, b["Id"], ""
+            return 0, json.dumps([{"Id": b["Id"], "Config": {"Labels": dict(b["labels"])}}]), ""
+        if key == "build":
+            return self._build(args, stdin)
         if key == "image inspect":
             ref = args[-1]
             if ref in self.images:
@@ -261,6 +275,11 @@ class FakeDocker:
             c = self._find(args[1])
             if c is None or c["state"] != "running":
                 return 1, "", "Error: container is not running"
+            if args[2:3] != ["cat"]:  # 1.97.0: a recipe's command, recorded and answered
+                words = tuple(args[2:])
+                self.execs.append({"container": c["name"], "argv": list(words)})
+                code, said = self.exec_answers.get(words, (0, "done"))
+                return code, said, ""
             data = self._read_path(c, args[-1])
             return (0, data, "") if data is not None else (1, b"", "cat: no such file")
         if key == "logs":
@@ -313,9 +332,30 @@ class FakeDocker:
              "state": "created", "exit": 0, "mounts": mounts, "network": _opt(args, "--network", ""),
              "ip": _opt(args, "--ip", ""), "ports": _opts(args, "-p"), "env_names": env_names,
              "restart": _opt(args, "--restart", "no"), "memory": _opt(args, "--memory", ""), "argv": list(args),
-             "secret_values": {k: env[k] for k in env_names if k in env}}
+             "secret_values": {k: env[k] for k in env_names if k in env},
+             "image_id": image if image.startswith("sha256:") else
+             "sha256:" + hashlib.sha256(image.encode("utf-8")).hexdigest()}
         self.containers[name] = c
         return 0, c["id"], ""
+
+    def _build(self, args, stdin):
+        """1.97.0: `docker build ... -f Dockerfile -`: its context (a tar on standard input) recorded, an ID made of the
+        digest of what it held, the image tagged with its labels. A build that names any other context is refused."""
+        if args[-1] != "-" or _opt(args, "-f") != "Dockerfile" or "--pull=false" not in args:
+            return 2, "", "the stand-in builds from a context on standard input alone, --pull=false, -f Dockerfile"
+        files = {}
+        with tarfile.open(fileobj=io.BytesIO(stdin or b""), mode="r:") as tar:
+            for m in tar.getmembers():
+                files[m.name] = tar.extractfile(m).read() if m.isfile() else b""
+        h = hashlib.sha256()
+        for name in sorted(files):
+            h.update(name.encode("utf-8") + b"\0" + files[name] + b"\0")
+        ident = "sha256:" + h.hexdigest()
+        tag, labels = _opt(args, "--tag"), _labels_of(args)
+        self.builds.append({"tag": tag, "files": files, "dockerfile": files.get("Dockerfile", b"").decode("utf-8"),
+                            "labels": labels, "argv": list(args), "id": ident})
+        self.built[tag] = {"Id": ident, "labels": labels}
+        return 0, f"#1 naming to {tag} done", "#0 building with the stand-in"
 
     def _volume_at(self, c: dict, path: str):
         best = None
@@ -406,7 +446,8 @@ class FakeDocker:
     def changes(self) -> list[str]:
         reads = ("ps", "inspect", "volume ls", "volume inspect", "network ls", "network inspect", "image inspect",
                  "logs", "version", "exec", "info")
-        return [c["key"] for c in self.calls if c["key"] not in reads and not (c["key"] == "cp" and c["stdin"] is None)]
+        return [c["key"] for c in self.calls if c["key"] not in reads and not (c["key"] == "cp" and c["stdin"] is None)
+                or (c["key"] == "exec" and "cat" not in c["argv"][-3:-1])]
 
 
 def _norm(path: str) -> str:
@@ -511,11 +552,33 @@ class FakeWindowsDocker(FakeDocker):
         return super()._run(args, stdin, out)
 
 
+class FakeFetch:
+    """1.97.0: a build's pinned files as a stand-in transport answers them ({url: bytes}), each fetch recorded
+    (`asked`); an address it does not hold is refused, so that no test reaches the network."""
+
+    def __init__(self, files: dict | None = None):
+        self.files = dict(files or {})
+        self.asked: list[str] = []
+
+    def __call__(self, url, most):
+        self.asked.append(str(url))
+        if url not in self.files:
+            from ..instances import Refusal
+
+            raise Refusal(f"the stand-in fetches nothing but its own files, not {str(url)[:80]}")
+        raw = self.files[url]
+        for i in range(0, max(len(raw), 1), 1 << 16):
+            yield raw[i:i + (1 << 16)]
+
+
 class StandInHost(ContainerHost):
-    """A container plugin on stand-in targets: {target id: (Target, FakeDocker)}."""
+    """A container plugin on stand-in targets: {target id: (Target, FakeDocker)}. Since 1.97.0 its runtimes build
+    images (a FakeDocker's build) and run a recipe's commands (hosted_run); its fetch is a FakeFetch."""
 
     name, title, about, api, order = "standin-host", "A stand-in host", "a stand-in container plugin", "2.2", 990
     RUNTIME = "docker"
+    HOOKS = (*ContainerHost.HOOKS, *ContainerHost.RUN_HOOKS)
+    PLUGIN_ONLY_HOOKS = (*ContainerHost.PLUGIN_ONLY_HOOKS, *ContainerHost.RUN_HOOKS)
 
     def __init__(self, targets: dict | None = None, outside: Outside | None = None, name: str | None = None):
         out = outside or Outside(sleep=lambda s: None, health=lambda h, p, path: True, platform="windows::TEST")
@@ -523,6 +586,8 @@ class StandInHost(ContainerHost):
             import tempfile
 
             out.folder = Path(tempfile.mkdtemp(prefix="liminal-standin-"))
+        if out.fetch is None:  # nor fetches from the network
+            out.fetch = FakeFetch()
         ContainerHost.__init__(self, out)
         if name:
             self.name = name
@@ -537,7 +602,8 @@ class StandInHost(ContainerHost):
     def runtime_of(self, target: Target) -> DockerRuntime:
         fake = self.fakes[target.id]
         return DockerRuntime(["docker"], fake, fake.stream, version=fake.version, arch=fake.arch,
-                             wsl=bool(target.wsl), lan=(target.path, target.lan_words), where_data=target.where_data)
+                             wsl=bool(target.wsl), lan=(target.path, target.lan_words), where_data=target.where_data,
+                             builds=True)
 
     def present(self) -> bool:
         """Always there: a stand-in."""
@@ -663,7 +729,7 @@ class ServiceOwner(MachinePlugin):
 
 
 ACCEPTS_ALL = {"accept_lan": True, "accept_kept_secret": True, "accept_differs": True, "accept_no_backup": True,
-               "accept_data": True}
+               "accept_data": True, "accept_build": True}
 
 
 def conformance(owner: ServiceOwner, page: Callable, spec: dict, target_id: str, wait: Callable[[str], dict],

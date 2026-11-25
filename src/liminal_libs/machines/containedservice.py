@@ -28,6 +28,9 @@ and the databases' servers, are built on it: each says its recipe (`spec_for`) a
   the action "boot") and refused until it is offered (containers.SERVICE_MODE_OFFERED).
 - **Images.** A recipe pins every image by digest; a pin whose digest is UNREAD (not read from its registry yet) is
   refused before any plan.
+- **1.97.0.** Its web port named (WEB_PORT, WEB_PART), its own READY_S, its own settings changed with an Expose
+  (after_expose, after_close), its recipe's commands run on your confirmation (service_run, opted into by RUN_HOOKS),
+  and an image built here kept by its built ID and its pins' context digest (Update… rebuilds only on new pins).
 - **Lifecycle.** Turned off (its detach while the platform says it is disabled), it asks release_owned of each container
   plugin hosting one of its services; a detach for invalidity asks nothing. Nothing restarts a service after a crash.
 
@@ -53,6 +56,7 @@ from .plugin import MachinePlugin
 
 HOSTS, INSTALL, CHANGE, CARRY, LOG, FORGET = ("hosts", "service_install", "service_change", "service_carry",
                                               "service_log", "service_forget")
+RUN = "service_run"  # 1.97.0: a fixed command of its recipe run in a running part (opted into: RUN_HOOKS)
 CHANGES = ("start", "stop", "restart", "update", "rollback", "expose", "boot", "remove", "delete_data")
 CHOICES = {"rollback": ("as-is", "backup"), "expose": ("on", "off"), "boot": ("on", "off"),
            "delete_data": ("keep", "delete")}
@@ -79,8 +83,23 @@ def loopback(reach: str) -> bool:
 
 
 def unread_pins(spec: ServiceSpec) -> list[str]:
-    """The images of a spec whose digest is not read from its registry yet (UNREAD)."""
-    return [p.image.ref for p in spec.parts if p.image.digest == UNREAD]
+    """The images of a spec whose digest is not read from its registry yet (UNREAD); 1.97.0: a build's base whose
+    digest is UNREAD, or a pinned file whose sha256 is 64 zeros."""
+    out = []
+    for p in spec.parts:
+        if p.build is not None:
+            out += p.build.unread()
+        elif p.image.digest == UNREAD:
+            out.append(p.image.ref)
+    return out
+
+
+def placed_pins(placed) -> dict:
+    """What a placement runs, part by part, as a recipe's pins say it (1.97.0): its image's digest, or for a part
+    built here its build's context digest (the image ID it was built as is kept in "image")."""
+    placed = placed or {}
+    images = dict(placed.get("image") or {})
+    return {**images, **{k: v for k, v in dict(placed.get("build") or {}).items() if v}}
 
 
 # -- hashes a seed may hold (never the password: the base refuses a seed holding a secret's value) --------------------
@@ -146,6 +165,11 @@ class ContainedService(MachinePlugin):
     SERVICE = "ci"  # the name a service of its gets unless you give another
     SYSTEMS: tuple = ("linux",)  # the systems its recipe has images for
     DEFAULT_MEMORY_MB = 2048
+    READY_S = READY_S  # 1.97.0: how long a carry waits for its software (a plugin's own: GitLab's first start)
+    # 1.97.0: where its own API is asked: the port named WEB_PORT, else WEB_PART's first port; neither: the first port
+    WEB_PART = ""
+    WEB_PORT = ""
+    RUN_HOOKS = (RUN,)  # 1.97.0: opted into, spread into HOOKS and PAGE_ONLY_HOOKS, by a recipe that declares commands
     HOOKS = (*MachinePlugin.HOOKS, HOSTS, INSTALL, CHANGE, CARRY, LOG, FORGET)
     READ_HOOKS = (HOSTS, LOG)
     PAGE_ONLY_HOOKS = (INSTALL, CHANGE, CARRY, LOG, FORGET)
@@ -183,16 +207,47 @@ class ContainedService(MachinePlugin):
         """Its own steps after an action carried out well (its lines)."""
         return []
 
+    def after_expose(self, hosted: Mapping) -> Mapping:
+        """1.97.0 (S4): its own settings once it is open to your network, made with its containers inside the
+        Expose's own approved work, as {part: {setting: value}} (only settings its parts have already: GitLab's
+        external_url in GITLAB_OMNIBUS_CONFIG). {} by default: nothing of its own changes."""
+        return {}
+
+    def after_close(self, hosted: Mapping) -> Mapping:
+        """1.97.0 (S4): the same once it is closed to your network again ({} by default)."""
+        return {}
+
+    def web_port(self) -> str:
+        """1.97.0 (S1): the name of the port its own API is asked at: WEB_PORT, else WEB_PART's first port in its
+        recipe, else "" (the placement's first port, as before)."""
+        if self.WEB_PORT:
+            return str(self.WEB_PORT)
+        if self.WEB_PART:
+            try:
+                spec = self.spec_for(self.SYSTEMS[0], self.SERVICE, {"lan": self.LAN_FIRST, "fit": True})
+            except Refusal:
+                return ""
+            part = spec.part(self.WEB_PART)
+            return part.ports[0].name if part is not None and part.ports else ""
+        return ""
+
     def address(self, hosted: Mapping | None = None) -> str:
-        """Where its own API is asked: its placement's first port at its here ("" when nothing is placed). A subclass's
-        URL setting wins over this."""
+        """Where its own API is asked: its web port (web_port) at its here, else its placement's first port's (""
+        when nothing is placed). A subclass's URL setting wins over this."""
+        named = self.web_port()
         if hosted:
             ports = [p for p in hosted.get("ports") or [] if isinstance(p, Mapping) and p.get("here")]
+            if named:
+                ports = [p for p in ports if p.get("name") == named]
             if ports:
                 return str(ports[0]["here"])
         placed = self.placement()
         here = (placed or {}).get("here") or {}
-        return str(next(iter(here.values()), "")) if isinstance(here, Mapping) else ""
+        if not isinstance(here, Mapping):
+            return ""
+        if named:
+            return str(here.get(named) or "")
+        return str(next(iter(here.values()), ""))
 
     # -- small parts ----------------------------------------------------------------------------------------------------
     @property
@@ -471,18 +526,22 @@ class ContainedService(MachinePlugin):
             if unread:
                 raise Refusal(f"{', '.join(unread)}: its image is not pinned by digest yet: no update to it")
             pins = {p.name: p.image.digest for p in spec.parts}
-            if pins == dict(placed.get("image") or {}):
+            if pins == placed_pins(placed):
                 raise Refusal(f"{sid} runs this plugin's pins already: an update comes with a release that pins newer "
                               "images")
             spec = self._update_first(plugin, sid, spec).as_dict()
         elif act == "expose":
             on = (choice or "on") == "on"
             options = {"lan": on}
+            hosted = self.ask_plugin(plugin, C.HOSTED, sid)
+            hosted = hosted if isinstance(hosted, Mapping) else {}
             if on:
-                hosted = self.ask_plugin(plugin, C.HOSTED, sid)
-                ok, why = self.lan_ready(hosted if isinstance(hosted, Mapping) else {})
+                ok, why = self.lan_ready(hosted)
                 if not ok:
                     raise Refusal(f"{self._title()} is not opened to your network yet: {why or 'its sign-in does not answer'}")
+            own = dict((self.after_expose if on else self.after_close)(hosted) or {})
+            if own:  # 1.97.0 (S4): its own settings changed with it, in the Expose's plan
+                options["env"] = {str(k): {str(a): str(b) for a, b in dict(v).items()} for k, v in own.items()}
         elif act == "rollback":
             options = {"choice": choice or "as-is"}
         elif act == "delete_data":
@@ -504,7 +563,7 @@ class ContainedService(MachinePlugin):
         if not running or all(p.name in running for p in spec.parts):
             return spec
         kept = tuple(p for p in spec.parts if p.name in running)
-        placed = (self.placement(sid.split("/", 1)[1]) or {}).get("image") or {}
+        placed = placed_pins(self.placement(sid.split("/", 1)[1]))
         if not kept or all(placed.get(p.name) == p.image.digest for p in kept):
             return spec  # only adds: one plan
         return ServiceSpec.of({**spec.as_dict(), "parts": [p.as_dict() for p in kept]})
@@ -577,7 +636,7 @@ class ContainedService(MachinePlugin):
         return {"said": said, "ok": True, "lines": lines}
 
     def _wait_ready(self, hosted: Mapping, cancelled) -> tuple[bool, str]:
-        deadline = self._pace.clock() + READY_S
+        deadline = self._pace.clock() + float(self.READY_S)
         why = ""
         while True:
             try:
@@ -596,6 +655,8 @@ class ContainedService(MachinePlugin):
         spec = words.get("spec") if isinstance(words.get("spec"), Mapping) else None
         here = {str(p.get("name")): str(p.get("here")) for p in hosted.get("ports") or []
                 if isinstance(p, Mapping) and p.get("here")}
+        built = {str(p.get("name")): str(p.get("built")) for p in hosted.get("parts") or []
+                 if isinstance(p, Mapping) and p.get("built")}
         if act == "install":
             parts = (spec or {}).get("parts") or []
             row = {"plugin": plugin, "target": str(words.get("target") or pending.get("target") or ""),
@@ -606,14 +667,17 @@ class ContainedService(MachinePlugin):
                    "memory_mb": int(pending.get("memory_mb") or 0), "boot": False, "state": INSTALLED,
                    "here": here, "made": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._pace.wall())),
                    "platform": str(hosted.get("platform") or "")}
+            self._built_into(row, parts, built)
             self._keep(name, row)
             return f"kept: {row['sid']} on {plugin}'s {row['target']}"
         if not kept:
             return "no placement was kept for it"
         if act == "update" and spec:
             kept["image"] = {str(p.get("name")): str((p.get("image") or {}).get("digest", "")) for p in spec.get("parts") or []}
+            self._built_into(kept, spec.get("parts") or [], built)
         elif act == "rollback":
             kept["image"] = {}  # its previous container's, as the runtime reads it
+            kept.pop("build", None)
         elif act == "expose":
             kept["lan"] = bool(((pending.get("options") or {}) or (words.get("options") or {})).get("lan"))
         elif act == "remove":
@@ -625,6 +689,73 @@ class ContainedService(MachinePlugin):
             kept["here"] = here
         self._keep(name, kept)
         return f"kept: {self.name}/{name} {kept['state']}"
+
+    @staticmethod
+    def _built_into(row: dict, parts, built: Mapping) -> None:
+        """1.97.0: a part built here kept as the image ID it was built as (image[part], as its container runs it) and
+        its build's context digest (build[part], what the next release's pins are compared with)."""
+        ctx = {str(p.get("name")): str((p.get("image") or {}).get("digest", "")) for p in parts if p.get("build")}
+        if not ctx:
+            row.pop("build", None)
+            return
+        row["build"] = ctx
+        for name in ctx:
+            if built.get(name):
+                row.setdefault("image", {})[name] = built[name]
+
+    # -- a fixed command in a running part (1.97.0, S2) ------------------------------------------------------------------
+    def commands(self, name: str | None = None) -> list:
+        """The commands its recipe declares, (part, containers.Command) each: read from its recipe for the placement's
+        system (its release's, fixed), never from what an asker sends."""
+        placed = self.placement(name) or {}
+        system = str(placed.get("system") or (self.SYSTEMS[0] if self.SYSTEMS else "linux"))
+        try:
+            spec = self.spec_for(system, name or self.SERVICE, {"lan": bool(placed.get("lan")), "fit": True,
+                                                                 "memory_mb": int(placed.get("memory_mb") or 0),
+                                                                 "ports": list(placed.get("ports") or [])})
+            spec = ServiceSpec.of(spec.as_dict() if isinstance(spec, ServiceSpec) else spec)
+        except Refusal:
+            return []
+        return [(p.name, c) for p in spec.parts for c in p.commands]
+
+    def service_run(self, name="ci", command="", confirm=False, *args) -> dict:
+        """One of its recipe's commands run in its running part, from its page alone, each run confirmed (`confirm`
+        exactly True, asked as a second confirmation naming the words it runs): its arguments parsed by their kinds,
+        never free text; carried out by its container plugin (hosted_run), which checks them again against the
+        recipe its container is labelled with."""
+        self._need_page(RUN)
+        sid = self._sid(name)
+        name = sid.split("/", 1)[1]
+        placed = self.placement(name)
+        if not placed or placed.get("state") != INSTALLED:
+            raise Refusal(f"{sid} is not installed in a container: Install… it first")
+        found = next(((p, c) for p, c in self.commands(name) if c.name == str(command or "")), None)
+        if found is None:
+            raise Refusal(f"{self._title()} declares no command {str(command)[:20]!r}: "
+                          + (", ".join(c.name for _, c in self.commands(name)) or "none"))
+        part, cmd = found
+        argv = cmd.argv_for(args)
+        if confirm is not True:
+            raise Refusal(f"Run {cmd.title} in {sid}'s {part}: {' '.join(argv)}?", accept="confirm")
+        return self.ask_plugin(str(placed.get("plugin")), C.HOSTED_RUN, sid, part, cmd.name, *[str(a) for a in args])
+
+    def _run_forms(self) -> list[dict]:
+        if RUN not in getattr(self, "HOOKS", ()):
+            return []
+        forms = []
+        for part, c in self.commands():
+            fields = [{"name": "name", "label": "Service", "type": "fixed"},
+                      {"name": "command", "label": "Command", "type": "fixed", "value": c.name},
+                      {"name": "confirm", "type": "accept", "title": f"Run {c.title}?", "yes": "Run it",
+                       "words": f"It runs in {part}: " + " ".join(c.argv)}]
+            for a in c.args:
+                fields.append({"name": a.name, "label": a.label, "type": "choice", "choices": [
+                    {"value": x, "title": x} for x in a.choices]} if a.kind == "choice" else
+                    {"name": a.name, "label": a.label, "type": "number" if a.kind == "number" else "text"})
+            forms.append({"id": f"run-{c.name}", "hook": RUN, "title": c.title, "submit": "Review", "fields": fields,
+                          "confirm": {"title": f"{c.title} in {{name}}?", "words": c.about or "Run in its "
+                                      "container, as its recipe says it.", "yes": "Go on"}})
+        return forms
 
     # -- reads and forgetting --------------------------------------------------------------------------------------------
     def service_log(self, name="ci", part="", lines=100) -> dict:
@@ -766,7 +897,15 @@ class ContainedService(MachinePlugin):
                 "columns": [{"title": "Change"}, {"title": "Container plugin"}, {"title": "Plan"},
                             {"title": "Carry"}],
                 "note": "Approve each plan on its container plugin's page first (an older platform draws no dialog)."})
-        return {"tables": tables, "forms": self._service_forms()}
+        runs = self._run_forms()
+        if runs and placed:
+            tables.append({"title": "Commands", "empty": "", "rows": [
+                [{"text": f["title"], "sub": f["fields"][2]["words"]}, n,
+                 {"form": f["id"], "title": "Run…", "values": {"name": n}}]
+                for n, p in sorted(placed.items()) if p.get("state") == INSTALLED for f in runs],
+                "columns": [{"title": "Command"}, {"title": "Service"}, {"title": "Run"}],
+                "note": "Each is its recipe's own, run in its running container; each run is confirmed."})
+        return {"tables": tables, "forms": self._service_forms() + runs}
 
     def _port_fields(self) -> list[dict]:
         try:

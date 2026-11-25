@@ -95,7 +95,8 @@ class Want:
     1.95.0 it may say what its engine has already, to be reserved and recorded as it is (Runtime.network_want):
 
     - `found`: a prefix its engine's own network has (Windows' one NAT network, a cluster's pod range): reserved for
-      this service, never handed out of the pool, never routed unless `route`;
+      this service, never handed out of the pool, never routed unless `route`. 1.97.0: several prefixes (a list: a
+      multi-node cluster's pod range per node), the first its segment's, the others (`found_more`) reserved with it;
     - `assigns`: who gives the parts their addresses: "reserved" (the firewall, from `found` or the pool) or the
       runtime's own word of ASSIGNS ("hns", "kubernetes", "incus", "docker"): the firewall then hands none out and
       records the members' addresses as the container plugin's segments() read them;
@@ -118,13 +119,27 @@ class Want:
     shared: bool = False
     route: bool = True
     behind: str = ""
+    found_more: tuple = ()  # 1.97.0: the further prefixes `found` was given as a list
+
+    @property
+    def found_all(self) -> tuple:
+        """Every prefix found (its first is `found`)."""
+        return ((self.found,) if self.found else ()) + tuple(self.found_more)
 
     def as_dict(self) -> dict:
         d = asdict(self)
+        if not self.found_more:  # left out unless said: a 1.96.0 firewall reads the Want it always did
+            d.pop("found_more")
         return {k: list(v) if isinstance(v, tuple) else v for k, v in d.items()}
 
     @classmethod
     def of(cls, m) -> "Want":
+        m = dict(m or {})
+        if isinstance(m.get("found"), (list, tuple)):  # 1.97.0: several prefixes
+            given = [str(x) for x in m["found"] if x]
+            if len(given) > 16:
+                raise Refusal("a network is found as 16 prefixes at most")
+            m["found"], m["found_more"] = (given[0] if given else ""), tuple(given[1:])
         w = _of(cls, m)
         if w.stack not in STACKS:
             raise Refusal(f"a network is wanted on one of {', '.join(STACKS)}, not {str(w.stack)[:20]!r}")
@@ -134,7 +149,9 @@ class Want:
             raise Refusal("reaching another service comes later (with agents across services)")
         if w.assigns not in ASSIGNS:
             raise Refusal(f"a network's addresses are given by one of {', '.join(ASSIGNS)}, not {str(w.assigns)[:20]!r}")
-        for word, value in (("found", w.found), ("behind", w.behind)):
+        if w.found_more and not w.found:
+            raise Refusal("a network's further prefixes come after its first (found)")
+        for word, value in (*(("found", x) for x in w.found_all), ("behind", w.behind)):
             if value:
                 try:
                     (ipaddress.ip_network if word == "found" else ipaddress.ip_address)(str(value))
@@ -338,6 +355,12 @@ class Allocation:
     found: bool = False  # 1.95.0: a prefix its engine has, reserved (never handed out of the pool)
     shared: bool = False  # 1.95.0: that found network is shared by several services
     assigns: str = "reserved"  # 1.95.0: who gives its members their addresses
+    found_more: list = field(default_factory=list)  # 1.97.0: the further prefixes found with it, reserved too
+
+    @property
+    def prefixes(self) -> list:
+        """Every prefix it holds (its own, and any further one found with it)."""
+        return [self.prefix, *self.found_more]
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -737,7 +760,7 @@ class NetworkHost(MachinePlugin):
         if act == "install":
             if w.found:
                 subnet, gateway, addresses = self._reserve_found(sid, w)
-                extra["found"] = (f"{subnet}, {w.target}'s own network, reserved for {sid}"
+                extra["found"] = (", ".join([subnet, *w.found_more]) + f", {w.target}'s own network, reserved for {sid}"
                                   + (" (shared with the other services there)" if w.shared else "")
                                   + ("" if w.assigns == "reserved" else f"; its addresses given by {w.assigns}"))
             elif a is not None and a.state in ("made", "removed") and set(a.addresses) == set(w.parts):
@@ -746,14 +769,14 @@ class NetworkHost(MachinePlugin):
             else:
                 if a is not None and a.state == "held" and a.plan and self._held(a.plan):
                     raise Refusal(f"a plan for {sid}'s network waits already ({a.plan}): approve or decline it")
-                avoid = [*self.networks_here(), *(x.prefix for x in self._book.all() if x.sid != sid)]
+                avoid = [*self.networks_here(), *(p for x in self._book.all() if x.sid != sid for p in x.prefixes)]
                 subnet, skipped = Pool(self._half()).allocate(avoid)
                 gateway, addresses = addresses_in(subnet, list(w.parts))
                 if skipped:
                     extra["skipped"] = skipped
             facts["allocation"] = subnet
             extra.update({"subnet": subnet, "gateway": gateway, "addresses": addresses, "assigns": w.assigns,
-                          "shared": w.shared, "is_found": bool(w.found)})
+                          "shared": w.shared, "is_found": bool(w.found), "found_more": list(w.found_more)})
             if w.behind and w.stack != own:
                 raise Refusal(f"{sid}'s segment sits behind {w.behind} on {w.stack}: a nested segment is routed by the "
                               f"firewall of its own stack ({w.stack}) alone in this release")
@@ -842,7 +865,7 @@ class NetworkHost(MachinePlugin):
         if act == "install" and "kept" not in extra:
             self._book.put(Allocation(extra["subnet"], w.stack, extra["segment"], sid, owner, self._platform(),
                                       extra["gateway"], extra["addresses"], "held", plan.plan, found=bool(w.found),
-                                      shared=w.shared, assigns=w.assigns))
+                                      shared=w.shared, assigns=w.assigns, found_more=list(w.found_more)))
         out = plan.as_dict(self._net.plans.clock())
         out.pop("_steps", None)
         return out
@@ -851,14 +874,17 @@ class NetworkHost(MachinePlugin):
         """A prefix its engine has (Want.found), reserved for `sid` as it is (1.95.0): refused where it meets another
         service's allocation, unless both say the one same shared network. Its gateway and addresses are handed out
         only when the firewall gives the addresses (assigns "reserved")."""
-        net = ipaddress.ip_network(str(w.found), strict=False)
-        subnet = str(net)
-        for x in self._book.all():
-            if x.sid == sid or not netguard.overlaps(net, [x.prefix]):
-                continue
-            if w.shared and x.shared and x.prefix == subnet:
-                continue
-            raise Refusal(f"{subnet} meets {x.prefix}, {x.sid}'s network: it is not reserved for {sid}")
+        subnet = str(ipaddress.ip_network(str(w.found), strict=False))
+        mine = [str(ipaddress.ip_network(str(p), strict=False)) for p in w.found_all]  # 1.97.0: each one found
+        for net in mine:
+            for x in self._book.all():
+                theirs = [p for p in x.prefixes if p]
+                if x.sid == sid or not netguard.overlaps(ipaddress.ip_network(net), theirs):
+                    continue
+                if w.shared and x.shared and net in theirs:
+                    continue
+                met = next(p for p in theirs if netguard.overlaps(ipaddress.ip_network(net), [p]))
+                raise Refusal(f"{net} meets {met}, {x.sid}'s network: it is not reserved for {sid}")
         if w.assigns != "reserved":
             return subnet, "", {}
         gateway, addresses = addresses_in(subnet, list(w.parts))
@@ -991,7 +1017,8 @@ class NetworkHost(MachinePlugin):
                 a = Allocation(str(p.extra["subnet"]), str(p.extra["stack"]), str(p.extra["segment"]), sid, p.owner,
                                self._platform(), str(p.extra["gateway"]), dict(p.extra["addresses"]),
                                found=bool(p.extra.get("is_found")), shared=bool(p.extra.get("shared")),
-                               assigns=str(p.extra.get("assigns") or "reserved"))
+                               assigns=str(p.extra.get("assigns") or "reserved"),
+                               found_more=list(p.extra.get("found_more") or []))
             a.state, a.plan, a.made = "made", p.plan, a.made or now
             a.route = {"next_hop": route["next_hop"], "interface": route["interface"]} if route else a.route
             a.exposed = [s.detail for s in steps if s.kind == "proxy"] or a.exposed

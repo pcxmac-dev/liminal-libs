@@ -62,7 +62,7 @@ def test_a_sound_spec_round_trips_with_a_stable_sha():
     (lambda d: d["parts"][0].update(seeds=[{"volume": "home", "path": "a", "text": "x" * (65 << 10)}]), "64 KB"),
     (lambda d: d.update(title="Jen\x07kins"), "control character"),
     (lambda d: d.update(system="windows"), "linux image"),
-    (lambda d: d["parts"][0].update(image={"steps": "RUN x"}), "comes later"),
+    (lambda d: d["parts"][0].update(image={"steps": "RUN x"}), "says `build` (a BuildPin)"),  # 1.97.0's words
     (lambda d: d["parts"][0]["health"].update(port="nope"), "does not publish"),
     (lambda d: d.update(parts=d["parts"] * 9), "8 parts at most"),
     (lambda d: d.update(owner="Jenkins"), "lowercase"),
@@ -143,7 +143,9 @@ def test_the_bases_declare_their_gates_and_are_sound():
     h, f = standins.StandInHost(), standins.StandInNetworkHost()
     assert internal.problems(h) == [] and internal.problems(f) == []
     assert set(internal.page_only(h)) == {C.APPROVE, C.GRANT, C.REVOKE, C.FORGET_VOLUME}
-    assert set(internal.plugin_only(h)) == {C.WORK, C.PLAN, C.APPLY, C.HOSTED_FILE, C.RELEASE}
+    # 1.97.0: the stand-in opts into hosted_run; the base itself declares it nowhere (a plugin opts in)
+    assert set(internal.plugin_only(h)) == {C.WORK, C.PLAN, C.APPLY, C.HOSTED_FILE, C.RELEASE, C.HOSTED_RUN}
+    assert C.HOSTED_RUN not in standins.ContainerHost.HOOKS + standins.ContainerHost.PLUGIN_ONLY_HOOKS
     assert {"approve_plan", "grant_network", "set_domain"} <= set(internal.page_only(f))
     assert {"network_plan", "apply_network", "network_work"} <= set(internal.plugin_only(f))
     assert set(h.interface()["hooks"]) >= set(C.__dict__[k] for k in ("HOSTING", "PLAN", "APPROVE", "APPLY"))

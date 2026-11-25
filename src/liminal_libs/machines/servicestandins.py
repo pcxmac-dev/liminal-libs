@@ -58,19 +58,22 @@ def quick_pace():
 class ServiceWorld:
     """The service plugin under test (`service`) attached to a Frame beside a stand-in container plugin (`host`,
     named standin-host, its one target wsl-ubuntu on a FakeDocker: `fake`), a stand-in firewall (`firewall`) and a
-    stand-in WSL plugin (`wsl`). `pairs`: the login's (the service's settings)."""
+    stand-in WSL plugin (`wsl`). `pairs`: the login's (the service's settings). `files` (1.97.0): what a build's
+    pinned files' addresses answer ({url: bytes}, a FakeFetch: `fetch`); no other address is fetched."""
 
     HOST, TARGET, FIREWALL = "standin-host", "wsl-ubuntu", "standin-firewall"
 
-    def __init__(self, service, pairs=None, ready=True, firewall=True, health=None, folder=None, reach="127.0.0.1"):
+    def __init__(self, service, pairs=None, ready=True, firewall=True, health=None, folder=None, reach="127.0.0.1",
+                 files=None):
         self.login = standins.login(dict(pairs or {}))
         self.app = Frame(self.login)
         self.fake = FakeDocker()
         t = (target(reach=reach) if ready else
              target(state="stopped", why="Liminal-Ubuntu is stopped, and a look never starts it", reach=reach))
+        self.fetch = standins.FakeFetch(files)
         out = Outside(sleep=lambda s: None, health=health or (lambda h, p, path: True), platform="windows::TEST",
                       holders=lambda port: [], folder=Path(folder) if folder else Path(tempfile.mkdtemp(
-                          prefix="liminal-standin-")))
+                          prefix="liminal-standin-")), fetch=self.fetch)
         self.host = StandInHost({self.TARGET: (t, self.fake)}, outside=out)
         self.firewall = StandInNetworkHost() if firewall else None
         self.wsl = StandInWsl()
