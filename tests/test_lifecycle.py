@@ -611,7 +611,7 @@ def command(table, apps, ledger=None, clock=None, node=None):
     out: list[str] = []
     cmd = stop.SignalCommand(node=node or _NoNode(), http=apps, table=table, killer=table,
                              ledger=ledger or MemoryLedger(table), key=apps.key, env={}, venvs=[VENV],
-                             clock=clock, sleep=clock.sleep, out=out.append)
+                             clock=clock, sleep=clock.sleep, out=out.append, set_event=lambda name: False)
     return cmd, out
 
 

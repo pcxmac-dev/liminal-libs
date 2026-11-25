@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.88.2 (2026-11-24)
+
+- A test can never reach a running app's stop event. While pytest runs a test (PYTEST_CURRENT_TEST is set), every
+  stop event's name (`lifecycle.stop_event_name`) carries the test process's own suffix, so whatever a test makes, opens
+  or sets is its own. At 21:36 a run of this suite on the machine the apps run on set the real
+  `Local\\liminal-stop-<app>` events (the stop command's test helper set them through kernel32 for real) and stopped all
+  four apps, cleanly but unasked. The helper now has its stand-in as well. Outside a test the names are as before.
+
 ## 1.88.1 (2026-11-24)
 
 - `mongo.keep` reads `KEEP_SECONDS` when it runs, as it did before 1.87.0: its new `every` defaulted to the value

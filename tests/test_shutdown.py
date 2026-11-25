@@ -494,8 +494,8 @@ def test_an_apps_stop_event_is_set_by_the_command_before_anything_is_ended_and_e
                              sleep=clock.sleep, out=lambda line: None, set_event=set_event)
     cmd.signal(Signal.TERM, timeout=1)
     events = [o for o in order if o[0] == "event"]
-    assert ("event", "Local\\liminal-stop-charts") in events
-    assert order.index(("event", "Local\\liminal-stop-charts")) < order.index(("send", 8301, "TERM"))
+    assert ("event", lifecycle.stop_event_name("charts")) in events
+    assert order.index(("event", lifecycle.stop_event_name("charts"))) < order.index(("send", 8301, "TERM"))
 
 
 def test_serve_ends_when_its_stop_event_is_set():
@@ -550,9 +550,9 @@ def test_a_stop_event_is_made_named_and_set_through_kernel32():
     k32 = K32()
     event = lifecycle.StopEvent(lifecycle.stop_event_name("platform"), k32)
     assert not event.is_set()
-    assert lifecycle.set_stop_event("Local\\liminal-stop-platform", k32) and event.is_set()
+    assert lifecycle.set_stop_event(lifecycle.stop_event_name("platform"), k32) and event.is_set()
     event.close()
-    assert ("create", 1, 0, "Local\\liminal-stop-platform") in k32.calls and ("close", 9) in k32.calls
+    assert ("create", 1, 0, lifecycle.stop_event_name("platform")) in k32.calls and ("close", 9) in k32.calls
 
 
 # -- 9. an app's plugins told together ------------------------------------------------------------------------------------

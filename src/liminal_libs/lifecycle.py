@@ -842,8 +842,16 @@ def scrub_command(command) -> list[str]:
 
 
 def stop_event_name(app: str) -> str:
-    """The named event an app waits on for a graceful stop on Windows (1.87.0): Local\\liminal-stop-<app>."""
-    return f"Local\\liminal-stop-{app}"
+    """The named event an app waits on for a graceful stop on Windows (1.87.0): Local\\liminal-stop-<app>.
+
+    While a test runs (pytest sets PYTEST_CURRENT_TEST for each test) the name carries the test process's own suffix
+    (1.88.2): a test that made, opened or set an app's event by its real name reached the real app on this machine,
+    and a library suite run at 21:36 on 2026-11-24 stopped all four running apps that way. Outside a test the name is
+    as before."""
+    name = f"Local\\liminal-stop-{app}"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        name += f"-test{os.getpid()}"
+    return name
 
 
 class StopEvent:
