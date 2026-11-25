@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.82.0 (2026-11-24)
+
+- The live recorder and the publishers through the fetch cache (Monday list item 5; until now only the feeds'
+  fetches went through it). The recorder's trades (`live.py`): each write of a flush goes to a trades file in its
+  stream's pull first (kind `live`, new in `pulls.KINDS`) and the tick file is written from the file read back, as a
+  feed's bars are. One pull a stream a minute (`live.PULL_MS`), not one a flush: closed and audited at the first flush
+  of the next minute, and at the recorder's stop, then forgotten at once when it passes. A minute's trades are the
+  most an audit holds in memory. The cache at its cap, or one that cannot be written, never stops the recorder: that
+  minute's trades are written without it and the log says so. At its start the recorder recovers what an earlier
+  one left open (a crash mid-minute: its trades files loaded without asking anything again) and audits its feeds'
+  pulls (`Recorder.settle_cache`).
+- Trades files (`storage/pulls.py` `TRADE_COLUMNS`, ledger kind `trades`; `Pull.rows(table="trades")`;
+  `storage/feeds.py` `upsert_trades` through the open pull). The copy audit holds them against ticks.trades key by
+  key and value by value with `IS`, in a table of the same types (`auditing.compare_trades`): a trade missing is put
+  back from the file unless the exchange withdrew it since (it is in ticks.archived_trades); one stored with other
+  values is a `copy-differs` finding (timespan `trades`: never asked of a feed again), nothing stored overwritten.
+  A trade a later file of the same pull wrote again is that file's to judge. A file loaded late puts in only what
+  is not stored. A pull with trades files is audited, and loaded late, only by a process that opens tick files (not
+  in bars-only mode). The recorder's built bars stay out: they are built here from the audited trades, every flush.
+- Pulls held open across calls: `auditing.held_open` and `auditing.end`.
+- The publishers (`publications.py`): an agency's answer goes to a pull's folder (kind `publication`, by the
+  publisher's name) and is parsed from the file read back; the items it stored are then read back
+  (`GovDB.items_held`, `GovDB.items_unlike`): a new item must be stored with every field as parsed, one held
+  already keeps its own. All as they should be: the pull closes and its file goes. Any other: a `document-differs`
+  finding, and the pull is kept with its answer, audited as a mismatch (`Pull.unverified`). A vendor's headlines are
+  read inside a pull, so its plugin's HTTP answers go to the folder and are parsed from there; what the plugin
+  stores of them is not read back yet, nor are items kept in MongoDB.
+- With LIMINAL_FETCH_CACHE=off, in a process that reads only or with no main store, nothing is cached and every
+  write is made as before.
+
 ## 1.81.0 (2026-11-24)
 
 - The review of 2026-11-21 (Monday list item 4), its five faults. The second-feed audit's queue (`queue_audit`)

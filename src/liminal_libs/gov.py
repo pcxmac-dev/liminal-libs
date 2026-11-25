@@ -118,6 +118,24 @@ CREATE TABLE IF NOT EXISTS holds (      -- nothing sent until: a publisher refus
 """
 
 
+def item_docs(source: str, items: list[dict], now: datetime) -> list[dict]:
+    """A feed's items as the documents save_items stores (storage/documents.py GOV_ITEMS)."""
+    return [{"source": source, "id": it["id"], "agency": it["agency"], "title": it["title"],
+             "url": it.get("url"), "published": it.get("published"), "kind": it.get("kind"),
+             "tags": it.get("tags") or [], "fetched_at": now.isoformat()} for it in items]
+
+
+def _as_stored(value):
+    """A document's value as gov.db's items give it back (every column is text: a list through its JSON, a whole
+    number as its digits, a value that is no number or text as its text, as the driver writes it), for holding what
+    was parsed against what was stored."""
+    if isinstance(value, (list, tuple)):
+        return json.loads(json.dumps(list(value)))
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value if value is None or isinstance(value, (str, float)) else str(value)
+
+
 def db_path(main_db: Path | str) -> Path | None:
     """gov/gov.db beside the main database (None for an in-memory one)."""
     p = Path(main_db)
@@ -206,9 +224,7 @@ class GovDB:
 
         plugin = stores.item_plugin(source)
         engine = self.engines().get(plugin, "sqlite") if plugin else "sqlite"
-        docs = [{"source": source, "id": it["id"], "agency": it["agency"], "title": it["title"],
-                 "url": it.get("url"), "published": it.get("published"), "kind": it.get("kind"),
-                 "tags": it.get("tags") or [], "fetched_at": now.isoformat()} for it in items]
+        docs = item_docs(source, items, now)
         if engine == "mongodb":
             try:
                 return stores.backend("mongodb", GOV_ITEMS, data_dir=Path(self.main).parent if self.main else None,
@@ -216,6 +232,44 @@ class GovDB:
             except Exception:  # noqa: BLE001 - the server down: this file holds them, the next settle copies them over
                 pass
         return stores.backend("sqlite", GOV_ITEMS, gov_conn=self.conn).put(docs)
+
+    def items_held(self, source: str, ids) -> dict | None:
+        """The stored documents of a feed's items by id, of those `ids` (1.82.0: what a publication's audit reads
+        back). None where its plugin keeps them in MongoDB: not read back here (that audit is still to come)."""
+        from . import stores
+        from .storage.documents import GOV_ITEMS
+
+        plugin = stores.item_plugin(source)
+        if plugin and self.engines().get(plugin, "sqlite") != "sqlite":
+            return None
+        ids = list(dict.fromkeys(ids))
+        out: dict = {}
+        backend = stores.backend("sqlite", GOV_ITEMS, gov_conn=self.conn)
+        for i in range(0, len(ids), 500):
+            for d in backend.find({"source": source, "id": ids[i:i + 500]}):
+                out[d["id"]] = d
+        return out
+
+    def items_unlike(self, source: str, items: list[dict], now: datetime, before: dict) -> list:
+        """The ids of the items read whose stored document is not what was parsed (1.82.0): one new in this read
+        (not in `before`, items_held before it was saved) must be stored with every field as parsed; one held
+        already keeps its own (save_items never replaces it) and must still be there as it was. [] when every item
+        is as it should be; None when they cannot be read back here (items_held)."""
+        docs = item_docs(source, items, now)
+        after = self.items_held(source, [d["id"] for d in docs])
+        if after is None:
+            return None
+        bad, seen = [], set()
+        for d in docs:
+            key = _as_stored(d["id"])  # (as items_held gives them: by the id as stored)
+            if key in seen:
+                continue  # (an id twice in one answer: the first is the one stored)
+            seen.add(key)
+            want = before.get(key) if key in before else {k: _as_stored(v) for k, v in d.items()}
+            got = after.get(key)
+            if got is None or any(got.get(k) != v for k, v in want.items()):
+                bad.append(key)
+        return bad
 
     def save_rate(self, series: str, day: str, value: float | None, lo: float | None, hi: float | None,
                   now: datetime) -> None:

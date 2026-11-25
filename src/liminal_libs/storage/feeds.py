@@ -570,8 +570,11 @@ class FeedStore:
         rows = sorted((_trade_row(ticker, t) for t in trades), key=lambda r: (r[1], r[2]))  # oldest first: see _ascending
         feed = self._feed(source, create=True)
         feed.attach_ticks()
+        # through the pull that is open (1.82.0: the live recorder's minute of a stream), as bars are
+        rows, cached = self._through_cache(source, rows, _stored_ms(), table="trades")
         with feed.conn:
             feed.conn.executemany("INSERT OR REPLACE INTO ticks.trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        self._cache_loaded(cached)
         self._wrote()
         self.rows_saved += len(rows)
         return len(rows)
@@ -678,15 +681,15 @@ class FeedStore:
         return len(rows)
 
     @staticmethod
-    def _through_cache(source: str, rows: list[tuple], stored: int) -> tuple[list[tuple], tuple | None]:
-        """Bar rows about to be written, through the pull that is open (1.64.0; spool.py, storage/pulls.py): written
+    def _through_cache(source: str, rows: list[tuple], stored: int, table: str = "bars") -> tuple[list[tuple], tuple | None]:
+        """Rows about to be written, through the pull that is open (1.64.0; spool.py, storage/pulls.py): written
         to a rows file in its folder and read back, so that what is written to the database is what the cache
-        holds. With no pull open (the live recorder's writes, a test's), the rows as given. Returns the rows to
-        write and what to say once they are in (_cache_loaded)."""
+        holds. Bar rows, or trades (`table`, 1.82.0). With no pull open (a test's writes), the rows as given.
+        Returns the rows to write and what to say once they are in (_cache_loaded)."""
         pull = spool.current()
         if pull is None or not rows:
             return rows, None
-        rows, seq = pull.rows(source, rows, stored)
+        rows, seq = pull.rows(source, rows, stored) if table == "bars" else pull.rows(source, rows, stored, table=table)
         return rows, (pull, seq)
 
     @staticmethod

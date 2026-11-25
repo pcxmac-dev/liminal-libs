@@ -187,6 +187,22 @@ _LATE = ("INSERT INTO bars (" + ", ".join((*_KEY, *_VALUES)) + ", stored_at) SEL
          + " WHERE (" + " OR ".join(f"bars.{c} IS NOT excluded.{c}" for c in _VALUES)
          + ") AND COALESCE(bars.stored_at, 0) <= excluded.stored_at")
 _NOT_MOVED = " AND NOT EXISTS (SELECT 1 FROM archived_bars a WHERE " + _ON.format(o="a") + ")"
+# A trades file (1.82.0: the live recorder's, storage/pulls.py TRADE_COLUMNS) is held against the feed's
+# ticks.trades the same way: every key and every value by `IS`, in a table of the same columns and types. A trade
+# the file has and the database has not is put in from it, unless the exchange withdrew it since (it is then in
+# ticks.archived_trades, where it should be). A trade has no moment of its own write: one stored with other values
+# is a difference, except in a file loaded late, where what was stored since is the newer word.
+_TKEY = ("ticker", "ts_ns", "seq")
+_TVALUES = ("price", "size", "exchange", "conditions", "trade_id", "tape")
+_TTEMP = ("CREATE TEMP TABLE IF NOT EXISTS pull_trades (ticker TEXT NOT NULL, ts_ns INTEGER NOT NULL, seq INTEGER "
+          "NOT NULL, price REAL NOT NULL, size REAL NOT NULL, exchange INTEGER, conditions TEXT, trade_id TEXT, tape "
+          "INTEGER, PRIMARY KEY (ticker, ts_ns, seq)) WITHOUT ROWID")
+_TON = " AND ".join(f"{{o}}.{c}=t.{c}" for c in _TKEY)
+_TIS_NOT = " OR ".join(f"b.{c} IS NOT t.{c}" for c in _TVALUES)
+_TT = ", ".join(f"t.{c}" for c in (*_TKEY, *_TVALUES))
+_TB = ", ".join(f"b.{c}" for c in _TVALUES)
+_TFILL = "INSERT OR REPLACE INTO temp.pull_trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+_TWITHDRAWN = " AND EXISTS (SELECT 1 FROM ticks.archived_trades a WHERE " + _TON.format(o="a") + ")"
 FAILURES = 3  # so many pulls whose audit raised are said one by one in a pass; the rest are counted
 
 
@@ -413,6 +429,82 @@ def compare(conn, rows: list, stored_at: int | None = None, repair: bool = True,
     return out
 
 
+def _tick_archive(conn) -> bool:
+    """Whether the feed's tick file has its archive of withdrawn trades (made with the first withdrawal)."""
+    return conn.execute("SELECT 1 FROM ticks.sqlite_master WHERE type='table' AND name='archived_trades'"
+                        ).fetchone() is not None
+
+
+def compare_trades(conn, rows: list, repair: bool = True, late: bool = False) -> FileAudit:
+    """Trades (as a trades file holds them: TRADE_COLUMNS) held against ticks.trades on `conn`, a feed's own
+    connection with its tick file attached (1.82.0): what is missing, what differs. With `repair`, the missing are
+    put in, never one the exchange withdrew since. `late`: the file was loaded after its run had ended, and a trade
+    stored since with other values is the newer word (counted as replaced, not as a difference)."""
+    out = FileAudit(seq=0, rows=len(rows))
+    conn.execute(_TTEMP)
+    with conn:
+        conn.execute("DELETE FROM temp.pull_trades")
+        conn.executemany(_TFILL, rows)
+    out.rows = conn.execute("SELECT COUNT(*) FROM temp.pull_trades").fetchone()[0]
+    differs = f"FROM temp.pull_trades t JOIN ticks.trades b ON {_TON.format(o='b')} WHERE ({_TIS_NOT})"
+    n = conn.execute(f"SELECT COUNT(*) {differs}").fetchone()[0]
+    if late:
+        out.replaced = n
+    else:
+        out.differing = n
+        for r in conn.execute(f"SELECT {_TT}, {_TB} {differs} ORDER BY t.ts_ns LIMIT {SHOWN}") if n else ():
+            out.shown.append({"ticker": r[0], "timespan": "trades", "ts": r[1] // 1_000_000, "ts_ns": r[1], "seq": r[2],
+                              "cached": list(r[3:9]), "stored": list(r[9:15])})
+    absent = f"FROM temp.pull_trades t WHERE NOT EXISTS (SELECT 1 FROM ticks.trades b WHERE {_TON.format(o='b')})"
+    out.missing = conn.execute(f"SELECT COUNT(*) {absent}").fetchone()[0]
+    if out.missing:
+        withdrawn = _TWITHDRAWN if _tick_archive(conn) else ""
+        if withdrawn:
+            out.moved = conn.execute(f"SELECT COUNT(*) {absent}{withdrawn}").fetchone()[0]
+        left = absent + (withdrawn.replace(" AND EXISTS", " AND NOT EXISTS") if withdrawn else "")
+        if out.missing > out.moved:
+            for r in conn.execute(f"SELECT {_TT} {left} ORDER BY t.ts_ns LIMIT {SHOWN}"):
+                out.shown.append({"ticker": r[0], "timespan": "trades", "ts": r[1] // 1_000_000, "ts_ns": r[1],
+                                  "seq": r[2], "cached": list(r[3:9]), "stored": None})
+            if repair:
+                with conn:
+                    out.repaired = conn.execute(f"INSERT OR IGNORE INTO ticks.trades SELECT {_TT} {left}").rowcount
+    with conn:
+        conn.execute("DELETE FROM temp.pull_trades")
+    out.missing -= out.moved  # (a trade the exchange withdrew is where it should be: in the archive)
+    if out.differing or out.missing > out.repaired:
+        out.result = "mismatch"
+    elif out.repaired:
+        out.result = "repaired"
+    return out
+
+
+def _ticks_here(store, feed: str) -> bool:
+    """Whether this process may open a feed's tick file (not in bars-only mode, where only the live recorder
+    does): a pull with trades files is audited, and its trades loaded late, only where it may."""
+    fd = store._feed(feed)
+    return fd is not None and bool(getattr(fd, "ticks_allowed", False))
+
+
+def _load_trades(store, feed: str, rows: list) -> bool:
+    """A trades file's trades loaded late: those not stored put in, never one the exchange withdrew since; what was
+    stored stays as it is (a trade has no moment of its own write to judge which is newer). False where this
+    process may not open the feed's tick file."""
+    fd = store._feed(feed, create=True)
+    if not getattr(fd, "ticks_allowed", False):
+        return False
+    fd.attach_ticks()
+    conn = fd.conn
+    conn.execute(_TTEMP)
+    withdrawn = _TWITHDRAWN.replace(" AND EXISTS", " AND NOT EXISTS") if _tick_archive(conn) else ""
+    with conn:
+        conn.execute("DELETE FROM temp.pull_trades")
+        conn.executemany(_TFILL, rows)
+        conn.execute(f"INSERT OR IGNORE INTO ticks.trades SELECT {_TT} FROM temp.pull_trades t WHERE true{withdrawn}")
+        conn.execute("DELETE FROM temp.pull_trades")
+    return True
+
+
 def _load(store, pull: dict, files: list[dict], folder) -> int:
     """Rows files written and never loaded (their run ended, or failed, between the file and the database): loaded
     now, and for a series' own pull recorded as held in the coverage ledger from their first bar to their last.
@@ -422,7 +514,7 @@ def _load(store, pull: dict, files: list[dict], folder) -> int:
     loaded."""
     done = 0
     for f in files:
-        if f["kind"] != "rows" or f["loaded_at"] or f["removed_at"]:
+        if f["kind"] not in pulls.ROWS_KINDS or f["loaded_at"] or f["removed_at"]:
             continue
         try:
             header, rows, digest = spool.read_rows(folder / f["name"])
@@ -431,6 +523,12 @@ def _load(store, pull: dict, files: list[dict], folder) -> int:
         if digest != f["sha256"] or not rows:
             continue
         feed = f["feed"] or header.get("feed") or pull["feed"]
+        if f["kind"] == "trades":  # (1.82.0: the live recorder's; left for a process that opens tick files)
+            if _load_trades(store, feed, rows):
+                store.pull_file_loaded(pull["id"], f["seq"], late=True)
+                store._wrote()
+                done += 1
+            continue
         stored = int(f["stored_at"] or header.get("stored_at") or time.time() * 1000)
         conn = store._feed(feed, create=True).conn
         conn.execute(_TEMP)
@@ -496,9 +594,22 @@ def _audit(store, row: dict, with_: Policy, log: Log | None) -> PullAudit | None
         return None
     out = PullAudit(row["id"], row["feed"], row["ticker"])
     files = store.pull_files(row["id"])
+    trades = [f for f in files if f["kind"] == "trades" and not f["removed_at"]]
+    if any(not _ticks_here(store, f["feed"] or row["feed"]) for f in trades):
+        return None  # (a process in bars-only mode: the live recorder's own to audit, which opens the tick files)
     out.loaded_late = _load(store, row, files, folder)
     if out.loaded_late:
         files = store.pull_files(row["id"])
+    # A trade a later file of the same pull wrote again (the recorder's same trade in the next flush) is that
+    # file's to judge: each trades file is held only to the keys no later one of its pull holds.
+    later: dict[int, set] = {}
+    seen: set = set()
+    for f in sorted((f for f in files if f["kind"] == "trades" and not f["removed_at"]), key=lambda f: -f["seq"]):
+        later[f["seq"]] = seen
+        try:
+            seen = seen | {(r[0], r[1], r[2]) for r in spool.read_rows(folder / f["name"])[1]}
+        except (OSError, EOFError, ValueError, IndexError, TypeError):
+            pass  # (its own audit says it is damaged)
     for f in files:
         if f["removed_at"]:
             continue
@@ -523,7 +634,19 @@ def _audit(store, row: dict, with_: Policy, log: Log | None) -> PullAudit | None
             one.result, one.why = "damaged", "its text is not the one written (sha256)"
         if one.result != "damaged" and not f["loaded_at"]:
             one.result, one.why = "damaged", "its rows were never loaded"
-        if one.result != "damaged":
+        if one.result != "damaged" and f["kind"] == "trades":
+            conn = store._ticks(f["feed"] or header.get("feed") or row["feed"])
+            if conn is None:
+                one.result, one.why, one.rows, one.missing = "mismatch", "its feed has no tick file", len(rows), len(rows)
+            else:
+                mine = later.get(f["seq"])
+                held = [r for r in rows if (r[0], r[1], r[2]) not in mine] if mine else rows
+                got = compare_trades(conn, held, repair=with_.repair, late=bool(f["late"]))
+                got.seq = f["seq"]
+                one = got
+                if one.repaired:
+                    store._wrote()
+        elif one.result != "damaged":
             conn = store._bars(f["feed"] or header.get("feed") or row["feed"])
             if conn is None:
                 one.result, one.why, one.rows, one.missing = "mismatch", "its feed has no file", len(rows), len(rows)
@@ -674,7 +797,7 @@ def _recover(store, row: dict, log: Log | None) -> int:
         if not number:
             last += 1
             number = last
-        times = [r[3] for r in rows]
+        times = pulls.row_times(header.get("table") or "bars", rows)  # (a trades file's: its trades' times)
         store.pull_file_known(row["id"], number, spool.Written(path.name, path.stat().st_size, digest, len(rows)),
                               header, (min(times), max(times)))
     loaded = _load(store, row, store.pull_files(row["id"]), folder)
@@ -741,6 +864,37 @@ def pull(store, feed: str, kind: str, log: Log | None = None, **facts) -> Iterat
             except (sqlite3.Error, OSError) as e:
                 if log is not None:
                     log(f"cache {feed}: a pull's audit is left for later ({type(e).__name__}: {e})")
+
+
+def held_open(store, feed: str, kind: str, log: Log | None = None, **facts) -> pulls.Pull | None:
+    """A pull its caller holds open across many calls (1.82.0: the live recorder's minute of a stream's trades,
+    written flush by flush): entered for each write with spool.opened, ended with `end`. The cap is looked at
+    before it opens (spool.CacheFull at it) and as it grows, as for `pull`. None where nothing is cached
+    (LIMINAL_FETCH_CACHE=off, a process that reads only, a store in memory or a stand-in for one): the caller
+    writes as before."""
+    if not cache_on() or pulls.cache_dir(store) is None or not callable(getattr(store, "pull_open", None)):
+        return None
+    with_ = policy()
+    room(store, with_, log)
+    one = store.pull_open(feed, kind, **facts)
+    if one.spools:
+        one.limit = lambda: _over(store, with_)
+    return one
+
+
+def end(store, one: pulls.Pull, state: str = "complete", note: str = "", log: Log | None = None) -> PullAudit | None:
+    """A pull held open (held_open) ended, and audited as it closes when the policy says so, as `pull` does. An
+    audit that cannot run then (a database busy) is left to the next pass."""
+    pulls._close(one, state, note)
+    with_ = policy()
+    if not one.made or not with_.on_update:
+        return None
+    try:
+        return audit_pull(store, one.id, with_, log)
+    except (sqlite3.Error, OSError, ValueError, TypeError) as e:  # (as audit_pulls: the pull waits, nothing stops)
+        if log is not None:
+            log(f"cache {one.feed}: a pull's audit is left for later ({type(e).__name__}: {e})")
+        return None
 
 
 def tidy(store, policy_: Policy | None = None, now: datetime | None = None) -> dict:

@@ -612,21 +612,50 @@ class Reader:
             self._failed(pub, feed, now, f"not a feed ({ctype}): pages are never read", lasting=True)
             self.log(f"publications: {pub.title} {feed.title}: not a feed ({ctype}); not read")
             return sent
-        try:  # the feed's own parser (its plugin's: Feed.parse), else an RSS or Atom feed's items
-            read = feed.parse(r, feed) if feed.parse else Read(items=parse_rss(r.content, feed))
-            read = Read(items=read) if isinstance(read, list) else read
-            for rate in read.rates:
-                self.gdb.save_rate(rate["series"], rate["day"], rate.get("value"), rate.get("lo"), rate.get("hi"), now)
-            rates_only = bool(read.rates) and not read.items  # the New York Fed's: a rate, no items
-            new = 0 if rates_only else self.gdb.save_items(feed.key, read.items, now)
-        except (ValueError, ET_XML.ParseError, AttributeError, KeyError, TypeError, IndexError) as e:
-            self._failed(pub, feed, now, f"unreadable answer: {type(e).__name__}: {e}", lasting=True)
-            return sent
+        from . import auditing
+
+        # The answer through the fetch cache (1.82.0; auditing.py, storage/pulls.py): written to a pull's folder,
+        # parsed from the file read back, and kept until the items stored of it are read back as they were parsed
+        # (_verify). With LIMINAL_FETCH_CACHE=off, or no main store, nothing is kept and nothing read back.
+        with auditing.pull(self.store, pub.name, "publication", log=self.log) as pull:
+            _to_cache(pull, url, r)
+            before = None
+            try:  # the feed's own parser (its plugin's: Feed.parse), else an RSS or Atom feed's items
+                read = feed.parse(r, feed) if feed.parse else Read(items=parse_rss(r.content, feed))
+                read = Read(items=read) if isinstance(read, list) else read
+                for rate in read.rates:
+                    self.gdb.save_rate(rate["series"], rate["day"], rate.get("value"), rate.get("lo"), rate.get("hi"), now)
+                rates_only = bool(read.rates) and not read.items  # the New York Fed's: a rate, no items
+                if pull.made and not rates_only and read.items and callable(getattr(self.gdb, "items_held", None)):
+                    before = self.gdb.items_held(feed.key, [it["id"] for it in read.items])
+                new = 0 if rates_only else self.gdb.save_items(feed.key, read.items, now)
+            except (ValueError, ET_XML.ParseError, AttributeError, KeyError, TypeError, IndexError) as e:
+                self._failed(pub, feed, now, f"unreadable answer: {type(e).__name__}: {e}", lasting=True)
+                return sent
+            if before is not None:
+                self._verify(pub, feed, pull, read.items, now, before)
         self.gdb.note(feed.key, now, "ok", None if rates_only else f"{new} new",
                       etag=_header(r, "ETag") or "", modified=_header(r, "Last-Modified") or "")
         if new:
             self.log(f"publications: {pub.title} {feed.title}: {new} new")
         return sent
+
+    def _verify(self, pub: Publisher, feed: Feed, pull, items: list[dict], now: datetime, before: dict) -> None:
+        """A publication's copy audit (1.82.0): the items stored of its answer read back and held against what was
+        parsed from the cached answer (GovDB.items_unlike). Every one as it should be: the pull closes complete
+        and its file goes. Any other: a finding (`document-differs`), and the pull is kept, audited as a mismatch,
+        with the answer as its evidence. Nothing stored is changed."""
+        from .auditing import SHOWN
+
+        bad = self.gdb.items_unlike(feed.key, items, now, before)
+        if not bad:
+            return
+        why = f"{len(bad)} of the {len(items)} items read are not stored as they were parsed"
+        pull.unverified(why)
+        if callable(getattr(self.store, "finding_put", None)):
+            self.store.finding_put("document-differs", pub.name, pull=pull.id, count=len(bad),
+                                   detail={"feed": feed.key, "ids": bad[:SHOWN]})
+        self.log(f"publications: {pub.title} {feed.title}: {why}; the answer is kept")
 
     def refusal(self, pub: Publisher, url: str) -> str | None:
         """Why a URL may not be read by this publisher (None: it may)."""
@@ -727,8 +756,14 @@ class Reader:
         def count(n: int = 1) -> None:
             sent[0] += n
             self._count(pub, now, n)
+        from . import auditing
+
         try:
-            new = pub.read(Context(pub, feed, self.settings, self.store, now, self.log, count))
+            # the answers its plugin's HTTP client receives go to the pull's folder while it reads (1.82.0;
+            # sources/http.py), and are parsed from there; what it stores of them is the plugin's own (no read-back
+            # here yet): the pull closes complete and its files go
+            with auditing.pull(self.store, pub.name, "publication", log=self.log):
+                new = pub.read(Context(pub, feed, self.settings, self.store, now, self.log, count))
         except (RateLimited, Unauthorized) as e:  # its feed's account said stop: that feed is killed, this with it
             killswitch.strike(self.store, pub.account, "fetch", f"{pub.title}: {e}", log=self.log,
                               at_least_s=killswitch.retry_after_s(e))
@@ -890,6 +925,33 @@ def _today_moments(pub: Publisher, now: datetime) -> list[datetime]:
     from .sessions import ET
 
     return sorted(pub.moments(now.astimezone(ET).date())) if pub.has_moments else []
+
+
+def _to_cache(pull, url: str, r) -> None:
+    """A feed's answer into the pull that is open (1.82.0; spool.py, storage/pulls.py) and back out of its file:
+    what is parsed afterwards is what the cache holds (`content`, and from requests's answer its text and JSON
+    too). Kept by the request's path alone, never its query. Nothing where the pull keeps nothing on disk, or the
+    answer has no body to keep. spool.CacheFailed when the disk or the ledger refuses."""
+    writer = pull.payload(urlsplit(url).path, getattr(r, "status_code", 200))
+    if writer is None:
+        return
+    body = getattr(r, "content", None)
+    if not isinstance(body, (bytes, bytearray)):
+        writer.abandon()
+        return
+    try:
+        writer.write(bytes(body))
+        body = writer.keep()
+    except BaseException:
+        writer.abandon()
+        raise
+    if isinstance(r, requests.Response):
+        r._content, r._content_consumed = body, True
+    else:  # a stand-in's answer (a test's): its content, where it can be set
+        try:
+            r.content = body
+        except AttributeError:
+            pass
 
 
 class _NoSession:

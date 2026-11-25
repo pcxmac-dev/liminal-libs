@@ -114,6 +114,14 @@ MAX_STOCKS = 30  # Alpaca Basic: symbols on its one real-time connection
 OPEN_FRESH_MS = 180_000  # a symbol is streamed this long after a page last said it has it open
 WANT_SECONDS = 5.0  # how often the stock symbols to stream are looked up
 FLUSH_SECONDS = 2.0
+# The trades a flush stores go through the fetch cache (1.82.0; auditing.py, storage/pulls.py): written to a trades
+# file in a pull's folder first, stored from the file read back, and held against the tick file by the copy audit
+# before the file goes. One pull a stream a minute, not one a flush: a pull costs its ledger row, a claim on the
+# feed's cache and an audit as it closes, which every 2 s for every stream would be most of what the recorder writes
+# to the main file; a minute's pull costs a ledger row per trades file written (one a symbol a flush that had
+# trades) and one audit a minute, and is forgotten as soon as it passes. A minute's trades are what an audit holds in
+# memory at most, never more.
+PULL_MS = 60_000
 DERIVE_SECONDS = 60.0  # the time frames above a minute are rebuilt this often for the symbols streamed
 RULES_SECONDS = 3600.0  # trade condition rules (stocks) are reread this often
 RECV_TIMEOUT = 20.0
@@ -292,6 +300,8 @@ class Recorder:
         self._derivations: dict[tuple[str, str, int, str | None], int] = {}  # (feed, symbol, day, rules digest) -> id
         self._built: dict[int, int] = defaultdict(int)
         self._touched: set[str] = set()  # symbols with trades stored since the last derive_recorded
+        self._pulls: dict[str, tuple[object, int]] = {}  # feed -> (its minute's pull, the minute: ms // PULL_MS)
+        self._uncached: dict[str, int] = {}  # feed -> written without the cache until this minute (ms // PULL_MS)
         if self.connect is None:
             from .wsclient import WebSocket
 
@@ -600,13 +610,15 @@ class Recorder:
         stored = 0
         streams = {s.source: s for s in self.streams}
         withdrawn: dict[tuple[str, str], list[int]] = {}  # the times (ns) of the stored trades taken out
+        self.end_pulls(store, before_ms=now_ms)  # the minutes that are over: closed and audited
         for (source, ticker), trades in batch.items():
             standing, gone, taken = _settle(trades)
             if gone:  # first: a correction that keeps its trade's id must not go with the original
                 since_ns = min(t["sip_timestamp"] for t in trades) - DAY_MS * 1_000_000
                 withdrawn[(source, ticker)] = store.withdraw_trades(source, ticker, gone, since_ns, taken)
             if standing:
-                stored += store.upsert_trades(source, ticker, standing)
+                stored += self._cached(store, source, streams.get(source), now_ms, store.upsert_trades, source, ticker,
+                                       standing)
         streamed = {source: self._streamed(streams[source], start, subs.get(source, {})) for source, start in since.items()}
         for source, start in since.items():
             end = min(now_ms, heard.get(source, start) + HEARD_SLACK_MS)  # not past the last time it was heard
@@ -670,6 +682,82 @@ class Recorder:
                                              "selectedOnly": self.selected_only}))
         return stored
 
+    # -- through the fetch cache (1.82.0: PULL_MS) ----------------------------------------------------------
+    def _pull_of(self, store, source: str, stream, now_ms: int):
+        """The pull this minute's trades of a feed go into, opened with its first write (None: written without
+        the cache: none is kept here, or the cache could not take them this minute)."""
+        from . import auditing, spool
+
+        minute = now_ms // PULL_MS
+        had = self._pulls.get(source)
+        if had is not None:
+            return had[0]
+        if self._uncached.get(source, -1) >= minute:
+            return None
+        try:
+            one = auditing.held_open(store, source, "live", log=self.log, asset=getattr(stream, "asset", None),
+                                     timespan="trades", start_ms=minute * PULL_MS, end_ms=(minute + 1) * PULL_MS)
+        except spool.CacheFailed as e:  # at its cap (CacheFull), or its ledger refused: this minute goes without it
+            self._uncached[source] = minute
+            self.log(f"live: {source}: trades written without the fetch cache this minute ({e})")
+            return None
+        if one is not None:
+            self._pulls[source] = (one, minute)
+        return one
+
+    def _cached(self, store, source: str, stream, now_ms: int, write, *args):
+        """A write of trades made through the feed's pull of this minute: a trades file first, the tick file
+        from the file read back (storage/feeds.py). A cache that cannot take it (a full disk, the cap reached as
+        the pull grew) ends the pull as cut and the trades are written without it, until the next minute: a stream
+        cannot be asked again, so the recorder never waits for the auditors as a feed's run does. A database that
+        refuses the write leaves the pull open: the flush keeps the trades and writes them into it again."""
+        from . import spool
+
+        pull = self._pull_of(store, source, stream, now_ms)
+        if pull is None:
+            return write(*args)
+        try:
+            with spool.opened(pull):
+                return write(*args)
+        except spool.CacheFailed as e:
+            self._end_pull(store, source, "cut", f"{type(e).__name__}: {e}")
+            self._uncached[source] = now_ms // PULL_MS
+            self.log(f"live: {source}: trades written without the fetch cache this minute ({e})")
+            return write(*args)  # (one written already and refused only by the ledger: the same rows again)
+
+    def _end_pull(self, store, source: str, state: str = "complete", note: str = "") -> None:
+        from . import auditing
+
+        had = self._pulls.pop(source, None)
+        if had is not None:
+            auditing.end(store, had[0], state, note, log=self.log)
+
+    def end_pulls(self, store, before_ms: int | None = None) -> None:
+        """The feeds' pulls whose minute is over before `before_ms` (all of them: None, as the recorder stops)
+        closed as complete and audited (the auditor's policy). One a crash left open is closed as cut by the next
+        recorder's start (auditing.recover), its trades files loaded without asking anything again."""
+        for source, (_, minute) in list(self._pulls.items()):
+            if before_ms is None or minute < before_ms // PULL_MS:
+                self._end_pull(store, source)
+
+    def settle_cache(self, store) -> None:
+        """At the start: what an earlier recorder left in the fetch cache (a crash in the middle of a minute) closed
+        and its trades loaded (auditing.recover), then the feeds' pulls not audited yet audited. A database busy
+        just then leaves it to the next start or to the auditors' own process."""
+        import sqlite3
+
+        from . import auditing
+
+        if not auditing.cache_on():
+            return
+        try:
+            for source in sorted({s.source for s in self.streams}):  # (its own feeds: the others' runs settle theirs)
+                auditing.recover(store, source, log=self.log)
+                if auditing.policy().on_update:
+                    auditing.audit_pulls(store, feed=source, log=self.log, budget_s=60.0)
+        except (sqlite3.Error, OSError) as e:
+            self.log(f"live: the fetch cache is settled later ({type(e).__name__}: {e})")
+
     def run(self) -> None:
         from .storage import Store
 
@@ -681,6 +769,7 @@ class Recorder:
         pubs, pubs_at = self._start_publications(), time.monotonic()
         # the one process that opens tick files in bars-only mode: it records the streams' trades
         with Store(self.db_path, ticks=True) as store:
+            self.settle_cache(store)
             total, last_log, last_derive, last_want, last_lock = 0, time.time(), time.time(), 0.0, time.time()
             next_reap = time.time() + FIRST_REAP_SECONDS
             while True:
@@ -720,6 +809,7 @@ class Recorder:
                 self.flush(store)
             except Exception as e:  # noqa: BLE001
                 self.log(f"live: the last flush failed: {e}")
+            self.end_pulls(store)  # (never raises: a pull the ledger could not be told of is recovered next start)
 
     def derive_recorded(self, store) -> int:
         """Build the frames above a minute for the symbols this recorder stored trades of since it

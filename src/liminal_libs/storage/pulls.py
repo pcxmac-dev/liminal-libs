@@ -6,7 +6,10 @@ goes over the symbol and checks the data bit by bit to ensure it was copied succ
 symbol is updated, or periodically."
 
 A **pull** is one thing asked of a feed: a gap of a series (`bars`), a future's contract (`future`), a whole market's
-day (`market_day`, `grouped_day`), a download by hand (`download`), a bar asked a second time (`recheck`). While it is
+day (`market_day`, `grouped_day`), a download by hand (`download`), a bar asked a second time (`recheck`), a minute
+of a stream's trades as the live recorder stores them (`live`, 1.82.0: its writes of trades go through trades files,
+audited as bars files are), a publisher's answer (`publication`, 1.82.0: kept until its documents are read back as
+parsed). While it is
 open (`pulling`; spool.py says which pull is), every answer the HTTP client receives is written into its folder
 (cache/<feed>/<pull>/ beside the main file) and every write of bars is made from a rows file written there first. A
 pull knows how it ended: `complete` (its pages ended), or `cut` (a stop, an error, a crash: a fragment, and known to
@@ -44,9 +47,21 @@ from .common import _now, busy, read_only, write_transaction
 
 CACHE = "cache"  # the folder, beside the main file
 SWITCH = "LIMINAL_FETCH_CACHE"  # off: nothing is cached (the step's switch)
-KINDS = ("bars", "future", "market_day", "grouped_day", "download", "recheck")
+# `live` (1.82.0): a minute of a stream's trades as the live recorder stores them (live.py); `publication`: one
+# answer of a publisher's feed (publications.py), kept until what was stored of it is seen to be what it said.
+KINDS = ("bars", "future", "market_day", "grouped_day", "download", "recheck", "live", "publication")
 ROW_COLUMNS = ("ticker", "timespan", "multiplier", "ts", "open", "high", "low", "close", "volume", "vwap",
                "transactions")  # a rows file's columns: a bar as it is stored, without when
+# A trades file's (1.82.0): a trade as ticks.trades stores it (storage/feeds.py: _trade_row). Its file is of kind
+# `trades` in the ledger, a bars file of kind `rows`.
+TRADE_COLUMNS = ("ticker", "ts_ns", "seq", "price", "size", "exchange", "conditions", "trade_id", "tape")
+TABLES = {"bars": ("rows", ROW_COLUMNS), "trades": ("trades", TRADE_COLUMNS)}  # a rows file's table: its kind, columns
+ROWS_KINDS = ("rows", "trades")  # the ledger's kinds of rows file
+
+
+def row_times(table: str, rows) -> list[int]:
+    """The times (ms) of a rows file's rows: a bar's `ts`, a trade's `ts_ns` in ms."""
+    return [int(r[1]) // 1_000_000 for r in rows] if table == "trades" else [r[3] for r in rows]
 FINDING_STATES = ("open", "repaired", "asked", "absent", "closed")
 _PULL = ("id", "feed", "kind", "ticker", "asset", "timespan", "start_ms", "end_ms", "state", "audit", "opened_at",
          "closed_at", "audited_at", "instance", "pid", "note")
@@ -232,6 +247,7 @@ class Pull:
         self.closed = False
         self.unspooled = 0  # writes made without a rows file: values a rows file cannot hold
         self.rows_files = 0
+        self.mismatch = ""  # why what was stored from it is not what it holds (unverified): its files are kept
         self.limit = None  # a callable saying why nothing more may be asked into the cache ("" or None: it may)
         self._since = 0  # bytes written since the cap was last looked at
         self._seq = 0
@@ -287,25 +303,27 @@ class Pull:
         return _Payload(self, seq, spool.PayloadWriter(self.folder, name), path[:300], int(status))
 
     # -- a write of bars -----------------------------------------------------------------------------------------
-    def rows(self, feed: str, rows: list[tuple], stored_at: int) -> tuple[list[tuple], int | None]:
-        """Bar rows on their way into `feed`'s file (as _UPSERT_BAR takes them, when stored last): written to a
-        rows file, read back, and handed on as read. Returns the rows to write and the file's number (None: no
-        file was made, and the rows are the ones given)."""
+    def rows(self, feed: str, rows: list[tuple], stored_at: int, table: str = "bars") -> tuple[list[tuple], int | None]:
+        """Rows on their way into `feed`'s file, written to a rows file, read back, and handed on as read: bar
+        rows (`bars`, as _UPSERT_BAR takes them, when stored last) or trades (`trades`, 1.82.0: as ticks.trades
+        takes them, TRADE_COLUMNS; `stored_at` is then only the file's moment). Returns the rows to write and the
+        file's number (None: no file was made, and the rows are the ones given)."""
         if not self.spools or self.closed or not rows:
             return rows, None
+        kind, columns = TABLES[table]
         self.room()  # (before anything of this write is on disk: at the cap nothing of it is written or stored)
         self._make()
         seq, name = self._name(spool.ROWS_SUFFIX)
-        header = {"pull": self.id, "seq": seq, "feed": feed, "table": "bars", "columns": list(ROW_COLUMNS),
+        header = {"pull": self.id, "seq": seq, "feed": feed, "table": table, "columns": list(columns),
                   "stored_at": int(stored_at)}
         try:
-            written = spool.write_rows(self.folder, name, header, [list(r[:len(ROW_COLUMNS)]) for r in rows])
+            written = spool.write_rows(self.folder, name, header, [list(r[:len(columns)]) for r in rows])
         except spool.Unspoolable as e:
             self.unspooled += 1
             self._notes.append(f"{len(rows)} rows written without a rows file ({e})")
             return rows, None
-        times = [r[3] for r in rows]
-        self._record(seq, "rows", written, feed=feed, rows=len(rows), lo_ms=min(times), hi_ms=max(times),
+        times = row_times(table, rows)
+        self._record(seq, kind, written, feed=feed, rows=len(rows), lo_ms=min(times), hi_ms=max(times),
                      stored_at=int(stored_at))
         try:
             _, back, digest = spool.read_rows(self.folder / name)
@@ -314,7 +332,7 @@ class Pull:
         if digest != written.sha256 or len(back) != len(rows):
             raise spool.CacheFailed(f"a rows file read back is not what was written ({self.folder / name})")
         self.rows_files += 1
-        return [(*r, stored_at) for r in back], seq
+        return ([tuple(r) for r in back] if table == "trades" else [(*r, stored_at) for r in back]), seq
 
     def loaded(self, seq: int | None) -> None:
         """The rows of file `seq` are in the database (committed). A ledger that cannot be told so just then is
@@ -324,10 +342,17 @@ class Pull:
             _ledger(self.store._pull_loaded, self.id, seq, what=f"marking rows file {seq} of pull {self.id} loaded",
                     notes=self._notes, store=self.store)
 
+    def unverified(self, why: str) -> None:
+        """What was stored from this pull's answers is not what they say (a publication's documents read back
+        otherwise than they were parsed, 1.82.0): it closes audited as a mismatch, and its files are kept as the
+        evidence, as a copy audit's mismatch keeps them."""
+        self.mismatch = (why or "what was stored is not what it holds")[:400]
+
     # -- its end -------------------------------------------------------------------------------------------------
     def close(self, state: str = "complete", note: str = "") -> None:
         """The pull ended: `complete`, or `cut` with why. One that wrote nothing leaves nothing; one that is
-        complete and loaded no rows had nothing to check, and its files go at once."""
+        complete and loaded no rows had nothing to check, and its files go at once (unless it was found
+        `unverified`: then it is kept, audited as a mismatch)."""
         if self.closed:
             return
         self.closed = True
@@ -335,11 +360,14 @@ class Pull:
             if not self.made:
                 return
             words = "; ".join(w for w in (note, *self._notes) if w)[:400]
-            if state == "complete" and not self.rows_files and not self.unspooled:
+            if state == "complete" and not self.rows_files and not self.unspooled and not self.mismatch:
                 _waited(self.store.pull_drop, self.id, what=f"forgetting pull {self.id}", store=self.store)
                 return
             _waited(self.store._pull_closed, self.id, state, words, what=f"closing pull {self.id} as {state}",
                     store=self.store)
+            if self.mismatch:
+                _waited(self.store.pull_audited, self.id, "mismatch", self.mismatch,
+                        what=f"marking pull {self.id} a mismatch", store=self.store)
         finally:
             # live until its ledger says how it ended (or could not be told): a recover on another thread of this
             # process never finds it open in the ledger and not open here
@@ -445,12 +473,13 @@ class PullStore:
 
     def pull_file_known(self, pull_id: str, seq: int, written: spool.Written, header: dict, times: tuple[int, int]) -> None:
         """A rows file found in a pull's folder that the ledger did not have (its run ended between the file and
-        its row): entered as it is."""
+        its row): entered as it is, of the kind its table says (a trades file's `trades`)."""
+        kind = TABLES.get(header.get("table") or "bars", TABLES["bars"])[0]
         with self.conn:
             self.conn.execute(
                 "INSERT OR IGNORE INTO pull_files (pull, seq, kind, name, bytes, sha256, written_at, feed, rows, lo_ms, hi_ms, "
-                "stored_at) VALUES (?, ?, 'rows', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (pull_id, seq, written.name, written.bytes, written.sha256, _now(), header.get("feed"), written.rows,
+                "stored_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (pull_id, seq, kind, written.name, written.bytes, written.sha256, _now(), header.get("feed"), written.rows,
                  times[0], times[1], header.get("stored_at")))
 
     # -- what the audit says ---------------------------------------------------------------------------------------
@@ -548,7 +577,7 @@ class PullStore:
         """The cache by state, for its page: pulls, files kept, bytes kept and rows, for each state and audit."""
         sql = ("SELECT p.state, p.audit, COUNT(DISTINCT p.id), COUNT(CASE WHEN f.removed_at IS NULL THEN f.seq END), "
                "COALESCE(SUM(CASE WHEN f.removed_at IS NULL THEN f.bytes END), 0), "
-               "COALESCE(SUM(CASE WHEN f.kind='rows' THEN f.rows END), 0), MIN(p.opened_at), MAX(p.opened_at) "
+               "COALESCE(SUM(CASE WHEN f.kind IN ('rows', 'trades') THEN f.rows END), 0), MIN(p.opened_at), MAX(p.opened_at) "
                "FROM pulls p LEFT JOIN pull_files f ON f.pull=p.id GROUP BY p.state, p.audit ORDER BY p.state, p.audit")
         keys = ("state", "audit", "pulls", "files", "bytes", "rows", "oldest", "newest")
         return [dict(zip(keys, r)) for r in self.conn.execute(sql)]
