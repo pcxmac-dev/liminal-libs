@@ -172,7 +172,13 @@ class HttpClient:
             # 2026-11-21, Monday list item 4: the place was spent for nothing and slowed the next requests).
             if self.take_day is not None and not self.take_day():
                 raise BudgetExhausted("the daily request cap is reached on this machine (all its databases together)")
-            (self.class_limiters.get(self.class_of(url), self._limiter) if self.class_of else self._limiter).acquire()
+            limiter = self.class_limiters.get(self.class_of(url), self._limiter) if self.class_of else self._limiter
+            try:
+                limiter.acquire(stop=self.should_stop)  # 1.87.0: a stop ends the window's wait, not after it
+            except Paused:
+                if self.take_day is not None and self.give_day is not None:
+                    self.give_day()  # counted for the day, never sent
+                raise
             reason = self.should_stop() if self.should_stop else None  # paused during the window's wait
             if reason:
                 if self.take_day is not None and self.give_day is not None:
@@ -190,7 +196,7 @@ class HttpClient:
                 else:
                     resp = self._session.get(url, params=params, headers=self._headers, timeout=self._timeout)
                 if caching and 200 <= resp.status_code < 300:
-                    self._to_cache(pull, url, resp, streamed)  # (a body cut off on its way: no answer, tried again)
+                    self._to_cache(pull, url, resp, streamed, self.should_stop)  # (a body cut off: tried again)
             except (requests.exceptions.InvalidHeader, requests.exceptions.InvalidURL):
                 # A key with a space or a line break in it: nothing can be sent, ever, and the error
                 # repeats the header (the key) word for word, which went to the log and the kill's
@@ -249,7 +255,7 @@ class HttpClient:
         return resp
 
     @staticmethod
-    def _to_cache(pull, url: str, resp, streamed: bool) -> None:
+    def _to_cache(pull, url: str, resp, streamed: bool, stop: Callable[[], object] | None = None) -> None:
         """A good answer's body into the pull that is open (1.64.0; spool.py, storage/pulls.py) and back out of
         its file: what is parsed afterwards is what the cache holds. From a real session the body comes off the
         wire in pieces and goes to disk as it comes (`streamed`); a stand-in's answer gives the body it holds, and
@@ -264,6 +270,9 @@ class HttpClient:
                 return
             if streamed:
                 for piece in resp.iter_content(spool.CHUNK):
+                    reason = stop() if stop is not None else None  # 1.87.0: a stop between two pieces of a body
+                    if reason:
+                        raise Paused(reason if isinstance(reason, str) else "stopped during a download")
                     writer.write(piece)
             else:
                 body = getattr(resp, "content", None)

@@ -93,7 +93,7 @@ class SignalCommand:
     def __init__(self, *, node=None, node_factory=None, http: Callable | None = None, table=None, killer=None,
                  ledger=None, key: bytes | None = None, scope=None, env=None, venvs=None,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
-                 out: Callable[[str], None] = print):
+                 out: Callable[[str], None] = print, set_event: Callable[[str], bool] | None = None):
         self.table = table or lifecycle.OsTable()
         self.killer = killer or lifecycle.OsKiller()
         self.ledger = ledger or lifecycle.Ledger(table=self.table)
@@ -106,6 +106,7 @@ class SignalCommand:
         self._node = node
         self._node_factory = node_factory
         self.lines: list[Line] = []
+        self.set_event = set_event or lifecycle.set_stop_event  # an app's stop event (Windows), set before any kill
 
     # -- its own node -------------------------------------------------------------------------------------------------
     @property
@@ -276,6 +277,13 @@ class SignalCommand:
             except Exception as e:  # noqa: BLE001
                 refused = True
                 self.say(Line(f"plugin {name}", "refused", _pid_of(remote), f"{type(e).__name__}: {e}"))
+        if not listing and plugin is None and sig is Signal.TERM:
+            # each app's stop event set before anything is ended (1.87.0): a console-less pythonw hears only this
+            told = [name for name in names if self.set_event(lifecycle.stop_event_name(name))]
+            for name in told:
+                self.say(Line(f"app {name}", "asked", None, "TERM by its stop event"))
+            while told and self.clock() < deadline and self.running_apps(told):
+                self.sleep(lifecycle.STEP_S)
         if not listing:
             self.wait_gone(waited, deadline)
         # what is left, ended by its tree
@@ -297,6 +305,8 @@ class SignalCommand:
                 self.say(Line(_said(p), "would end", p.pid))
             return EXIT_OK
         left = False
+        pids = {p.pid for p in roots}
+        jobs = {r.pid: lifecycle.job_of(r.tie) for r in self.ledger.rows() if r.pid in pids and lifecycle.job_of(r.tie)}
         if roots:
             for r in lifecycle.end_trees(roots, sig, max(deadline - self.clock(), 0.0), table=self.table,
                                          killer=self.killer, clock=self.clock, sleep=self.sleep,
@@ -304,6 +314,12 @@ class SignalCommand:
                 p = next((x for x in roots if x.pid == r["pid"]), None)
                 self.say(Line(_said(p) if p else "a child", r["how"], r["pid"], r.get("why", "")))
                 left |= r["how"] == "left"
+            # what a row's own job holds (a host, mongod, and the interpreter its redirector started): ended at once,
+            # read from the ledger before the trees were ended (1.87.0)
+            end_job = getattr(self.killer, "end_job", None)
+            for pid, job in jobs.items() if callable(end_job) else ():
+                if end_job(job):
+                    self.say(Line(f"job {job}", "killed", pid, "everything in it"))
         if not roots and not self.lines:
             self.say(Line("Liminal", "nothing running"))
         return EXIT_REFUSED if refused else EXIT_LEFT if left else EXIT_OK

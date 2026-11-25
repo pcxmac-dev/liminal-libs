@@ -24,6 +24,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
+from .errors import Paused
+
+SLICE_S = 1.0  # a rate wait is slept in pieces of at most this, a stop looked at between them (1.87.0)
+
 
 class Ledger(Protocol):
     def load(self) -> list[float]: ...
@@ -54,8 +58,10 @@ class RateLimiter:
         The first ledger shared decides each call (in one transaction); the others are told."""
         self._ledgers.append(ledger)
 
-    def acquire(self) -> None:
-        """Block until another call is allowed, then record it."""
+    def acquire(self, stop: Callable[[], object] | None = None) -> None:
+        """Block until another call is allowed, then record it. `stop` (1.87.0; the shutdown audit of 2026-11-24: a
+        wait was one sleep of up to an hour on Tiingo's window, deaf to a stop): asked before each slice of the wait
+        (SLICE_S at the most); a reason it gives raises Paused, nothing taken."""
         if not self.max_calls:
             return
         while True:
@@ -64,7 +70,14 @@ class RateLimiter:
                 return
             if self.on_wait:
                 self.on_wait(wait)
-            self._sleep(wait)
+            slept = 0.0
+            while slept < wait:
+                reason = stop() if stop is not None else None
+                if reason:
+                    raise Paused(reason if isinstance(reason, str) else "stopped while waiting for the rate window")
+                piece = min(SLICE_S, wait - slept) if stop is not None else wait - slept
+                self._sleep(piece)
+                slept += piece
 
     def _take(self) -> float:
         """Take a place in the window now (0), or say how many seconds until one frees. Every

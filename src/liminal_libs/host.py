@@ -38,6 +38,7 @@ from .proc import pid_alive
 IDLE_SECONDS = 60.0  # a host ends this long after its last client detached (LIMINAL_IDLE_SECONDS)
 START_SECONDS = 30.0  # a new host waits this long for its first client; a client this long for a host it started
 CHECK_SECONDS = 5.0  # how often a host makes sure each client's process is still there
+GONE_SECONDS = 5.0  # a host whose last client's process is gone (killed, crashed) ends this long after (1.87.0)
 HELLO_SECONDS = 5.0  # a connection that has not said which host it wants by then is dropped
 API = 1
 
@@ -172,6 +173,7 @@ class Host:
         self._touched: float | None = None  # when a page last touched this host (touch)
         self._seq = 0
         self.handle: Callable[[dict], object] | None = None  # answers a client's `ask` (a status, say)
+        self._last_left = ""  # how the last client went (1.87.0): "detach" (it said so), "gone" (its process ended)
 
     @classmethod
     def start(cls, name: str, db_path: Path) -> None:
@@ -231,6 +233,14 @@ class Host:
         restore = lifecycle.install_handlers(self)  # SIGTERM (SIGBREAK on Windows): signal(TERM), on the main thread
         try:
             work(self.stop)
+        except BaseException as e:
+            # said with its traceback before it goes on up (1.87.0; the shutdown audit of 2026-11-24): a host's stderr
+            # goes nowhere, and the history host had died every hour since 2026-11-22 without a line of why
+            import traceback
+
+            self.reason = self.reason or f"its work failed: {type(e).__name__}: {e}"
+            self.log(f"host {self.name}: its work failed:\n{''.join(traceback.format_exception(e)).rstrip()}")
+            raise
         finally:
             self.end(self.reason or "its work ended")
             try:
@@ -282,7 +292,7 @@ class Host:
             threading.Thread(target=self._client, args=(conn, n), name=f"host-{self.name}-client-{n}", daemon=True).start()
 
     def _client(self, conn, n: int) -> None:
-        pid = 0
+        pid, how = 0, "gone"
         try:
             if not conn.poll(HELLO_SECONDS):
                 return  # said nothing: not a client
@@ -301,6 +311,7 @@ class Host:
                 if conn.poll(CHECK_SECONDS):
                     msg = conn.recv()  # EOFError: detached
                     if msg == "detach":
+                        how = "detach"
                         return
                     if isinstance(msg, dict) and "ask" in msg:
                         conn.send(self.handle(msg) if self.handle is not None else {"error": "nothing to ask here"})
@@ -312,6 +323,8 @@ class Host:
             with self._lock:
                 gone = self.attached.pop(n, None) is not None
                 left = len(self.attached)
+                if gone:
+                    self._last_left = how
             try:
                 conn.close()
             except OSError:
@@ -319,22 +332,46 @@ class Host:
             if gone:
                 self.log(f"host {self.name}: client {pid} detached ({left} attached)")
 
+    def idle_for(self) -> float:
+        """How long it waits once nobody holds it (1.87.0; the shutdown audit of 2026-11-24): nothing after a last
+        client that let it go ("detach": a feed host, the MongoDB keeper, once the fetcher has done with them, ends at
+        once, not 60 s later); GONE_SECONDS after one whose process ended without a word (killed: a restart's own
+        client may come back); the idle time when no client ever came by the pipe (a page of its own in touch counts
+        as held for the idle time after its last touch, check_idle)."""
+        with self._lock:
+            how = self._last_left
+        if how == "detach":
+            return 0.0
+        if how == "gone":
+            return min(GONE_SECONDS, self.idle)
+        return self.idle
+
     def _watch(self) -> None:
-        """Ends the work once the last client has been gone for the idle time (or none came)."""
+        """Ends the work once the last client has been gone for its idle time (idle_for), or none came."""
         while not self.stop.wait(0.25):
-            with self._lock:
-                touched = self._touched is not None and time.monotonic() - self._touched < self.idle
-                attached, ever = len(self.attached) or touched, self._ever
-                if attached:
-                    self._idle_since = None
-                    continue
-                if self._idle_since is None:
-                    self._idle_since = time.monotonic()
-                waited = time.monotonic() - self._idle_since
-            if ever and waited >= self.idle:
-                self.end(f"no client attached for {self.idle:g} s")
-            elif not ever and waited >= self.start_wait:
-                self.end(f"no client came within {self.start_wait:g} s")
+            self.check_idle()
+
+    def check_idle(self, now: float | None = None) -> bool:
+        """One look (the watch's, every quarter second): the work ended when nobody has held it for its idle time, or
+        nobody came within the start wait. Whether it was ended."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            touched = self._touched is not None and now - self._touched < self.idle
+            attached, ever = len(self.attached) or touched, self._ever
+            if attached:
+                self._idle_since = None
+                return False
+            if self._idle_since is None:
+                self._idle_since = now
+            waited = now - self._idle_since
+        idle = self.idle_for()
+        if ever and waited >= idle:
+            self.end(f"its last client let it go" if idle == 0 else f"no client attached for {idle:g} s")
+            return True
+        if not ever and waited >= self.start_wait:
+            self.end(f"no client came within {self.start_wait:g} s")
+            return True
+        return False
 
 
 # -- the clients' side ---------------------------------------------------------------------------

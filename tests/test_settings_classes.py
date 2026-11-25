@@ -321,4 +321,4 @@ def test_an_attachment_is_made_by_the_class_and_a_host_started_by_it(tmp_path, m
     assert served.clients() == [os.getpid()]
     attached.detach()
     thread.join(5)
-    assert reasons and "no client attached" in reasons[0]
+    assert reasons and reasons[0] == "its last client let it go"  # 1.87.0: at once, not after its idle time

@@ -143,6 +143,7 @@ class App:
     # names one inherits the login all the same, its address unused, LOGIN_URL_VAR's "none" or "off" honoured
     LOGIN_URL_VAR = ""
     LOGIN_URL = ""
+    STOP_GRACE_S = lifecycle.GRACE_S  # its plugins' grace past their deadline at a TERM (1.87.0)
 
     def __init__(self, log=print, login=None):
         self.log = log
@@ -340,12 +341,18 @@ class App:
             objects.append(lifecycle.deliver(login, now(), deadline, sender=self, name="login"))
         for part in self.parts():
             objects.append(lifecycle.deliver(part, now(), deadline, sender=self))
-        for name in list(self._plugins) if plugins or now() is Signal.KILL else ():
+        # its plugins told together, under one deadline and a grace (1.87.0): their own deadlines, the plugins' at most
+        names = [n for n in list(self._plugins) if self._plugins.get(n) is not None] if plugins or now() is Signal.KILL \
+            else []
+        if names:
+            longest = max(lifecycle.stop_deadline(self._plugins[n]) for n in names)
+            together = min(deadline, lifecycle.deadline_in(min(longest, lifecycle.PLUGINS_DEADLINE_S)))
+            objects += lifecycle.deliver_all([(n, self._plugins[n]) for n in names], now(), together, sender=self,
+                                             grace=0.0 if now() is Signal.KILL else self.STOP_GRACE_S)
+        for name in names:
             plugin = self._plugins.get(name)
             if plugin is None:
                 continue
-            own = min(deadline, lifecycle.deadline_in(lifecycle.stop_deadline(plugin)))
-            objects.append(lifecycle.deliver(plugin, now(), own, sender=self, name=name, within=True))
             if now() is Signal.KILL:
                 self._plugins.pop(name, None)
                 self._lent.pop(name, None)
@@ -765,18 +772,32 @@ class App:
         url = self.start(port, open_browser)
         stop = stop or threading.Event()
         self._serving = stop  # set by terminate: a signal's end ends the wait (1.86.0)
+        # its stop event (1.87.0; Windows: a console-less pythonw hears no Ctrl+C and no SIGTERM): liminal-signal sets
+        # it before it ends anything, and the app then ends in good order
+        event = self.stop_event()
         self.touch()
         try:
             while not stop.wait(0.5):
                 if until_quiet is not None and time.monotonic() - self.touched > until_quiet:
                     self.log(f"{self.NAME}: no page has been in touch for {until_quiet:g} s: the server ends")
                     break
+                if event is not None and event.is_set():
+                    self.log(f"{self.NAME}: asked to stop (its stop event): the server ends")
+                    break
         except KeyboardInterrupt:
             pass
         finally:
             stop.set()
-            self.stop()
+            try:
+                self.stop()
+            finally:
+                if event is not None:
+                    event.close()
         return url
+
+    def stop_event(self):
+        """Its stop event (lifecycle.StopEvent, named after it), or None: none is held off Windows."""
+        return lifecycle.StopEvent(lifecycle.stop_event_name(self.NAME)) if os.name == "nt" else None
 
 
 def attach_registry(app: App, only: str | None = None) -> list[str]:

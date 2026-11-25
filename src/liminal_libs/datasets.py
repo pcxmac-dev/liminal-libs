@@ -141,8 +141,10 @@ class DatasetFetcher:
     parsing, the ledger, the kept copies and the git calls stay the module's functions, called
     through it; each file's progress is on the fetch queue (FileQueue)."""
 
-    def __init__(self, store, today: date | None = None, session: requests.Session | None = None, log=print):
+    def __init__(self, store, today: date | None = None, session: requests.Session | None = None, log=print,
+                 stop=None):
         self.store, self.log = store, log
+        self.stop = stop  # 1.87.0: asked before each dataset, each file and each commit; the rest next time
         self.today = today or datetime.now(ET).date()
         self._session = session
 
@@ -163,6 +165,8 @@ class DatasetFetcher:
         done = {}
         known = declared()
         for name in names or list(known):
+            if self._stopped(f"before {name}"):
+                break
             ds = known[name]
             if only_started and name not in started:
                 continue
@@ -176,6 +180,12 @@ class DatasetFetcher:
                 done[name] = self.files(ds, force)
         return done
 
+    def _stopped(self, where: str) -> bool:
+        if self.stop is not None and self.stop():
+            self.log(f"datasets: stopped {where}; the rest next time")
+            return True
+        return False
+
     def files(self, ds: Dataset, force: bool = False) -> int:
         """One dataset's due files (due_files) downloaded, each version kept and stored: a file
         unchanged is noted, one not published yet or not readable is left for next time, a final one
@@ -187,6 +197,8 @@ class DatasetFetcher:
         queue = FileQueue(store, ds, log)
         queue.plan(due)
         for url, final in due:
+            if self._stopped(f"{name}: before {url.rsplit('/', 1)[-1]}"):
+                break
             file = url.rsplit("/", 1)[-1]
             why = refusal(ds, url)
             if why:
@@ -261,6 +273,8 @@ class DatasetFetcher:
         for sha, when in commits:
             if sha in seen:
                 continue
+            if self._stopped(f"{ds.name}: before commit {sha[:8]}"):
+                break
             t = datetime.fromisoformat(when)
             blob = _git(repo, "show", f"{sha}:{path}", binary=True)
             try:
@@ -287,10 +301,10 @@ class DatasetFetcher:
 
 
 def fetch(store, names: list[str] | None = None, today: date | None = None, force: bool = False,
-          session: requests.Session | None = None, log=print, only_started: bool = False) -> dict:
+          session: requests.Session | None = None, log=print, only_started: bool = False, stop=None) -> dict:
     """Fetch (or refresh) datasets: DatasetFetcher(store, today, session, log).fetch(names, force,
     only_started). Returns {name: versions stored}."""
-    return DatasetFetcher(store, today, session, log).fetch(names, force, only_started)
+    return DatasetFetcher(store, today, session, log, stop).fetch(names, force, only_started)
 
 
 def _changed(counts: dict) -> int:
@@ -448,9 +462,12 @@ def _repo(ds: Dataset) -> Path | None:
 
 
 def _git(repo: Path, *args: str, binary: bool = False):
-    from .proc import no_window
+    from . import proctree
 
-    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=600, **no_window())
+    try:  # 1.87.0: through proctree, so a git past its timeout ends with what it started (its index.lock let go)
+        r = proctree.run(["git", "-C", str(repo), *args], timeout=600)
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {args[0]} did not end within 600 s") from None
     if r.returncode != 0:
         raise GitError(r.stderr.decode(errors="replace").strip() or f"git {args[0]} failed")
     return r.stdout if binary else r.stdout.decode()

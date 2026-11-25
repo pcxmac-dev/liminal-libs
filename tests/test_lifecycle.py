@@ -136,7 +136,9 @@ def test_term_reaches_the_login_a_platform_part_and_every_plugin_in_that_order_t
         table.send = send
         report = app.terminate(Signal.TERM, 5)
     # the plugin's own child ends with its plugin (its last client let go), before any process of the app's own
-    assert record == ["login", "part TERM", "plugin acme", "process 4001 TERM", "plugin beta"]
+    # the login, then the part, then the plugins (together since 1.87.0), the plugin's own child after its plugin
+    assert record[:2] == ["login", "part TERM"] and sorted(record[2:]) == ["plugin acme", "plugin beta", "process 4001 TERM"]
+    assert record.index("plugin acme") < record.index("process 4001 TERM")
     assert [o["name"] for o in report["objects"]] == ["login", "Part", "acme", "beta"]
     assert a.app is None and a.login is None and app.plugins() == {} and 4001 not in table.rows
     assert app.terminate(Signal.TERM) is report  # twice: the first's report, nothing done again
@@ -403,15 +405,25 @@ def test_spawn_writes_its_row_and_ties_the_child_to_its_owner(monkeypatch):
     def ctypes_cast(info):
         return info._obj.BasicLimitInformation.LimitFlags
 
+    class Nt:
+        resumed = []
+
+        def NtResumeProcess(self, handle):
+            k32.calls.append(("resume", handle))
+            return 0
+
     k32 = K32()
     ledger = MemoryLedger(FakeTable([Proc(8001, ME, "x", "c", 3)]))
     monkeypatch.setattr(lifecycle._proc, "started", lambda pid: 3)
     monkeypatch.setattr(lifecycle.os, "name", "nt")
     child = lifecycle.spawn(["mongod", "--port", "1"], owner="host:mongo", kind="mongod", popen=popen, ledger=ledger,
-                            job=lifecycle.JobTie(k32), creationflags=0x8)
-    assert child.pid == 8001 and made[0][1]["creationflags"] == 0x8 | lifecycle.NO_WINDOW
+                            job=lifecycle.JobTie(k32, Nt()), creationflags=0x8)
+    # 1.87.0: started suspended, put in the job, then let run, so what it starts at once (the venv's redirector's
+    # base interpreter) is in the job too
+    assert child.pid == 8001 and made[0][1]["creationflags"] == 0x8 | lifecycle.NO_WINDOW | lifecycle.CREATE_SUSPENDED
     assert k32.calls[0] == "create" and k32.calls[1][1] == lifecycle.EXTENDED_LIMITS
     assert k32.calls[1][2] & lifecycle.JOB_KILL_ON_CLOSE and k32.calls[2] == ("assign", 5, 77)
+    assert k32.calls[3] == ("resume", 77)
     row = ledger.kept[0]
     assert (row.pid, row.started, row.owner, row.owner_pid, row.kind, row.tie) == (8001, 3, "host:mongo", ME, "mongod", "job")
     assert lifecycle.mine("host:mongo")[0].command == ["mongod", "--port", "1"]

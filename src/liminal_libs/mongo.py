@@ -238,23 +238,78 @@ def ensure(data_dir: Path) -> bool:
         return False
 
 
-def keep(data_dir: Path, stop: threading.Event, log=print) -> None:
-    """The keeper's work: the server started (or the one running adopted), kept until the clients
-    are gone (`stop`) or it stops answering (`mongo stop` by hand)."""
-    pid = start(data_dir)
-    log(f"host mongo: server {'started' if pid else 'running already'} on {HOST}:{port()}")
-    while not stop.wait(KEEP_SECONDS):
-        if not running():
-            log("host mongo: the server is gone; the keeper ends")
-            return
+GONE_PINGS = 3  # pings in a row that must fail before the keeper takes the server for gone (1.87.0)
+GONE_GRACE_S = 10.0  # ... and for at least this long
 
 
-def stop() -> bool:
-    """End the server cleanly (its own shutdown command). Returns whether one was running."""
-    from pymongo.errors import AutoReconnect, ConnectionFailure, PyMongoError
+def keep(data_dir: Path, stop: threading.Event, log=print, *, starter=None, answers=None, ender=None,
+         alive=None, started_of=None, clock=time.monotonic, every: float = KEEP_SECONDS) -> None:
+    """The keeper's work: the server started (or the one running adopted: an orphan a keeper before left is never
+    started twice), kept until the clients are gone (`stop`) or it is gone (`mongo stop` by hand), then shut down
+    cleanly (stop), whether it started it or adopted it. 1.87.0 (the failed-tasks log, 2026-11-23: at 100% CPU one
+    ping of 500 ms failed, the keeper ended, and mongod ran three hours with no keeper): the server is taken for gone
+    only once GONE_PINGS pings in a row have failed over GONE_GRACE_S, and only when the process it started (its id
+    and start time held) is gone too. The stand-ins (starter, answers, ender, alive, started_of, clock) are a test's."""
+    from . import proc
 
+    starter, answers, ender = starter or start, answers or running, ender or globals()["stop"]
+    alive, started_of = alive or proc.pid_alive, started_of or proc.started
+    pid = starter(data_dir)
+    born = started_of(pid) if pid else None
+    log(f"host mongo: server {'started' if pid else 'running already: adopted'} on {HOST}:{port()}")
+
+    def ours_alive() -> bool:
+        return bool(pid) and born is not None and alive(pid) and started_of(pid) == born
+
+    misses, since = 0, None
+    try:
+        while not stop.wait(every):
+            if answers():
+                misses, since = 0, None
+                continue
+            misses += 1
+            since = clock() if since is None else since
+            if misses >= GONE_PINGS and clock() - since >= GONE_GRACE_S and not ours_alive():
+                log(f"host mongo: the server has not answered {misses} pings over {clock() - since:.0f} s; "
+                    "the keeper ends")
+                return
+    finally:
+        try:
+            ender()  # a server it holds ends with it, cleanly (its own shutdown, then its tree past STOP_WAIT_S)
+        except Exception as e:  # noqa: BLE001 - said; the keeper ends all the same
+            log(f"host mongo: the server did not shut down cleanly: {type(e).__name__}: {e}")
+
+
+STOP_WAIT_S = 10.0  # what the server's own shutdown is given to end it, before its tree is killed (1.87.0)
+
+
+def stop(wait_s: float = STOP_WAIT_S, clock=time.monotonic, sleep=time.sleep, kill=None) -> bool:
+    """End the server cleanly (its own shutdown command), wait up to `wait_s` for it to stop answering, then end what
+    is left of it by its tree: the ledger's mongod rows (lifecycle; 1.87.0, the shutdown audit of 2026-11-24: a
+    shutdown that hung left mongod and its lock for good). Returns whether one was running."""
     if not running():
         return False
+    _shutdown()
+    end = clock() + wait_s
+    while clock() < end and running(timeout_ms=200):
+        sleep(0.2)
+    if running(timeout_ms=200):
+        (kill or _kill_mongod)()
+    return True
+
+
+def _kill_mongod() -> list:
+    """The ledger's mongod processes (owner host:mongo) ended with their trees, KILL: its shutdown was not heard."""
+    from . import lifecycle
+
+    rows = [r for r in lifecycle._ledger().rows() if r.kind == "mongod"]
+    return lifecycle.end_trees([r.as_proc() for r in rows], lifecycle.Signal.KILL, 0) if rows else []
+
+
+def _shutdown() -> None:
+    """mongod asked to shut down (its own command), its clients here let go."""
+    from pymongo.errors import AutoReconnect, ConnectionFailure, PyMongoError
+
     from pymongo import MongoClient
 
     c = MongoClient(HOST, port(), serverSelectionTimeoutMS=2000, directConnection=True)
@@ -271,7 +326,6 @@ def stop() -> bool:
     if old is not None:
         old.close()
     _alive[:] = [time.monotonic(), False]
-    return True
 
 
 def status(data_dir: Path) -> dict:

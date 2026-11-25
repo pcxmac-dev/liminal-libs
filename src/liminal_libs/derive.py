@@ -406,10 +406,12 @@ class Builder:
             total += n
         return total
 
-    def run(self, sources=None, tickers=None) -> int:
+    def run(self, sources=None, tickers=None, stop=None) -> int:
         """Build the frames above every base frame of every series on the given feeds (every feed by
         default), or for the given tickers only: seconds, then minutes, then days (days built from
-        minutes feed the weeks). Returns bars stored."""
+        minutes feed the weeks). Returns bars stored. `stop` (1.87.0): asked before each symbol, the
+        pass ends there when it says so (the next pass builds what this one did not reach: what
+        changed is marked until it is built)."""
         store = self.store
         wanted = {t.upper() for t in tickers} if tickers else None
         watch = store.watchlist()
@@ -427,6 +429,9 @@ class Builder:
             series.setdefault((source, ticker), set()).add(kind)
         total = 0
         for i, ((source, ticker), kinds) in enumerate(sorted(series.items())):
+            if stop is not None and stop():
+                self.log(f"derive: stopped after {i:,} of {len(series):,} series; the rest at the next pass")
+                break
             asset = assets.get((source, ticker)) or any_feed.get(ticker) or ("future" if ticker in contracts else "stock")
             total += self.symbol(source, ticker, asset, progress=(i + 1, len(series)))
         if series:
@@ -453,7 +458,7 @@ def build_symbol(store, source: str, ticker: str, asset: str = "stock", log=prin
     return Builder(store, log).symbol(source, ticker, asset, progress, exchange)
 
 
-def run(store, sources=None, tickers=None, log=print) -> int:
+def run(store, sources=None, tickers=None, log=print, stop=None) -> int:
     """Build the frames above every base frame of every series on the given feeds (every feed by
     default), or for the given tickers only: Builder(store, log).run(...). Returns bars stored."""
-    return Builder(store, log).run(sources, tickers)
+    return Builder(store, log).run(sources, tickers, stop)

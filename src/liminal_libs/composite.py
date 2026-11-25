@@ -201,7 +201,7 @@ def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(lo, hi) for lo, hi in out]
 
 
-def refresh(store, feeds: dict, now: datetime, log=print, rebuild_days: int = 2) -> dict:
+def refresh(store, feeds: dict, now: datetime, log=print, rebuild_days: int = 2, stop=None) -> dict:
     """Bring every multi-exchange asset's composite up to date (and the exchanges' quality, daily).
     Once a composite exists, rebuilt are: the last `rebuild_days` (late bars, quality changes), what
     an exchange now holds further back than at the last build, and the span of each exchange's
@@ -212,6 +212,9 @@ def refresh(store, feeds: dict, now: datetime, log=print, rebuild_days: int = 2)
         watched.setdefault((w["ticker"], w["asset"]), set()).add(w["source"])
     done = {}
     for (ticker, asset), sources in sorted(watched.items()):
+        if stop is not None and stop():  # 1.87.0: asked before each asset; the rest at the next refresh
+            log(f"composite: stopped before {ticker}")
+            break
         feed_of = {f: v for f, v in exchange_feeds(feeds, asset).items() if f in sources}
         if len(feed_of) < 2:
             continue

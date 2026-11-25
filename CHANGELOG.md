@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.87.0 (2026-11-24)
+
+- What ends promptly when asked (the shutdown audit of 2026-11-24: a stop took 61 s to 47+ min).
+- Hosts: a last client that says "detach" ends its host at once (a feed host, the MongoDB keeper: 60 s each until
+  now, one after another); one whose process ended without a word, after GONE_SECONDS (5 s); a page in touch keeps it
+  its idle time (`Host.idle_for`, `check_idle`). A host's work that fails is logged with its traceback before it goes
+  on up (the history host had died every hour since 2026-11-22 with nothing said).
+- `RateLimiter.acquire(stop=)` sleeps in slices of at most a second and raises Paused at a stop (one sleep of up to
+  an hour on Tiingo's window until now); `HttpClient` passes its `should_stop` (the day's place given back), and a
+  streamed download into the cache ends at a stop between two pieces.
+- `derive.run` / `Builder.run(stop=)` and `composite.refresh(stop=)` look before each symbol or asset; the
+  publications' Reader before each feed (`Reader.stopping`, lent to each read as `Context.stopping`);
+  `DatasetFetcher(stop=)` / `datasets.fetch(stop=)` before each dataset, file and commit, and git runs through
+  proctree (its tree ended at its timeout); the auditors' `Sweep.run(stop=)` before each series.
+- MongoDB: `mongo.stop()` waits up to 10 s for the server's own shutdown, then kills the ledger's mongod by its tree.
+  `mongo.keep()` takes the server for gone only after 3 failed pings over 10 s and only when the process it started
+  (its id and start time held) is gone too (one failed 500 ms ping at 100% CPU left mongod three hours with no keeper,
+  2026-11-23); an orphan is adopted, never started twice; the server it holds is shut down when the keeper ends.
+- Jobs: a child is started suspended and resumed once it is in its job, so the base interpreter the venv's pythonw.exe
+  redirector starts is in it too. A child meant to outlive its starter (`Host.start`, mongod) gets a named job of its
+  own, written in its ledger row; liminal-signal ends everything in it by its name.
+- A graceful stop a console-less pythonw hears: each app's named stop event (Windows, `Local\liminal-stop-<app>`),
+  waited on by `App.serve` and set by liminal-signal before anything is ended.
+- An app's plugins are told TERM together, under one deadline (their own, 10 s at the most) and a grace of 2.5 s
+  (`App.STOP_GRACE_S`); one still at it then is late and its trees are killed.
+
 ## 1.86.0 (2026-11-24)
 
 - A reliable end for every app, plugin and process of Liminal's (Monday list item 38; the user, 2026-11-24: "there

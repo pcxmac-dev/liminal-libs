@@ -973,7 +973,7 @@ class Sweep:
         self.clock = clock
 
     # -- a run ---------------------------------------------------------------------------------------------------
-    def run(self, budget_s: float | None = None, only: set | None = None) -> dict:
+    def run(self, budget_s: float | None = None, only: set | None = None, stop=None) -> dict:
         """One run: what waits in the cache first, then the series in turn from where the last run stopped, for
         `budget_s` (the policy's minutes). `only`: these (feed, ticker) alone, out of turn (an audit asked for a
         symbol). Returns the run in numbers, kept for the page too (LAST_KEY)."""
@@ -999,6 +999,9 @@ class Sweep:
         done = 0
         for row in rows:
             if self.clock() - began >= budget:
+                break
+            if stop is not None and stop():  # 1.87.0: the cursor keeps its place; the rest at the next run
+                out["stopped"] = True
                 break
             visit = self.series(row)
             done += 1

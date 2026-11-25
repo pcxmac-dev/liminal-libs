@@ -175,6 +175,7 @@ class Context:
     now: datetime
     log: Callable[[str], None]
     count: Callable[[int], None]
+    stopping: Callable[[], bool] | None = None  # 1.87.0: whether the read is to end (a vendor's long read asks it)
 
 
 class Reader:
@@ -189,6 +190,7 @@ class Reader:
         self.contact = contact if contact is not None else getattr(settings, "gov_contact", None)
         self._queued: set[str] = set()  # feeds put on the fetch queue by this reader
         self._queue_broken = False
+        self.stopping: Callable[[], bool] | None = None  # 1.87.0: asked before each feed, and lent to each read
 
     # -- a reader for a view, a pass over the due feeds, a recheck ---------------------------------------
     @classmethod
@@ -487,6 +489,8 @@ class Reader:
             return later  # the recheck read each feed once
         soonest, seen = later, self.gdb.fetched()
         for feed in pub.feeds:
+            if self.stopping is not None and self.stopping():  # 1.87.0: the rest at the next pass
+                break
             if self.held(pub, now):  # refused in this pass: the rest wait with it
                 break
             row = seen.get(feed.key)
@@ -763,7 +767,7 @@ class Reader:
             # sources/http.py), and are parsed from there; what it stores of them is the plugin's own (no read-back
             # here yet): the pull closes complete and its files go
             with auditing.pull(self.store, pub.name, "publication", log=self.log):
-                new = pub.read(Context(pub, feed, self.settings, self.store, now, self.log, count))
+                new = pub.read(Context(pub, feed, self.settings, self.store, now, self.log, count, self.stopping))
         except (RateLimited, Unauthorized) as e:  # its feed's account said stop: that feed is killed, this with it
             killswitch.strike(self.store, pub.account, "fetch", f"{pub.title}: {e}", log=self.log,
                               at_least_s=killswitch.retry_after_s(e))

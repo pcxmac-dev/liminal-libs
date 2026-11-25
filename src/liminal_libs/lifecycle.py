@@ -215,6 +215,43 @@ def deliver(obj, sig: Signal, deadline: float, sender=None, name: str = "", with
     return {"name": name, "how": how, "why": "it has nothing to end" if how == "nothing" else ""}
 
 
+PLUGINS_DEADLINE_S = 10.0  # an app's plugins told TERM together are given this long in all (1.87.0)
+GRACE_S = 2.5  # ... and this much more before one still at it is taken for late
+
+
+def deliver_all(items, sig: Signal, deadline: float, sender=None, grace: float = GRACE_S,
+                clock: Callable[[], float] | None = None) -> list[dict]:
+    """`sig` passed to each of `items` ((name, object)) at once, each on a thread of its own, under one `deadline`
+    and `grace` seconds more (1.87.0; the shutdown audit of 2026-11-24: the platform told its plugins one after
+    another, about 54 s and more): what each came to, in their order (deliver's); one still at it then is "late", and
+    what was started for it is killed with its trees."""
+    sig = Signal.of(sig)
+    box: dict[str, dict] = {}
+    threads = []
+    for name, obj in items:
+        def run(name=name, obj=obj) -> None:
+            box[name] = deliver(obj, sig, deadline, sender=sender, name=name)
+
+        t = threading.Thread(target=run, name=f"liminal-signal-{name}", daemon=True)
+        t.start()
+        threads.append((name, t))
+    for _, t in threads:
+        t.join(left(deadline, clock))
+    end = time.monotonic() + max(grace, 0.0)
+    for _, t in threads:
+        t.join(max(end - time.monotonic(), 0.0))
+    out = []
+    for name, t in threads:
+        if t.is_alive():
+            killed = end_owned(name, Signal.KILL, deadline_in(0))
+            out.append({"name": name, "how": "late", "processes": killed,
+                        "why": f"it did not end within the deadline and its grace: killed what it started "
+                               f"({len(killed)} processes)"})
+        else:
+            out.append(box.get(name) or {"name": name, "how": "failed", "why": "it said nothing"})
+    return out
+
+
 def check_sender(plugin, sender) -> None:
     """A plugin hears a signal only from its own app, or the login that app attached it with; SignalRefused else."""
     app, login = getattr(plugin, "app", None), getattr(plugin, "login", None)
@@ -287,10 +324,36 @@ class OsTable:
         return rows
 
 
+def job_of(tie: str) -> str | None:
+    """The name of a ledger row's job (its tie "job:<name>..."), or None."""
+    head = str(tie or "").split(";", 1)[0].strip()
+    return head[4:] if head.startswith("job:") and len(head) > 4 else None
+
+
 class OsKiller:
     """How a signal reaches one process: Linux's os.kill (or its group's, os.killpg, when it leads one); on Windows
     TERM is taskkill without /F (a polite close: what has a window or a console may hear it) and KILL is
     TerminateProcess (os.kill)."""
+
+    def end_job(self, name: str) -> bool:
+        """Everything in the named job ended at once (Windows: OpenJobObjectW, TerminateJobObject). Whether it was."""
+        if os.name != "nt" or not name:
+            return False
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenJobObjectW.restype = ctypes.c_void_p
+            k32.OpenJobObjectW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+            k32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            job = k32.OpenJobObjectW(0x0008, 0, name)  # JOB_OBJECT_TERMINATE
+            if not job:
+                return False
+            try:
+                return bool(k32.TerminateJobObject(job, 1))
+            finally:
+                k32.CloseHandle(job)
+        except (AttributeError, OSError):
+            return False
 
     def send(self, pid: int, sig: Signal, group: bool = False) -> bool:
         if os.name == "nt":
@@ -548,17 +611,53 @@ def _kernel32():
         return None
 
 
-class JobTie:
-    """This process's job object on Windows (one, made when first needed, its handle held for this process's life):
-    every child put in it is ended by Windows when this process ends, however it ends (its last handle closed). A
-    child started before it is put in (the moment between its start and `tie`) may start one of its own outside it.
-    `k32`: kernel32 (a test's stand-in)."""
+def _ntdll():
+    try:
+        nt = ctypes.WinDLL("ntdll")
+        nt.NtResumeProcess.restype = ctypes.c_long
+        nt.NtResumeProcess.argtypes = [ctypes.c_void_p]
+        return nt
+    except (AttributeError, OSError):
+        return None
 
-    def __init__(self, k32=None):
+
+CREATE_SUSPENDED = 0x00000004
+
+
+class JobTie:
+    """A job object on Windows. The process's own (one, made when first needed, its handle held for this process's
+    life, `kill_on_close`): every child put in it is ended by Windows when this process ends, however it ends (its last
+    handle closed). Or one for a child meant to outlive its starter (`name`: Local\\liminal-job-..., written in its
+    ledger row): nothing ends it with its starter, and liminal-stop ends everything in it at once by its name
+    (OsKiller.end_job). 1.87.0 (the shutdown audit of 2026-11-24): a child is started suspended and resumed once it is in
+    the job (`can_resume`, NtResumeProcess), so what it starts at once is in it too: the venv's pythonw.exe is a
+    redirector that starts the base interpreter as its child, and that child was left out. `k32`, `ntdll`: a test's."""
+
+    def __init__(self, k32=None, ntdll=None, name: str | None = None, kill_on_close: bool = True):
         self._k32 = k32
+        self._nt = ntdll
         self._job = None
         self._lock = threading.Lock()
         self.problem = ""
+        self.name = name
+        self.kill_on_close = kill_on_close
+
+    def can_resume(self) -> bool:
+        """Whether a child can be started suspended and resumed here (ntdll's NtResumeProcess)."""
+        if self._nt is None:
+            self._nt = _ntdll() or False
+        return bool(self._nt) and self._job_handle() is not None
+
+    def resume(self, popen) -> bool:
+        """A child started suspended let run (NtResumeProcess on its handle). Whether it was."""
+        nt = self._nt
+        handle = getattr(popen, "_handle", None)
+        if not nt or not handle:
+            return False
+        try:
+            return nt.NtResumeProcess(int(handle)) == 0
+        except (OSError, ValueError, TypeError):
+            return False
 
     def _job_handle(self):
         with self._lock:
@@ -569,12 +668,12 @@ class JobTie:
             if k32 is None:
                 self.problem = "no kernel32 here"
                 return None
-            job = k32.CreateJobObjectW(None, None)
+            job = k32.CreateJobObjectW(None, self.name)
             if not job:
                 self.problem = f"CreateJobObjectW failed ({ctypes.get_last_error() if os.name == 'nt' else 0})"
                 return None
             info = _ExtendedLimits()
-            info.BasicLimitInformation.LimitFlags = JOB_KILL_ON_CLOSE | JOB_BREAKAWAY_OK
+            info.BasicLimitInformation.LimitFlags = (JOB_KILL_ON_CLOSE if self.kill_on_close else 0) | JOB_BREAKAWAY_OK
             if not k32.SetInformationJobObject(job, EXTENDED_LIMITS, ctypes.byref(info), ctypes.sizeof(info)):
                 self.problem = "SetInformationJobObject failed"
                 k32.CloseHandle(job)
@@ -594,7 +693,7 @@ class JobTie:
             opened = handle = k32.OpenProcess(0x0100 | 0x0001, 0, int(popen.pid))  # SET_QUOTA | TERMINATE
         try:
             if handle and k32.AssignProcessToJobObject(job, int(handle)):
-                return "job"
+                return f"job:{self.name}" if self.name else "job"
             return "no job: AssignProcessToJobObject failed (a job that allows no nesting, or the child had ended)"
         finally:
             if opened:
@@ -602,6 +701,7 @@ class JobTie:
 
 
 _JOB = JobTie()
+_REAL_POPEN = subprocess.Popen
 
 
 def pdeathsig_preexec(libc=None, sig: int | None = None, main_thread: bool | None = None):
@@ -651,15 +751,36 @@ def spawn(args, owner: str, kind: str, *, tied: bool = True, ledger: Ledger | No
                 tie = "pdeathsig"
             else:
                 tie = "no pdeathsig (no prctl here, or started from a thread that ends)"
+    holder = None
+    # a job is made only for a real start, or one given (a test's stand-in Popen gets no kernel object of this machine)
+    if nt and (popen is _REAL_POPEN or job is not None):
+        if tied:
+            holder = job or _JOB
+        else:
+            import uuid
+
+            holder = job or JobTie(name=f"Local\\liminal-job-{uuid.uuid4().hex[:16]}", kill_on_close=False)
+    suspended = bool(holder is not None and holder.can_resume())
+    if suspended:
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_SUSPENDED
     child = popen(args, **kwargs)
+    if holder is not None:
+        try:
+            tie = holder.tie(child)
+        finally:
+            if suspended and not holder.resume(child):
+                try:
+                    child.kill()  # never left suspended for good
+                finally:
+                    raise OSError(f"{owner}'s {kind} could not be resumed after it was put in its job: ended")
+        if not tied:
+            tie = f"{tie}; untied: it outlives its starter by design"
+    elif not tied:
+        tie = "untied: it outlives its starter by design"
     pid = getattr(child, "pid", None)
     started = _proc.started(pid) if isinstance(pid, int) and not isinstance(pid, bool) else None
     if started is None:  # no process to tell apart from a later one with its id (ended already, or a stand-in's)
         return child
-    if nt and tied:
-        tie = (job or _JOB).tie(child)
-    elif not tied:
-        tie = "untied: it outlives its starter by design"
     row = Row(pid=pid, started=started, owner=owner, owner_pid=os.getpid(),
               owner_started=_proc.started(os.getpid()), kind=kind, command=[str(a) for a in args], at=time.time(),
               tie=tie)
@@ -718,6 +839,78 @@ def scrub_command(command) -> list[str]:
             continue
         out.append(word)
     return out
+
+
+def stop_event_name(app: str) -> str:
+    """The named event an app waits on for a graceful stop on Windows (1.87.0): Local\\liminal-stop-<app>."""
+    return f"Local\\liminal-stop-{app}"
+
+
+class StopEvent:
+    """An app's stop event on Windows (1.87.0; the shutdown audit of 2026-11-24): a console-less pythonw hears no
+    Ctrl+C and no SIGTERM, and `schtasks /End` kills outright, so liminal-signal sets this event before it ends
+    anything and App.serve, which looks at it, stops in good order. Elsewhere it is never set (SIGTERM is). `k32`: a
+    test's stand-in."""
+
+    def __init__(self, name: str, k32=None):
+        self.name = name
+        self._k32 = k32
+        self._handle = None
+        if os.name == "nt" or k32 is not None:
+            try:
+                k = self._kernel32()
+                self._handle = k.CreateEventW(None, 1, 0, name) or None  # manual reset, not set
+            except (AttributeError, OSError):
+                self._handle = None
+
+    def _kernel32(self):
+        if self._k32 is None:
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.CreateEventW.restype = ctypes.c_void_p
+            k.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
+            k.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            k.WaitForSingleObject.restype = ctypes.c_uint32
+            k.CloseHandle.argtypes = [ctypes.c_void_p]
+            self._k32 = k
+        return self._k32
+
+    def is_set(self) -> bool:
+        if self._handle is None:
+            return False
+        try:
+            return self._kernel32().WaitForSingleObject(self._handle, 0) == 0  # WAIT_OBJECT_0
+        except (AttributeError, OSError):
+            return False
+
+    def close(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            try:
+                self._kernel32().CloseHandle(handle)
+            except (AttributeError, OSError):
+                pass
+
+
+def set_stop_event(name: str, k32=None) -> bool:
+    """The stop event `name` set, when an app holds it (OpenEventW, SetEvent). Whether one was."""
+    if os.name != "nt" and k32 is None:
+        return False
+    try:
+        if k32 is None:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenEventW.restype = ctypes.c_void_p
+            k32.OpenEventW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+            k32.SetEvent.argtypes = [ctypes.c_void_p]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = k32.OpenEventW(0x0002, 0, name)  # EVENT_MODIFY_STATE
+        if not handle:
+            return False
+        try:
+            return bool(k32.SetEvent(handle))
+        finally:
+            k32.CloseHandle(handle)
+    except (AttributeError, OSError):
+        return False
 
 
 def install_handlers(target, signals_=None) -> Callable[[], None]:
