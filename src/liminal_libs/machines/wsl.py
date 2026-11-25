@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import layout, proctree
+from ..apps import asking
+from ..instances import Refusal
 from ..docker import Instance
 from .plugin import LIMINAL_PREFIX, MachinePlugin, liminal_scoped
 from .terminal import inherited  # a child's environment: no LIMINAL_* name (the review of 2026-11-21, item 26)
@@ -110,6 +112,51 @@ ENGINE_SCRIPT = (
 
 class WslError(Exception):
     pass
+
+
+# 1.96.0 (service-containers-networking §5.4, §8.5; the design's §7 rows 21 and 22): the hooks a container plugin asks
+HOLD, LET_GO, WSL_NETWORK = "hold", "let_go", "wsl_network"
+# the bridges an engine makes in WSL's one network, seen from any distribution in it
+ENGINE_LINKS = ("docker0", "br-", "lxdbr0", "incusbr0", "cni0", "flannel")
+ACCEPT_HELD, ACCEPT_ENGINE = "accept_held", "accept_second_engine"
+
+
+class Asked(ValueError):
+    """A change refused until accepted in so many words (`accept`: the argument; the page asks a second time)."""
+
+    def __init__(self, message: str, accept: str):
+        super().__init__(message)
+        self.accept = accept
+
+
+def wslconfig_mode(text: str) -> str:
+    """The networking mode a .wslconfig sets ([wsl2] networkingMode): nat when it sets none."""
+    section = ""
+    for line in str(text or "").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+        elif section == "wsl2" and "=" in line:
+            k, v = (x.strip() for x in line.split("=", 1))
+            if k.lower() == "networkingmode" and v:
+                return v.lower()
+    return "nat"
+
+
+def eth0_of(text: str) -> tuple[str, str]:
+    """(the address, its prefix) from `ip -4 -o addr show dev eth0`: ("172.31.5.9", "172.31.5.9/20")."""
+    m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", str(text or ""))
+    return (m.group(1), f"{m.group(1)}/{m.group(2)}") if m else ("", "")
+
+
+def engine_links(text: str) -> list[str]:
+    """The engines' bridges among `ip -o link show`'s interfaces."""
+    out = []
+    for line in str(text or "").splitlines():
+        m = re.match(r"\s*\d+:\s*([^:@\s]+)", line)
+        if m and m.group(1).startswith(ENGINE_LINKS):
+            out.append(m.group(1))
+    return out
 
 
 class UninstallRefused(ValueError):
@@ -501,8 +548,16 @@ class WslDistribution(MachinePlugin):
     space_gb = 4.0  # the free space its install needs on the data folder's drive
     architectures = ("AMD64", "x86_64", "ARM64", "aarch64")  # the processors its system is built for
     HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall",
-             "start_install", "pause_install", "stop_install", "rename_install")
-    READ_HOOKS = ("check", "services")  # its reads beside MachinePlugin's (Plugin.READ_HOOKS): the rest change or start
+             "start_install", "pause_install", "stop_install", "rename_install", HOLD, LET_GO, WSL_NETWORK)
+    READ_HOOKS = ("check", "services", WSL_NETWORK)  # its reads beside MachinePlugin's: the rest change or start
+    # 1.96.0: a container plugin holds a distribution up while a service runs in it, and lets it go (PLUGIN_ONLY);
+    # any plugin reads WSL's one network (a firewall: a route's next hop); every change is the page's alone
+    # (service-containers-networking §8.1, step 0: before, any plugin could ask uninstall with accept_risk set)
+    SERVICE_HOOKS = (HOLD, LET_GO, WSL_NETWORK)
+    PLUGIN_ONLY_HOOKS = (HOLD, LET_GO)
+    PAGE_ONLY_HOOKS = ("uninstall", "update_packages", "terminal", "pick_install", "start_install", "pause_install",
+                       "stop_install", "rename_install")
+    WSLCONFIG = None  # a test's path for .wslconfig; None: %USERPROFILE%\.wslconfig
     DISTRIBUTION_VAR = ""  # the variable overriding the WSL name (WSL_UBUNTU_DISTRIBUTION)
     USER_VAR = ""  # the variable overriding the user (WSL_UBUNTU_USER)
     INTERNAL_NOTES = ("A rename of its own install (rename_install) is kept through its login as its DISTRIBUTION_VAR "
@@ -524,6 +579,7 @@ class WslDistribution(MachinePlugin):
         self._pick = {"name": ""}  # the install chosen (pick_install); a dict, so the registry's copies share it
         self._tasks = {"kept": {}, "paused": {}}  # the sessions holding started installs up; the services paused, by install
         self._engine_seen: dict | None = None  # Docker inside as last seen while it ran (a stopped one is not asked)
+        self._holds = {"by": {}, "sessions": {}, "lock": threading.Lock()}  # 1.96.0: who holds which install up
 
     def install_script(self) -> str:
         """The family's Docker install, from the plugin's `docker_repository` (WslError: no recipe for the
@@ -726,11 +782,16 @@ class WslDistribution(MachinePlugin):
         if target is None:
             raise LookupError(f"no {self.system_name} install named {name!r} here")
         ours = target.name.lower() == self.distribution_name.lower()
+        goes = self.goes_with(target.name)  # 1.96.0: the services, their data and their networks that go with it
         if not ours and accept_risk is not True:
             raise UninstallRefused(
                 f"{target.name} is yours, not Liminal's: unregistering it deletes its disk ({size_words(target.size)}) and everything "
                 "in it, your files, your packages and your home folder, for good"
-                + (f"; its Store app ({target.package}) stays installed, and opening it installs a fresh one" if target.package else ""))
+                + (f"; its Store app ({target.package}) stays installed, and opening it installs a fresh one" if target.package else "")
+                + (f"; with it go {goes}" if goes else ""))
+        if ours and goes and accept_risk is not True:
+            raise UninstallRefused(f"{target.name} holds Liminal's services: unregistering it deletes them, their data "
+                                   f"and what reaches them, for good: {goes}")
         self.wsl.unregister(target.name)
         self._tasks["paused"].pop(target.name.lower(), None)
         self._tasks["kept"].pop(target.name.lower(), None)
@@ -766,13 +827,20 @@ class WslDistribution(MachinePlugin):
         """The services this plugin paused in `name` (frozen while it runs); [] when none."""
         return list(self._tasks["paused"].get(name.lower(), []))
 
-    def start_install(self, name) -> dict:
+    def start_install(self, name, accept_second_engine=False) -> dict:
         """An install started and kept running (WSL stops one with no session: a windowless session holds it, until Stop);
         one paused, its services resumed. The user's own too: the user asked. A running one is thawed whatever this
         plugin remembers: what it paused is kept in memory only, and a pause from before the plugin restarted was left
         frozen with Start saying it runs already (the review of 2026-11-21, item 26); THAW_SCRIPT thaws every service
         still frozen."""
         target = self._install(name)
+        if target.state != "Running" and target.name.lower() == self.distribution_name.lower():
+            others = self.engines_elsewhere()  # N10: one container engine in WSL's one network
+            if others and accept_second_engine is not True:
+                raise Asked(f"{', '.join(others)} runs a container engine in WSL's one network, which every "
+                            f"distribution shares: {target.name} starts its own Docker at its start, and two engines "
+                            "in one network cut each other off (Docker's forwarding drop, one docker0 for two daemons)",
+                            ACCEPT_ENGINE)
         if target.state == "Running":
             named = self.paused(target.name)
             try:
@@ -813,12 +881,17 @@ class WslDistribution(MachinePlugin):
                 "ok": bool(frozen) or not failed,
                 "lines": ([", ".join(frozen)] if frozen else []) + ([f"not paused: {', '.join(failed)}"] if failed else [])}
 
-    def stop_install(self, name) -> dict:
-        """An install stopped (`wsl --terminate`): every program in it ends; Start brings it back."""
+    def stop_install(self, name, accept_held=False) -> dict:
+        """An install stopped (`wsl --terminate`): every program in it ends; Start brings it back. One a service holds
+        up (1.96.0) only once accepted in so many words (`accept_held`), the services that stop with it named."""
         target = self._install(name)
         if target.state != "Running":
             return {"said": f"{target.name} is stopped already", "ok": True}
+        held = self.held_by(target.name)
+        if held and accept_held is not True:
+            raise Asked(f"{target.name} holds services up for {', '.join(held)}: they stop with it", ACCEPT_HELD)
         self.wsl.terminate(target.name)
+        self._drop_holds(target.name)
         self._tasks["paused"].pop(target.name.lower(), None)
         held = self._tasks["kept"].pop(target.name.lower(), None)
         if held is not None and hasattr(held, "poll"):
@@ -930,7 +1003,10 @@ class WslDistribution(MachinePlugin):
 
     def task_forms(self) -> list[dict]:
         """The tasks' forms: Stop (confirmed), Rename (confirmed) and Uninstall (install_forms)."""
-        return [{"id": "stop", "hook": "stop_install", "title": "Stop a distribution", "fields": [{"name": "name", "label": "Distribution", "type": "fixed"}],
+        return [{"id": "stop", "hook": "stop_install", "title": "Stop a distribution",
+                 "fields": [{"name": "name", "label": "Distribution", "type": "fixed"},
+                            {"name": ACCEPT_HELD, "type": "accept", "title": "Stop the services it holds?", "yes": "Stop them too",
+                             "words": "Liminal's services run in it: they stop with it, and Start brings none of them back."}],
                  "confirm": {"title": "Stop {name}?", "words": "Every program running in {name} ends now (wsl --terminate); Start brings it back.",
                              "yes": "Stop it"}},
                 {"id": "rename", "hook": "rename_install", "title": "Rename a distribution",
@@ -1101,7 +1177,13 @@ class WslDistribution(MachinePlugin):
                     self.wsl.script(name, self.install_script(), timeout=INSTALL_TIMEOUT_S, out=stream)
                     step("docker", True, f"Docker installed by {self.family} from Docker's own repository")
             if "engine" in wanted:
-                begin("engine", "starting the engine and enabling it at boot")
+                others = self.engines_elsewhere()
+                if others:
+                    step("engine", False, f"{', '.join(others)} runs a container engine in WSL's one network: one engine "
+                                          "there at a time (stop it first)")
+                    return done
+                begin("engine", "starting the engine and enabling it at boot (Docker changes the network every WSL "
+                                "distribution shares, your own Ubuntu's too)")
                 how = self.wsl.script(name, ENGINE_SCRIPT, timeout=600).strip().splitlines()
                 step("engine", True, f"the engine started and enabled ({how[-1] if how else 'started'})")
             if "user" in wanted:
@@ -1111,6 +1193,145 @@ class WslDistribution(MachinePlugin):
         except WslError as e:
             step(wanted[len(done)] if len(done) < len(wanted) else "setup", False, str(e))
         return done
+
+    # -- holds, WSL's one network and its one engine (1.96.0) ------------------------------------------------------------
+    def _holder(self, hook: str) -> str:
+        who = asking.asker()
+        if who is None or who == asking.PAGE:
+            raise Refusal(f"{self.name}'s {hook} is asked by a container plugin alone, not by {who or 'no one'}")
+        return str(who)
+
+    def held_by(self, name: str) -> list[str]:
+        with self._holds["lock"]:
+            return sorted(self._holds["by"].get(str(name).lower(), set()))
+
+    def _drop_holds(self, name: str) -> None:
+        with self._holds["lock"]:
+            self._holds["by"].pop(str(name).lower(), None)
+            session = self._holds["sessions"].pop(str(name).lower(), None)
+        if session is not None and hasattr(session, "poll"):
+            session.poll()
+
+    def hold(self, distribution) -> dict:
+        """An install held up while a service of the asker runs in it: a windowless session of its own keeps it
+        running (WSL stops one with none), once for every holder. A hold never starts one that is stopped (the user's
+        rule: an engine that is off is never started): it is refused, naming its page. A container plugin's alone."""
+        who = self._holder(HOLD)
+        try:
+            target = self._install(distribution)
+        except LookupError as e:
+            raise Refusal(str(e)) from None
+        key = target.name.lower()
+        if target.state != "Running":
+            raise Refusal(f"{target.name} is stopped: start it on {self.title or self.name}'s page (a hold never "
+                          "starts a distribution)")
+        with self._holds["lock"]:
+            holders = self._holds["by"].setdefault(key, set())
+            first = not holders and key not in self._holds["sessions"] and key not in self._tasks["kept"]
+            holders.add(who)
+        if first:
+            d = self.wsl.distribution(target.name)  # read again just before: a stopped one is never asked anything
+            if d is None or not _running(d):
+                with self._holds["lock"]:
+                    self._holds["by"].get(key, set()).discard(who)
+                raise Refusal(f"{target.name} stopped meanwhile: start it on {self.title or self.name}'s page")
+            session = self.wsl.keep_running(target.name)
+            with self._holds["lock"]:
+                self._holds["sessions"][key] = session
+        return {"said": f"{target.name} held up for {who}", "ok": True, "holders": self.held_by(target.name)}
+
+    def let_go(self, distribution) -> dict:
+        """The asker's hold let go; with the last holder gone, the session the holds kept ends (the distribution then
+        stops as WSL stops one nobody uses; one you started from the page runs until Stop). Nothing is stopped."""
+        who = self._holder(LET_GO)
+        key = str(distribution or "").strip().lower()
+        with self._holds["lock"]:
+            holders = self._holds["by"].get(key, set())
+            holders.discard(who)
+            last = not holders
+            session = self._holds["sessions"].pop(key, None) if last else None
+            if last:
+                self._holds["by"].pop(key, None)
+        if session is not None and hasattr(session, "terminate"):
+            try:
+                session.terminate()  # this plugin's own wsl.exe session alone: the distribution is not stopped
+            except OSError:
+                pass
+        return {"said": f"{distribution} let go by {who}", "ok": True, "holders": self.held_by(key)}
+
+    def _wslconfig(self) -> Path:
+        if self.WSLCONFIG is not None:
+            return Path(self.WSLCONFIG)
+        return Path(os.environ.get("USERPROFILE") or Path.home()) / ".wslconfig"
+
+    def wsl_network(self) -> dict:
+        """WSL's one network, read: the mode as set (.wslconfig, read as a file), the distributions that run (wsl
+        --list, which starts nothing), and, only while its own distribution runs, the VM's address (eth0), the engines'
+        bridges seen there and whether its own Docker answers. It never runs anything in a stopped distribution, nor in
+        any but its own (never in yours)."""
+        try:
+            text = self._wslconfig().read_text(encoding="utf-8", errors="replace")
+            mode, said = wslconfig_mode(text), "as .wslconfig sets it"
+        except OSError:
+            mode, said = "nat", "WSL's default: no .wslconfig"
+        listed = self.wsl.distributions() if self.wsl.here else []
+        running = [d.name for d in listed if _running(d)]
+        own = self.distribution_name
+        out = {"plugin": self.name, "distribution": own, "mode": mode, "mode_words": said, "running": running,
+               "vm_address": "", "prefix": "", "links": [], "engines": {}, "why": ""}
+        if own not in running:
+            out["why"] = f"{own} is stopped: its address is read only while it runs (a look never starts it)"
+            return out
+        try:
+            out["vm_address"], out["prefix"] = eth0_of(self.wsl.run(own, "ip", "-4", "-o", "addr", "show", "dev",
+                                                                    "eth0", timeout=30))
+            out["links"] = engine_links(self.wsl.run(own, "ip", "-o", "link", "show", timeout=30))
+        except WslError as e:
+            out["why"] = f"{own}'s network could not be read: {str(e)[:200]}"
+        try:
+            self.wsl.run(own, "docker", "info", "--format", "{{.ServerVersion}}", timeout=30)
+            out["engines"][own] = True
+        except WslError:
+            out["engines"][own] = False
+        if mode != "nat":
+            out["why"] = f"WSL runs in {mode} mode: there is no VM address to route to"
+        return out
+
+    def engines_elsewhere(self) -> list[str]:
+        """The other WSL plugins' distributions running a container engine now (their wsl_network): N10's one engine."""
+        from . import asks
+
+        out = []
+        for _name, answer, _e in asks.others(self, WSL_NETWORK):
+            if isinstance(answer, dict):
+                out += [d for d, on in dict(answer.get("engines") or {}).items()
+                        if on and d.lower() != self.distribution_name.lower()]
+        return sorted(set(out))
+
+    def goes_with(self, name: str) -> str:
+        """In words, what goes with an install's uninstall: the services the container plugins place in it and the
+        networks the firewalls keep for them (their segments, routes and proxies); "" for none."""
+        from . import asks
+
+        targets, services = set(), []
+        for plugin, answer, _e in asks.others(self, "hosting"):
+            if not isinstance(answer, dict):
+                continue
+            ids = {str(t.get("id")) for t in answer.get("targets") or [] if str(t.get("wsl") or "").lower() == name.lower()}
+            targets |= ids
+            services += [f"{s.get('sid')} ({plugin})" for s in answer.get("services") or [] if str(s.get("target")) in ids]
+        nets = []
+        for plugin, answer, _e in asks.others(self, "network_host"):
+            for s in (answer or {}).get("segments") or [] if isinstance(answer, dict) else []:
+                if s.get("target") in targets:
+                    nets.append(f"{s.get('sid')}'s segment {s.get('prefix')}"
+                                + (" and its route" if s.get("route") else "")
+                                + (f" and {s.get('exposed')} port(s) open to your network" if s.get("exposed") else "")
+                                + f" ({plugin}: Withdraw… there afterwards)")
+        held = self.held_by(name)
+        parts = ([f"the services {', '.join(services)}"] if services else []) + nets + (
+            [f"the holds of {', '.join(held)}"] if held else [])
+        return "; ".join(parts)
 
     def run(self, *command: str, user: str | None = None, stdin: str | None = None, timeout: float = TIMEOUT_S) -> str:
         """A command in its own distribution, run as given with no shell between, as `user` (the distribution's default

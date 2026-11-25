@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.96.0 (2026-11-25)
+
+The firewall side of the services' networking, and the WSL plugins' hold: the last piece before a service installs
+(service-containers-networking-2026-11-23.md §5 to §9 and §14, decision 2 as (b) with (b1); SERVICE-INTERFACE.md §6
+and §9). Additive: every new word has a default, so a 1.95.0 plugin runs as it did; nothing renamed or removed.
+- **The network database** (`liminal_libs/netbook.py`, `NetBook`): one SQLite file per system, network/network.db in
+  the data folder, beside hosts.db: `allocations` (each prefix handed out or found, its addresses, route and openings,
+  marked freed, never deleted), `addresses` (the DHCP records) and `changes` (each change in words). A plan's hold is in
+  memory alone; each call opens and closes the file; a read makes none; another system's drive is never written; 0700
+  and 0600 off Windows. A firewall plugin hands one to `NetworkHost(book=...)` in place of MemoryBook.
+- **The DHCP records** (N21): `leases` and the Networks tab read the granted container plugins' `segments` (never on a
+  timer) and record every member, who gave its address, its MAC, since when and when last seen; one no longer read is
+  marked gone, and only Forget… takes it away. `reverse_name` answers a found container with its engine's own name,
+  `found: true`, never named in your domain (N15). MemoryBook gains the same `seen`, `members`, `forget_members`.
+- **No domain until you set one:** `NetworkHost.DOMAIN_DEFAULT` (home.arpa, as before; a firewall plugin says None, the
+  user's rule that Liminal picks none for you). With none set, an install's or an addition's network plan is refused,
+  naming the Networks tab, so the container plugin's plan is refused too (N12: a firewall routes and names, or no plan).
+- **An Expose's words from the firewall:** `lan_detail(sid, port, address)` lays the subclass's detail (firewall-windows:
+  the port proxy's listen address and the reserved address it connects to) into each step and the plan; Conceal, Remove
+  and Withdraw take away exactly what the allocation records as opened; an Expose of what is open already is `nothing`.
+  ContainerHost's Want ports also carry the container's own port and its part.
+- **The Networks tab** (`container_networks`, `NetworkHost.TABS`: a subclass with tabs spreads both): Segments by stack
+  (route current or stale, proxies), Waiting for your answer (Approve…, Decline), Container plugins (Let it…, Stop
+  letting it…), Domain (Change…), Names, DHCP records, Gone segments (Forget…), Leftovers (Remove…), and Re-point….
+- **The page's own changes,** page-only and carried out at once through `run_steps` (UAC on Windows), refused while a
+  network work runs on that stack: `repoint` (every stale route and proxy made again, one elevation), `withdraw` (a
+  segment's route and proxies taken away, its records kept, marked gone), `remove_leftover` (what `made_here()` holds
+  that no allocation accounts for: `leftovers`) and `forget_records`. `network_host` also says the segments it keeps and
+  whether a domain is set.
+- **The WSL base** (`machines/wsl.py`): `hold` and `let_go` (PLUGIN_ONLY: a container plugin's alone): one windowless
+  session of its own holds a running distribution up for all its holders, ended with the last; a hold never starts a
+  stopped distribution (the user's rule: an engine that is off is never started) and is refused, naming its page.
+  `wsl_network` (a read): the mode .wslconfig sets, the distributions running, and, only while its own runs, the VM's
+  eth0 address, the engines' bridges and whether its own Docker answers; nothing run in a stopped distribution or in
+  yours. The one-engine check (N10): Start of its own distribution while another WSL plugin's runs an engine asks
+  `accept_second_engine`, and the engine step refuses. Stop of a held distribution asks `accept_held`, naming the
+  holders; Uninstall of Liminal's own distribution asks `accept_risk` when services, their networks or holds go with it
+  (`goes_with`), and the user's own names them too. Every change of the WSL plugins is page-only (step 0, §8.1).
+- `machines/asks.py`: another plugin asked through the app, for bases that are not a ContainerHost.
+- Tests: tests/test_network_196.py (21), the conformance sequence among them with a firewall that has no default domain
+  and gives its own Expose words, on the network database.
+
 ## 1.95.0 (2026-11-25)
 
 The gaps the container-plugin builders found in the one "run a service" interface (Windows containers 0.3.0, LXD

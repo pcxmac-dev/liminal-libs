@@ -1322,8 +1322,11 @@ class ContainerHost(MachinePlugin):
         lan_ports = [x for p in spec.parts if p.name in adds for x in p.ports if x.lan] if adds else (
             spec.lan_ports() if spec else [])
         ports = []
+        part_of = {(x.name, x.host): q.name for q in spec.parts for x in q.ports} if spec else {}
         for p in lan_ports:
-            row = {"name": p.name, "host": p.host, "protocol": p.protocol}
+            # 1.96.0: the container's own port and its part too, where an Expose's proxy connects (its address)
+            row = {"name": p.name, "host": p.host, "protocol": p.protocol, "container": p.container,
+                   "part": part_of.get((p.name, p.host), "")}
             try:
                 here = rt.here(p.host) if rt is not None else ""
             except Exception:  # noqa: BLE001 - not said
