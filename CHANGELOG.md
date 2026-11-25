@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.88.1 (2026-11-24)
+
+- `mongo.keep` reads `KEEP_SECONDS` when it runs, as it did before 1.87.0: its new `every` defaulted to the value
+  at import, so the module's KEEP_SECONDS set afterwards went unheard (the charts' keeper test, which sets it to
+  0.05 s, waited 5 s a look, 15 s in all). `every=` given still wins.
+
 ## 1.88.0 (2026-11-24)
 
 - Preferences and licences through the login (Monday list item 21; the user, 2026-11-19: "preferences, keys,

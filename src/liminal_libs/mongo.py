@@ -243,7 +243,7 @@ GONE_GRACE_S = 10.0  # ... and for at least this long
 
 
 def keep(data_dir: Path, stop: threading.Event, log=print, *, starter=None, answers=None, ender=None,
-         alive=None, started_of=None, clock=time.monotonic, every: float = KEEP_SECONDS) -> None:
+         alive=None, started_of=None, clock=time.monotonic, every: float | None = None) -> None:
     """The keeper's work: the server started (or the one running adopted: an orphan a keeper before left is never
     started twice), kept until the clients are gone (`stop`) or it is gone (`mongo stop` by hand), then shut down
     cleanly (stop), whether it started it or adopted it. 1.87.0 (the failed-tasks log, 2026-11-23: at 100% CPU one
@@ -254,6 +254,9 @@ def keep(data_dir: Path, stop: threading.Event, log=print, *, starter=None, answ
 
     starter, answers, ender = starter or start, answers or running, ender or globals()["stop"]
     alive, started_of = alive or proc.pid_alive, started_of or proc.started
+    # read when it runs, as before 1.87.0 (1.88.1): a default of KEEP_SECONDS was fixed at import, and the module's
+    # KEEP_SECONDS set afterwards (the charts' keeper test sets it to 0.05) was no longer heard
+    every = KEEP_SECONDS if every is None else every
     pid = starter(data_dir)
     born = started_of(pid) if pid else None
     log(f"host mongo: server {'started' if pid else 'running already: adopted'} on {HOST}:{port()}")

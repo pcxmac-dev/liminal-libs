@@ -347,6 +347,20 @@ def test_an_orphan_server_is_adopted_not_started_twice():
     assert said[0].startswith("host mongo: server running already: adopted") and ended == [True]
 
 
+def test_the_keepers_look_is_keep_seconds_as_set_when_it_runs(monkeypatch):
+    # 1.88.1: the default was fixed at import (1.87.0), and a KEEP_SECONDS set later was not heard
+    asked = []
+
+    class Stop:
+        def wait(self, timeout=None):
+            asked.append(timeout)
+            return True  # its clients are gone at the first look
+    monkeypatch.setattr(mongo, "KEEP_SECONDS", 0.05)
+    mongo.keep(Path("data"), Stop(), lambda m: None, starter=lambda d: None, answers=lambda: True,
+               ender=lambda: None, alive=lambda pid: False, started_of=lambda p: 7)
+    assert asked == [0.05]
+
+
 def test_mongo_stop_waits_for_the_server_then_kills_its_tree():
     clock = FakeClock(0.0)
     answering, killed = [True] * 200, []
