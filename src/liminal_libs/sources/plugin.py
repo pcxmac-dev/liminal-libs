@@ -419,6 +419,157 @@ class PlatformPlugin(Plugin):
     SYSTEM = "platform"
 
 
+# -- the login's plugins (liminal-libs 1.92.0; Monday list item 12, item 30 step 8) ---------------------------------------
+# The user, 2026-11-15: "also create a plugin for the login app that is used to connect to or examine the datastore that
+# has user credentials and other keys related to the user"; "the login plugin can be used per user, but also in a global
+# sense"; "let the secret user be the admin, and allow secret to alter the global page/tab of the plugin and where it
+# points to to get user/keystore data". A login plugin is attached by the login app (liminal-login's LoginApp) and sees
+# only what the login hands it for the person asking: a Viewer, made for each request. A Viewer carries no value, no
+# password and no key: a keystore's pairs by name, kind and dates, never another user's.
+
+class LoginRefusal(ValueError):
+    """A login plugin's answer refused, in its own words: `status` the HTTP status it is answered with; `accept`, the
+    argument that, sent true with the same change, makes it anyway (the page asks it as a second question)."""
+
+    def __init__(self, words: str, status: int = 400, accept: str | None = None):
+        super().__init__(words)
+        self.words = str(words)
+        self.status = int(status)
+        self.accept = accept
+
+    def answer(self) -> dict:
+        out = {"error": self.words}
+        if self.accept:
+            out["accept"] = self.accept
+        return out
+
+
+@dataclass(frozen=True)
+class LoginTab:
+    """One tab of a login plugin's page: its id in the address (url-safe), its title, and whether only the login's admin
+    may change what it shows (`admin`: anyone signed in sees it, only the admin's changes are taken). Its page is the
+    plugin's `page(tab, viewer)`, a change on it the plugin's `change(tab, viewer, body)`."""
+
+    id: str
+    title: str
+    admin: bool = False
+
+    def __post_init__(self) -> None:
+        import re
+
+        if not isinstance(self.id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", self.id):
+            raise ValueError(f"a tab's id is url-safe: letters, digits, - and _, 1 to 40 of them (not {self.id!r})")
+        if not isinstance(self.title, str) or not self.title.strip():
+            raise ValueError(f"tab {self.id!r} has no title")
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "title": self.title, "admin": self.admin, "hook": "page"}
+
+
+@dataclass(frozen=True)
+class Keystore:
+    """One user's keystore as a login plugin is shown it: whose it is, where it is (`where`, its file; for a user of
+    another login their login's address), how it is reached (`method`: "file", this machine's own disk; "remote", their
+    own login), its size in bytes when it can be told, and its pairs by name, kind, label and dates: never a value."""
+
+    owner: str
+    where: str
+    method: str = "file"
+    reached: str = ""  # in words
+    size: int | None = None
+    pairs: tuple = ()  # each {name, kind, label, createdAt, updatedAt}: nothing else is kept in it
+
+    def __post_init__(self) -> None:
+        allowed = ("name", "kind", "label", "createdAt", "updatedAt")
+        clean = tuple(MappingProxyType({k: p.get(k) for k in allowed if k in p}) for p in self.pairs
+                      if isinstance(p, Mapping))
+        object.__setattr__(self, "pairs", clean)  # a value handed in by mistake never reaches the plugin
+
+    def as_dict(self) -> dict:
+        return {"owner": self.owner, "where": self.where, "method": self.method, "reached": self.reached,
+                "size": self.size, "pairs": [dict(p) for p in self.pairs]}
+
+
+@dataclass(frozen=True)
+class UsersPlace:
+    """Where a login keeps its users and their keystores: its own folder (`own`), or a central database many logins
+    point to (`pointer`, {"engine", "instance"}: one of the database plugins' instances). `users_file` is the users'
+    file and `stores` the folder of each user's keystore, where they are files; `users` how many users are there and
+    `names` theirs (no more of them); `note` what else is to be said (a pointer that could not be reached at this
+    start, for one)."""
+
+    own: bool = True
+    users_file: str = ""
+    stores: str = ""
+    folder: str = ""
+    pointer: Mapping | None = None
+    users: int | None = None
+    names: tuple = ()
+    note: str = ""
+
+    def as_dict(self) -> dict:
+        return {"own": self.own, "usersFile": self.users_file, "stores": self.stores, "folder": self.folder,
+                "pointer": dict(self.pointer) if self.pointer else None, "users": self.users, "names": list(self.names),
+                "note": self.note}
+
+
+@dataclass(frozen=True)
+class Viewer:
+    """The person a login plugin answers, as the login made them for one request: their name, whether they are the
+    login's admin (its secret user), the login of theirs when another's (`remote`, its address), their own keystore
+    (None for a user of another login: theirs is at their own login), where the login keeps its users (`place`), and
+    what the plugin keeps through the login's own settings (`kept`, the plugin's alone)."""
+
+    name: str
+    admin: bool = False
+    remote: str = ""
+    keystore: Keystore | None = None
+    place: UsersPlace = field(default_factory=UsersPlace)
+    kept: Mapping = field(default_factory=dict)
+
+
+class LoginPlugin(Plugin):
+    """The abstract base of the plugins of the login app (liminal-libs 1.92.0): attached by the login (a LoginApp, on
+    its own or as the object an app holds), never by the integrator, the platform or the charts. Its page has the
+    tabs it declares (`TABS`, each a LoginTab), drawn on the login's page beside its External and Internal API tabs.
+
+    Its hooks:
+    - `page(tab, viewer)`: what the tab shows the person asking (`viewer`, a Viewer): a dict of `title`, `note`,
+      `facts` ([{label, value, mono}]) and `tables` ([{title, note, columns: [{key, title}], rows: [{...}], empty}]),
+      a row's `act` ({label, body, ask}) a change the page may send. A read: it never changes anything.
+    - `change(tab, viewer, body)`: a change asked on the tab. The login refuses one on an admin tab to anyone but its
+      admin before it is asked. It answers a dict; its `keep` ({name: value, or None to forget it}) is kept by the
+      login in its own settings for this plugin, and handed back as `viewer.kept`. A refusal is a LoginRefusal.
+    - `place(kept)`: where the login keeps its users, by what this plugin keeps (a UsersPlace), or None when it says
+      nothing of that: asked by the login as it starts, before anything is attached. A read.
+    A login plugin never sees a password, a vault key or a pair's value: the login hands it none."""
+
+    CONTRACT = True
+    SYSTEM = "login"
+    KIND = "login"
+    HOOKS = ("page", "change", "place", "scan", "settings")
+    READ_HOOKS = ("page", "place")
+    PAGE_ONLY_HOOKS = ("page", "change")  # asked by the login for its page: never by another plugin
+    TABS: tuple = ()  # its tabs (LoginTab), the first its Main
+    ICON = "plug"
+
+    def page(self, tab: str, viewer: Viewer) -> dict:
+        """What the tab `tab` shows the person `viewer` is (a read): the contract has no page."""
+        raise NotImplementedError(f"{self.name}: no page")
+
+    def change(self, tab: str, viewer: Viewer, body: Mapping) -> dict:
+        """A change asked on the tab `tab`, its answer's `keep` kept by the login: the contract's changes nothing."""
+        raise LoginRefusal(f"{self.name}: nothing on its {tab} tab can be changed", 404)
+
+    def place(self, kept: Mapping) -> "UsersPlace | None":
+        """Where the login keeps its users by what this plugin keeps (a read, as the login starts): the contract's says
+        nothing of that (None)."""
+        return None
+
+    def tab(self, tab_id: str) -> "LoginTab | None":
+        return next((t for t in self.TABS if isinstance(t, LoginTab) and t.id == tab_id), None)
+
+
 class FeedPlugin(IntegratorPlugin):
     """A feed's plugin: everything the app needs to know about a data provider (sources/registry.py
     says what for). Its hooks, each with the contract's default here: `build` (its DataSource),
