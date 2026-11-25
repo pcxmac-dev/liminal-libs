@@ -150,7 +150,8 @@ def test_an_app_notes_its_pages_requests_and_its_plugins_attached_asked_and_deta
     assert nodes["demo"]["role"] == "app" and nodes["login"]["role"] == "login" and nodes["acme"]["role"] == "plugin"
     assert nodes["acme"]["attached"] is True and nodes["page"]["role"] == "caller" and nodes["client"]["role"] == "caller"
     assert snap["app"] == "demo" and snap["classes"] == CLASSES and len(snap["recent"]) <= 50
-    assert app.detach("acme") and app.traffic.recent()[0]["what"] == "detached"
+    # its stop let every plugin go (1.86.0: terminate), noted as any detach
+    assert not app.detach("acme") and app.traffic.recent()[0]["what"] == "detached"
 
 
 def test_a_request_is_in_the_picture_before_it_is_answered(tmp_path, monkeypatch):

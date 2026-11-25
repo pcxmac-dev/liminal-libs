@@ -28,7 +28,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .. import jsonread
+from .. import lifecycle
 from .. import web
+from ..lifecycle import Signal
 from ..ui import STATIC as UI_STATIC
 from . import asking
 from .codebase import Codebase
@@ -43,6 +45,14 @@ KEPT_INTERNAL = 256  # plugins' Internal APIs an app keeps at the most (App.plug
 SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
 LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
 LOGIN_CLASS = "liminal_login.app:LoginApp"  # the login class an app inherits (liminal-login's), made here when first asked
+# How an app is told to end, and its plugins asked what they are (1.86.0, Monday list item 38; liminal_libs.lifecycle and
+# liminal_libs.stop), for an app that is not a liminal-net node yet: each with the proof of this user's key
+# (lifecycle.PROOF_HEADER: what host.py's pipes and liminal-net's handshake authenticate with), a write with the write
+# header too. Without the proof: 401; a wrong one: 403.
+STOP_PATH = "/api/app/stop"  # TERM: POST {"timeout": s}
+SIGNAL_PATH = "/api/app/signal"  # POST {"signal": "TERM" | "KILL", "timeout": s}
+PROCESSES_PATH = "/api/app/processes"  # GET: what this app's process started (the ledger's rows of it)
+PLUGIN_ASKS = ("status", "interface", "apis", "needs", "processes")  # GET /api/plugins/<name>/<what>: reads alone
 
 
 def _is_login(path: str) -> bool:
@@ -153,6 +163,15 @@ class App:
         self._login_lock = threading.Lock()  # one login object made, however many pages ask at once
         self._login_object = None  # the login it inherits, once made (login_object)
         self._login_missing = False  # the login class could not be had: said once, not tried again
+        # its end (1.86.0, terminate): once begun nothing new is taken; KILL may come while a TERM is under way
+        self._lent: dict[str, object] = {}  # the login each plugin was attached with, by name (attach)
+        self._no_login = None  # the login lent to its plugins when this app was given none (lent_login)
+        self._term_lock = threading.Lock()
+        self._terminating = False
+        self._terminated: dict | None = None  # the report of its end, once ended
+        self._kill_now = threading.Event()
+        self._serving: threading.Event | None = None  # serve's stop, set once it has ended
+        self.stop_timeout = lifecycle.TERM_TIMEOUT_S  # what a TERM gives its plugins and its processes (stop)
 
     # -- the login it inherits: an object here (1.46.0; 1.52.0) -------------------------------------------------------
     def inherits_login(self) -> bool:
@@ -172,7 +191,7 @@ class App:
         if not self.inherits_login():
             return None
         with self._login_lock:
-            if self._login_object is None and not self._login_missing:
+            if self._login_object is None and not self._login_missing and not self._terminating:  # none made once ending
                 try:
                     self._login_object = self.make_login()
                 except Exception as e:  # noqa: BLE001 - not installed, a store that cannot open: the page as without one
@@ -226,34 +245,200 @@ class App:
         login = self.login_object()
         return [login.tray().as_dict()] if login is not None else []
 
-    def login_for(self, name: str):
-        """The login `name` (a plugin, or the app itself by its own name) is lent: the app's; noting what it reads and
-        keeps there when the app traces its login (TRACE_LOGIN)."""
-        if self.login is None or not self.TRACE_LOGIN:
+    def lent_login(self):
+        """The login this app lends its plugins: the one it was given; when it was given none, one that holds no one
+        (authorization.NoLogin), made once, so every plugin attached has a login all the same (1.86.0; the user,
+        2026-11-24: "all the plugins, need a login-app class attached/inherited")."""
+        if self.login is not None:
             return self.login
-        return RecordingLogin(self.login, name, self.traffic)
+        if self._no_login is None:
+            from .authorization import NoLogin
+
+            self._no_login = NoLogin()
+        return self._no_login
+
+    def login_for(self, name: str):
+        """The login `name` (a plugin, or the app itself by its own name) is lent: the app's (lent_login); noting what
+        it reads and keeps there when the app traces its login (TRACE_LOGIN)."""
+        login = self.lent_login()
+        if self.login is None or not self.TRACE_LOGIN:
+            return login
+        return RecordingLogin(login, name, self.traffic)
 
     # -- the plugins attached (the user, 2026-11-06: "the app itself (either chart or integrator) has
     # plugin ABC as well"; "the plugin ABC will enumerate attached plugins and their API") ------------
     def attach(self, plugin) -> dict:
         """A plugin attached to this app: it gets this app and its login (the one way to its keys);
-        returns the interface the plugin offers (what `plugins` enumerates)."""
-        interface = plugin.attach(self, self.login_for(plugin.name))
+        returns the interface the plugin offers (what `plugins` enumerates). A plugin that does not keep the login it
+        was given (its attach put another in its place) is let go again and refused (1.86.0); so is any plugin while
+        the app is ending."""
+        if self._terminating:
+            raise RuntimeError(f"{self.NAME} is ending: {plugin.name} is not attached")
+        login = self.login_for(plugin.name)
+        interface = plugin.attach(self, login)
+        if getattr(plugin, "login", None) is not login:
+            try:
+                plugin.detach()
+            finally:
+                raise RuntimeError(f"{plugin.name} did not keep the login {self.NAME} attached it with: refused")
         self._plugins[plugin.name] = plugin
+        self._lent[plugin.name] = login
         self.traffic.own(plugin, plugin.name)
         self.traffic.record(self.NAME, plugin.name, "attach", "attached")
         self.log(f"{self.NAME}: {plugin.name} attached ({plugin.KIND}; hooks {', '.join(interface['hooks']) or 'none'})")
         return interface
 
     def detach(self, name: str) -> bool:
-        """The plugin of that name let go: it holds this app and its login no more; False when none is attached."""
+        """The plugin of that name let go: it holds this app and its login no more; False when none is attached. An
+        on-demand plugin's last client is its app: what it started (lifecycle.spawn, owned by its name) ends with it,
+        TERM and then KILL at its STOP_DEADLINE_S (1.86.0)."""
         plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
+        self._lent.pop(name, None)
         plugin.detach()
+        lifecycle.end_owned(name, Signal.TERM, lifecycle.deadline_in(lifecycle.stop_deadline(plugin)))
         self.traffic.record(self.NAME, name, "attach", "detached")
         self.log(f"{self.NAME}: {name} detached")
         return True
+
+    # -- its end (1.86.0, Monday list item 38; liminal_libs.lifecycle) ---------------------------------------------
+    def parts(self) -> tuple:
+        """The objects of a platform this app includes besides its login and its plugins (each told a signal after the
+        login, before the plugins): the frame's, none."""
+        return ()
+
+    def owned_apps(self) -> tuple:
+        """The objects of other apps it holds in its process (bound, not linked): told a signal after its plugins. The
+        frame's, none."""
+        return ()
+
+    @property
+    def stopping(self) -> bool:
+        """Whether it is ending: nothing new is taken (a request is answered 503, a plugin is not attached)."""
+        return self._terminating
+
+    def terminate(self, sig=Signal.TERM, timeout: float | None = None) -> dict:
+        """The app ended in good order (TERM) or now (KILL). It refuses new work; passes the signal down to the login it
+        includes, then each platform part (parts), then every plugin attached (each detached after), then every app
+        object it owns (owned_apps); then ends the trees of the processes it started (the ledger's, its own and its
+        plugins'), TERM first and KILL for what is left at `timeout` (KILL: at once); then its server. Each plugin is
+        given its own STOP_DEADLINE_S within `timeout`, and one that misses it is reported and its trees killed.
+        Safe to call twice, from any thread: the second TERM returns the first's report; a KILL while a TERM is under
+        way kills what was started at once. Returns what came of each: {"app", "signal", "objects", "processes"}."""
+        sig = Signal.of(sig)
+        timeout = self.stop_timeout if timeout is None else timeout
+        with self._term_lock:
+            if self._terminated is not None:
+                return self._terminated
+            already = self._terminating
+            self._terminating = True
+            if sig is Signal.KILL:
+                self._kill_now.set()
+        if already:
+            if sig is Signal.KILL:
+                return {"app": self.NAME, "signal": sig.value, "objects": [],
+                        "processes": lifecycle.end_owned(None, Signal.KILL, lifecycle.deadline_in(0))}
+            return {"app": self.NAME, "signal": sig.value, "objects": [], "processes": [], "already": True}
+        deadline = lifecycle.deadline_in(timeout)
+        objects: list[dict] = []
+        now = (lambda: Signal.KILL if self._kill_now.is_set() else sig)
+        self.log(f"{self.NAME}: {sig.value}: its login, its parts, its plugins, then what it started")
+        login = self._login_object
+        if login is not None:
+            objects.append(lifecycle.deliver(login, now(), deadline, sender=self, name="login"))
+        for part in self.parts():
+            objects.append(lifecycle.deliver(part, now(), deadline, sender=self))
+        for name in list(self._plugins):
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                continue
+            own = min(deadline, lifecycle.deadline_in(lifecycle.stop_deadline(plugin)))
+            objects.append(lifecycle.deliver(plugin, now(), own, sender=self, name=name, within=True))
+            if now() is Signal.KILL:
+                self._plugins.pop(name, None)
+                self._lent.pop(name, None)
+                from ..sources.plugin import Plugin
+
+                if isinstance(plugin, Plugin):
+                    Plugin.detach(plugin)  # let go without its own detach, which may wait
+            else:
+                try:
+                    self.detach(name)
+                except Exception as e:  # noqa: BLE001 - the others are detached all the same
+                    objects.append({"name": name, "how": "failed", "why": f"detach: {type(e).__name__}: {e}"})
+        for other in self.owned_apps():
+            objects.append(lifecycle.deliver(other, now(), deadline, sender=self))
+        processes = lifecycle.end_owned(None, now(), deadline)
+        self._end_server()
+        with self._login_lock:
+            self._login_object = None
+        report = {"app": self.NAME, "signal": sig.value, "objects": objects, "processes": processes}
+        with self._term_lock:
+            self._terminated = report
+        if self._serving is not None:
+            self._serving.set()
+        return report
+
+    def signal(self, sig, deadline: float, sender=None) -> dict:
+        """This app as an object another holds (the login an app includes, an app bound in its process): TERM, its
+        own stop (`close` where it has one, which stops it), so a subclass's own end runs; KILL, terminate now."""
+        sig = Signal.of(sig)
+        if sig is Signal.KILL:
+            return self.terminate(Signal.KILL, 0)
+        self.stop_timeout = lifecycle.left(deadline)
+        closing = getattr(self, "close", None)
+        (closing if callable(closing) else self.stop)()
+        return self._terminated or {"app": self.NAME, "signal": sig.value}
+
+    def signal_plugin(self, name: str, sig) -> dict:
+        """One attached plugin told `sig` by this app (the one way a signal reaches a plugin: through its app), then let
+        go; within its STOP_DEADLINE_S, KILL of its trees past it."""
+        sig = Signal.of(sig)
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            raise LookupError(f"no plugin {name!r} is attached to {self.NAME}")
+        deadline = lifecycle.deadline_in(lifecycle.stop_deadline(plugin))
+        out = lifecycle.deliver(plugin, sig, deadline, sender=self, name=name, within=True)
+        if sig is Signal.KILL:
+            self._plugins.pop(name, None)
+            self._lent.pop(name, None)
+            from ..sources.plugin import Plugin
+
+            if isinstance(plugin, Plugin):
+                Plugin.detach(plugin)
+            out["processes"] = lifecycle.end_owned(name, Signal.KILL, lifecycle.deadline_in(0))
+        else:
+            self.detach(name)
+        return out
+
+    def ask_plugin(self, name: str, what: str):
+        """What a plugin is, asked by name, read alone (GET /api/plugins/<name>/<what>; a node's `ask`): its status
+        (when it answers one and its status only reads), its interface, its APIs, its needs, its mode and deadlines,
+        and what it started (the ledger's rows owned by its name, a command's secrets hidden)."""
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            raise LookupError(f"no plugin {name!r} is attached to {self.NAME}")
+        return lifecycle.ask_of(plugin, what, ask=lambda hook: self.ask(name, hook),
+                                apis=lambda: {"internal": self.plugin_internal(plugin), **dict(zip(("apis", "apiFacts"), _cards_of(plugin)))})
+
+    def signal_key(self) -> bytes:
+        """This user's key, the proof of a signal or an ask is made from (host.key: the pipes' and liminal-net's)."""
+        from ..host import key
+
+        return key()
+
+    def proven(self, handler) -> None:
+        """A signal's or an ask's proof checked: Refused 401 without it, 403 when it is not this user's key's."""
+        given = handler.headers.get(lifecycle.PROOF_HEADER) if handler is not None else None
+        if not given:
+            raise Refused(HTTPStatus.UNAUTHORIZED, f"no proof of this user's key ({lifecycle.PROOF_HEADER})")
+        if not lifecycle.proof_ok(self.signal_key(), given):
+            raise Refused(HTTPStatus.FORBIDDEN, "not this user's key")
+
+    def later(self, fn) -> None:
+        """`fn` run once this request is answered (a signal's end, which stops the server answering it)."""
+        threading.Timer(0.25, fn).start()
 
     def plugin(self, name: str):
         return self._plugins.get(name)
@@ -503,6 +688,39 @@ class App:
                 raise Refused(HTTPStatus.NOT_FOUND, f"no plugin {name!r} is attached to {self.NAME}")
             apis, facts = _cards_of(plugin)
             return 200, {"name": name, "internal": self.plugin_internal(plugin), "apis": apis, "apiFacts": facts}
+        if path in (STOP_PATH, SIGNAL_PATH) and method == "POST":  # its end, asked with this user's key (1.86.0)
+            self.proven(handler)
+            body = body or {}
+            try:
+                sig = Signal.of(body.get("signal") or "TERM") if path == SIGNAL_PATH else Signal.TERM
+            except ValueError as e:
+                raise Refused(HTTPStatus.BAD_REQUEST, str(e)) from None
+            raw = body.get("timeout")
+            timeout = float(raw) if isinstance(raw, (int, float)) and raw >= 0 else self.stop_timeout
+            if sig is Signal.TERM:
+                self.stop_timeout = timeout
+            self.later(self.stop if sig is Signal.TERM else (lambda: self.terminate(Signal.KILL, 0)))
+            return 202, {"app": self.NAME, "signal": sig.value, "pid": os.getpid(), "timeout": timeout,
+                         "plugins": sorted(self._plugins)}
+        if method == "GET" and path == PROCESSES_PATH:
+            self.proven(handler)
+            return 200, {"app": self.NAME, "pid": os.getpid(), "processes": lifecycle.shown_rows(lifecycle.mine())}
+        if path.startswith("/api/plugins/"):  # /api/plugins/<name>/<what>: a read; /api/plugins/<name>/signal: a write
+            name, _, what = path[len("/api/plugins/"):].partition("/")
+            if method == "POST" and what == "signal":
+                self.proven(handler)
+                try:
+                    return 200, self.signal_plugin(name, (body or {}).get("signal") or "TERM")
+                except ValueError as e:
+                    raise Refused(HTTPStatus.BAD_REQUEST, str(e)) from None
+                except LookupError as e:
+                    raise Refused(HTTPStatus.NOT_FOUND, str(e)) from None
+            if method == "GET" and what in (*PLUGIN_ASKS, "mode"):
+                self.proven(handler)
+                try:
+                    return 200, self.ask_plugin(name, what)
+                except LookupError as e:
+                    raise Refused(HTTPStatus.NOT_FOUND, str(e)) from None
         raise Refused(HTTPStatus.NOT_FOUND, "not found")
 
     # -- the server ------------------------------------------------------------------------------
@@ -511,6 +729,9 @@ class App:
         (`served`). A port another program holds is refused (PortTaken), never traded for another (1.52.0). The server
         is web.Server, whose port is its own on every system: on Windows no later server can bind it while it serves."""
         port = self.port() if port is None else port
+        with self._term_lock:  # started again after an end: a new life (1.86.0)
+            self._terminating, self._terminated = False, None
+            self._kill_now.clear()
         if port and web.listening(port):  # who holds it, said in words before the bind (web.Server's bind refuses too)
             raise PortTaken(self, port)
         try:
@@ -529,22 +750,20 @@ class App:
         return self.served
 
     def stop(self) -> None:
-        """End the server (the page stops answering), and the login object it held (its sessions closed)."""
+        """The app ended in good order: terminate(TERM) within stop_timeout (1.86.0; until then the server and the
+        login object alone). A subclass that ends more of its own does it here and calls this."""
+        self.terminate(Signal.TERM, self.stop_timeout)
+
+    def _end_server(self) -> None:
+        """End the server (the page stops answering)."""
         self.traffic.unwatch()
         httpd, self._httpd = self._httpd, None
         if httpd is not None:
             httpd.shutdown()
             httpd.server_close()
-        if self._thread is not None:
+        if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(5)
-            self._thread = None
-        with self._login_lock:
-            login, self._login_object = self._login_object, None
-        if login is not None and callable(getattr(login, "close", None)):
-            try:
-                login.close()
-            except Exception as e:  # noqa: BLE001 - the app ends all the same
-                self.log(f"{self.NAME}: its login did not close cleanly: {type(e).__name__}: {e}")
+        self._thread = None
 
     def serve(self, port: int | None = None, open_browser: bool = False, stop: threading.Event | None = None,
               until_quiet: float | None = None) -> str:
@@ -552,6 +771,7 @@ class App:
         come for that long; the server ends; returns the URL served."""
         url = self.start(port, open_browser)
         stop = stop or threading.Event()
+        self._serving = stop  # set by terminate: a signal's end ends the wait (1.86.0)
         self.touch()
         try:
             while not stop.wait(0.5):
@@ -625,6 +845,9 @@ def make_handler(app: App):
         def _login(self, method: str) -> None:
             """The request answered by the login object this app holds, as /<the rest>, here (serve_object): its
             answer and its cookies (at /, so this app's page sends them and the app can ask who is in)."""
+            if app.stopping:  # ending: nothing new taken (1.86.0)
+                web.drain(self)
+                return web.send_json(self, {"error": f"{app.NAME} is ending"}, HTTPStatus.SERVICE_UNAVAILABLE)
             login = app.login_object()
             if login is None:
                 web.drain(self)
@@ -673,6 +896,8 @@ def make_handler(app: App):
             self._write("DELETE")
 
         def _answer(self, method: str, parts, body: dict | None) -> None:
+            if app.stopping and parts.path not in (STOP_PATH, SIGNAL_PATH):  # ending: nothing new taken (1.86.0)
+                return web.send_json(self, {"error": f"{app.NAME} is ending"}, HTTPStatus.SERVICE_UNAVAILABLE)
             query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
             began, headers = time.perf_counter(), None
             try:

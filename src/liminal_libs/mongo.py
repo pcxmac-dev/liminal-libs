@@ -121,10 +121,14 @@ def args(data_dir: Path) -> list[str]:
 
 
 def _spawn(argv: list[str]) -> int:
-    """Start mongod detached, without a window, outliving this process. Returns its id."""
+    """Start mongod detached, without a window, outliving this process. Returns its id. Written in the process ledger
+    (1.86.0, lifecycle.spawn: owner host:mongo, kind mongod), so liminal-stop finds it when its keeper is gone; not tied
+    to its starter (a keeper that ends hands it to the next, which adopts it)."""
+    from . import lifecycle
+
     flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NEW_GROUP | NO_WINDOW
-    return subprocess.Popen(argv, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+    return lifecycle.spawn(argv, owner="host:mongo", kind="mongod", tied=False, creationflags=flags, close_fds=True,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
 
 
 def start(data_dir: Path, wait_s: float = START_WAIT_S) -> int | None:

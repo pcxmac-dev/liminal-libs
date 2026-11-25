@@ -92,6 +92,7 @@ def problems(p: object) -> list[str]:
     except Exception as e:  # noqa: BLE001 - what with_ raised is the problem
         out.append(f"{tag}: with_() failed: {type(e).__name__}: {e}")
     out += _apis(tag, p)
+    out += _lifecycle(tag, p)
     if expected == "feed":
         out += _feed(tag, p)
     elif expected == "publisher":
@@ -461,6 +462,183 @@ def _auditor(tag: str, p) -> list[str]:
         if not isinstance(made, auditing.Policy):
             out.append(f"{tag}: settings({{}}) must give an auditing.Policy (the defaults), not {made!r}")
     return out
+
+
+def _lifecycle(tag: str, p: Plugin) -> list[str]:
+    """How it runs and ends (1.86.0, liminal_libs.lifecycle): its MODE one of lifecycle.MODES and on demand (service
+    mode is refused for now), its START_DEADLINE_S and STOP_DEADLINE_S numbers above nought (its own or the
+    contract's), a `signal` it answers, and the login it is attached with kept as given: no class of it makes `login`
+    a property or another descriptor of its own."""
+    import math as _math
+
+    from .. import lifecycle
+
+    out: list[str] = []
+    mode = getattr(p, "MODE", None)
+    if mode not in lifecycle.MODES:
+        out.append(f"{tag}: MODE {mode!r} is none of {list(lifecycle.MODES)}")
+    elif mode == lifecycle.SERVICE:
+        out.append(f"{tag}: MODE 'service': {lifecycle.SERVICE_REFUSED}")
+    for attr in ("START_DEADLINE_S", "STOP_DEADLINE_S"):
+        value = getattr(p, attr, None)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not _math.isfinite(value) or value <= 0:
+            out.append(f"{tag}: {attr} {value!r} is not a number of seconds above nought")
+    if not callable(getattr(p, "signal", None)):
+        out.append(f"{tag}: it answers no signal (TERM, KILL): the contract's `signal` was replaced by something else")
+    for cls in type(p).__mro__:
+        if cls is Plugin or cls is object:
+            break
+        held = cls.__dict__.get("login")
+        if held is not None and hasattr(type(held), "__get__"):
+            out.append(f"{tag}: {cls.__name__} makes `login` its own ({type(held).__name__}): a plugin keeps the login "
+                       "its app attached it with")
+    return out
+
+
+class _StandInNode:
+    """A liminal-net node as node_problems serves a plugin on: it records what it is told, and opens nothing."""
+
+    def __init__(self, name, kind, scope, hillock, interface, ipc_dir=None, timing=None):
+        self.name, self.kind, self.scope, self.hillock, self.interface = name, kind, scope, hillock, interface
+        self.stopped: list[str] = []
+        self.fired: list[tuple] = []
+
+    def stop(self, reason: str) -> None:
+        self.stopped.append(reason)
+
+    def fire(self, signal: str, data) -> None:
+        self.fired.append((signal, data))
+
+    def stage(self) -> str:
+        return "ended" if self.stopped else "running"
+
+
+class StandInRefused(OSError):
+    """What a plugin served on stand-ins is told when it would start a process or reach a host (node_problems)."""
+
+
+def _refused(*args, **kwargs):
+    raise StandInRefused("a stand-in: nothing is started or reached while a plugin is checked as a node")
+
+
+class _NothingReal:
+    """No process started, no host reached, for the time of a `with` (node_problems): subprocess's Popen and run, the
+    socket's connect and create_connection refuse (StandInRefused)."""
+
+    def __enter__(self):
+        import socket
+        import subprocess
+
+        self.saved = [(subprocess, "Popen", subprocess.Popen), (subprocess, "run", subprocess.run),
+                      (socket, "create_connection", socket.create_connection),
+                      (socket.socket, "connect", socket.socket.connect),
+                      (socket.socket, "connect_ex", socket.socket.connect_ex)]
+        for owner, name, _ in self.saved:
+            setattr(owner, name, _refused)
+        return self
+
+    def __exit__(self, *exc):
+        for owner, name, value in self.saved:
+            setattr(owner, name, value)
+        return False
+
+
+def node_problems(p: Plugin) -> list[str]:
+    """`p` served as its liminal-net node on stand-ins (1.86.0; liminal_libs.nodes), in words, empty when it holds: a
+    copy of it attached to a stand-in app (an empty environment's login), a stand-in node, a stand-in process table,
+    ledger and clock; no process is started and no host reached (each refused). It must keep the login it is attached
+    with and refuse a signal from anyone but its app; answer ASK (interface, mode, processes, node, status) in shape;
+    end on TERM within its STOP_DEADLINE_S with nothing left (no child of it in the ledger, none running, no claim
+    held, let go of its app and login, its node ended); and, when a child of it ignores TERM, have that child killed
+    at its deadline, not before. Each plugin repository's tests/test_contract.py calls it through
+    assert_module_serves."""
+    import os
+    import time
+
+    from .. import lifecycle, nodes
+    from ..apps.app import App
+    from ..apps.authorization import EnvironmentLogin
+
+    tag = p.name or type(p).__name__
+    out: list[str] = []
+
+    class Probe(App):
+        NAME, TITLE, ICON = "probe", "Probe", "plug"
+
+    for ignores in (False, True):
+        table, clock = lifecycle.FakeTable(), lifecycle.FakeClock()
+        ledger = lifecycle.MemoryLedger(table)
+        with _NothingReal(), lifecycle.standins(table=table, killer=table, ledger=ledger, clock=clock,
+                                                sleep=clock.sleep):
+            try:
+                probe = p.with_()
+            except Exception as e:  # noqa: BLE001
+                return [f"{tag}: no copy of it can be made to serve ({type(e).__name__}: {e})"]
+            app = Probe(log=lambda m: None, login=EnvironmentLogin(env={}))
+            try:
+                node, hillock = nodes.plugin_node(probe, app, node_factory=_StandInNode)
+            except Exception as e:  # noqa: BLE001
+                return [f"{tag}: it cannot be attached and served as a node: {type(e).__name__}: {e}"]
+            hillock._later = lambda fn: fn()
+            if probe.login is not app.lent_login():
+                out.append(f"{tag}: it does not hold the login its app attached it with")
+            if not ignores:
+                try:
+                    probe.signal(lifecycle.Signal.TERM, lifecycle.deadline_in(1), sender=object())
+                    out.append(f"{tag}: it took a signal from someone who is not its app")
+                except lifecycle.SignalRefused:
+                    pass
+                for what, keys in (("interface", ("hooks",)), ("mode", ("mode", "startDeadline", "stopDeadline")),
+                                   ("processes", ("processes",)), ("node", ("node", "stage")), ("status", ("name",))):
+                    try:
+                        answer = hillock.ask(what)
+                    except Exception as e:  # noqa: BLE001
+                        out.append(f"{tag}: ASK {what} failed: {type(e).__name__}: {e}")
+                        continue
+                    if not isinstance(answer, dict) or any(k not in answer for k in keys):
+                        out.append(f"{tag}: ASK {what} answered {type(answer).__name__}, not a map with {list(keys)}")
+            pid = 990001 + int(ignores)
+            table.rows[pid] = lifecycle.Proc(pid, os.getpid(), "stand-in", f"stand-in child of {tag}", 7)
+            if ignores:
+                table.ignores.add(pid)
+            lifecycle.note(lifecycle.Row(pid=pid, started=7, owner=p.name, owner_pid=os.getpid(), owner_started=None,
+                                         kind="stand-in", command=["stand-in"], at=time.time()), ledger)
+            began, at = time.monotonic(), clock()
+            answer = hillock.term()
+            took = time.monotonic() - began
+            deadline = lifecycle.stop_deadline(probe)
+            how = answer.get("how") if isinstance(answer, dict) else None
+            if how in ("failed", "late", "refused"):
+                out.append(f"{tag}: TERM came to {how}: {answer.get('why')}")
+            if took > deadline:
+                out.append(f"{tag}: TERM took {took:.1f} s, past its STOP_DEADLINE_S ({deadline:g} s)")
+            if pid in table.rows:
+                out.append(f"{tag}: TERM left its child running")
+            if lifecycle.mine(p.name) or [r for r in ledger.kept if r.owner == p.name]:
+                out.append(f"{tag}: TERM left its child in the ledger")
+            if lifecycle.claims_held():
+                out.append(f"{tag}: TERM left claims held: {lifecycle.claims_held()}")
+            if probe.app is not None or probe.login is not None:
+                out.append(f"{tag}: TERM did not let go of its app and its login")
+            if not node.stopped:
+                out.append(f"{tag}: TERM did not end its node")
+            if ignores:
+                if (pid, "KILL") not in table.sent:
+                    out.append(f"{tag}: a child ignoring TERM was not killed")
+                elif clock() - at < deadline - 1e-6:
+                    out.append(f"{tag}: a child ignoring TERM was killed before its deadline ({clock() - at:g} s)")
+            with lifecycle._MINE_LOCK:  # nothing of the check is left behind
+                lifecycle._MINE.pop(pid, None)
+    return out
+
+
+def assert_module_serves(module: ModuleType) -> list[Plugin]:
+    """Every plugin of a module served as its node on stand-ins holds (node_problems); returns them."""
+    found = plugins_of(module)
+    assert found, f"{module.__name__} defines no plugin"
+    wrong = [w for p in found for w in node_problems(p)]
+    assert not wrong, "\n".join(wrong)
+    return found
 
 
 def plugins_of(module: ModuleType) -> list[Plugin]:

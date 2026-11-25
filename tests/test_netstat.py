@@ -57,6 +57,13 @@ LONDON = geo.Place("GB", "United Kingdom", "London", 51.5142, -0.0931)
 NUREMBERG = geo.Place("DE", "Germany", "Nuremberg", 49.4478, 11.0683, 64500, "Example Net")
 PLACES = {WEB: LONDON, V6WEB: NUREMBERG, WEB2: LONDON}  # NOWHERE: the file has no place for it
 
+def hold_login(plugin):
+    """A plugin given a login as its app lends one (1.86.0: a plugin holding none refuses to be asked)."""
+    from liminal_libs.apps.authorization import NoLogin
+
+    object.__setattr__(plugin, "login", NoLogin())
+    return plugin
+
 
 def sock(proto="tcp", local=LAN, local_port=51000, remote="", remote_port=0, *, state="established", pid=4321,
          program="msedge.exe", path=EDGE, service="", title="", started=None, seen=None, inode=0, user="",
@@ -868,6 +875,7 @@ class App:
 
 def test_the_firewall_tab_reads_the_socket_table_says_not_for_here_and_what_wsl_changes(tmp_path, monkeypatch):
     fw = Wall(tmp_path, placing=Placing())
+    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     page = fw.ask("netstat")  # the platform asks it so, every three seconds while the tab is shown
     assert page["title"] == "Netstat" and len(page["flows"]["rows"]) == 6
     assert [t["title"] for t in page["tables"]] == ["Listening ports", "The hosts database", "Connections recorded"]
@@ -1041,6 +1049,7 @@ def test_the_netstat_tab_tables_every_connection_recorded_its_who_what_when_wher
     """1.68.0: each connection the hosts database recorded, its own row, the newest first, under the database's own
     table: when it began, how long it lasted, when it was gone, who, what, where and why."""
     fw = Wall(tmp_path, placing=Placing())
+    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     page = fw.ask("netstat")
     recorded = page["tables"][-1]
     assert recorded["title"] == "Connections recorded"

@@ -103,6 +103,15 @@ FRAME_ROUTES = (  # answered by every app
     ("POST", "/api/codebase/fetch", "its repositories' remotes asked what they have, on the user's click", "change",
      "page"),
     ("GET", "/api/ui", "the UI's preferences every page applies", "read", "page"),
+    # its end and what its plugins are, with the proof of this user's key (1.86.0; liminal_libs.lifecycle, .stop)
+    ("POST", "/api/app/stop", "TERM: it ends in good order, its login, parts and plugins first", "change",
+     "client"),
+    ("POST", "/api/app/signal", "TERM or KILL, as liminal-signal sends them", "change", "client"),
+    ("GET", "/api/app/processes", "what its process started, from the process ledger", "read", "client"),
+    ("GET", "/api/plugins/{name}/{what}", "a plugin asked what it is: status, interface, apis, needs, mode, processes",
+     "read", "client"),
+    ("POST", "/api/plugins/{name}/signal", "one plugin told TERM or KILL through this app, then let go", "change",
+     "client"),
 )
 LOGIN_ROUTES = (  # answered only while the app inherits a login (App.inherits_login)
     ("GET", "/api/trays", "the trays of what it holds besides its own: the login it inherits", "read", "page"),

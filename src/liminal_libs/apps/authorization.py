@@ -191,6 +191,32 @@ class EnvironmentLogin(Login):
         return "this process's environment, until it ends (no user environment to keep it in here)"
 
 
+class NoLogin(Login):
+    """The login an app lends its plugins when it was given none (App.lent_login, 1.86.0): it holds no one, so every
+    plugin attached has a login and asks it as any other, and is refused every pair (401)."""
+
+    NAMESPACE = "none"
+
+    def user(self) -> dict:
+        raise Unauthorized("no one is signed in: this app was given no login")
+
+    def vector(self, name: str) -> str:
+        raise Unauthorized(f"no {name} here: this app was given no login")
+
+    def names(self) -> set[str]:
+        return set()
+
+    def save(self, variable: str, value: str | None) -> str:
+        raise Unauthorized("nothing can be kept: this app was given no login", 405)
+
+    @property
+    def signed_in(self) -> bool:
+        return False
+
+    def describe(self) -> dict:
+        return {"namespace": self.NAMESPACE, "signedIn": False, "kind": type(self).__name__}
+
+
 def saved_variables() -> dict[str, str]:
     """The user's saved environment variables (Windows' user Environment key); {} elsewhere or unreadable."""
     if os.name != "nt":

@@ -221,6 +221,13 @@ class Plugin:
     KEEPS: tuple = ()  # what it keeps through its login beside its keys: (variable, about); a property where the
     # variable is named after the plugin (Firewall's groups)
     INTERNAL_NOTES: tuple[str, ...] = ()  # a few lines more for that tab, each at most 400 characters
+    # How it runs and ends (1.86.0, Monday list item 38; liminal_libs.lifecycle): on demand, while a client holds it
+    # (its app, a node's synapse), ending what it started when let go; "service" (a daemon) is named and refused by the
+    # conformance for now (the user, 2026-11-24: "for now lets just do on demand only"). Its start is given
+    # START_DEADLINE_S, its TERM STOP_DEADLINE_S, then what it started is killed with its trees.
+    MODE = "on_demand"
+    START_DEADLINE_S = 10.0
+    STOP_DEADLINE_S = 15.0
 
     def __init__(self, **attributes) -> None:
         """A plugin with these attributes set on it (a test's FeedPlugin(name=..., build=...)); a real
@@ -335,17 +342,43 @@ class Plugin:
 
     def ask(self, hook: str, *args, **kwargs):
         """One of this plugin's hooks called by name (the app's `ask`; across the pipe once the
-        plugin is resident): only a hook `interface` lists; LookupError for any other name."""
+        plugin is resident): only a hook `interface` lists; LookupError for any other name. A plugin
+        holding no login (not attached by an app) refuses, in words (NoLoginAttached, 1.86.0)."""
         if hook not in self.interface()["hooks"]:
             raise LookupError(f"{self.name or type(self).__name__} offers no {hook!r}")
+        if self.login is None:
+            raise NoLoginAttached(f"{self.name or type(self).__name__} holds no login: it is asked only once an app "
+                                  "has attached it (its login with it)")
         given = self.__dict__.get(hook) if hook in self.__dict__ else getattr(self, hook)
         return given(*args, **kwargs)
+
+    def signal(self, sig, deadline: float, sender=None) -> dict:
+        """Told to end (1.86.0; liminal_libs.lifecycle), only by its own app or that app's login (SignalRefused for
+        anyone else). TERM: its own end first (`app_stopping`, where it has one: what it started is stopped, its data
+        secured), then what the library started for it (lifecycle.spawn, owned by its name) ended with its trees,
+        TERM and KILL at `deadline`. KILL: those trees ended now, nothing waited for. Its app detaches it after."""
+        from .. import lifecycle
+
+        lifecycle.check_sender(self, sender)
+        sig = lifecycle.Signal.of(sig)
+        stopped = False
+        if sig is lifecycle.Signal.TERM:
+            stopping = getattr(self, "app_stopping", None)
+            if callable(stopping):
+                stopping()
+                stopped = True
+        ended = lifecycle.end_owned(self.name, sig, deadline)
+        return {"name": self.name, "signal": sig.value, "stopped": stopped, "processes": ended}
 
     def refusal(self) -> str | None:
         """Why the registry cannot take it: no name, or a database it may not write (databases_refused)."""
         if not self.name:
             return "it has no name"
         return databases_refused(self.databases)
+
+
+class NoLoginAttached(LookupError):
+    """A plugin asked to work with no login attached (1.86.0): attached by an app first, its login with it."""
 
 
 class IntegratorPlugin(Plugin):

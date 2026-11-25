@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liminal-libs"
-version = "1.85.0"  # the library's own release (CHANGELOG.md)
+version = "1.86.0"  # the library's own release (CHANGELOG.md)
 description = "The Liminal library: the stores, the plugin contract, the collector and the scheme every Liminal program builds on (the chart app, the integrator, the plugins)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +21,12 @@ dependencies = [
     "duckdb>=1.1",  # closed months of bars by column (storage/history.py)
     "pymongo>=4.9",  # documents on the MongoDB server here (mongo.py, storage/documents.py)
 ]
+
+[project.scripts]
+# the machine-wide signals (1.86.0, liminal_libs.stop): pip makes each an executable (Scripts\liminal-signal.exe
+# on Windows, bin/liminal-signal elsewhere)
+liminal-signal = "liminal_libs.stop:signal_main"
+liminal-stop = "liminal_libs.stop:stop_main"
 
 [project.optional-dependencies]
 # cryptography: the DKIM tests (dkim.py imports it when used); maxminddb: the GeoIP tests (geo.py imports it when used)

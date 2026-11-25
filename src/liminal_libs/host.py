@@ -183,9 +183,13 @@ class Host:
         pythonw = exe.with_name("pythonw.exe") if os.name == "nt" and exe.with_name("pythonw.exe").exists() else exe
         flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NEW_GROUP | NO_WINDOW
         env = {**os.environ, "LIMINAL_DB": str(db_path)}
-        subprocess.Popen([str(pythonw), "-m", APP_MODULE, "host", name], creationflags=flags, close_fds=True, env=env,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=os.name != "nt")
+        # written in the process ledger (1.86.0, lifecycle.spawn: owner host:NAME), so liminal-stop finds it; not tied
+        # to its starter, which it outlives by design (it ends when its last client has gone)
+        from . import lifecycle
+
+        lifecycle.spawn([str(pythonw), "-m", APP_MODULE, "host", name], owner=f"host:{name}", kind="host", tied=False,
+                        creationflags=flags, close_fds=True, env=env, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt")
 
     def clients(self) -> list[int]:
         with self._lock:
@@ -222,6 +226,9 @@ class Host:
         threading.Thread(target=self._accept_loop, name=f"host-{self.name}-accept", daemon=True).start()
         threading.Thread(target=self._watch, name=f"host-{self.name}-watch", daemon=True).start()
         self.log(f"host {self.name}: up for {self.db_path.name} (pid {os.getpid()})")
+        from . import lifecycle
+
+        restore = lifecycle.install_handlers(self)  # SIGTERM (SIGBREAK on Windows): signal(TERM), on the main thread
         try:
             work(self.stop)
         finally:
@@ -230,8 +237,13 @@ class Host:
                 self._listener.close()
             except OSError:
                 pass
-            if secure is not None:
-                secure()
+            try:
+                if secure is not None:
+                    secure()
+            finally:
+                # what it started ends after its data is secured (1.86.0): TERM, KILL at its deadline
+                lifecycle.end_owned(None, lifecycle.Signal.TERM, lifecycle.deadline_in(lifecycle.STOP_DEADLINE_S))
+                restore()
         self.log(f"host {self.name}: down ({self.reason})")
         return self.reason
 
@@ -240,6 +252,17 @@ class Host:
         if not self.reason:
             self.reason = reason
         self.stop.set()
+
+    def signal(self, sig, deadline: float, sender=None) -> dict:  # noqa: ARG002 - the lifecycle's signature
+        """Told to end (1.86.0; liminal_libs.lifecycle): TERM ends the work at once, whoever is attached, and serve
+        secures its data (its `secure`) and ends what it started, as when its last client has gone; KILL ends what it
+        started with its trees now, then the work. A host is on demand: it never stays for nobody."""
+        from . import lifecycle
+
+        sig = lifecycle.Signal.of(sig)
+        ended = lifecycle.end_owned(None, lifecycle.Signal.KILL, deadline) if sig is lifecycle.Signal.KILL else []
+        self.end(f"signalled {sig.value}")
+        return {"host": self.name, "signal": sig.value, "processes": ended}
 
     # -- clients -------------------------------------------------------------------------------
     def _accept_loop(self) -> None:

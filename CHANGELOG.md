@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.86.0 (2026-11-24)
+
+- A reliable end for every app, plugin and process of Liminal's (Monday list item 38; the user, 2026-11-24: "there
+  needs to be a reliable way to terminate all apps/plugins and related processes safely"). Seen the same day:
+  `schtasks /End` on the four apps' tasks left the integrator's `liminal_charts sync --extras-only`, the charts'
+  `host mongo` and its mongod running 10-20 minutes, since Windows ends the one process it is told to.
+- `lifecycle.py`: `Signal` (TERM: finish, secure the data, give back, detach, end the children; KILL: every child
+  tree now), the `signal(sig, deadline, sender)` every stoppable object answers, `deliver` (a deadline enforced: an
+  object late past it is reported and its trees killed), `end_trees` (deepest first, TERM then KILL at the timeout,
+  each process checked by its start time before every signal: a reused id is never touched), and the process ledger:
+  every process `lifecycle.spawn` starts is written with its owner, id, start time, kind and command in
+  processes/<installation>.json under the data folder (written whole, stale rows dropped). A tied child is put in its
+  owner's job object on Windows (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) and gets PR_SET_PDEATHSIG on Linux when started
+  on the main thread; what fails there is noted in its row, never fatal. Hosts (`Host.start`) and mongod are written
+  in the ledger, untied (they outlive their starters by design).
+- `App.terminate(sig, timeout)`, which `App.stop` now is: nothing new is taken (503), then the login it includes, its
+  platform parts (`parts`), every plugin (each within its STOP_DEADLINE_S, then detached), the app objects it owns
+  (`owned_apps`), what it started, its server. Safe twice and from any thread; a KILL during a TERM kills at once.
+  An app's stop now lets its plugins go, where it left them attached before.
+- Plugins: `MODE` "on_demand" (the only one allowed: "service" is refused by the conformance, "service mode is not
+  yet allowed: on demand only"), START_DEADLINE_S 10 and STOP_DEADLINE_S 15 by default, and `Plugin.signal`, taken
+  only from the plugin's own app or its login. Every plugin attached holds its app's login: an app given none lends
+  `authorization.NoLogin`; a plugin whose attach puts another login in its place is refused; a plugin asked with no
+  login refuses in words (`NoLoginAttached`). A detach ends what was started for the plugin.
+- `nodes.py`: a plugin served as a liminal-net node (`PluginHillock`: its hooks, and `term`, `kill` and `ask` any
+  node may request; its `lifecycle` stream signal as it ends), on demand by a launcher written in the ledger, a start
+  past its deadline ended; an app as a node too (`AppHillock`, opt-in `serve_app`).
+- `liminal-signal TERM|KILL|ASK` and `liminal-stop` (console scripts; `python -m liminal_libs.stop`): a node of its
+  own reaching app-<name> and plugin-<name> nodes, else the apps' new routes (`POST /api/app/signal`,
+  `/api/app/stop`, `GET /api/app/processes`, `GET /api/plugins/<name>/<what>`, `POST /api/plugins/<name>/signal`,
+  each with the proof of this user's key), then ending what is left of Liminal's by its tree; `--list` changes
+  nothing. A host ends at once on a signal (and on SIGTERM), its data secured first.
+- The conformance checks the mode, the deadlines, the signal and a login kept; `node_problems` and
+  `assert_module_serves` serve a plugin as its node on stand-ins (ASK, TERM within its deadline with nothing left, a
+  child ignoring TERM killed at the deadline), and the tests do so for every plugin the registry finds.
+
 ## 1.85.0 (2026-11-24)
 
 - An index for a product's futures contracts, `futures_contracts_product (source, product, first_trade)`, made when
