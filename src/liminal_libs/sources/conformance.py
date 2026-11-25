@@ -16,7 +16,7 @@ from ..freshness import Delay
 from ..layout import Database
 from .fetching import Fetcher
 from .keys import APP, KeyVar
-from .plugin import FeedPlugin, Plugin
+from .plugin import FeedPlugin, LoginPlugin, LoginTab, Plugin
 from .publisher import Feed, Policy, PublisherPlugin
 from .stream import Live
 
@@ -25,7 +25,7 @@ VARIABLE = re.compile(r"^[A-Z][A-Z0-9_]*$")  # a user environment variable
 ASSETS = frozenset({"stock", "index", "fx", "crypto", "future"})  # sources.base.RESOLUTIONS_BY_ASSET's
 RESOLUTIONS = frozenset({"second", "minute", "day"})
 FEED_KINDS = frozenset({"exchange", "consolidated", "official", "vendor", "mirror", "research"})
-SYSTEMS = frozenset({"integrator", "platform"})
+SYSTEMS = frozenset({"integrator", "platform", "login"})
 KINDS = {"feed": FeedPlugin, "publisher": PublisherPlugin}  # assistant: looked up when asked (its package imports the client)
 FEED_HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries", "plan_resolutions", "reporter", "scan",
               "settings")
@@ -34,6 +34,7 @@ ASSISTANT_HOOKS = ("build", "scan", "settings")
 MACHINE_HOOKS = ("present", "status", "setup", "run", "instances", "scan", "settings")
 DATABASE_HOOKS = ("builtin", "open", "probe", "make", "own_port", "scan", "settings")
 AUDITOR_HOOKS = ("scan", "settings")
+LOGIN_HOOKS = ("page", "change", "place", "scan", "settings")
 
 
 def problems(p: object) -> list[str]:
@@ -59,7 +60,7 @@ def problems(p: object) -> list[str]:
     expected = _kind_of(p)
     if expected is None:
         out.append(f"{tag}: neither a FeedPlugin, a PublisherPlugin, an AssistantPlugin, a MachinePlugin, a "
-                   "DatabasePlugin nor an AuditorPlugin")
+                   "DatabasePlugin, an AuditorPlugin nor a LoginPlugin")
     elif p.KIND != expected:
         out.append(f"{tag}: KIND {p.KIND!r} for a {expected} plugin")
     refused = p.refusal()
@@ -79,7 +80,7 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: fetcher is not a sources.fetching.Fetcher")
     hooks = (FEED_HOOKS if expected == "feed" else PUBLISHER_HOOKS if expected == "publisher"
              else MACHINE_HOOKS if expected == "machine" else DATABASE_HOOKS if expected == "database"
-             else AUDITOR_HOOKS if expected == "auditor" else ASSISTANT_HOOKS)
+             else AUDITOR_HOOKS if expected == "auditor" else LOGIN_HOOKS if expected == "login" else ASSISTANT_HOOKS)
     for hook in hooks:
         if p.gives(hook) and not callable(getattr(p, hook, None)):
             out.append(f"{tag}: gives {hook} but it is not callable")
@@ -103,6 +104,8 @@ def problems(p: object) -> list[str]:
         out += _database(tag, p)
     elif expected == "auditor":
         out += _auditor(tag, p)
+    elif expected == "login":
+        out += _login(tag, p)
     return out
 
 
@@ -136,6 +139,8 @@ def _kind_of(p: Plugin) -> str | None:
         return "feed"
     if isinstance(p, PublisherPlugin):
         return "publisher"
+    if isinstance(p, LoginPlugin):
+        return "login"
     from ..assistants.plugin import AssistantPlugin  # when asked, not on import
     from ..machines.plugin import MachinePlugin
     from ..auditing import AuditorPlugin
@@ -464,6 +469,31 @@ def _auditor(tag: str, p) -> list[str]:
     return out
 
 
+def _login(tag: str, p: LoginPlugin) -> list[str]:
+    """A login's plugin (1.92.0; sources/plugin.py: LoginPlugin): the login's system, at least one tab, each a LoginTab
+    of its own id, and a page to show on them; `change` and `place` callable where it gives them."""
+    out: list[str] = []
+    if p.SYSTEM != "login":
+        out.append(f"{tag}: a login's plugin plugs into the login (SYSTEM 'login'), not {p.SYSTEM!r}")
+    tabs = p.TABS
+    if not isinstance(tabs, tuple) or not tabs:
+        out.append(f"{tag}: TABS must be a non-empty tuple of LoginTab (its page's tabs, the first its Main)")
+        tabs = ()
+    ids: set[str] = set()
+    for t in tabs:
+        if not isinstance(t, LoginTab):
+            out.append(f"{tag}: tab {t!r} is not a LoginTab")
+            continue
+        if t.id.lower() in ("external", "internal", "api") or t.id.lower() in ids:
+            out.append(f"{tag}: tab {t.id!r} is the page's own, or another of its tabs'")
+        ids.add(t.id.lower())
+    if not p.gives("page"):
+        out.append(f"{tag}: a login's plugin must give page(tab, viewer): what its tabs show")
+    if not isinstance(getattr(p, "ICON", ""), str):
+        out.append(f"{tag}: ICON is not a str")
+    return out
+
+
 def _lifecycle(tag: str, p: Plugin) -> list[str]:
     """How it runs and ends (1.86.0, liminal_libs.lifecycle): its MODE one of lifecycle.MODES and on demand (service
     mode is refused for now), its START_DEADLINE_S and STOP_DEADLINE_S numbers above nought (its own or the
@@ -648,7 +678,7 @@ def assert_module_serves(module: ModuleType) -> list[Plugin]:
 
 def plugins_of(module: ModuleType) -> list[Plugin]:
     """A module's plugins as the registry reads them (PLUGIN(S), PUBLISHER(S), ASSISTANT(S), MACHINE(S), DATABASE(S),
-    AUDITOR(S))."""
+    AUDITOR(S), LOGIN(S))."""
     from .registry import _plugins_in
 
     return _plugins_in(module, module.__name__)

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.92.0 (2026-11-25)
+
+- The login's plugins (Monday list item 12; item 30, step 8; the user, 2026-11-15: "also create a plugin for the login
+  app that is used to connect to or examine the datastore that has user credentials and other keys related to the
+  user"): a new kind, `LoginPlugin` (sources/plugin.py, SYSTEM and KIND "login"), attached by the login app alone. Its
+  page has the tabs it declares (`TABS`, each a `LoginTab`, `admin` where only the login's admin may change what it
+  shows), each drawn from its `page(tab, viewer)`; a change on a tab is its `change(tab, viewer, body)`, whose `keep` the
+  login keeps in its own settings for it; `place(kept)` says where the login keeps its users, asked as the login starts.
+  The login hands it a `Viewer` for each request: the person's name, whether they are its admin, their own `Keystore`
+  (where, how it is reached, its size, its pairs by name, kind, label and dates: a value handed in by mistake is
+  dropped), where the login keeps its users (`UsersPlace`) and what the plugin keeps. A refusal is a `LoginRefusal`
+  (its words, its status, and `accept`, the second question's argument).
+- The registry files them (`LOGIN` or `LOGINS` in a module; `registry.logins()`, `login_plugin(name)`; a second of one
+  name left out as any kind's is); the conformance checks them (the login's system, at least one tab, each a LoginTab
+  of its own id, a `page`). `attach_registry` attaches them only when asked for the "login" system, so an app that
+  attaches everything attaches none of them. The plugin API stays 2.4: a new kind only adds, and an older library
+  leaves a package of this kind out in words (it cannot import the class).
+
 ## 1.91.0 (2026-11-25)
 
 - A store's pick may name an instance (Monday list item 10; item 30, step 7): `engine:instance`, for example
