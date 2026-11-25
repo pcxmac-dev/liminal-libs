@@ -12,7 +12,14 @@ on its page: `LiminalApis.html(apis, facts)`, its own styles on the themes' vari
 The UI's preferences (the user, 2026-11-07: "add a preferences plugin for the 'UI' and add the different
 themes"): one file for every app on this machine, the data folder's ui.json (LIMINAL_UI_FILE names another),
 written by the platform's Preferences plugin, read by every app's frame (`GET /api/ui`) and applied by
-theme.js. The themes are liminal.css's, as the charts app's Preferences offers them."""
+theme.js. The themes are liminal.css's, as the charts app's Preferences offers them.
+
+1.88.0 (Monday list item 21; the user, 2026-11-19: "preferences, keys, licenses all get stored in the individual's
+login db"): the theme is the signed-in user's, a preference pair of their login's store (THEME_PAIR, `ui-theme`),
+read and kept through the login given or, when none is, the login of the person whose request is being answered
+(apps.authorization.asking_login: every app's frame names it from the browser's session). A login that keeps none
+(an EnvironmentLogin, or nobody signed in) reads and writes ui.json as before; a user's store holding no theme yet
+is given the file's, once, and the file is left as it was."""
 from __future__ import annotations
 
 import json
@@ -22,6 +29,7 @@ from pathlib import Path
 STATIC = Path(__file__).parent / "static"
 UI_VAR = "LIMINAL_UI_FILE"
 DEFAULT_THEME = "dark"
+THEME_PAIR = "ui-theme"  # the theme as a preference pair of the signed-in user's login store (1.88.0)
 # each theme's base (a light-based one also gets body.light) and its page, card, accent and text colours (liminal.css)
 THEMES = {
     "dark": {"title": "Dark", "base": "dark", "swatch": ("#131722", "#1e222d", "#2962ff", "#d1d4dc")},
@@ -44,35 +52,64 @@ def preferences_file(path: Path | None = None) -> Path:
     return layout.data_dir() / "ui.json"
 
 
-def preferences(path: Path | None = None) -> dict:
-    """What every app's page applies: the theme (the default when none is saved or the saved one is unknown), its
-    base, and the themes there are (for a page offering them)."""
+def _file_theme(path: Path | None) -> str | None:
+    """The theme ui.json keeps, None when it keeps none (or one not among THEMES, or the file is broken)."""
     try:
         saved = json.loads(preferences_file(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        saved = {}
-    theme = saved.get("theme") if isinstance(saved, dict) and saved.get("theme") in THEMES else DEFAULT_THEME
-    return {"theme": theme, "base": THEMES[theme]["base"],
-            "themes": [{"name": n, "title": t["title"], "base": t["base"], "swatch": list(t["swatch"])} for n, t in THEMES.items()]}
+        return None
+    theme = saved.get("theme") if isinstance(saved, dict) else None
+    return theme if theme in THEMES else None
 
 
-def save_preferences(path: Path | None = None, **changes) -> dict:
-    """The UI's preferences changed (`theme`: one of THEMES; ValueError otherwise), kept in the file; returns them."""
-    theme = changes.pop("theme", None)
-    if changes:
-        raise ValueError(f"no such UI preference: {', '.join(sorted(changes))}")
-    if theme is not None and theme not in THEMES:
-        raise ValueError(f"no theme named {theme!r}: {', '.join(THEMES)}")
+def _write_file_theme(path: Path | None, theme: str) -> None:
     file = preferences_file(path)
     try:
         saved = json.loads(file.read_text(encoding="utf-8"))
         saved = saved if isinstance(saved, dict) else {}
     except (OSError, ValueError):
         saved = {}
-    if theme is not None:
-        saved["theme"] = theme
+    saved["theme"] = theme
     file.parent.mkdir(parents=True, exist_ok=True)
     part = file.with_name(file.name + ".part")
     part.write_text(json.dumps(saved, indent=1), encoding="utf-8")
     os.replace(part, file)
-    return preferences(path)
+
+
+def _login_of(login):
+    """The login given, else the asking person's (apps.authorization.asking_login), else None (the file)."""
+    if login is not None:
+        return login
+    from ..apps.authorization import asking_login
+
+    return asking_login()
+
+
+def preferences(path: Path | None = None, login=None) -> dict:
+    """What every app's page applies: the theme (the default when none is saved or the saved one is unknown), its
+    base, the themes there are (for a page offering them), and where it is kept (`store`: "login" or "file").
+    The theme is the user's that `login` serves, else the asking person's; the file's when that login keeps none."""
+    from ..apps.authorization import keeps, recall
+
+    who = _login_of(login)
+    theme = recall(who, THEME_PAIR, lambda: _file_theme(path), label="the UI's theme")
+    theme = theme if isinstance(theme, str) and theme in THEMES else DEFAULT_THEME
+    return {"theme": theme, "base": THEMES[theme]["base"],
+            "themes": [{"name": n, "title": t["title"], "base": t["base"], "swatch": list(t["swatch"])} for n, t in THEMES.items()],
+            "store": "login" if keeps(who) else "file"}
+
+
+def save_preferences(path: Path | None = None, login=None, **changes) -> dict:
+    """The UI's preferences changed (`theme`: one of THEMES; ValueError otherwise), kept in the store of the user
+    `login` serves (else the asking person's), or in the file when that login keeps none; returns them."""
+    from ..apps.authorization import keep
+
+    theme = changes.pop("theme", None)
+    if changes:
+        raise ValueError(f"no such UI preference: {', '.join(sorted(changes))}")
+    if theme is not None and theme not in THEMES:
+        raise ValueError(f"no theme named {theme!r}: {', '.join(THEMES)}")
+    who = _login_of(login)
+    if theme is not None:
+        keep(who, THEME_PAIR, theme, lambda value: _write_file_theme(path, value), label="the UI's theme")
+    return preferences(path, who)

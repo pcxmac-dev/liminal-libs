@@ -10,13 +10,35 @@ user of the app's namespace. The realizations: `LoginClient` (apps/login.py), ov
 app of that namespace (liminal-login), the proxy over the hosts' pipe to come with the resident
 plugins; `EnvironmentLogin` here, reading the user environment variables that are the keys' store
 until every plugin is attached through an app (the transition); a test's stand-in. A refusal is
-`Unauthorized`."""
+`Unauthorized`.
+
+1.88.0 (Monday list item 21; the user, 2026-11-19: "preferences, keys, licenses all get stored in the individual's
+login db"): besides the keys, a login may keep the signed-in user's preferences and the licences they accepted, each
+a pair of its own kind (PREFERENCE, LICENCE) holding a JSON value (`setting`, `keep_setting`, `keeps_settings`).
+`recall` and `keep` read and write one through a login, and fall back to the file it was kept in before when the
+login keeps none (an EnvironmentLogin): the file's value is copied into the user's store the first time one that
+keeps them is there, and the file is left as it was. `accept_licence` keeps a licence accepted with what was accepted,
+its version and address, when and by whom. `as_user` names, for a request's block, the login of the person asking
+(an app sets it from the browser's session: App.user_login), so a second user signed in reads their own."""
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import getpass
+import hashlib
+import json
 import os
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+
+PREFERENCE = "preference"  # a pair holding one of the user's preferences (a JSON value): ui-theme, platform-plugins
+LICENCE = "licence"  # a pair holding a licence the user accepted (a JSON object: licence_record)
+SETTING_KINDS = (PREFERENCE, LICENCE)
+LICENCE_PREFIX = "licence-"  # a licence's pair: licence-dbip-lite
+WORDS_KEPT = 1500  # the most of a licence's words kept in its record (all of them by their SHA-256)
 
 
 class Unauthorized(Exception):
@@ -82,6 +104,20 @@ class Login(ABC):
         user"): its pair named by the variable (NAMECHEAP_API_KEY is `namecheap-api-key`); `value` None forgets it.
         Where it is kept, in words. Unauthorized when this login keeps none."""
         raise Unauthorized(f"{type(self).__name__} keeps no settings", 405)
+
+    # 1.88.0: the user's preferences and the licences they accepted, a pair each of a kind of its own (SETTING_KINDS)
+    keeps_settings = False  # whether this login keeps them for the signed-in user (a realization that does says so)
+
+    def setting(self, name: str):
+        """The JSON value the signed-in user keeps under the pair `name` (a preference or a licence: SETTING_KINDS);
+        None when they keep none of that name. Unauthorized when nobody is signed in, when this login keeps none
+        (405), or when the pair is of another kind (a key is never read as a setting: 409)."""
+        raise Unauthorized(f"{type(self).__name__} keeps no preferences or licences", 405)
+
+    def keep_setting(self, name: str, value, kind: str = PREFERENCE, label: str = "") -> dict:
+        """`value` (anything JSON holds) kept for the signed-in user as the pair `name` of `kind` (SETTING_KINDS);
+        the pair's row (its name, kind, label and dates). Unauthorized as `setting`."""
+        raise Unauthorized(f"{type(self).__name__} keeps no preferences or licences", 405)
 
     def names(self) -> set[str] | None:
         """The pairs the signed-in user has, by name, when the realization can list them (one call
@@ -227,3 +263,186 @@ def saved_variables() -> dict[str, str]:
         return out
     except OSError:
         return {}
+
+
+# -- 1.88.0: preferences and licences through the login (Monday list item 21) -----------------------------------------
+LICENCES_VAR = "LIMINAL_LICENCES_FILE"  # where a licence accepted is kept when the login keeps none (licences_file)
+
+
+def encode_setting(value) -> str:
+    """A setting's value as its pair keeps it: compact JSON (strict: no NaN)."""
+    return json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False)
+
+
+def decode_setting(raw):
+    """A pair's value read back as the setting it holds; None for one that is not JSON (as if none were kept)."""
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def setting_kind(kind) -> str:
+    kind = str(kind or "").strip().lower()
+    if kind not in SETTING_KINDS:
+        raise ValueError(f"a setting's kind is one of {', '.join(SETTING_KINDS)}, not {kind!r}")
+    return kind
+
+
+def keeps(login) -> bool:
+    """Whether `login` keeps the signed-in user's preferences and licences now (it says it does, and someone is
+    signed in). A login that cannot say keeps none."""
+    try:
+        return login is not None and bool(login.keeps_settings) and bool(login.signed_in)
+    except Exception:  # noqa: BLE001 - a login that cannot say: the file, as before
+        return False
+
+
+def recall(login, name: str, fallback: Callable[[], object], kind: str = PREFERENCE, label: str = ""):
+    """The setting `name` of the user `login` serves: theirs when it keeps one; else what `fallback()` reads (the
+    file it was kept in before 1.88.0), None for nothing. With a login that keeps settings but holds none of that
+    name yet, the file's value is copied into the user's store, once (from then on theirs is read), and the file is
+    left as it was, for a login that keeps none. A store that refuses or cannot be reached: the file, as before."""
+    if not keeps(login):
+        return fallback()
+    try:
+        value = login.setting(name)
+    except Unauthorized:
+        return fallback()
+    if value is not None:
+        return value
+    old = fallback()
+    if old is not None:
+        try:
+            login.keep_setting(name, old, kind, label or f"{name} (from the file it was kept in before)")
+        except Unauthorized:
+            pass  # read from the file again next time, and copied then
+    return old
+
+
+def keep(login, name: str, value, fallback: Callable[[object], None], kind: str = PREFERENCE, label: str = "") -> str:
+    """The setting `name` kept: in the store of the user `login` serves when it keeps settings, else (or when the
+    store refuses or cannot be reached) by `fallback(value)`, the file it was kept in before. Where, in words."""
+    if keeps(login):
+        try:
+            login.keep_setting(name, value, kind, label)
+            return "your login's store"
+        except Unauthorized:
+            pass
+    fallback(value)
+    return "the file"
+
+
+def licence_pair(slug: str) -> str:
+    """A licence's pair name: `dbip-lite` is licence-dbip-lite."""
+    slug = str(slug or "").strip().lower()
+    return slug if slug.startswith(LICENCE_PREFIX) else LICENCE_PREFIX + slug
+
+
+def licence_record(name: str, *, title: str, version: str = "", url: str = "", words: str = "", by: str = "",
+                   at: datetime | None = None, login: str = "") -> dict:
+    """What a licence accepted is kept as: its pair's name, what was accepted (its title), its version and address,
+    its words (the first WORDS_KEPT characters, and all of them by their SHA-256, so a changed licence is told from
+    the one accepted), when (UTC, ISO 8601) and by whom, and through which login."""
+    words = str(words or "")
+    at = (at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return {"licence": licence_pair(name), "title": str(title or ""), "version": str(version or ""), "url": str(url or ""),
+            "words": words[:WORDS_KEPT], "wordsSha256": hashlib.sha256(words.encode("utf-8")).hexdigest() if words else "",
+            "acceptedAt": at.isoformat(timespec="seconds").replace("+00:00", "Z"), "acceptedBy": str(by or ""),
+            "login": str(login or "")}
+
+
+def _who(login) -> str:
+    try:
+        return str((login.user() or {}).get("name") or "") if login is not None else getpass.getuser()
+    except Exception:  # noqa: BLE001 - nobody said: the machine's user
+        return getpass.getuser()
+
+
+def licences_file(path: Path | None = None) -> Path:
+    """Where a licence accepted is kept when the login keeps none: `path`, else LIMINAL_LICENCES_FILE, else the data
+    folder's licences.json (written only then)."""
+    if path is not None:
+        return Path(path)
+    named = (os.environ.get(LICENCES_VAR) or "").strip()
+    if named:
+        return Path(named).expanduser()
+    from .. import layout
+
+    return layout.data_dir() / "licences.json"
+
+
+def _licences_read(path: Path | None) -> dict:
+    try:
+        saved = json.loads(licences_file(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def write_json(file: Path, value) -> None:
+    """`value` written whole to `file` (a part file of this thread's own renamed into place), its folder made."""
+    file = Path(file)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    part = file.with_name(f"{file.name}.{os.getpid()}.{threading.get_ident()}.part")
+    part.write_text(json.dumps(value, indent=1), encoding="utf-8")
+    os.replace(part, file)
+
+
+_LICENCES_LOCK = threading.Lock()
+
+
+def accept_licence(login, name: str, *, title: str, version: str = "", url: str = "", words: str = "", by: str = "",
+                   at: datetime | None = None, path: Path | None = None) -> dict:
+    """A licence accepted, kept as a LICENCE pair of the user `login` serves (licence_record: what, its version and
+    address, when, by whom); with a login that keeps none, in the licences file (licences_file). Returns the record
+    with `kept`: where, in words."""
+    record = licence_record(name, title=title, version=version, url=url, words=words, by=by or _who(login), at=at,
+                            login=type(login).__name__ if login is not None else "")
+
+    def to_file(value) -> None:
+        with _LICENCES_LOCK:
+            saved = _licences_read(path)
+            saved[record["licence"]] = value
+            write_json(licences_file(path), saved)
+
+    where = keep(login, record["licence"], record, to_file, LICENCE, f"{record['title']} {record['version']}".strip())
+    return {**record, "kept": where}
+
+
+def licence(login, name: str, path: Path | None = None) -> dict | None:
+    """The record of the licence `name` the user `login` serves accepted (licence_record), None when none was; read
+    as `recall` reads (the licences file the fallback, copied into a store that keeps them, once)."""
+    pair = licence_pair(name)
+    found = recall(login, pair, lambda: _licences_read(path).get(pair), LICENCE)
+    return found if isinstance(found, dict) else None
+
+
+# -- who asks, as a login: the person at the browser of the request being answered ------------------------------------
+_ASKING: contextvars.ContextVar[tuple[object, object] | None] = contextvars.ContextVar("liminal_user_login", default=None)
+_THREAD = threading.local()
+
+
+def _mark() -> object:
+    try:
+        return _THREAD.mark
+    except AttributeError:
+        mark = _THREAD.mark = object()
+        return mark
+
+
+def asking_login():
+    """The login of the person whose request this thread answers (as_user), None when none was named here. Never
+    inherited by another thread: one started in a copy of this context has a mark of its own (apps.asking's reason)."""
+    held = _ASKING.get()
+    return held[0] if held is not None and held[1] is _mark() else None
+
+
+@contextlib.contextmanager
+def as_user(login) -> Iterator[object]:
+    """`login` is the asking person's for the block, in this thread alone; put back as it was after."""
+    token = _ASKING.set((login, _mark()))
+    try:
+        yield login
+    finally:
+        _ASKING.reset(token)

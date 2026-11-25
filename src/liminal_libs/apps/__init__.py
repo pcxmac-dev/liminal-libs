@@ -6,6 +6,8 @@ graphics"): `App` (an app's page, tray and routes served at its own port: app.py
 What is particular to one app (its users, its views) stays in that app's package."""
 from .app import App, PortTaken, Refused, attach_registry, make_handler, serve_object  # noqa: F401
 from .authorization import EnvironmentLogin, Login, Unauthorized, pair_name, saved_variables, variable_name  # noqa: F401
+from .authorization import (LICENCE, PREFERENCE, SETTING_KINDS, accept_licence, as_user, asking_login, keep,  # noqa: F401
+                            keeps, licence, licence_pair, licence_record, recall)
 from .binding import FORWARDED, PASSED_BACK, START_SECONDS, Binding, forward, tray_of, wait_for  # noqa: F401
 from .codebase import Codebase  # noqa: F401
 from .login import (DEFAULT_URL, PAIRS_PATH, SESSION_HEADER, SUPER_TITLE_VAR, SUPER_URL_VAR, SUPER_VAR, URL_VAR,  # noqa: F401

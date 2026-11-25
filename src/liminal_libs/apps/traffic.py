@@ -366,6 +366,19 @@ class RecordingLogin(Login):
         with self.traffic.timed(self.name, self.target, "login", f"{'forget' if value is None else 'keep'} {variable}"):
             return self.inner.save(variable, value)
 
+    # 1.88.0: the user's preferences and licences (Login.setting), passed through and noted by name like the rest
+    @property
+    def keeps_settings(self) -> bool:
+        return bool(getattr(self.inner, "keeps_settings", False))
+
+    def setting(self, name: str):
+        with self.traffic.timed(self.name, self.target, "login", f"read {name}"):
+            return self.inner.setting(name)
+
+    def keep_setting(self, name: str, value, kind: str = "preference", label: str = "") -> dict:
+        with self.traffic.timed(self.name, self.target, "login", f"keep {name}"):
+            return self.inner.keep_setting(name, value, kind, label)
+
     @property
     def signed_in(self) -> bool:
         return self.inner.signed_in

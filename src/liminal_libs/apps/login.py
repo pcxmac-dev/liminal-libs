@@ -185,6 +185,27 @@ class LoginClient(Login):
             self.put(pair_name(variable), value, kind="key", label=variable)
         return "your login's pairs"
 
+    # 1.88.0: the signed-in user's preferences and licences, each a pair of its kind holding JSON (Login.setting)
+    keeps_settings = True
+
+    def setting(self, name: str):
+        from .authorization import SETTING_KINDS, decode_setting
+
+        try:
+            row = self._call("GET", f"/api/pairs/{urllib.parse.quote(name, safe='')}")
+        except LoginRefused as e:
+            if e.status == 404:
+                return None
+            raise
+        if row.get("kind") not in SETTING_KINDS:
+            raise LoginRefused(409, f"the pair {name} is a {row.get('kind') or 'pair'}, not a preference or a licence")
+        return decode_setting(row.get("value"))
+
+    def keep_setting(self, name: str, value, kind: str = "preference", label: str = "") -> dict:
+        from .authorization import encode_setting, setting_kind
+
+        return self.put(name, encode_setting(value), kind=setting_kind(kind), label=label)
+
     def key(self, plugin: str) -> str:
         return self.vector(f"{plugin}-account-api-key")
 

@@ -33,6 +33,7 @@ from .. import web
 from ..lifecycle import Signal
 from ..ui import STATIC as UI_STATIC
 from . import asking
+from .authorization import as_user
 from .codebase import Codebase
 from .login import PAIRS_PATH, pairs_wanted
 from .traffic import RecordingLogin, Traffic, node_of
@@ -218,6 +219,22 @@ class App:
             return login.session(handler) is not None
         except Exception:  # noqa: BLE001 - a login that cannot say: as if there were none
             return None
+
+    def user_login(self, handler):
+        """The login of the person at the browser of `handler` (1.88.0, Monday list item 21: their preferences and
+        licences are theirs): the session the login this app inherits gives that browser, as a Login (the login
+        object's own user_login), else this app's login (`login`: an EnvironmentLogin keeps none, so the files are
+        read as before). Never raises: a login that cannot say is as if none were signed in there."""
+        login = self.login_object() if self.inherits_login() else None
+        own = getattr(login, "user_login", None) if login is not None else None
+        if callable(own):
+            try:
+                theirs = own(handler)
+            except Exception:  # noqa: BLE001 - a login that cannot say: this app's login
+                theirs = None
+            if theirs is not None:
+                return theirs
+        return self.login
 
     def present(self, handler) -> bool | None:
         """Whether the person at the browser of `handler` is shown to be there, for a hook only its page may ask
@@ -676,7 +693,7 @@ class App:
         if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
             from ..ui import preferences
 
-            return 200, preferences()
+            return 200, preferences(login=self.user_login(handler))  # the asking person's (1.88.0)
         if method == "GET" and path == APIS_PATH:  # its own two views; ?plugin=NAME, an attached plugin's (1.63.0)
             name = str(query.get("plugin") or "")
             if not name:
@@ -915,7 +932,10 @@ def make_handler(app: App):
             query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
             began, headers = time.perf_counter(), None
             try:
-                status, data, *rest = app.api(self, method, parts.path, query, body)
+                # the asking person's login for the request's block (1.88.0): what their page reads or keeps of their
+                # preferences (ui.preferences, a plugin's hook asked from it) is theirs, a second user's their own
+                with as_user(app.user_login(self)):
+                    status, data, *rest = app.api(self, method, parts.path, query, body)
                 headers = rest[0] if rest else None
             except Refused as e:
                 status, data = e.status, {"error": e.reason}

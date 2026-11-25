@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.88.0 (2026-11-24)
+
+- Preferences and licences through the login (Monday list item 21; the user, 2026-11-19: "preferences, keys,
+  licenses all get stored in the individual's login db"). Two pair kinds beside the keys, `preference` and `licence`
+  (`apps.PREFERENCE`, `LICENCE`), each holding a JSON value: `Login.keeps_settings`, `setting(name)` and
+  `keep_setting(name, value, kind, label)`, refused (405) by a login that keeps none, an EnvironmentLogin among them;
+  `LoginClient` keeps them as the login app's pairs and never reads a key as one (409); `RecordingLogin` passes them
+  through, noted by name.
+- `apps.recall` and `apps.keep` read and write one through a login and fall back to the file it was kept in before
+  when the login keeps none, or refuses, or cannot be reached. A user's store holding none of that name yet is given
+  the file's value the first time it is read, once; the file is left as it was.
+- The UI's theme is the signed-in user's preference `ui-theme` (`ui.THEME_PAIR`): `ui.preferences(path, login)` and
+  `save_preferences(path, login, theme=...)` take the login given, else the asking person's; ui.json as before
+  without one; the answer says where it is kept (`store`: login or file).
+- The asking person's login (`apps.as_user`, `asking_login`): every app's frame names it for a request's block, from
+  the browser's session in the login it inherits (`App.user_login(handler)`: that login object's own `user_login`,
+  else the app's login), in that thread alone. `GET /api/ui` answers each browser with its own user's theme, and a
+  plugin's hook asked from a page (the Preferences plugin's theme) keeps it for that user.
+- A licence accepted (`apps.accept_licence(login, name, title=, version=, url=, words=, by=, at=)`) is kept as the
+  pair `licence-<name>` with what was accepted, its version and address, its words (the first 1,500 characters, all
+  of them by SHA-256), when (UTC) and by whom; without a login that keeps them, in the data folder's licences.json
+  (LIMINAL_LICENCES_FILE), copied into a user's store once as above. `apps.licence(login, name)` reads it back.
+
 ## 1.87.0 (2026-11-24)
 
 - What ends promptly when asked (the shutdown audit of 2026-11-24: a stop took 61 s to 47+ min).
