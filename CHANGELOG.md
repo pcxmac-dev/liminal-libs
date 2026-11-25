@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.91.0 (2026-11-25)
+
+- A store's pick may name an instance (Monday list item 10; item 30, step 7): `engine:instance`, for example
+  `postgres:main`, one of the database plugins' instances added on the platform's Databases section. A bare engine
+  keeps meaning today's store, its plugin's own instance, so nothing changes for the picks kept (`sqlite:data` and
+  `mongodb:local`, the own instances named, are kept as the bare engines). Documents alone go to an instance for now;
+  bars and series after.
+- The pick is kept where the Store picker keeps every pick (the main file's `store:pick:<plugin>:<type>`), and in
+  effect at once (`store:effect:...`): nothing is moved. What the store left holds stays where it is, and only where
+  new documents are written changes; they are read from the instance with the SQLite file's copy of the ones before
+  (gov.py `items`, markets.py `news`, `latest_news_ms`), and an agency's items are read back from the instance for the
+  publications' audit (`items_held`). The hourly `settle` copies nothing for such a plugin. The picker says so
+  (`NAMED_MOVES`).
+- Storage opens a named instance through its plugin's `open` (`registry.database(engine)`, the class loaded in this
+  process, no hop): attached by the app here, with its login; in a process of no app's (the recorder, the sync's
+  extras) a copy holding the login every plugin is lent. The instances are read through that login once and kept in
+  memory (`NAMED_S`, 60 s; read again at once when the one asked for is not among them, and when a pick is set).
+  Connections to a server's instance are kept, at most `POOL_MOST` (8), one call at a time each, a failed one closed.
+- Refused in words, when picked and when written to, never replaced by another store (`PickRefused`, a ValueError):
+  an instance not there, its plugin not installed here, one holding something else, a folder, its driver missing, a
+  bare engine with no store of its own (`postgres`). A server that does not answer is raised as its driver said it:
+  the read is tried again at its next due time, its pull kept in the fetch cache.
+- A documents backend for PostgreSQL and MariaDB (`storage/documents.py` `SqlDocuments`, through `stores.backend` and
+  `named_backend`), the same calls as SQLite's and MongoDB's (put, find, newest, count, every): a table for each kind
+  (`liminal_gov_items`, `liminal_news`), its fields as columns, `doc_id` (the key's sha256) the primary key, made when
+  first written; `every` reads a batch at a time by key. A SQLite file the user added keeps them the same way, a
+  MongoDB instance in a collection. `TYPES["documents"]` lists both engines; the drivers are the plugins' own, imported
+  by their `open` only when an instance is used. `Kind.numbers`: a kind's whole numbers (a headline's `published_ms`).
+- The Store picker's rows (`plugin_stores`): the bare engines as before (`engines`), and `instances`, each instance
+  that can hold the type as engine:instance with its title (`instance_choices`); a pick that cannot be used now says
+  why (`refused`); the instance picked is counted with the others.
+
 ## 1.90.0 (2026-11-25)
 
 - The platform's core, the base the apps inherit (Monday list item 30, step 1; the user, 2026-11-24: "through the rust

@@ -124,10 +124,25 @@ class MarketsStore:
 
         return stores.moved_to(self.conn, "mongodb")
 
+    def _news_named(self) -> dict[str, str]:
+        """The vendors whose new headlines go to an instance their plugin picked (1.91.0): source -> engine:instance."""
+        from .. import stores
+
+        return {p: e for p, e in stores.effects(self.conn).items() if stores.is_named(e)}
+
+    def _news_in(self, store_name: str):
+        from .. import stores
+        from .documents import NEWS
+
+        return stores.named_backend(store_name, NEWS, None if str(self.path) == ":memory:" else self.path.parent)
+
     def save_news(self, source: str, items: Iterable[dict]) -> int:
         docs = [{"source": source, "id": str(i["id"]), "published_ms": int(i["published_ms"]), "title": i["title"],
                  "publisher": i.get("publisher"), "url": i.get("url"), "tickers": i.get("tickers") or []}
                 for i in items if i.get("id") and i.get("title")]
+        named = self._news_named().get(source)
+        if named:  # written there and nowhere else (1.91.0): one that cannot be used is raised in words
+            return self._news_in(named).put(docs, replace=True)
         if source in self._news_moved():
             try:
                 return self._news_docs("mongodb", start=True).put(docs, replace=True)
@@ -160,9 +175,34 @@ class MarketsStore:
             except Exception:  # noqa: BLE001 - the server down: this file's copy of them
                 got = self._news_here(there, [], since_ms, limit)
             out = sorted(out + got, key=lambda d: d["published_ms"], reverse=True)[:limit]
+        named = self._news_named()
+        wanted = {s: e for s, e in named.items() if source is None or s == source}
+        if wanted:
+            # the instances picked (1.91.0): their new headlines with this file's copy of the ones before (the same one
+            # once); an instance that does not answer leaves this file's
+            seen = {(d["source"], str(d["id"])): d for d in out}
+            by: dict[str, list[str]] = {}
+            for s, e in wanted.items():
+                by.setdefault(e, []).append(s)
+            for e, sources in by.items():
+                try:
+                    got = self._news_in(e).find({"source": sources}, since=since_ms, limit=limit)
+                except Exception:  # noqa: BLE001 - a read: this file's copy
+                    continue
+                for d in got:
+                    seen[(d["source"], str(d["id"]))] = d
+            out = sorted(seen.values(), key=lambda d: d["published_ms"], reverse=True)[:limit]
         return out
 
     def latest_news_ms(self, source: str) -> int | None:
+        named = self._news_named().get(source)
+        if named:  # (1.91.0) the newest of the instance's and this file's copy's
+            here = self._news_docs("sqlite").newest({"source": source})
+            try:
+                there = self._news_in(named).newest({"source": source})
+            except Exception:  # noqa: BLE001 - a read: this file's copy
+                there = None
+            return max((v for v in (here, there) if v is not None), default=None)
         if source in self._news_moved():
             try:
                 return self._news_docs("mongodb").newest({"source": source})

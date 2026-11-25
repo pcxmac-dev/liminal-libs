@@ -7,6 +7,10 @@ db based on data type". A kind of document (Kind) has the same fields in either:
 columns (a list as JSON), in MongoDB a collection's documents, each with its key as `_id`. Both
 answer the same calls (put, find, newest, count, every), so a plugin's code does not change with
 its store, and a move from one to the other (stores.settle) is a copy of `every` into `put`.
+
+1.91.0 (Monday list item 10): an instance the user added on the platform's Databases section keeps them too, when a
+plugin's pick names it (stores.py): `SqlDocuments`, a table each kind on a PostgreSQL or MariaDB database, or in a
+SQLite file, answering the same calls; a MongoDB instance is a MongoDocuments on its database.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ class Kind:
     order: str
     fields: tuple[str, ...]
     lists: tuple[str, ...] = ()
+    numbers: tuple[str, ...] = ()  # its whole numbers (a time in ms): a server's table keeps them as numbers (1.91.0)
 
     def id(self, doc: dict) -> str:
         return ":".join(str(doc[k]) for k in self.key)
@@ -37,7 +42,7 @@ class Kind:
 GOV_ITEMS = Kind("gov_items", "items", "gov_items", ("source", "id"), "published",
                  ("source", "id", "agency", "title", "url", "published", "kind", "tags", "fetched_at"), ("tags",))
 NEWS = Kind("news", "news", "news", ("source", "id"), "published_ms",
-            ("source", "id", "published_ms", "title", "publisher", "url", "tickers"), ("tickers",))
+            ("source", "id", "published_ms", "title", "publisher", "url", "tickers"), ("tickers",), ("published_ms",))
 KINDS = {k.name: k for k in (GOV_ITEMS, NEWS)}
 
 
@@ -169,6 +174,241 @@ class MongoDocuments:
                 out = []
         if out:
             yield out
+
+
+# -- a kind's documents in an instance the user added (1.91.0, Monday list item 10) -------------------------------------
+@dataclass(frozen=True)
+class Dialect:
+    """How a SQL engine is spoken to for a kind's table: a parameter's mark, an identifier's quotes, the types of its
+    columns (a field's text, a text field that is indexed, a whole number), what follows CREATE TABLE, and how an insert
+    keeps a document held already (`keep`) or replaces it (`replace`, each column `{c}` from what was given)."""
+
+    name: str
+    mark: str
+    quote: str
+    text: str
+    keyed: str
+    number: str
+    keep: str
+    replace: str
+    replace_column: str
+    table_tail: str = ""
+
+
+_KEEP, _REPLACE, _REPLACE_COLUMN = (" ON CONFLICT (doc_id) DO NOTHING", " ON CONFLICT (doc_id) DO UPDATE SET {sets}",
+                                    "{c} = EXCLUDED.{c}")
+DIALECTS = {
+    # PostgreSQL (pg8000: format marks); a SQLite file the user added speaks the same upsert (SQLite 3.24 and later)
+    "postgres": Dialect("postgres", "%s", '"', "TEXT", "TEXT", "BIGINT", _KEEP, _REPLACE, _REPLACE_COLUMN),
+    "sqlite": Dialect("sqlite", "?", '"', "TEXT", "TEXT", "INTEGER", _KEEP, _REPLACE, _REPLACE_COLUMN),
+    # MariaDB (PyMySQL: format marks): an index on text needs a length, so the indexed text columns are VARCHAR(255); a
+    # duplicate key alone is let by (never INSERT IGNORE, which lets a value cut short by, too)
+    "mariadb": Dialect("mariadb", "%s", "`", "MEDIUMTEXT", "VARCHAR(255)", "BIGINT",
+                       " ON DUPLICATE KEY UPDATE doc_id = doc_id", " ON DUPLICATE KEY UPDATE {sets}", "{c} = VALUES({c})",
+                       " DEFAULT CHARSET=utf8mb4"),
+}
+TABLE_PREFIX = "liminal_"  # a kind's table on a server (liminal_gov_items, liminal_news): never one of the server's own
+PUT_BATCH = 500  # documents written in one statement
+_READY: set = set()  # (place, table): made in this process already
+_READY_MOST = 256
+
+
+def forget_tables() -> None:
+    """The tables made looked for again at the next call (a connection closed, so perhaps another server's now)."""
+    _READY.clear()
+
+
+class SqlDocuments:
+    """A kind's documents in a table of an instance the user added (stores.py: a pick naming one): a PostgreSQL or
+    MariaDB database, or a SQLite file. One table for each kind (TABLE_PREFIX and its collection's name), its fields as
+    columns (a list as JSON text, a whole number as a number, the rest as text, as gov.db and the main file keep them),
+    and `doc_id`, the sha256 of its key, as the primary key. It answers the calls the other two answer (put, find,
+    newest, count, every), so a plugin's code does not change with its store.
+
+    `session`: a context manager giving a DB-API connection, held while one call runs (stores.py's, through the
+    instance's plugin's `open`); `place`: the instance's name for this process's note of the tables it made. `every`
+    reads a batch at a time by key, never the whole table."""
+
+    def __init__(self, session, kind: Kind, dialect: str, place: str = ""):
+        if dialect not in DIALECTS:
+            raise ValueError(f"no documents' dialect {dialect!r}: {', '.join(DIALECTS)}")
+        self.session, self.kind, self.dialect = session, kind, DIALECTS[dialect]
+        self.engine = dialect
+        self.place = place
+        self.table = TABLE_PREFIX + kind.collection
+
+    # -- words of the statements -------------------------------------------------------------------------------------
+    def _q(self, name: str) -> str:
+        q = self.dialect.quote
+        return f"{q}{name}{q}"
+
+    def _marks(self, n: int) -> str:
+        return ", ".join([self.dialect.mark] * n)
+
+    def _type(self, field: str) -> str:
+        if field in self.kind.numbers:
+            return self.dialect.number
+        if field in (self.kind.key[0], self.kind.order):
+            return self.dialect.keyed
+        return self.dialect.text
+
+    def _ready(self, conn) -> None:
+        """Its table and indexes made where they are not (once in this process for each place)."""
+        token = (self.place, self.dialect.name, self.table)
+        if self.place and token in _READY:
+            return
+        t = self._q(self.table)
+        cols = ", ".join(f"{self._q(f)} {self._type(f)}" for f in self.kind.fields)
+        keyed = "CHAR(64)" if self.dialect.name != "sqlite" else "TEXT"
+        cur = conn.cursor()
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {t} (doc_id {keyed} NOT NULL PRIMARY KEY, {cols}){self.dialect.table_tail}")
+        cur.execute(f"CREATE INDEX IF NOT EXISTS {self._q(self.table + '_by_order')} ON {t} ({self._q(self.kind.order)})")
+        cur.execute(f"CREATE INDEX IF NOT EXISTS {self._q(self.table + '_by_key')} ON {t} "
+                    f"({self._q(self.kind.key[0])}, {self._q(self.kind.order)})")
+        conn.commit()
+        if self.place:
+            if len(_READY) >= _READY_MOST:
+                _READY.clear()
+            _READY.add(token)
+
+    def doc_id(self, doc: dict) -> str:
+        import hashlib
+
+        return hashlib.sha256(self.kind.id(doc).encode("utf-8")).hexdigest()
+
+    def _cell(self, field: str, value):
+        if field in self.kind.lists:
+            return json.dumps(list(value or []))
+        if value is None:
+            return None
+        if field in self.kind.numbers:
+            return int(value)
+        return value if isinstance(value, str) else str(value)
+
+    def _doc(self, row) -> dict:
+        d = dict(zip(self.kind.fields, row))
+        for f in self.kind.lists:
+            d[f] = json.loads(d[f] or "[]")
+        for f in self.kind.numbers:
+            if d[f] is not None:
+                d[f] = int(d[f])
+        return d
+
+    def _where(self, where: dict | None, since, extra: list[str] | None = None) -> tuple[str, list]:
+        sql, args = list(extra or ()), []
+        for f, v in (where or {}).items():
+            if f not in self.kind.fields:
+                raise ValueError(f"{self.kind.name} has no field {f!r}")
+            if isinstance(v, (list, tuple, set)):
+                v = list(v)
+                if not v:
+                    sql.append("1 = 0")
+                    continue
+                sql.append(f"{self._q(f)} IN ({self._marks(len(v))})")
+                args += [self._cell(f, x) for x in v]
+            else:
+                sql.append(f"{self._q(f)} = {self.dialect.mark}")
+                args.append(self._cell(f, v))
+        if since is not None:
+            sql.append(f"{self._q(self.kind.order)} >= {self.dialect.mark}")
+            args.append(since)
+        return (" WHERE " + " AND ".join(sql)) if sql else "", args
+
+    def _fields(self) -> str:
+        return ", ".join(self._q(f) for f in self.kind.fields)
+
+    # -- the calls -----------------------------------------------------------------------------------------------------
+    def put(self, docs: Iterable[dict], replace: bool = False) -> int:
+        """Store documents; one held already is kept (`replace`: replaced). Returns how many were new (replaced: how
+        many were given). Each batch is one transaction; a failure is raised as the server said it, nothing kept of it."""
+        docs = list(docs)
+        if not docs:
+            return 0
+        d = self.dialect
+        t, cols = self._q(self.table), ["doc_id", *self.kind.fields]
+        tail = (d.replace.format(sets=", ".join(d.replace_column.format(c=self._q(f)) for f in self.kind.fields))
+                if replace else d.keep)
+        insert = f"INSERT INTO {t} ({', '.join(self._q(c) for c in cols)}) VALUES ({self._marks(len(cols))}){tail}"
+        new = 0
+        with self.session() as conn:
+            self._ready(conn)
+            for i in range(0, len(docs), PUT_BATCH):
+                batch = docs[i:i + PUT_BATCH]
+                rows = {}
+                for doc in batch:  # (one key given twice: the last, as the others' stores keep it)
+                    rows[self.doc_id(doc)] = (self.doc_id(doc), *(self._cell(f, doc.get(f)) for f in self.kind.fields))
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT doc_id FROM {t} WHERE doc_id IN ({self._marks(len(rows))})", list(rows))
+                    held = {str(r[0]) for r in cur.fetchall()}
+                    cur.executemany(insert, list(rows.values()))
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:  # noqa: BLE001 - a connection gone: its failure is the one raised
+                        pass
+                    raise
+                new += len(batch) if replace else sum(1 for k in rows if k not in held)
+        return new
+
+    def find(self, where: dict | None = None, since=None, limit: int | None = None) -> list[dict]:
+        w, args = self._where(where, since)
+        sql = f"SELECT {self._fields()} FROM {self._q(self.table)}{w} ORDER BY {self._q(self.kind.order)} DESC"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        with self.session() as conn:
+            self._ready(conn)
+            cur = conn.cursor()
+            cur.execute(sql, args)
+            rows = cur.fetchall()
+            conn.rollback()  # (a read: its transaction ended)
+        return [self._doc(r) for r in rows]
+
+    def newest(self, where: dict | None = None):
+        w, args = self._where(where, None)
+        with self.session() as conn:
+            self._ready(conn)
+            cur = conn.cursor()
+            cur.execute(f"SELECT MAX({self._q(self.kind.order)}) FROM {self._q(self.table)}{w}", args)
+            got = cur.fetchone()
+            conn.rollback()
+        value = got[0] if got else None
+        return int(value) if value is not None and self.kind.order in self.kind.numbers else value
+
+    def count(self, where: dict | None = None) -> int:
+        w, args = self._where(where, None)
+        with self.session() as conn:
+            self._ready(conn)
+            cur = conn.cursor()
+            cur.execute(f"SELECT COUNT(*) FROM {self._q(self.table)}{w}", args)
+            got = cur.fetchone()
+            conn.rollback()
+        return int(got[0] if got else 0)
+
+    def every(self, where: dict | None = None, batch: int = 5000) -> Iterator[list[dict]]:
+        """All documents (matching `where`) a batch at a time, by doc_id: each batch its own statement, from the last
+        key read (never the whole table at once; nothing held between batches)."""
+        after = None
+        while True:
+            extra = [f"doc_id > {self.dialect.mark}"] if after is not None else []
+            w, args = self._where(where, None, extra)
+            if after is not None:
+                args = [after, *args]
+            sql = (f"SELECT doc_id, {self._fields()} FROM {self._q(self.table)}{w} ORDER BY doc_id "
+                   f"LIMIT {int(batch)}")
+            with self.session() as conn:
+                self._ready(conn)
+                cur = conn.cursor()
+                cur.execute(sql, args)
+                rows = cur.fetchall()
+                conn.rollback()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            yield [self._doc(r[1:]) for r in rows]
+            if len(rows) < batch:
+                return
 
 
 def copy(src, dst, where: dict | None = None) -> tuple[int, int]:

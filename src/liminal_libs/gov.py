@@ -192,6 +192,22 @@ class GovDB:
         self._engines_seen = (now, got)
         return got
 
+    def _named(self) -> dict[str, list[str]]:
+        """The item sources (feeds' keys) whose plugin's new documents go to an instance it picked (1.91.0), by that
+        instance (engine:instance)."""
+        from . import stores
+        from .storage.documents import GOV_ITEMS
+
+        out: dict[str, list[str]] = {}
+        for plugin, e in self.engines().items():
+            if stores.is_named(e):
+                out.setdefault(e, []).extend(k for kind, where in stores.document_scopes(plugin) if kind is GOV_ITEMS
+                                             for k in where["source"])
+        return out
+
+    def _data_dir(self) -> Path | None:
+        return Path(self.main).parent if self.main else None
+
     def _items_in(self, engine: str) -> list[str]:
         """The item sources (feeds' keys) whose plugin keeps its documents in `engine`."""
         from . import stores
@@ -225,6 +241,10 @@ class GovDB:
         plugin = stores.item_plugin(source)
         engine = self.engines().get(plugin, "sqlite") if plugin else "sqlite"
         docs = item_docs(source, items, now)
+        if stores.is_named(engine):
+            # an instance the plugin picked (1.91.0): written there and nowhere else; one that cannot be used, or does
+            # not answer, is raised in words (the read is tried again at its next due time), never kept elsewhere
+            return stores.named_backend(engine, GOV_ITEMS, self._data_dir()).put(docs)
         if engine == "mongodb":
             try:
                 return stores.backend("mongodb", GOV_ITEMS, data_dir=Path(self.main).parent if self.main else None,
@@ -240,11 +260,14 @@ class GovDB:
         from .storage.documents import GOV_ITEMS
 
         plugin = stores.item_plugin(source)
-        if plugin and self.engines().get(plugin, "sqlite") != "sqlite":
+        engine = self.engines().get(plugin, "sqlite") if plugin else "sqlite"
+        if engine != "sqlite" and not stores.is_named(engine):
             return None
         ids = list(dict.fromkeys(ids))
         out: dict = {}
-        backend = stores.backend("sqlite", GOV_ITEMS, gov_conn=self.conn)
+        # (an instance picked, 1.91.0: read back from it, where they were written)
+        backend = (stores.named_backend(engine, GOV_ITEMS, self._data_dir()) if stores.is_named(engine)
+                   else stores.backend("sqlite", GOV_ITEMS, gov_conn=self.conn))
         for i in range(0, len(ids), 500):
             for d in backend.find({"source": source, "id": ids[i:i + 500]}):
                 out[d["id"]] = d
@@ -297,6 +320,22 @@ class GovDB:
                 got = [dict(zip(cols, r)) for r in self.conn.execute(
                     sql.format(where=f" WHERE source IN ({marks})"), (*moved, limit))]
             out = sorted(out + got, key=lambda d: d["published"] or "", reverse=True)[:limit]
+        named = self._named()
+        if named:
+            # the instances picked (1.91.0): their new items with this file's copy of what was here before (the same
+            # item once); an instance that does not answer leaves this file's
+            from . import stores
+            from .storage.documents import GOV_ITEMS
+
+            seen = {(d["source"], str(d["id"])): d for d in out}
+            for engine, sources in named.items():
+                try:
+                    got = stores.named_backend(engine, GOV_ITEMS, self._data_dir()).find({"source": sources}, limit=limit)
+                except Exception:  # noqa: BLE001 - a read: what this file holds is still shown
+                    continue
+                for d in got:
+                    seen[(d["source"], str(d["id"]))] = {c: d.get(c) for c in cols}
+            out = sorted(seen.values(), key=lambda d: d["published"] or "", reverse=True)[:limit]
         for row in out:
             if isinstance(row["tags"], str) or row["tags"] is None:
                 row["tags"] = json.loads(row["tags"] or "[]")
