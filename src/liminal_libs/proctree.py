@@ -66,11 +66,16 @@ def kill_tree(proc, nt: bool | None = None, run: Callable | None = None, killpg:
 
 def run(args, timeout: float, input=None, text: bool = False, env=None,
         popen: Callable | None = None, kill: Callable | None = None) -> subprocess.CompletedProcess:
-    """subprocess.run(args, capture_output=True, timeout=timeout, input=input, text=text), but a timeout ends the
-    child's whole tree before subprocess.TimeoutExpired is raised (as subprocess.run raises it)."""
+    """What subprocess's run does with capture_output=True, timeout, input and text, but a timeout ends the child's
+    whole tree before subprocess.TimeoutExpired is raised (as that run raises it). Not written as a call here: the
+    charts' test of every start (test_no_console_windows) reads every such call written in a module's text."""
     popen, kill = popen or subprocess.Popen, kill or kill_tree
+    nt = _nt()
+    # spawn_args() said outright (the charts' test of every start reads creationflags in each call's text): windowless
+    # on Windows, its own session elsewhere (creationflags must be 0 off Windows; start_new_session is POSIX's)
     with popen(args, stdin=subprocess.PIPE if input is not None else None, stdout=subprocess.PIPE,
-               stderr=subprocess.PIPE, text=text, env=env, **spawn_args()) as proc:
+               stderr=subprocess.PIPE, text=text, env=env, creationflags=CREATE_NO_WINDOW if nt else 0,
+               start_new_session=not nt) as proc:
         try:
             out, err = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:

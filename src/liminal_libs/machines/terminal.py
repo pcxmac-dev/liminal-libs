@@ -132,7 +132,8 @@ class Terminal:
         self.started = time.time()
         self.seen = time.monotonic()  # the last time the page read it: an unread terminal is closed (Platform)
         self.output = Output()
-        env = dict(os.environ, WSL_UTF8="1")  # wsl's own words in UTF-8 rather than UTF-16
+        # wsl's own words in UTF-8 rather than UTF-16; no LIMINAL_* name inherited (`inherited`: the review of 2026-11-21, item 26)
+        env = dict(inherited(), WSL_UTF8="1")
         self.proc = (popen or subprocess.Popen)(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                 bufsize=0, env=env, **_no_window())
         self._reader = threading.Thread(target=self._read, daemon=True, name="terminal")

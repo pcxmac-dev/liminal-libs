@@ -119,7 +119,7 @@ class Docker:
         self._runner = runner
         self.log = log or (lambda m: None)
         # the command, with a prefix when the engine is reached through another program: `wsl -d Ubuntu docker`
-        self.argv = shlex.split((command or env.get(COMMAND_VAR) or "docker").strip() or "docker")
+        self.argv = split_command((command or env.get(COMMAND_VAR) or "docker").strip() or "docker")
         self.name = self.argv[0]  # the command's name
         self.command = shutil.which(self.name) or self.name  # its path when found
         self.translate = translate  # a host path as the engine sees it (a Windows path under WSL)
@@ -141,7 +141,8 @@ class Docker:
                                   f"command; Rancher's containerd gives nerdctl: {COMMAND_VAR}=nerdctl), and no context or host names "
                                   f"another ({CONTEXT_VAR}, {HOST_VAR})")
             try:  # a timeout ends the command with what it started (1.80.0: a helper of a pull, a build)
-                done = proctree.run(full, timeout, input=stdin, text=True)
+                # no LIMINAL_* name inherited, docker's own DOCKER_* kept (machines/terminal.inherited: the review of 2026-11-21, item 26)
+                done = proctree.run(full, timeout, input=stdin, text=True, env=_inherited())
             except subprocess.TimeoutExpired:
                 raise DockerError(f"{self.name} {' '.join(args[:2])} took more than {timeout:g} s on {self.where}") from None
             except OSError as e:
@@ -326,7 +327,7 @@ def wsl() -> dict | None:
     if os.name != "nt":
         return None
     try:
-        done = subprocess.run(["wsl", "--status"], capture_output=True, timeout=15, **_no_window())
+        done = subprocess.run(["wsl", "--status"], capture_output=True, timeout=15, env=_inherited(), **_no_window())
     except (OSError, subprocess.SubprocessError):
         return {"present": False, "version": "", "distribution": ""}
     raw = done.stdout or b""
@@ -343,6 +344,26 @@ def wsl() -> dict | None:
 def command_line(service: Service, command: str = "docker") -> str:
     """What `docker run` (or nerdctl's) would be asked, for a page or a log."""
     return f"{command} " + " ".join(shlex.quote(a) for a in service.run_args())
+
+
+def _inherited() -> dict:
+    """A child's environment (machines/terminal.inherited): this process's without any LIMINAL_* name."""
+    from .machines.terminal import inherited
+
+    return inherited()
+
+
+def split_command(command: str, windows: bool | None = None) -> list[str]:
+    r"""A command line (the command given, or LIMINAL_DOCKER_COMMAND) as its words. On Windows it is split as Windows
+    splits one: a path that is there kept whole (C:\Program Files\Docker\...\docker.exe, spaces and
+    all), otherwise shlex without POSIX's escapes and with the quotes taken off; POSIX shlex took each backslash
+    for an escape and the path apart (the review of 2026-11-21, item 26). Elsewhere POSIX shlex, as before."""
+    command = command.strip()
+    if not (os.name == "nt" if windows is None else windows):
+        return shlex.split(command)
+    if os.path.isfile(command.strip('"')):
+        return [command.strip('"')]
+    return [w[1:-1] if len(w) >= 2 and w[0] == w[-1] and w[0] in "\"'" else w for w in shlex.split(command, posix=False)]
 
 
 def _no_window() -> dict:

@@ -16,6 +16,7 @@ from typing import Callable
 
 from . import claims, collector, killswitch
 from .collector import StopRun
+from .errors import BudgetExhausted, Paused, RateLimited
 from .sources.fetching import FetchContext, Fetcher, Job
 from .sources.registry import plugin_fetchers
 
@@ -32,6 +33,15 @@ def stopped(store, plugin: str, part: str | None = None, now: datetime | None = 
         if k:
             return f"{name}: {k.get('why') or 'stopped'}"
     return None
+
+
+def _stop(e: Exception) -> StopRun:
+    """What stops a plugin's pass for a fetch's pause, cap or 429: collector._guard_call's StopRun, a 429 a strike."""
+    if isinstance(e, RateLimited):
+        return StopRun(f"rate limited ({e.message}); stopping until the next run", strike=True)
+    if isinstance(e, BudgetExhausted):
+        return StopRun(f"request cap reached ({e})")
+    return StopRun(str(e))
 
 
 class Runner:
@@ -107,12 +117,21 @@ class Runner:
             job = Job(row["kind"], row["key"], row["title"], row["part"], row["detail"] or "", row["priority"])
             sent[0] = 0
             try:
-                got = fetcher.fetch(ctx(row["part"]), job)
+                try:
+                    got = fetcher.fetch(ctx(row["part"]), job)
+                except (Paused, BudgetExhausted, RateLimited) as e:
+                    # The server's pause, the cap or a 429 stops the plugin's pass, the way the bars path's
+                    # (collector._guard_call) stops a run, and a 429 strikes the plugin's fetching: caught as one
+                    # job's failure, the next job went to the same server at once (the review of 2026-11-21, item 26).
+                    raise _stop(e) from e
             except StopRun as e:
                 store.queue_end(plugin, row["part"], row["kind"], row["key"], "waiting", detail=f"stopped: {e}",
                                 requests=sent[0], now=clock())
                 out["stopped"] = str(e)
                 log(f"{plugin}: stopped ({e})")
+                if e.strike:  # refused, or failing: the plugin's fetching is killed (killswitch.py)
+                    killswitch.strike(store, plugin, "fetch", str(e), now=clock(), log=log,
+                                      at_least_s=killswitch.retry_after_s(e))
                 break
             except Exception as e:  # noqa: BLE001 - this job failed; the plugin's next goes on
                 store.queue_end(plugin, row["part"], row["kind"], row["key"], "failed", error=f"{type(e).__name__}: {e}"[:300],

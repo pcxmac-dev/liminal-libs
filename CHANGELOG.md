@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.83.0 (2026-11-24)
+
+- The review of 2026-11-21 (item 26), the library's P3 findings. A feed's history triggers made by an older version
+  are dropped and made again in one transaction (`storage/history.ensure`, each statement of SCHEMA run inside it):
+  a write to an archived month between the two marked nothing stale.
+- The collector's clock (`Collector.clock`) is the monotonic clock corrected against the wall clock: a step in which
+  the wall clock went on a second or more past it counts the wall clock's. On Linux (WSL too) the monotonic clock
+  stops while the machine sleeps, and a request made after waking was stamped synced before it was made.
+- The IPC key file (`host.key`) is made owner-only from the start (O_EXCL, mode 0600) and put in place by a hard link,
+  which never replaces a key there: it was written at the umask and chmodded after, and two first starts replaced
+  each other's. The second start reads the first's.
+- A plugin's own fetching (`runner.Runner`): the server's pause, the request cap or a 429 stops the plugin's pass, the
+  jobs left not sent, and a 429 (any StopRun with a strike) strikes the plugin's fetching (killswitch, at least the
+  server's Retry-After), as the bars path does; each was one job's failure and the next job went to the same server.
+- No child the machines or docker start inherits a LIMINAL_* name (`machines/terminal.inherited`): PowerShell, the
+  Linux shell, wsl (run, streamed and the keeping session), the terminal panel's process and docker; what a call adds
+  (WSL_UTF8) is still added, and docker's DOCKER_* and WSL's own variables are kept.
+- A docker command on Windows (`docker.split_command`: the command given or LIMINAL_DOCKER_COMMAND) is split as
+  Windows splits one: a path that is there kept whole, else without POSIX's escapes and with the quotes taken off.
+  `C:\Program Files\Docker\...\docker.exe` was split apart at every backslash.
+- A WSL plugin's Start thaws a running distribution's services still frozen whatever the plugin remembers (what it
+  paused is kept in memory only, and a pause from before a restart was left frozen); Start is never disabled.
+- A WSL rename whose new name the login could not keep is renamed back, and the error says so; when the undo fails
+  too, it says both and names the distribution as it now is.
+- `proctree.run` says its window flags outright in its Popen call (creationflags CREATE_NO_WINDOW on Windows, 0
+  elsewhere; start_new_session off Windows), and its docstring no longer reads as a subprocess call: the charts'
+  test of every start (`test_no_console_windows`) took the docstring's text for a call with no window flags.
+
 ## 1.82.0 (2026-11-24)
 
 - The live recorder and the publishers through the fetch cache (Monday list item 5; until now only the feeds'

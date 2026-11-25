@@ -129,10 +129,28 @@ def ensure(conn: sqlite3.Connection) -> None:
     found = dict(conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'history_stale_%'"))
     if has_manifest(conn) and len(found) == 6 and all(TRIGGER_MARK in sql for sql in found.values()):
         return
+    # The old triggers dropped and the new made in one transaction: made apart (the review of 2026-11-21, item 26),
+    # a write to an archived month between the two marked nothing stale and the month was read from an old copy.
+    # Each statement IF NOT EXISTS: processes doing it at once are fine.
     with write_transaction(conn):
-        for name in found:  # all six in one transaction: no write runs between without one
+        for name in found:
             conn.execute(f"DROP TRIGGER {name}")
-    conn.executescript(SCHEMA)  # each statement IF NOT EXISTS: processes doing it at once are fine
+        for statement in _statements(SCHEMA):
+            conn.execute(statement)
+
+
+def _statements(script: str) -> list[str]:
+    """A script's statements one by one (a trigger's body has semicolons of its own: sqlite3.complete_statement
+    says where each ends), for running inside a transaction (executescript commits first)."""
+    out, part = [], ""
+    for line in script.splitlines(keepends=True):
+        part += line
+        if sqlite3.complete_statement(part):
+            out.append(part.strip())
+            part = ""
+    if part.strip():
+        out.append(part.strip())
+    return out
 
 
 def current(conn: sqlite3.Connection, lo_ms: int | None, hi_ms: int | None) -> list[tuple[int, int, str]]:

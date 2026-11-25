@@ -1517,8 +1517,24 @@ class Collector:
         self.repulls_left = 0  # spans the auditors found that this run may still ask the feed for again (run)
 
     def clock(self) -> datetime:
-        """The time now: a run lasts hours, and `now` is when it began."""
-        return self.now + timedelta(seconds=monotonic() - self.started)
+        """The time now: a run lasts hours, and `now` is when it began. By the monotonic clock, corrected against the
+        wall clock: on Linux (WSL too) the monotonic clock stops while the machine sleeps, and a request made after
+        waking was stamped synced before it was made (the review of 2026-11-21, item 26). A step since the last call
+        in which the wall clock went on a second or more past the monotonic one counts the wall clock's (a sleep);
+        any other the monotonic's (a wall clock set back or slewed counts nothing)."""
+        import time as _time
+
+        slept_s = 1.0  # the wall clock this far ahead of the monotonic one in a step: the machine slept
+
+        mono, wall = monotonic(), _time.time()
+        seen = self.__dict__.get("_clock_seen")
+        if seen is None or seen[0] != (self.started, self.now):  # a run's first call
+            elapsed = mono - self.started
+        else:
+            step = mono - seen[1]
+            elapsed = seen[3] + (wall - seen[2] if wall - seen[2] - step >= slept_s else step)
+        self._clock_seen = ((self.started, self.now), mono, wall, elapsed)
+        return self.now + timedelta(seconds=elapsed)
 
     def run(self, only: set[str] | None = None, published_only: bool = False,
             on_item: Callable[[str], None] | None = None, directory_allowance: int | Callable[[], int] = 0) -> SyncResult:

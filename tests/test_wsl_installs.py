@@ -137,7 +137,7 @@ def test_an_install_is_chosen_by_a_click_on_its_row_and_its_tasks_follow(machine
     st = p.status()
     tasks = st["tables"][0]["tasks"]
     assert st["terminalInto"] == "Ubuntu" and tasks["subject"] == "Ubuntu"
-    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, True, False, False, False, False, False]  # running: Pause and Stop
+    assert [a.get("disabled", False) for a in tasks["actions"]] == [False, False, False, False, False, False, False]  # running: Pause and Stop (Start thaws any left frozen)
     assert tasks["actions"][0]["terminal"] is True and {f["id"] for f in st["forms"]} == {"stop", "rename", "uninstall"}
     with pytest.raises(LookupError):
         p.pick_install("Debian")  # not of its system

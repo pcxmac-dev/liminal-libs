@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .. import proctree
 from .plugin import CommandError
+from .terminal import inherited
 
 TIMEOUT_S = 120.0
 ELEVATE_VAR = "LIMINAL_ELEVATE"  # prompt: a step needing an administrator asks through UAC; else it fails saying so
@@ -131,7 +132,7 @@ class PowerShell:
             if not self.here:
                 raise CommandError("Windows PowerShell is not here (this is not Windows)")
             try:  # a timeout ends powershell.exe with what it started (a Hyper-V job's, an installer): 1.80.0
-                done = proctree.run(args, timeout)
+                done = proctree.run(args, timeout, env=inherited())  # no LIMINAL_* name (the review of 2026-11-21, item 26)
             except subprocess.TimeoutExpired:
                 raise TimedOut(f"PowerShell took more than {timeout:g} s (ended, with what it had started)") from None
             except OSError as e:

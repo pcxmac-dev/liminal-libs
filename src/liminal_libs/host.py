@@ -58,15 +58,30 @@ def key() -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = os.urandom(32).hex().encode("ascii")
     tmp = path.with_name(f"key.{os.getpid()}.new")
-    tmp.write_bytes(data)
+    # Made owner-only from the start (O_EXCL, mode 0600) and put in place by a link, which never replaces a key
+    # there: written at the umask and chmodded after (a failed chmod ignored), the key was readable by others for a
+    # moment, and two first starts replaced each other's (the review of 2026-11-21, item 26). The second start reads
+    # the first's, whole (linked only once written).
+    tmp.unlink(missing_ok=True)  # one this process id left before
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
+        os.write(fd, data)
+    finally:
+        os.close(fd)
     try:
-        os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
+        os.link(tmp, path)
+    except FileExistsError:  # another start's key (or a short one left: replaced, as before)
+        try:
+            if len(path.read_bytes().strip()) < 32:
+                os.replace(tmp, path)
+        except OSError:
+            pass
+    except OSError:  # no hard links here (a FAT drive): put in place by a rename
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    tmp.unlink(missing_ok=True)
     return path.read_bytes().strip()
 
 

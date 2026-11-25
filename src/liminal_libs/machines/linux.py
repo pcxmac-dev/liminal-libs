@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 from .. import proctree
 from .plugin import LIMINAL_PREFIX, CommandError, liminal_scoped
+from .terminal import inherited  # a child's environment: no LIMINAL_* name (the review of 2026-11-21, item 26)
 
 TIMEOUT_S = 120.0
 FOUND_S = 30.0  # the WSL distributions listed are kept this long
@@ -187,7 +188,8 @@ def wsl_distributions() -> list[str]:
     names: list[str] = []
     if _on_windows() and shutil.which("wsl"):
         try:
-            out = subprocess.run(["wsl", "--list", "--quiet"], capture_output=True, timeout=30, **_no_window()).stdout or b""
+            out = subprocess.run(["wsl", "--list", "--quiet"], capture_output=True, timeout=30, env=inherited(),
+                                 **_no_window()).stdout or b""
             text = out.decode("utf-16-le", "replace") if b"\x00" in out else out.decode("utf-8", "replace")
             names = [n.strip().lstrip("\ufeff") for n in text.replace("\x00", "").splitlines() if n.strip()]
         except (OSError, subprocess.TimeoutExpired):
@@ -330,7 +332,8 @@ class Shell:
             if not self.here:
                 raise CommandError(f"no {self.where} to reach from here")
             try:  # a timeout ends the command with what it started, sudo's command asked to stop through sudo (1.80.0)
-                done = proctree.run(args, timeout, input=feed.encode() if feed is not None else None)
+                done = proctree.run(args, timeout, input=feed.encode() if feed is not None else None,
+                                    env=inherited())  # no LIMINAL_* name (the review of 2026-11-21, item 26)
             except subprocess.TimeoutExpired:
                 raise CommandError(f"{command[0]} took more than {timeout:g} s on {self.where}") from None
             except OSError as e:

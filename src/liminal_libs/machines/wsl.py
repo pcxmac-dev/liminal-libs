@@ -47,6 +47,7 @@ from pathlib import Path
 from .. import layout, proctree
 from ..docker import Instance
 from .plugin import LIMINAL_PREFIX, MachinePlugin, liminal_scoped
+from .terminal import inherited  # a child's environment: no LIMINAL_* name (the review of 2026-11-21, item 26)
 from .services import SCRIPT as SCAN_SCRIPT, Scan, parse as parse_scan
 
 TIMEOUT_S = 600.0
@@ -233,7 +234,7 @@ class Wsl:
         if out is not None:
             return self._stream(args, timeout, stdin, out)
         try:  # a timeout ends wsl.exe with what it started on Windows (1.80.0); what it runs in Linux is beyond reach
-            done = proctree.run(args, timeout, input=stdin.encode() if stdin is not None else None)
+            done = proctree.run(args, timeout, input=stdin.encode() if stdin is not None else None, env=inherited())
         except subprocess.TimeoutExpired:
             raise WslError(f"{' '.join(args[:3])} took more than {timeout:g} s") from None
         except OSError as e:
@@ -241,7 +242,8 @@ class Wsl:
         return done.returncode, done.stdout or b"", done.stderr or b""
 
     def _stream(self, args: list[str], timeout: float, stdin: str | None, out) -> tuple[int, bytes, bytes]:
-        env = dict(os.environ, WSL_UTF8="1")  # wsl's own words in UTF-8, as the commands inside print theirs
+        # wsl's own words in UTF-8, as the commands inside print theirs; no LIMINAL_* name inherited (the review of 2026-11-21, item 26)
+        env = dict(inherited(), WSL_UTF8="1")
         try:
             proc = subprocess.Popen(args, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, bufsize=0, env=env, **_no_window())
@@ -392,7 +394,7 @@ class Wsl:
         if self._spawn is not None:
             return self._spawn(args)
         return subprocess.Popen([_which("wsl") or "wsl", *args[1:]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, **_no_window())
+                                stderr=subprocess.DEVNULL, env=inherited(), **_no_window())
 
     def rename(self, key: str, name: str) -> None:
         """A stopped distribution renamed in WSL's own record (rename_registered); WslError in words when it cannot be."""
@@ -760,15 +762,24 @@ class WslDistribution(MachinePlugin):
 
     def start_install(self, name) -> dict:
         """An install started and kept running (WSL stops one with no session: a windowless session holds it, until Stop);
-        one paused, its services resumed. The user's own too: the user asked."""
+        one paused, its services resumed. The user's own too: the user asked. A running one is thawed whatever this
+        plugin remembers: what it paused is kept in memory only, and a pause from before the plugin restarted was left
+        frozen with Start saying it runs already (the review of 2026-11-21, item 26); THAW_SCRIPT thaws every service
+        still frozen."""
         target = self._install(name)
-        if target.state == "Running" and self.paused(target.name):
-            text = self.wsl.run(target.name, "sh", "-c", THAW_SCRIPT, "sh", *self.paused(target.name), user="root", timeout=120)
+        if target.state == "Running":
+            named = self.paused(target.name)
+            try:
+                text = self.wsl.run(target.name, "sh", "-c", THAW_SCRIPT, "sh", *named, user="root", timeout=120)
+            except Exception:  # noqa: BLE001 - nothing known paused: one that cannot be asked runs, as it did
+                if named:
+                    raise
+                text = ""
             thawed = [line.split(" ", 1)[1] for line in text.splitlines() if line.startswith("thawed ")]
             self._tasks["paused"].pop(target.name.lower(), None)
-            return {"said": f"{target.name} resumed: {_count(len(thawed), 'service')} running again", "ok": True,
-                    "lines": [", ".join(thawed)] if thawed else []}
-        if target.state == "Running":
+            if named or thawed:
+                return {"said": f"{target.name} resumed: {_count(len(thawed), 'service')} running again", "ok": True,
+                        "lines": [", ".join(thawed)] if thawed else []}
             return {"said": f"{target.name} is running already", "ok": True}
         self._tasks["kept"][target.name.lower()] = self.wsl.keep_running(target.name)
         for _ in range(60):
@@ -844,7 +855,18 @@ class WslDistribution(MachinePlugin):
             lines.append(f"{target.name} stopped first")
         self.wsl.rename(target.key, new)
         if ours:
-            where = login.save(self.DISTRIBUTION_VAR, new)
+            # The new name kept through the login, else the rename undone: left renamed, the plugin looked for its own
+            # under the old name and found none (the review of 2026-11-21, item 26).
+            try:
+                where = login.save(self.DISTRIBUTION_VAR, new)
+            except Exception as e:  # noqa: BLE001 - any login's failure: said with the undo's outcome
+                try:
+                    self.wsl.rename(target.key, target.name)
+                except Exception as undo:  # noqa: BLE001
+                    raise WslError(f"{target.name} was renamed to {new}, but its new name could not be kept through the "
+                                   f"login ({e}), and renaming it back failed too ({undo}): it is named {new} now") from e
+                raise WslError(f"{target.name} was not renamed: its new name could not be kept through the login ({e}); "
+                               f"the rename was undone, and it is named {target.name} still") from e
             lines.append(f"the plugin follows it: {self.DISTRIBUTION_VAR} kept in {where}")
         if (self._pick.get("name") or "").lower() == target.name.lower():
             self._pick["name"] = new
@@ -885,8 +907,11 @@ class WslDistribution(MachinePlugin):
             running, paused = picked.state == "Running", bool(self.paused(picked.name))
             out["tasks"] = {"title": "Task", "subject": picked.name, "actions": [
                 {"terminal": True, "title": "Terminal", "note": f"a terminal into {picked.name}" + ("" if running else ", which starts it")},
-                {"hook": "start_install", "args": [picked.name], "title": "Start", "disabled": running and not paused,
-                 "note": f"resumes {picked.name}'s services" if paused else f"starts {picked.name} and keeps it running until Stop"},
+                # Start never disabled: a running one's Start resumes services a pause from before a restart left frozen
+                {"hook": "start_install", "args": [picked.name], "title": "Start", "disabled": False,
+                 "note": f"resumes {picked.name}'s services" if paused else (
+                     "resumes any service still frozen (a pause from before the plugin restarted)" if running
+                     else f"starts {picked.name} and keeps it running until Stop")},
                 {"hook": "pause_install", "args": [picked.name], "title": "Pause", "disabled": not running or paused,
                  "note": "freezes its running services (systemd's freezer); Start resumes them"},
                 {"form": "stop", "title": "Stop…", "values": {"name": picked.name}, "disabled": not running, "label": f"Stop {picked.name}"},
