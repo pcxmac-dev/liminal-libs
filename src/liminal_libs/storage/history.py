@@ -372,7 +372,10 @@ def archive_month(conn: sqlite3.Connection, folder: Path, feed: str, month: str,
         db.execute("CREATE TABLE about AS SELECT ? AS feed, ? AS month, ?::BIGINT AS lo_ms, ?::BIGINT AS hi_ms, "
                    "?::BIGINT AS archived_at, ? AS code", [feed, month, lo, hi, started, code])
         for table, (count, tsmod, volume) in sums.items():  # what was written is what was read
-            got = db.execute(f"SELECT COUNT(*), COALESCE(SUM(ts % 1000003), 0), COALESCE(SUM(volume), 0) FROM {table}"
+            # ts % m in DuckDB keeps the sign of ts and Python's is never negative: for bars before 1970 (negative ts)
+            # the two disagreed though the rows were the same, and the copy was refused (1.88.3: tiingo 1969-12, every
+            # hour since 2026-11-22). ((ts % m) + m) % m is Python's remainder in DuckDB.
+            got = db.execute(f"SELECT COUNT(*), COALESCE(SUM(((ts % 1000003) + 1000003) % 1000003), 0), COALESCE(SUM(volume), 0) FROM {table}"
                              ).fetchone()
             if got[0] != count or got[1] != tsmod or abs(got[2] - volume) > 1e-6 * max(1.0, abs(volume)):
                 raise RuntimeError(f"{feed} {month} {table}: wrote {got}, read {(count, tsmod, volume)}")

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.88.3 (2026-11-24)
+
+- The closed months' copy to DuckDB is no longer refused for bars before 1970. Its check after the write compares the
+  rows read from SQLite with those written, by count, the sum of `ts % 1000003` and the volume. Python's remainder is
+  never negative, DuckDB's keeps the sign of `ts`, so a month with negative timestamps (before 1970) never matched
+  though the rows were the same. Seen as `tiingo 1969-12 bars: wrote (177, -100842890, ...), read (177, 76157641,
+  ...)`: the history host's work failed every hour from 2026-11-22, and no closed month after it was copied. DuckDB's
+  side now takes Python's remainder. Found through 1.87.0's logging of a host's failed work.
+
 ## 1.88.2 (2026-11-24)
 
 - A test can never reach a running app's stop event. While pytest runs a test (PYTEST_CURRENT_TEST is set), every
