@@ -144,24 +144,68 @@ def test_a_linked_apps_tray_is_read_and_an_absent_app_is_never_started(tmp_path,
     assert not hasattr(binding_mod, "start_app")
 
 
-def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path):
+class Looks:
+    """serve's stop as a test drives it: each of serve's waits (a look every 0.5 s) is taken when the test says (look),
+    and moves the app's clock on by its 0.5 s; no real time passes. A served app's quiet end was timed by real sleeps
+    against real 0.5 s looks until 2026-11-25, and a slow runner failed it."""
+
+    BOUND_S = 60.0  # a last resort only: a look serve never reaches fails the test, it does not hang it
+
+    def __init__(self, clock: list):
+        self.clock, self._go, self._waiting, self._set = clock, threading.Semaphore(0), threading.Semaphore(0), False
+
+    def wait(self, timeout=None):
+        if self._set:
+            return True
+        self._waiting.release()  # serve waits here: the test may act, then look
+        assert self._go.acquire(timeout=self.BOUND_S), "the test never looked"
+        self.clock[0] += timeout
+        return self._set
+
+    def set(self):
+        self._set = True
+
+    def is_set(self):
+        return self._set
+
+    def waiting(self) -> None:
+        """Until serve waits for its next look."""
+        assert self._waiting.acquire(timeout=self.BOUND_S), "serve never waited for its next look"
+
+    def look(self) -> None:
+        """serve's next look, taken now."""
+        self._go.release()
+
+
+def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path, monkeypatch):
+    from liminal_libs.apps import app as app_mod
+
+    clock = [0.0]
+
+    class Clock:  # the app's time: its monotonic the test's, the rest the real module's
+        monotonic = staticmethod(lambda: clock[0])
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+    monkeypatch.setattr(app_mod, "time", Clock())
     DemoApp.STATIC = tmp_path
     lines: list[str] = []
     app = DemoApp(log=lines.append)
     done: list[str] = []
-    threading.Thread(target=lambda: done.append(app.serve(0, until_quiet=0.6)), daemon=True).start()
-    end = time.monotonic() + 5
-    while not app.served and time.monotonic() < end:
-        time.sleep(0.02)
+    looks = Looks(clock)
+    thread = threading.Thread(target=lambda: done.append(app.serve(0, stop=looks, until_quiet=0.6)), daemon=True)
+    thread.start()
+    looks.waiting()  # served, touched at 0.0, waiting for its first look
     port = int(app.served.rstrip("/").rsplit(":", 1)[1])
-    time.sleep(0.4)
-    assert _get(port, "/api/tray")[0] == 200  # in touch: the clock starts again
-    time.sleep(0.4)
+    looks.look()  # 0.5: quiet for 0.5 s, not yet 0.6
+    looks.waiting()
+    assert _get(port, "/api/tray")[0] == 200  # in touch at 0.5: the clock starts again
+    looks.look()  # 1.0: quiet for 0.5 s since the touch (1.0 s since it began: it would have ended here without it)
+    looks.waiting()
     assert web.listening(port) and not done
-    time.sleep(0.6)
-    end = time.monotonic() + 5
-    while not done and time.monotonic() < end:
-        time.sleep(0.05)
+    looks.look()  # 1.5: quiet for 1.0 s: it ends
+    thread.join(Looks.BOUND_S)
+    assert not thread.is_alive(), "the app did not end once quiet"
     assert done == [app.served] and not web.listening(port) and any("no page has been in touch" in m for m in lines)
 
 

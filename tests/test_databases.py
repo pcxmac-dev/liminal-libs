@@ -310,8 +310,10 @@ def test_with_nothing_set_a_plugin_has_its_own_instances_and_says_how_each_is(fl
         plugin.instance("nope")
     assert plugin.state(own) == {"method": "file", "methodTitle": "File", "path": str(data), "foreign": False,
                                  "state": "ready", "why": ""}
-    assert plugin.test("data") == {"ok": True, "said": plugin.test("data")["said"], "lines": ["1 files"]}
-    assert plugin.test("data")["said"].startswith("data answers (file, ")
+    # one answer compared with itself: its said holds how long it took, which two calls need not share
+    tested = plugin.test("data")
+    assert tested == {"ok": True, "said": tested["said"], "lines": ["1 files"]}
+    assert tested["said"].startswith("data answers (file, ")
     status = plugin.status()
     assert (status["name"], status["engine"], status["server"], status["variable"], status["problem"]) == (
         "sqlite", "sqlite", False, "SQLITE_INSTANCES", "")
