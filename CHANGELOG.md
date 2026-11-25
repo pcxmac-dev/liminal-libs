@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.93.0 (2026-11-25)
+
+The one "run a service" interface between service plugins and container plugins (Monday list items 34 and 35's
+foundation; service-containers-design-2026-11-23.md §3 and service-containers-networking-2026-11-23.md §8, with the
+user's answers of 2026-11-23 and 2026-11-25: containers only, agents in containers too, a service starting and stopping
+with its app, service mode provided for and not offered yet, never a restart after a crash, an engine that is off never
+started, the grant kept). Built beside 1.92.0 (a LoginPlugin kind), each rebased on the other when they land; nothing in
+`apps/` or `sources/registry.py` is changed. SERVICE-INTERFACE.md, written with it, is the interface in one page.
+- **`machines/containers.py`**: the words that cross (the hooks' names, the actions, the paths a port meets your network
+  by, the accepts, the limits), the spec a service plugin hands over (`ServiceSpec` and its `Part`s, `ImagePin` by digest,
+  `Port`, `Volume`, `Secret`, `Seed`, `Readable`, `Health`), refused in words before any plan (`ServiceSpec.of`: an
+  unknown field is refused, so a privileged mode, a capability, a host path, the Docker socket or a host namespace cannot
+  even be said), the names and labels every runtime gives what it makes, `Target` and `Fit`, and `approval_answer`.
+- **`machines/plans.py`**: one plan holder for container plugins and firewalls (`Plans`: 16 at most, ten minutes each,
+  bound to their owner, approved from the page with each accept exactly True, used once, the facts read again and
+  compared when taken) and the works that carry them out (`Works`: one per target at a time, their lines masked and
+  paged, cancelled and joined at the end).
+- **`machines/containerhost.py`**: `ContainerHost`, the base every container plugin is built on, and `Runtime`, what it
+  gives for each target. Hooks: hosting, hosted, hosted_logs, exposures, plan_words, service_work, service_plan,
+  approve_plan (page alone), decline_plan, apply_plan, service_cancel, hosted_file, release_owned, grant_service and
+  revoke_service (page alone), forget_volume (page alone, asked twice), segments. Every rule of the design's §3.7 is held
+  here: who asks, grants, plans, works, secrets by environment alone, ports, data, the container's shape (`--restart no`),
+  targets, lifecycle, failures undone in reverse, an unhealthy update undone, a backup before an update.
+- **`machines/dockerruntime.py`**: `DockerRuntime`, the docker command's mapping, through a runner its plugin hands it.
+- **`machines/segments.py`**: the networking words (`Want`, `Member`, `Segment`, `Route`, `NameRecord`, `Lease`), the
+  pool (10.77.0.0/16 in two halves, a /24 a segment), the names (`names_for`, `ptr_of`), and `NetworkHost`, the firewall's
+  network part: network_plan, plan_words, approve_plan (page alone), decline_plan, apply_network, network_work,
+  network_cancel, the grants and the domain (page alone), name_records, resolve_name, reverse_name, leases, lan_open,
+  resolver_for. Its allocations are kept in memory (`MemoryBook`) until a firewall's own network database comes with it.
+- **`machines/netguard.py`**: `public_only`, `overlaps`, `routable_found`, `listener_refusal`, `wider_than_lan`.
+- **`machines/standins.py`**: `FakeDocker`, `StandInHost`, `StandInNetworkHost`, `StandInWsl`, `ServiceOwner`, `login`
+  and `conformance`, the sequence every container plugin's tests run; no plugin imports another's tests.
+- Tests: `test_service_containers.py`, `test_service_network.py`, `test_docker_runtime.py` (99), through a real
+  apps.App; each of 52 gates taken out once made a test fail.
+
 ## 1.91.0 (2026-11-25)
 
 - A store's pick may name an instance (Monday list item 10; item 30, step 7): `engine:instance`, for example
