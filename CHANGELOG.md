@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.84.0 (2026-11-24)
+
+- Set-based reads for the charts' symbol list (Monday list item 16). It read a symbol at a time, about seven
+  statements each: some 230,000 for 33,145 symbols, 11 s on Windows and two minutes from Linux, where each statement
+  crosses the link. `Store.bar_edges_many(source, tickers)`, `newest_many(tickers, timespan, holders)`,
+  `probes(source)` and `rolls_of(source)` give what `bar_edges`, `newest_any`, `probe` and `rolls` give one at a time,
+  in one statement each however many symbols are asked (one a feed for `newest_many`). Each ticker's ends are still
+  index seeks: the tickers go as one JSON list (json_each), each end a MIN or MAX in a correlated subquery.
+- The loose index scan behind `stored_series()` (`storage/common._distinct`) is one statement, a recursive CTE whose
+  every step seeks past the last key, not a statement a step: one for each series of each bar table, tens of
+  thousands once another process had written. The same rows in the same order.
+
 ## 1.83.0 (2026-11-24)
 
 - The review of 2026-11-21 (item 26), the library's P3 findings. A feed's history triggers made by an older version

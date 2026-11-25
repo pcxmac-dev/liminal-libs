@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from typing import Iterator
+from typing import Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 from ..mounts import NotHere
@@ -145,18 +146,29 @@ def _feed_name(name: str) -> bool:
     return bool(FEED_NAME.fullmatch(name)) and not name.endswith("-ticks")
 
 
+def _per_ticker(conn: sqlite3.Connection, tickers: Iterable[str], selects: list[str], args: tuple) -> dict[str, tuple]:
+    """{ticker: (each of `selects`)} for many tickers in one statement: each select a scalar subquery on
+    `t.value` (the ticker), its other parameters ?1, ?2 ... from `args`; the tickers go as one JSON list
+    (json_each), so there is no limit on how many and one statement crosses the link however many are asked."""
+    tickers = sorted(set(tickers))
+    if not tickers:
+        return {}
+    sql = f"SELECT t.value, {', '.join(selects)} FROM json_each(?{len(args) + 1}) t"
+    return {row[0]: tuple(row[1:]) for row in conn.execute(sql, (*args, json.dumps(tickers)))}
+
+
 def _distinct(conn: sqlite3.Connection, table: str, cols: tuple[str, ...], rest: tuple[str, ...]) -> list[tuple]:
     """Distinct values of a primary-key prefix `cols`. Each step seeks past the whole key
     (`rest` = the remaining integer key columns, set to their maximum), so rows sharing a
     prefix are skipped in the index rather than read."""
+    # One statement (a recursive CTE, each step the seek past the last prefix, carried as a JSON array),
+    # not a statement a step: stored_series() made one for each series of each bar table, tens of thousands
+    # for the charts' symbol list once another process had written, each crossing the link from Linux
+    # (Monday list item 16, 2026-11-24).
     names = ", ".join(cols)
     key = ", ".join(cols + rest)
-    top = (2**63 - 1,) * len(rest)
-    out: list[tuple] = []
-    row = conn.execute(f"SELECT {names} FROM {table} ORDER BY {names} LIMIT 1").fetchone()
-    while row is not None:
-        out.append(tuple(row))
-        row = conn.execute(
-            f"SELECT {names} FROM {table} WHERE ({key}) > ({', '.join('?' * (len(cols) + len(rest)))}) "
-            f"ORDER BY {key} LIMIT 1", tuple(row) + top).fetchone()
-    return out
+    prev = ", ".join([f"json_extract(d.k, '$[{i}]')" for i in range(len(cols))] + [str(2**63 - 1)] * len(rest))
+    sql = (f"WITH RECURSIVE d(k) AS (SELECT (SELECT json_array({names}) FROM {table} ORDER BY {key} LIMIT 1) "
+           f"UNION ALL SELECT (SELECT json_array({names}) FROM {table} WHERE ({key}) > ({prev}) ORDER BY {key} LIMIT 1) "
+           f"FROM d WHERE d.k IS NOT NULL) SELECT k FROM d WHERE k IS NOT NULL")
+    return [tuple(json.loads(k)) for (k,) in conn.execute(sql)]

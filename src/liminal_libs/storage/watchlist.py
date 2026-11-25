@@ -77,6 +77,14 @@ class WatchlistStore:
             (source, product, rank))
         return [(date.fromisoformat(d), t) for d, t in cur]
 
+    def rolls_of(self, source: str, rank: int = 1) -> dict[str, list[tuple[date, str]]]:
+        """rolls() of every product of a feed in one statement: {product: [(session, contract), ...]}, by session."""
+        out: dict[str, list[tuple[date, str]]] = {}
+        for p, d, t in self.conn.execute("SELECT product, session, ticker FROM futures_rolls WHERE source=? AND rank=? "
+                                         "ORDER BY product, session", (source, rank)):
+            out.setdefault(p, []).append((date.fromisoformat(d), t))
+        return out
+
     def front_contracts(self) -> dict[tuple[str, str, int], str]:
         """{(source, product, rank): contract} the contract each continuous future holds at its newest
         session (its roll schedule's last entry): what its day's move is read from."""
@@ -240,6 +248,13 @@ class WatchlistStore:
         row = self.conn.execute("SELECT probed_at, source_through FROM watchlist WHERE source=? AND ticker=?",
                                 (source, ticker.upper())).fetchone()
         return (datetime.fromisoformat(row[0]), row[1]) if row and row[0] else None
+
+    def probes(self, source: str) -> dict[str, tuple[datetime, int | None]]:
+        """probe() for every symbol of a feed in one statement: {ticker: (probed at, newest ms at the source)},
+        the ones never probed left out (Monday list item 16: the charts' symbol list asked one a symbol)."""
+        return {t: (datetime.fromisoformat(at), through) for t, at, through in self.conn.execute(
+            "SELECT ticker, probed_at, source_through FROM watchlist WHERE source=? AND probed_at IS NOT NULL "
+            "AND probed_at != ''", (source,))}
 
     def set_synced(self, source: str, ticker: str, when: datetime) -> None:
         with self.conn:

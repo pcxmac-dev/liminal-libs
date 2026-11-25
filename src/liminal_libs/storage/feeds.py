@@ -27,8 +27,8 @@ import pandas as pd
 
 from .. import spool
 from . import history
-from .common import (BUSY_TIMEOUT_S, Behind, _date_ms, _distinct, _feed_name, _now, add_column, own_files, owners_layout, seal,
-                     write_transaction)
+from .common import (BUSY_TIMEOUT_S, Behind, _date_ms, _distinct, _feed_name, _now, _per_ticker, add_column, own_files,
+                     owners_layout, seal, write_transaction)
 from .link import connect, frame
 
 
@@ -1337,6 +1337,37 @@ class FeedStore:
                 best = (src, newest)
         return best
 
+    def newest_many(self, tickers: Iterable[str], timespan: str,
+                    holders: dict | None = None) -> dict[str, tuple[str, int]]:
+        """newest_any for many tickers: {ticker as given: (feed, ms)}, one statement per feed holding any of them
+        (index seeks, as newest_any's), not one a ticker and feed (Monday list item 16, as bar_edges_many). A tie
+        between feeds goes to the first in `holders`' order, as newest_any's does."""
+        holders = holders if holders is not None else self.series_holders()
+        names = {t: t.upper() for t in tickers}
+        feeds = {src: None for key in names.values() for src in holders.get((key, timespan), ())}
+        newest: dict[str, dict[str, int]] = {}
+        for src in feeds:
+            conn = self._bars(src)
+            if conn is None:
+                continue
+            asked = {key for key in names.values() if src in holders.get((key, timespan), ())}
+            for key, ends in _per_ticker(conn, asked, [
+                    f"(SELECT MAX(ts) FROM {table} WHERE ticker=t.value AND timespan=?1 AND multiplier=1)"
+                    for table in _BAR_TABLES], (timespan,)).items():
+                m = max((v for v in ends if v is not None), default=None)
+                if m is not None:
+                    newest.setdefault(key, {})[src] = m
+        out = {}
+        for given, key in names.items():
+            best = None
+            for src in holders.get((key, timespan), ()):
+                m = newest.get(key, {}).get(src)
+                if m is not None and (best is None or m > best[1]):
+                    best = (src, m)
+            if best is not None:
+                out[given] = best
+        return out
+
     # -- composite model and quality -----------------------------------------
 
     def save_composite(self, ticker: str, timespan: str, comp: pd.DataFrame, derivation: int | None = None,
@@ -1460,6 +1491,28 @@ class FeedStore:
             if first is not None:
                 edges.append((first, conn.execute(f"SELECT MAX(ts) {where}", key).fetchone()[0]))
         return (min(e[0] for e in edges), max(e[1] for e in edges)) if edges else None
+
+    def bar_edges_many(self, source: str, tickers: Iterable[str], timespan: str = "minute",
+                       multiplier: int = 1) -> dict[str, tuple[int, int]]:
+        """bar_edges for many series of one feed in one statement: {ticker as given: (first, last)}, tickers
+        without bars left out. Each ticker's ends are still index seeks (a MIN or MAX alone in a correlated
+        subquery is answered from the index's end), not a scan of the feed's bars. Monday list item 16
+        (2026-11-24): the charts' symbol list asked two to four statements a symbol, about 230,000 for 33,145
+        symbols: 11 s on Windows and two minutes from Linux, where each statement crosses the link."""
+        conn = self._bars(source)
+        names = {t: t.upper() for t in tickers}
+        if conn is None or not names:
+            return {}
+        found = _per_ticker(conn, set(names.values()), [
+            f"(SELECT {agg}(ts) FROM {table} WHERE ticker=t.value AND timespan=?1 AND multiplier=?2)"
+            for table in _BAR_TABLES for agg in ("MIN", "MAX")], (timespan, multiplier))
+        out = {}
+        for given, key in names.items():
+            ends = found.get(key, ())
+            edges = [(ends[i], ends[i + 1]) for i in range(0, len(ends), 2) if ends[i] is not None]
+            if edges:
+                out[given] = (min(e[0] for e in edges), max(e[1] for e in edges))
+        return out
 
     def separate_built_bars(self, log=print) -> int:
         """One-off: bars built from ticks before they were kept apart (in the feed's own bars, over the
