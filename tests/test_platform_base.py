@@ -169,11 +169,10 @@ def test_the_librarys_section_gives_what_the_integrators_module_gives(found, mon
     before = set(sys.modules)
     try:
         theirs = pytest.importorskip("liminal_integrator.instances")
-        monkeypatch.setattr(theirs.lib, "plugin_errors", registry.errors)
+        # since integrator 1.15.0 (step 4) its module is the library's names imported: the very same functions
+        for name in ("overview", "elsewhere", "ask", "ours", "load_errors"):
+            assert getattr(theirs, name) is getattr(section, name), name
         app = made(Running, found)
-        mine = section.overview(app)
-        assert theirs.overview(app) == {**mine, "errors": [e for e in mine["errors"] if "plugin-platform-" not in e]}
-        assert theirs.elsewhere(app) == section.elsewhere(app)
         test = {"plugin": "sqlite", "action": "test", "name": "data"}
         assert theirs.ask(app, test) == section.ask(app, test)
     finally:
