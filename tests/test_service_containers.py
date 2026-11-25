@@ -142,7 +142,7 @@ def test_plans_held_are_capped():
 def test_the_bases_declare_their_gates_and_are_sound():
     h, f = standins.StandInHost(), standins.StandInNetworkHost()
     assert internal.problems(h) == [] and internal.problems(f) == []
-    assert set(internal.page_only(h)) == {C.APPROVE, C.GRANT, C.REVOKE, C.FORGET_VOLUME, C.SET_SETTING}
+    assert set(internal.page_only(h)) == {C.APPROVE, C.GRANT, C.REVOKE, C.FORGET_VOLUME}
     assert set(internal.plugin_only(h)) == {C.WORK, C.PLAN, C.APPLY, C.HOSTED_FILE, C.RELEASE}
     assert {"approve_plan", "grant_network", "set_domain"} <= set(internal.page_only(f))
     assert {"network_plan", "apply_network", "network_work"} <= set(internal.plugin_only(f))

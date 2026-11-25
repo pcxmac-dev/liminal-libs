@@ -63,6 +63,8 @@ class Runtime(DockerRuntime):
 class Host(standins.StandInHost):
     """The stand-in container plugin with the 1.95.0 hooks a test sets."""
 
+    HOOKS = (*standins.StandInHost.HOOKS, *standins.ContainerHost.SETTING_HOOKS)
+    PAGE_ONLY_HOOKS = standins.ContainerHost.SETTING_HOOKS
     TARGET_SETTINGS = ()
     MORE_ACCEPTS = ()
     said: dict = {}
@@ -70,7 +72,7 @@ class Host(standins.StandInHost):
     def runtime_of(self, target):
         fake = self.fakes[target.id]
         rt = Runtime(["docker"], fake, fake.stream, version=fake.version, arch=fake.arch, wsl=bool(target.wsl),
-                     lan=(target.path, target.lan_words), where_data=target.where_data)
+                     lan=(target.path, target.lan_words), where_data=target.where_data, read_root=True)
         rt.said = self.said
         return rt
 
@@ -208,11 +210,17 @@ def test_a_size_you_set_below_a_volumes_least_is_refused(world):
         world.plan(spec_=s)
 
 
-def test_the_settings_are_drawn_on_its_page(world):
+def test_the_settings_are_drawn_on_its_page_and_nothing_of_them_where_none_is_declared(world):
+    assert not any(f["id"] == "setting" for f in world.page("standin-host", "status")["forms"])
+    plain = standins.StandInHost()
+    assert C.SET_SETTING not in plain.HOOKS and C.SET_SETTING not in plain.PAGE_ONLY_HOOKS
     Host.TARGET_SETTINGS = SETTINGS
     st = world.page("standin-host", "status")
     table = next(t for t in st["tables"] if t["title"] == "Yours to define")
     assert len(table["rows"]) == 3 and any(f["id"] == "setting" for f in st["forms"])
+    from liminal_libs import internal
+
+    assert internal.problems(world.host) == []
 
 
 # -- a container plugin's own accepts ---------------------------------------------------------------------------------------
@@ -494,8 +502,9 @@ def test_a_windows_pin_is_chosen_by_the_targets_build():
 # -- FakeWindowsDocker ------------------------------------------------------------------------------------------------------
 def test_the_windows_stand_in_answers_as_docker_exe_at_a_pipe():
     fake = standins.FakeWindowsDocker(build=20348)
-    rt = DockerRuntime(["docker.exe", "-H", "npipe:////./pipe/docker_engine"], fake, fake.stream)
+    rt = DockerRuntime(["docker.exe", "-H", "npipe:////./pipe/docker_engine"], fake, fake.stream, read_root=True)
     assert rt.data_root() == "C:\\ProgramData\\docker"
+    assert DockerRuntime(["docker"], fake, fake.stream).data_root() == "" and not fake.argv_of("info")[1:]
     assert "nat" in fake.networks and fake.networks["nat"]["gateway"] == "172.29.16.1"
     code, out, _ = fake(["docker.exe", "-H", "npipe:////./pipe/docker_engine", "version", "--format", "{{json .}}"],
                         10)

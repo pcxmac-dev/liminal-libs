@@ -11,7 +11,7 @@ bytes, `out` a path its output is written to (a backup). A pull is streamed: `st
 distribution by environment, never on a command line.
 
 What it runs, and nothing else (the plugin's API card names the same):
-- read: `info --format {{json .DockerRootDir}}` (where its data lives, 1.95.0), `ps -a --filter label=liminal=service -q`, `inspect --type container`, `volume ls --filter label=liminal=volume`,
+- read: `info --format {{json .DockerRootDir}}` (where its data lives, 1.95.0, when read_root), `ps -a --filter label=liminal=service -q`, `inspect --type container`, `volume ls --filter label=liminal=volume`,
   `volume inspect`, `network ls --filter label=liminal=segment -q`, `network inspect`, `image inspect`, `logs --tail
   --timestamps`, `exec <c> cat <path>` (a running container's readable file) and `cp <c>:<path> -` (a stopped one's);
 - change, inside an approved plan's work alone: `pull <ref>@<digest>`, `volume create --label ...`, `network create
@@ -84,13 +84,14 @@ class DockerRuntime(Runtime):
 
     def __init__(self, prefix, runner: Callable, streamer: Callable | None = None, *, version: str = "",
                  arch: str = "amd64", wsl: bool = False, trusted=("eth0",), lan=("direct", ""),
-                 where_data: str = "in the engine's own disk"):
+                 where_data: str = "in the engine's own disk", read_root: bool = False):
         self.prefix = [str(a) for a in prefix]
         self._runner, self._streamer = runner, streamer
         self.version, self.arch, self.wsl = str(version or ""), str(arch or "amd64"), bool(wsl)
         self.trusted = tuple(trusted)
         self.lan_path, self.lan_words = lan
         self.where_data = where_data
+        self.read_root = bool(read_root)  # 1.95.0: data_root asks docker info (opted into: a 1.93.0 plugin's card names no info)
 
     # -- the runner ----------------------------------------------------------------------------------------------------
     def _argv(self, *args) -> list[str]:
@@ -210,7 +211,10 @@ class DockerRuntime(Runtime):
         return list(by.values())
 
     def data_root(self) -> str:
-        """Where this engine keeps its data (docker info's DockerRootDir), read once: "" when it does not say."""
+        """Where this engine keeps its data (docker info's DockerRootDir), read once when `read_root`: "" when it is not
+        asked or does not say."""
+        if not self.read_root:
+            return ""
         if getattr(self, "_root", None) is None:
             code, out, _ = self.run("info", "--format", "{{json .DockerRootDir}}", check=False)
             try:

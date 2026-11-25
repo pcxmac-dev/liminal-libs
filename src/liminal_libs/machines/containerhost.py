@@ -282,15 +282,17 @@ class ContainerHost(MachinePlugin):
     RUNTIME = ""
     HOOKS = (*MachinePlugin.HOOKS, C.HOSTING, C.HOSTED, C.HOSTED_LOGS, C.EXPOSURES, C.PLAN_WORDS, C.WORK, C.PLAN,
              C.APPROVE, C.DECLINE, C.APPLY, C.CANCEL, C.HOSTED_FILE, C.RELEASE, C.GRANT, C.REVOKE, C.FORGET_VOLUME,
-             C.SEGMENTS, C.SET_SETTING)
+             C.SEGMENTS)
     READ_HOOKS = (C.HOSTING, C.HOSTED, C.HOSTED_LOGS, C.EXPOSURES, C.PLAN_WORDS, C.WORK, C.SEGMENTS)
     SERVICE_HOOKS = (C.HOSTING, C.HOSTED, C.HOSTED_LOGS, C.EXPOSURES, C.PLAN_WORDS, C.WORK, C.PLAN, C.DECLINE,
                      C.APPLY, C.CANCEL, C.HOSTED_FILE, C.RELEASE, C.SEGMENTS)
     PLUGIN_ONLY_HOOKS = (C.WORK, C.PLAN, C.APPLY, C.HOSTED_FILE, C.RELEASE)
-    PAGE_ONLY_HOOKS = (C.APPROVE, C.GRANT, C.REVOKE, C.FORGET_VOLUME, C.SET_SETTING)
+    PAGE_ONLY_HOOKS = (C.APPROVE, C.GRANT, C.REVOKE, C.FORGET_VOLUME)
     # 1.95.0: the places and sizes of yours its targets need (containers.Setting), none picked for you; a subclass
-    # whose targets differ answers target_settings(target) instead
+    # whose targets differ answers target_settings(target) instead. A plugin that declares any spreads SETTING_HOOKS
+    # into its HOOKS and its PAGE_ONLY_HOOKS (opted into, so that a plugin built on 1.93.0 declares exactly what it did)
     TARGET_SETTINGS: tuple = ()
+    SETTING_HOOKS = (C.SET_SETTING,)
     # 1.95.0: its own second confirmations (accept_<word>), added to a plan by more_accepts and taken by approve_plan
     # after the base's, in this order
     MORE_ACCEPTS: tuple = ()
@@ -2132,6 +2134,9 @@ class ContainerHost(MachinePlugin):
                         {"name": "target", "label": "Target", "type": "choice", "choices": targets}],
              "confirm": {"title": "Stop letting {plugin} plan on {target}?",
                          "words": "Its services there stay as they are.", "yes": "Stop letting it"}},
+        ]
+        if defined and C.SET_SETTING in getattr(self, "HOOKS", ()):
+            forms.append(
             {"id": "setting", "hook": C.SET_SETTING, "title": "Define a setting of a target",
              "fields": [{"name": "target", "label": "Target", "type": "fixed"},
                         {"name": "setting", "label": "Setting", "type": "fixed"},
@@ -2140,7 +2145,8 @@ class ContainerHost(MachinePlugin):
                         {"name": "confirm", "type": "accept", "title": "Go on?", "yes": "Go on",
                          "words": "Asked when the plugin needs a second confirmation for it."}],
              "confirm": {"title": "Set {setting} on {target}?", "words": "Kept through your login; Liminal picks "
-                         "none of these for you.", "yes": "Set it"}},
+                         "none of these for you.", "yes": "Set it"}})
+        forms += [
             {"id": "forget", "hook": C.FORGET_VOLUME, "title": "Forget a kept volume",
              "fields": [{"name": "target", "label": "Target", "type": "fixed"},
                         {"name": "volume", "label": "Volume", "type": "fixed"},

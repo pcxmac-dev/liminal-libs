@@ -17,6 +17,8 @@ before creating instances" (no default namespace, storage class or size). Nothin
   storage class, a per-service claim size, kinds text/number/size/choice); every plan on that target is refused in words
   until each is set; `hosting` says each target's `settings` and `unset`, and ContainedService offers no Install… there
   meanwhile; a "size" setting below a volume's `least` is refused; its page draws "Yours to define" and Set….
+  Opted into: a plugin that declares settings spreads `ContainerHost.SETTING_HOOKS` into its HOOKS and PAGE_ONLY_HOOKS,
+  so a plugin built on 1.93.0 declares, draws and runs exactly what it did.
 - **A container plugin's own accepts**: `MORE_ACCEPTS` (accept_<word>) and `more_accepts(act, sid, target, runtime,
   spec, facts)`; `plan_words`' `approve_args` lists them after the base's, and `approve_plan` takes them after its six
   (positionally or by name); an accept it does not declare is refused.
@@ -35,7 +37,8 @@ before creating instances" (no default namespace, storage class or size). Nothin
   `here` (a NodePort). `segments.ASSIGNS` gains "kubernetes".
 - **Words for the rest**: `ContainerHost.no_spec_fit(target, owner)` (a target's "not yet" for an owner without a spec
   of its system); `keep_targets(targets)` and `service_status(targets=...)` (targets its plugin read are not read
-  again); `Runtime.data_root()` (DockerRuntime: `docker info`'s DockerRootDir, said on each plan);
+  again); `Runtime.data_root()` (DockerRuntime: `docker info`'s DockerRootDir, said on each plan, asked only with
+  `read_root=True` so that a 1.93.0 plugin's API card still names every command it runs);
   `Runtime.kept_secret_words(spec)`; `Runtime.backup_kind(part)` ("tar", "snapshot": no tar needed, its words kept in
   <volume>.snapshot.json and handed to restore, or "none"); `Runtime.make_volume_for(name, labels, volume)` (the
   volume's owner and least); `containers.PULLED_BY_ENGINE` (a pull its engine makes by digest itself, said so; any other
@@ -48,7 +51,7 @@ before creating instances" (no default namespace, storage class or size). Nothin
   the Linux platform inside it takes the Linux half of the pool (`NetworkHost._half` by its platform).
 - **`standins.FakeWindowsDocker`**, taken from the Windows containers plugin's tests (docker.exe at a pipe, --isolation,
   C:\ paths, the nat network HNS addresses, OsVersion, PowerShell throwaways); FakeDocker answers `docker info`.
-- Tests: `test_service_gaps.py` (33); each of its 24 new gates taken out once made a test fail.
+- Tests: `test_service_gaps.py` (33); each of its 26 new gates taken out once made a test fail.
   SERVICE-INTERFACE.md §9 says what each container plugin changes to use them.
 
 ## 1.94.0 (2026-11-25)
