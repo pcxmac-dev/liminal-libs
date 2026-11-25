@@ -18,13 +18,14 @@
 - `App.terminate(sig, timeout)`, which `App.stop` now is: nothing new is taken (503), then the login it includes, its
   platform parts (`parts`), every plugin (each within its STOP_DEADLINE_S, then detached), the app objects it owns
   (`owned_apps`), what it started, its server. Safe twice and from any thread; a KILL during a TERM kills at once.
-  An app's stop now lets its plugins go, where it left them attached before.
+  An app's stop now lets its plugins go, where it left them attached before; an app whose class has a stop of its own
+  (the platform's, which tells each machine plugin itself) has them neither told a second time nor let go there.
 - Plugins: `MODE` "on_demand" (the only one allowed: "service" is refused by the conformance, "service mode is not
   yet allowed: on demand only"), START_DEADLINE_S 10 and STOP_DEADLINE_S 15 by default, and `Plugin.signal`, taken
-  only from the plugin's own app or its login. Every plugin always has a login: attached, its app's (an app given
-  none lends the user's environment's, `authorization.lent_login`, an EnvironmentLogin); asked before an app attached
-  it, that same login is lent for the time of the ask (said once in the log), so it answers as before; a plugin whose
-  attach puts another login in its place is refused. A detach ends what was started for the plugin.
+  only from the plugin's own app or its login. Every plugin always has a login, `Plugin.held_login()`: attached, its
+  app's; before an app attached it, or under an app given none, the user's environment's (`authorization.lent_login`,
+  one EnvironmentLogin), said once in the log. `login` itself stays as its app set it, so a plugin answers as before.
+  A plugin whose attach puts another login in its place is refused. A detach ends what was started for the plugin.
 - `nodes.py`: a plugin served as a liminal-net node (`PluginHillock`: its hooks, and `term`, `kill` and `ask` any
   node may request; its `lifecycle` stream signal as it ends), on demand by a launcher written in the ledger, a start
   past its deadline ended; an app as a node too (`AppHillock`, opt-in `serve_app`).

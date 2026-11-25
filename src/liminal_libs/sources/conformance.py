@@ -580,7 +580,7 @@ def node_problems(p: Plugin) -> list[str]:
             except Exception as e:  # noqa: BLE001
                 return [f"{tag}: it cannot be attached and served as a node: {type(e).__name__}: {e}"]
             hillock._later = lambda fn: fn()
-            if probe.login is not app.lent_login():
+            if probe.login is not app.lent_login() or probe.held_login() is not app.login:
                 out.append(f"{tag}: it does not hold the login its app attached it with")
             if not ignores:
                 try:

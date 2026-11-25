@@ -48,7 +48,6 @@ from __future__ import annotations
 import copy
 import inspect
 import math
-import threading
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from types import MappingProxyType
@@ -343,17 +342,25 @@ class Plugin:
 
     def ask(self, hook: str, *args, **kwargs):
         """One of this plugin's hooks called by name (the app's `ask`; across the pipe once the
-        plugin is resident): only a hook `interface` lists; LookupError for any other name. A plugin
-        holding no login (asked before an app attached it) is lent the user's environment's for the
-        time of the ask (authorization.lent_login), said once in the log; attached, it holds its app's
-        (1.86.0: every plugin always has a login). Between asks it holds none again, as before."""
+        plugin is resident): only a hook `interface` lists; LookupError for any other name. Asked
+        before an app attached it, it answers as it always did (its `login` None: a plugin's own code
+        tells "no login" by it); the login it has then is held_login()'s."""
         if hook not in self.interface()["hooks"]:
             raise LookupError(f"{self.name or type(self).__name__} offers no {hook!r}")
         given = self.__dict__.get(hook) if hook in self.__dict__ else getattr(self, hook)
+        return given(*args, **kwargs)
+
+    def held_login(self):
+        """The login this plugin has, always (1.86.0; the user, 2026-11-24: every plugin always has a login):
+        attached, its app's (`login`); before an app attached it, or attached by an app that holds none, the user's
+        environment's (authorization.lent_login, the EnvironmentLogin every app holds when it has no login of its
+        own), said once in the log. `login` itself stays as its app set it, so a plugin behaves as before."""
         if self.login is not None:
-            return given(*args, **kwargs)
-        with _lent(self):
-            return given(*args, **kwargs)
+            return self.login
+        from ..apps.authorization import lent_login
+
+        _said_lent(self.name or type(self).__name__)
+        return lent_login()
 
     def signal(self, sig, deadline: float, sender=None) -> dict:
         """Told to end (1.86.0; liminal_libs.lifecycle), only by its own app or that app's login (SignalRefused for
@@ -381,40 +388,6 @@ class Plugin:
 
 
 _LENT_SAID: set = set()
-_LENT_LOCK = threading.Lock()
-_LENT_HELD: dict[int, int] = {}  # the asks under way in which a plugin (by id) holds the lent login
-
-
-class _lent:
-    """The environment's login lent to a plugin asked before an app attached it, for the time of the ask (one lent
-    however many asks are under way at once); taken back after the last, unless an app attached it meanwhile."""
-
-    def __init__(self, plugin):
-        self.plugin = plugin
-
-    def __enter__(self):
-        from ..apps.authorization import lent_login
-
-        with _LENT_LOCK:
-            n = _LENT_HELD.get(id(self.plugin), 0)
-            if n == 0 and getattr(self.plugin, "login", None) is None:
-                object.__setattr__(self.plugin, "login", lent_login())
-            _LENT_HELD[id(self.plugin)] = n + 1
-        _said_lent(self.plugin.name or type(self.plugin).__name__)
-        return self
-
-    def __exit__(self, *exc):
-        from ..apps.authorization import lent_login
-
-        with _LENT_LOCK:
-            n = _LENT_HELD.get(id(self.plugin), 1) - 1
-            if n <= 0:
-                _LENT_HELD.pop(id(self.plugin), None)
-                if getattr(self.plugin, "login", None) is lent_login() and getattr(self.plugin, "app", None) is None:
-                    object.__setattr__(self.plugin, "login", None)
-            else:
-                _LENT_HELD[id(self.plugin)] = n
-        return False
 
 
 def _said_lent(name: str) -> None:
@@ -424,7 +397,7 @@ def _said_lent(name: str) -> None:
     _LENT_SAID.add(name)
     import logging
 
-    logging.getLogger(__name__).info("%s was asked before an app attached it: lent the environment's login", name)
+    logging.getLogger(__name__).info("%s holds no app's login: lent the environment's", name)
 
 
 class IntegratorPlugin(Plugin):

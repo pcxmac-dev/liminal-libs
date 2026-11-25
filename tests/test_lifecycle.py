@@ -216,39 +216,55 @@ def test_stop_is_terminate_and_a_request_while_ending_is_refused(tmp_path):
         app.attach(Acme(record))
 
 
+def test_an_app_whose_own_stop_tells_its_plugins_has_them_told_once():
+    """The platform's stop tells each machine plugin itself (once, enabled or not), then the frame's: the frame does
+    not tell them a second time, nor let them go (as before 1.86.0); its own terminate() still does."""
+    record: list[str] = []
+
+    class Own(Demo):
+        def stop(self):
+            for p in list(self._plugins.values()):
+                p.app_stopping()
+            super().stop()
+
+    app = Own(record)
+    app.attach(Acme(record))
+    app.stop()
+    assert record.count("plugin acme") == 1 and app.plugin("acme") is not None
+
+
 # -- the plugins' login ----------------------------------------------------------------------------------------------
-def test_a_plugin_asked_before_it_is_attached_is_lent_the_environments_login_and_its_app_replaces_it(caplog,
-                                                                                                    monkeypatch):
+def test_every_plugin_has_a_login_the_environments_until_an_app_attaches_it_and_answers_as_before(caplog,
+                                                                                                  monkeypatch):
     from liminal_libs.sources import plugin as contract
 
     monkeypatch.setattr(contract, "_LENT_SAID", set())
+
     class Holder(Acme):
         def build(self, settings, request_budget):
-            return self.login  # what it holds while it is asked
+            return self.login  # what its own code reads of its login
 
     app = Demo([])
     p = Holder()
-    assert p.login is None
     with caplog.at_level("INFO", logger="liminal_libs.sources.plugin"):
-        held = [p.ask("build", None, 1), p.ask("build", None, 2)]
-    assert held == [lent_login()] * 2 and isinstance(held[0], EnvironmentLogin) and held[0].env is None
-    assert p.login is None  # between asks none again, as before 1.86.0
-    assert [r.getMessage() for r in caplog.records].count(
-        "acme was asked before an app attached it: lent the environment's login") == 1  # said once
+        assert p.held_login() is lent_login() and p.held_login() is lent_login()
+    assert isinstance(lent_login(), EnvironmentLogin) and lent_login().env is None  # the user's environment
+    assert [r.getMessage() for r in caplog.records].count("acme holds no app's login: lent the environment's") == 1
+    assert p.ask("build", None, 1) is None and p.login is None  # asked before it is attached: as before 1.86.0
     app.attach(p)
-    assert p.login is app.login and p.app is app and p.ask("build", None, 1) is app.login
+    assert p.login is app.login and p.held_login() is app.login and p.ask("build", None, 1) is app.login
     app.detach("acme")
-    assert p.login is None and p.app is None
+    assert p.login is None and p.app is None and p.held_login() is lent_login()
 
 
-def test_an_app_given_no_login_lends_the_environments():
+def test_an_app_given_no_login_leaves_its_plugins_the_environments():
     class Bare(App):
         NAME, TITLE, ICON = "bare", "Bare", "plug"
 
     app = Bare(log=lambda m: None)
     p = Acme()
     app.attach(p)
-    assert p.login is lent_login() and p.login is app.lent_login() and app.login is None
+    assert p.login is None and app.lent_login() is None and p.held_login() is lent_login()  # as before, and has one
 
 
 def test_a_signal_from_anyone_but_its_app_or_its_login_is_refused():

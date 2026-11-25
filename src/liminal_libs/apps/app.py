@@ -245,22 +245,16 @@ class App:
         return [login.tray().as_dict()] if login is not None else []
 
     def lent_login(self):
-        """The login this app lends its plugins: the one it was given; when it was given none, the user's environment
-        (authorization.lent_login, an EnvironmentLogin), so every plugin attached has a login all the same (1.86.0; the
-        user, 2026-11-24: "all the plugins, need a login-app class attached/inherited")."""
-        if self.login is not None:
-            return self.login
-        from .authorization import lent_login
-
-        return lent_login()
+        """The login this app lends its plugins: the one it was given (None when it was given none: its plugins then
+        hold the environment's through Plugin.held_login, and behave as before 1.86.0)."""
+        return self.login
 
     def login_for(self, name: str):
-        """The login `name` (a plugin, or the app itself by its own name) is lent: the app's (lent_login); noting what
-        it reads and keeps there when the app traces its login (TRACE_LOGIN)."""
-        login = self.lent_login()
+        """The login `name` (a plugin, or the app itself by its own name) is lent: the app's; noting what it reads and
+        keeps there when the app traces its login (TRACE_LOGIN)."""
         if self.login is None or not self.TRACE_LOGIN:
-            return login
-        return RecordingLogin(login, name, self.traffic)
+            return self.login
+        return RecordingLogin(self.login, name, self.traffic)
 
     # -- the plugins attached (the user, 2026-11-06: "the app itself (either chart or integrator) has
     # plugin ABC as well"; "the plugin ABC will enumerate attached plugins and their API") ------------
@@ -315,14 +309,15 @@ class App:
         """Whether it is ending: nothing new is taken (a request is answered 503, a plugin is not attached)."""
         return self._terminating
 
-    def terminate(self, sig=Signal.TERM, timeout: float | None = None) -> dict:
+    def terminate(self, sig=Signal.TERM, timeout: float | None = None, plugins: bool = True) -> dict:
         """The app ended in good order (TERM) or now (KILL). It refuses new work; passes the signal down to the login it
         includes, then each platform part (parts), then every plugin attached (each detached after), then every app
         object it owns (owned_apps); then ends the trees of the processes it started (the ledger's, its own and its
         plugins'), TERM first and KILL for what is left at `timeout` (KILL: at once); then its server. Each plugin is
         given its own STOP_DEADLINE_S within `timeout`, and one that misses it is reported and its trees killed.
         Safe to call twice, from any thread: the second TERM returns the first's report; a KILL while a TERM is under
-        way kills what was started at once. Returns what came of each: {"app", "signal", "objects", "processes"}."""
+        way kills what was started at once. `plugins` False: its plugins are neither told nor let go here (an app whose
+        own stop tells them itself: stop). Returns what came of each: {"app", "signal", "objects", "processes"}."""
         sig = Signal.of(sig)
         timeout = self.stop_timeout if timeout is None else timeout
         with self._term_lock:
@@ -340,13 +335,12 @@ class App:
         deadline = lifecycle.deadline_in(timeout)
         objects: list[dict] = []
         now = (lambda: Signal.KILL if self._kill_now.is_set() else sig)
-        self.log(f"{self.NAME}: {sig.value}: its login, its parts, its plugins, then what it started")
         login = self._login_object
         if login is not None:
             objects.append(lifecycle.deliver(login, now(), deadline, sender=self, name="login"))
         for part in self.parts():
             objects.append(lifecycle.deliver(part, now(), deadline, sender=self))
-        for name in list(self._plugins):
+        for name in list(self._plugins) if plugins or now() is Signal.KILL else ():
             plugin = self._plugins.get(name)
             if plugin is None:
                 continue
@@ -749,7 +743,9 @@ class App:
     def stop(self) -> None:
         """The app ended in good order: terminate(TERM) within stop_timeout (1.86.0; until then the server and the
         login object alone). A subclass that ends more of its own does it here and calls this."""
-        self.terminate(Signal.TERM, self.stop_timeout)
+        # An app whose class has a stop of its own tells its plugins there, as it did before 1.86.0 (the platform's
+        # tells each machine plugin once, enabled or not): they are not told a second time here
+        self.terminate(Signal.TERM, self.stop_timeout, plugins=type(self).stop is App.stop)
 
     def _end_server(self) -> None:
         """End the server (the page stops answering)."""
