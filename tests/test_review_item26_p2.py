@@ -193,8 +193,8 @@ def test_on_windows_a_timeout_ends_powershells_whole_tree(stand_in, monkeypatch)
     monkeypatch.setattr(windows.PowerShell, "here", property(lambda self: True))
     with pytest.raises(CommandError, match="took more than 5 s") as err:
         windows.PowerShell().run("Start-VM x", timeout=5)
-    assert _taskkills(stand_in) == [["taskkill", "/T", "/F", "/PID", "4321"]]
-    assert type(err.value).__name__ == "TimedOut"
+    assert _taskkills(stand_in) == [["taskkill", "/T", "/PID", "4321"]]  # 1.88.4: asked, never /F
+    assert type(err.value).__name__ == "TimedOut" and not stand_in[0].killed
     assert stand_in[1].kw.get("creationflags") == proctree.CREATE_NO_WINDOW  # the taskkill windowless too
 
 
@@ -206,10 +206,10 @@ def test_docker_and_wsl_timeouts_end_the_tree(stand_in, monkeypatch):
     monkeypatch.setattr(wsl.Wsl, "here", property(lambda self: True))
     with pytest.raises(wsl.WslError, match="took more than"):
         wsl.Wsl()._run(["wsl", "--update"], timeout=5)
-    assert _taskkills(stand_in) == [["taskkill", "/T", "/F", "/PID", "4321"]] * 2
+    assert _taskkills(stand_in) == [["taskkill", "/T", "/PID", "4321"]] * 2  # 1.88.4: asked, never /F
 
 
-def test_on_linux_a_timeout_stops_the_commands_group_through_sudo_then_kills_it(stand_in, monkeypatch):
+def test_on_linux_a_timeout_stops_the_commands_group_through_sudo_and_never_kills_it(stand_in, monkeypatch):
     signals = []
     monkeypatch.setattr(proctree, "_nt", lambda: False)
     monkeypatch.setattr(proctree.os, "killpg", lambda pid, sig: signals.append((pid, sig)), raising=False)
@@ -219,8 +219,8 @@ def test_on_linux_a_timeout_stops_the_commands_group_through_sudo_then_kills_it(
     with pytest.raises(CommandError, match="took more than 5 s"):
         linux.Shell("local").run("apt-get", "upgrade", timeout=5)
     assert stand_in[0].args[:3] == ["sudo", "-n", "--"] and stand_in[0].kw.get("start_new_session") is True
-    kill = getattr(proctree.signal, "SIGKILL", proctree.signal.SIGTERM)
-    assert signals == [(4321, proctree.signal.SIGTERM), (4321, kill)] and stand_in[0].killed
+    # 1.88.4 ("all shutdowns need to be clean"): SIGTERM alone; one still running is left, never killed
+    assert signals == [(4321, proctree.signal.SIGTERM)] and not stand_in[0].killed
 
 
 def test_sudos_prefix_ends_its_options_before_the_command():

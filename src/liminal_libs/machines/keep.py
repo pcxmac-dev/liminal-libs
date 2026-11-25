@@ -25,6 +25,7 @@ MAX_DELAY_S = 600.0  # the longest wait while it keeps failing
 STEADY_S = 600.0  # a run this long brings the wait back to the first
 LOG_MAX_BYTES = 1_000_000  # the log is moved to <log>.1 past this, between runs
 KILL_ON_JOB_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+BREAKAWAY_OK = 0x0800  # JOB_OBJECT_LIMIT_BREAKAWAY_OK: a data holder started beneath (mongod, a host) may leave (1.88.4)
 EXTENDED_LIMITS = 9  # JobObjectExtendedLimitInformation
 
 
@@ -82,7 +83,9 @@ def _job():
         if not job:
             return None
         info = _Extended()
-        info.BasicLimitInformation.LimitFlags = KILL_ON_JOB_CLOSE
+        # 1.88.4: a data holder started beneath it (mongod, a host: lifecycle.spawn's holds_data) leaves the job, so
+        # the keeper ending never force-ends it (the user, 2026-11-24: "all shutdowns need to be clean")
+        info.BasicLimitInformation.LimitFlags = KILL_ON_JOB_CLOSE | BREAKAWAY_OK
         if not k32.SetInformationJobObject(job, EXTENDED_LIMITS, ctypes.byref(info), ctypes.sizeof(info)):
             return None
         return job
@@ -114,8 +117,11 @@ def run_once(command: list[str], log: Path, job=None) -> int:
             note(log, "it could not be held in a job: stopping the task may leave it running")
         try:
             return proc.wait()
-        except BaseException:  # the keeper told to end (Ctrl+C, SystemExit): the command too
-            proc.terminate()
+        except BaseException:  # the keeper told to end (Ctrl+C, SystemExit): the command asked too, never forced (1.88.4)
+            from .. import proctree
+
+            if not proctree.ask_end(proc):
+                note(log, f"it was asked to end and is still running (pid {proc.pid}): left, not killed")
             raise
 
 

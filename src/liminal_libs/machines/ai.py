@@ -914,12 +914,12 @@ class AiPlugin(MachinePlugin):
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-                process.wait(timeout=children.END_S)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            raise children.ChildError(f"{children.said(argv)} took more than {timeout:g} s") from None
+            # asked to end, never forced (1.88.4, "all shutdowns need to be clean"): one still running is left, and said
+            from .. import proctree
+
+            left = "" if proctree.ask_end(process, children.END_S) else \
+                f" (asked to end, still running as pid {getattr(process, 'pid', '?')}: left, not killed)"
+            raise children.ChildError(f"{children.said(argv)} took more than {timeout:g} s{left}") from None
         finally:
             for reader in readers:
                 reader.join(children.LEFT_S)  # what it started may hold its output open: not waited for past this

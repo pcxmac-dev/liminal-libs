@@ -265,8 +265,14 @@ def _trace_run(args: list[str], timeout: float, stop=None) -> tuple[str | None, 
             break
         except subprocess.TimeoutExpired:
             if time.monotonic() >= deadline or (stop is not None and stop()):
-                proc.kill()
-                out, err = proc.communicate()
+                # asked to end, never forced (1.88.4): what it said so far, if it ended; one still running is left
+                from . import proctree
+
+                proctree.ask_end(proc, 2.0)
+                try:
+                    out, err = proc.communicate(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError, ValueError):
+                    out, err = "", ""
                 break
     lines = (err or "").strip().splitlines()
     return out or "", lines[0][:200] if lines else ""

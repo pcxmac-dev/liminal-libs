@@ -172,13 +172,25 @@ class Terminal:
         self.proc.stdin.write(data.encode("utf-8"))
         self.proc.stdin.flush()
 
-    def close(self) -> None:
-        if self.alive:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - it goes, one way or the other
-                self.proc.kill()
+    def close(self) -> bool:
+        """The terminal let go (1.88.4, "all shutdowns need to be clean"): its shell's input closed (it ends there, as
+        at an exit typed), then, if it has not, asked to end (proctree.ask_end); one still running is left, never
+        killed. Whether it ended."""
+        if not self.alive:
+            return True
+        from .. import proctree
+
+        try:
+            self.proc.stdin.close()
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001 - still running: asked
+            pass
+        if not self.alive:
+            return True
+        return proctree.ask_end(self.proc, 5)
 
 
 def _no_window() -> dict:

@@ -255,6 +255,8 @@ class Wsl:
                 proc.stdin.close()
             except OSError:
                 pass
+        # past its timeout its tree is asked to end, never forced (1.88.4, proctree.kill_tree): one still running is
+        # left, no longer read nor waited for
         killed = threading.Event()
         timer = threading.Timer(timeout, lambda: (killed.set(), proctree.kill_tree(proc)))
         timer.daemon = True
@@ -267,12 +269,16 @@ class Wsl:
                     break
                 got += chunk
                 out(decode.decode(chunk))
+                if killed.is_set() and proc.poll() is None:
+                    break
             out(decode.decode(b"", final=True))
-            proc.wait()
+            if not killed.is_set() or proc.poll() is not None:
+                proc.wait()
         finally:
             timer.cancel()
         if killed.is_set():
-            raise WslError(f"{' '.join(args[:3])} took more than {timeout:g} s")
+            left = "" if proc.poll() is not None else f" (asked to end, still running as pid {proc.pid}: left, not killed)"
+            raise WslError(f"{' '.join(args[:3])} took more than {timeout:g} s{left}")
         return proc.returncode, bytes(got), b""
 
     def own(self, *args: str, timeout: float = TIMEOUT_S, out=None) -> str:

@@ -846,9 +846,10 @@ def _through_zstd(archive: Path, out: _Unpacking, which, popen, env: Mapping[str
                                 "or no .tar.zst")
     finally:
         try:
-            if child.poll() is None:
-                child.kill()
-                child.wait(timeout=ZSTD_END_S)
+            if child.poll() is None:  # asked to end, never forced (1.88.4): its pipe closed below ends it besides
+                from .. import proctree
+
+                proctree.ask_end(child, ZSTD_END_S)
         except Exception:  # noqa: BLE001 - gone already
             pass
         try:

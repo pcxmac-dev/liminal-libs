@@ -299,8 +299,8 @@ class App:
 
     def detach(self, name: str) -> bool:
         """The plugin of that name let go: it holds this app and its login no more; False when none is attached. An
-        on-demand plugin's last client is its app: what it started (lifecycle.spawn, owned by its name) ends with it,
-        TERM and then KILL at its STOP_DEADLINE_S (1.86.0)."""
+        on-demand plugin's last client is its app: what it started (lifecycle.spawn, owned by its name) is told TERM
+        with it and given its STOP_DEADLINE_S (1.86.0); what still runs then is reported, never killed (1.88.4)."""
         plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
@@ -331,8 +331,10 @@ class App:
         """The app ended in good order (TERM) or now (KILL). It refuses new work; passes the signal down to the login it
         includes, then each platform part (parts), then every plugin attached (each detached after), then every app
         object it owns (owned_apps); then ends the trees of the processes it started (the ledger's, its own and its
-        plugins'), TERM first and KILL for what is left at `timeout` (KILL: at once); then its server. Each plugin is
-        given its own STOP_DEADLINE_S within `timeout`, and one that misses it is reported and its trees killed.
+        plugins'), TERM, and what is left at `timeout` reported, never killed (1.88.4, "all shutdowns need to be
+        clean"); KILL, asked for outright: at once, but never to a process that holds data (mongod, a host), which is
+        asked to end cleanly instead; then its server. Each plugin is given its own STOP_DEADLINE_S within `timeout`,
+        and one that misses it is reported late, its trees asked again (TERM) and left.
         Safe to call twice, from any thread: the second TERM returns the first's report; a KILL while a TERM is under
         way kills what was started at once. `plugins` False: its plugins are neither told nor let go here (an app whose
         own stop tells them itself: stop). Returns what came of each: {"app", "signal", "objects", "processes"}."""
@@ -408,7 +410,8 @@ class App:
 
     def signal_plugin(self, name: str, sig) -> dict:
         """One attached plugin told `sig` by this app (the one way a signal reaches a plugin: through its app), then let
-        go; within its STOP_DEADLINE_S, KILL of its trees past it."""
+        go; within its STOP_DEADLINE_S: past it, it is late and its trees are asked again (TERM) and left, never killed
+        (1.88.4). KILL, asked for outright, kills its trees at once, but never what holds data."""
         sig = Signal.of(sig)
         plugin = self._plugins.get(name)
         if plugin is None:

@@ -34,8 +34,8 @@ ELEVATED_SWEEP_S = 6 * 3600.0  # one left this long by an elevated script that o
 
 
 class TimedOut(CommandError):
-    """PowerShell ran past its timeout (1.80.0): it was ended with what it started (proctree), except what runs
-    elevated, which this process may not end."""
+    """PowerShell ran past its timeout (1.80.0): it was asked to end with what it started (proctree), never forced
+    (1.88.4): one still running is left, as is what runs elevated, which this process may not end."""
 
 
 def quote(text) -> str:
@@ -127,14 +127,14 @@ class PowerShell:
             try:
                 code, out, err = self._runner(args, timeout)
             except subprocess.TimeoutExpired:  # a stand-in's timeout, said as a real one is
-                raise TimedOut(f"PowerShell took more than {timeout:g} s (ended, with what it had started)") from None
+                raise TimedOut(f"PowerShell took more than {timeout:g} s (asked to end, with what it had started; never forced)") from None
         else:
             if not self.here:
                 raise CommandError("Windows PowerShell is not here (this is not Windows)")
             try:  # a timeout ends powershell.exe with what it started (a Hyper-V job's, an installer): 1.80.0
                 done = proctree.run(args, timeout, env=inherited())  # no LIMINAL_* name (the review of 2026-11-21, item 26)
             except subprocess.TimeoutExpired:
-                raise TimedOut(f"PowerShell took more than {timeout:g} s (ended, with what it had started)") from None
+                raise TimedOut(f"PowerShell took more than {timeout:g} s (asked to end, with what it had started; never forced)") from None
             except OSError as e:
                 raise CommandError(f"PowerShell could not run: {e}") from None
             code, out, err = done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")

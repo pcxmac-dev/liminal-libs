@@ -301,8 +301,9 @@ class BpftraceWatch(Watch):
     def _end(self) -> None:
         """End bpftrace and reap it (`_halt`), then wait for the reader."""
         proc = self._proc
-        if proc is not None:
-            _halt(proc)
+        if proc is not None and not _halt(proc):
+            self.error = self.error or (f"bpftrace was asked to end (SIGTERM) and is still running (pid "
+                                        f"{getattr(proc, 'pid', '?')}): left, not killed")
         reader = self._reader
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=2.0)
@@ -320,11 +321,12 @@ def _spawn(argv, *, popen=None, windows: bool | None = None):
                  close_fds=True, **extra)
 
 
-def _halt(proc, grace: float = STOP_GRACE) -> None:
+def _halt(proc, grace: float = STOP_GRACE) -> bool:
     """End a bpftrace process and reap it, so neither it nor a zombie is left. SIGTERM first: sudo passes it on to
     bpftrace (its process group is its own, see `_spawn`), which detaches its probes, runs END and exits; a SIGKILL
-    would end sudo alone and could leave bpftrace running as root. If it has not gone within `grace` seconds,
-    SIGKILL, then wait again. A stand-in with only `kill()` is simply killed."""
+    would end sudo alone and could leave bpftrace running as root. 1.88.4 (the user, 2026-11-24: "all shutdowns need
+    to be clean"): one that has not gone within `grace` seconds is left and said (False), never killed. A stand-in
+    with only `kill()` (no terminate: no real process) is simply ended. Whether it ended."""
     terminate = getattr(proc, "terminate", None)
     wait = getattr(proc, "wait", None)
     if callable(terminate) and callable(wait):
@@ -332,14 +334,12 @@ def _halt(proc, grace: float = STOP_GRACE) -> None:
             terminate()
         except (OSError, ValueError):
             pass
-        if _reaped(wait, grace):
-            return
+        return _reaped(wait, grace)
     try:
         proc.kill()
     except (OSError, ValueError):
         pass
-    if callable(wait):
-        _reaped(wait, grace)
+    return _reaped(wait, grace) if callable(wait) else True
 
 
 def _reaped(wait, timeout: float) -> bool:

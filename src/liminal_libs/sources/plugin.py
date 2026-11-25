@@ -365,8 +365,9 @@ class Plugin:
     def signal(self, sig, deadline: float, sender=None) -> dict:
         """Told to end (1.86.0; liminal_libs.lifecycle), only by its own app or that app's login (SignalRefused for
         anyone else). TERM: its own end first (`app_stopping`, where it has one: what it started is stopped, its data
-        secured), then what the library started for it (lifecycle.spawn, owned by its name) ended with its trees,
-        TERM and KILL at `deadline`. KILL: those trees ended now, nothing waited for. Its app detaches it after."""
+        secured), then what the library started for it (lifecycle.spawn, owned by its name) asked to end with its
+        trees, TERM, and what still runs at `deadline` reported, never killed (1.88.4). KILL: those trees ended now,
+        nothing waited for, but never what holds data. Its app detaches it after."""
         from .. import lifecycle
 
         lifecycle.check_sender(self, sender)

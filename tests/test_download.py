@@ -1032,13 +1032,14 @@ def test_a_tar_zst_goes_through_the_systems_zstd_where_this_python_reads_none(tm
     way_out = Zstd(plain_tar([entry("ok", b"1"), entry("../evil", b"x")]))
     with pytest.raises(DownloadError, match="leads out of the folder"):
         unpack(archive, tmp_path / "refused", which=which, popen=way_out)
-    assert (way_out.killed, way_out.stdout.closed) == (1, True)  # ended with the unpacking, however that ends
+    # ended with the unpacking, however that ends: asked and its pipe closed, never killed (1.88.4)
+    assert (way_out.killed, way_out.stdout.closed) == (0, True)
     pax, _ = entry("small.txt", b"hello")
     pax.pax_headers = {"comment": "x" * (2 << 20)}
     long = Zstd(plain_tar([(pax, b"hello")], format=tarfile.PAX_FORMAT))  # a header past its bound, here too
     with pytest.raises(DownloadError, match="ollama-linux-amd64.tar.zst holds an extended header of 2.0 MB"):
         unpack(archive, tmp_path / "long", which=which, popen=long)
-    assert (long.killed, long.stdout.closed) == (1, True)
+    assert (long.killed, long.stdout.closed) == (0, True)  # asked, never killed (1.88.4)
     endless = Zstd(plain + bytes(download.TRAIL_MOST + download.CHUNK))
     with pytest.raises(DownloadError, match="goes on after its last entry"):
         unpack(archive, tmp_path / "endless", which=which, popen=endless)

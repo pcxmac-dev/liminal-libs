@@ -1,20 +1,27 @@
 """liminal-signal and liminal-stop: every Liminal app, plugin and process on this machine told to end, or asked what
 it is (1.86.0, Monday list item 38).
 
-    liminal-signal TERM|KILL (--all | --app NAME ... | --plugin NAME) [--timeout S] [--list]
+    liminal-signal TERM (--all | --app NAME ... | --plugin NAME | --pid N) [--kill] [--timeout S] [--list]
+    liminal-signal KILL ... --kill      (KILL forces: it is refused without --kill)
     liminal-signal ASK --plugin NAME [status|interface|apis|needs|mode|processes|node]
     liminal-signal ASK --all            (also --check): every app and plugin, its mode, deadlines and what runs of it
-    liminal-stop [--kill] [--list] [--timeout S] [--app NAME]     (liminal-signal TERM --all; python -m liminal_libs.stop)
+    liminal-stop [--kill] [--pid N] [--list] [--timeout S] [--app NAME]   (liminal-signal TERM --all; python -m liminal_libs.stop)
 
 The command is a liminal-net node of its own (the user, 2026-11-24: "a command that inherits the node class, and is
 able to attach to a plugin, and send a 'kill' signal graceful, force, etc..."): it reaches each app's node
 (app-<name>) and each plugin's (plugin-<name>) and asks it `term`, `kill` or `ask` (nodes.py), authenticated by
 liminal-net's own handshake with this user's key. An app that is no node yet is asked through its route
-(App: POST /api/app/signal, with the proof of the same key). Then, after the timeout, whatever of Liminal's still runs
-is ended by its whole tree, TERM and then KILL: the ledger's processes (lifecycle.Ledger) and the processes that are
-Liminal's by what they run (a python of Liminal's venv running `-m liminal_...`: lifecycle.is_liminal), each checked
-by its start time before every signal, so an id the system gave again is never touched, and never this command or
-what started it. `--list` says what it would end and changes nothing.
+(App: POST /api/app/signal, with the proof of the same key). Then whatever of Liminal's still runs is asked to end by
+its whole tree, TERM: the ledger's processes (lifecycle.Ledger) and the processes that are Liminal's by what they run
+(a python of Liminal's venv running `-m liminal_...`: lifecycle.is_liminal), each checked by its start time before
+every signal, so an id the system gave again is never touched, and never this command or what started it. `--list`
+says what it would end and changes nothing.
+
+1.88.4 (the user, 2026-11-24: "all shutdowns need to be clean"): TERM, and nothing else, unless --kill is given. What
+is still running after the timeout is reported (its id, what it runs, its owner, how long it was asked) with exit code 1
+and a line saying to run again with --kill; nothing is killed. With --kill, what is left after the timeout is forced,
+but only what holds no data: a data holder (mongod, the MongoDB host, a ledger row written as holding data) is asked
+to end in its own clean way (mongod: MongoDB's shutdown command), never forced, unless it is named: --pid N --kill.
 
 Exit codes: 0, everything asked ended (or, for --list and ASK, was answered); 1, something did not end, or an ASK found
 nothing to answer; 2, the command was not understood; 3, a node or an app refused it.
@@ -228,13 +235,20 @@ class SignalCommand:
 
     # -- the verbs -----------------------------------------------------------------------------------------------------
     def signal(self, sig: Signal, apps=None, plugin: str | None = None, timeout: float = lifecycle.TERM_TIMEOUT_S,
-               listing: bool = False) -> int:
-        """TERM or KILL to `apps` (names; None: every app) or one plugin; then what of theirs still runs ended by its
-        tree. `listing`: what it would end, nothing changed."""
+               listing: bool = False, kill: bool = False, pid: int | None = None) -> int:
+        """TERM or KILL to `apps` (names; None: every app) or one plugin; then what of theirs still runs asked to end by
+        its tree (TERM), and what has not ended after the timeout reported, not killed (1.88.4). `kill` (--kill): what
+        is left then, holding no data, is forced; KILL (asked for outright) forces it at once. `pid`: that process alone
+        (one of Liminal's), which `kill` may force even while it holds data. `listing`: what it would end, nothing
+        changed."""
         from . import nodes
 
+        if pid is not None:
+            return self.one(int(pid), sig, timeout, listing, kill)
         every = apps is None and plugin is None
         names = list(APPS) if apps is None else list(apps)
+        began = self.clock()
+        given = max(timeout, 0.0)  # what a data holder asked to end cleanly is given, a KILL's too
         timeout = 0.0 if sig is Signal.KILL else max(timeout, 0.0)
         deadline = self.clock() + timeout
         refused = False
@@ -305,24 +319,81 @@ class SignalCommand:
                 self.say(Line(_said(p), "would end", p.pid))
             return EXIT_OK
         left = False
-        pids = {p.pid for p in roots}
-        jobs = {r.pid: lifecycle.job_of(r.tie) for r in self.ledger.rows() if r.pid in pids and lifecycle.job_of(r.tie)}
         if roots:
-            for r in lifecycle.end_trees(roots, sig, max(deadline - self.clock(), 0.0), table=self.table,
-                                         killer=self.killer, clock=self.clock, sleep=self.sleep,
-                                         protect=self.protected()):
-                p = next((x for x in roots if x.pid == r["pid"]), None)
-                self.say(Line(_said(p) if p else "a child", r["how"], r["pid"], r.get("why", "")))
-                left |= r["how"] == "left"
-            # what a row's own job holds (a host, mongod, and the interpreter its redirector started): ended at once,
-            # read from the ledger before the trees were ended (1.87.0)
-            end_job = getattr(self.killer, "end_job", None)
-            for pid, job in jobs.items() if callable(end_job) else ():
-                if end_job(job):
-                    self.say(Line(f"job {job}", "killed", pid, "everything in it"))
+            # TERM's time: what the apps left of the timeout, and at least a grace for what is asked only now
+            wait = given if sig is Signal.KILL else max(deadline - self.clock(), 0.0) + lifecycle.GRACE_S
+            left = self.end(roots, sig, wait, began, force=kill or sig is Signal.KILL)
         if not roots and not self.lines:
             self.say(Line("Liminal", "nothing running"))
         return EXIT_REFUSED if refused else EXIT_LEFT if left else EXIT_OK
+
+    def end(self, roots: list, sig: Signal, wait: float, began: float, force: bool, named: set | None = None) -> bool:
+        """`roots` asked to end by their trees (lifecycle.end_trees): TERM and `wait` (KILL: what holds no data at
+        once, a data holder asked cleanly and given `wait`); `force` (--kill, or KILL): what holds no data and is
+        still running after it is forced; `named`, ids that may be forced while they hold data. What is left is said
+        with its owner and how long it was asked. Whether anything is left."""
+        rows = self.ledger.rows()
+        of = {r.pid: r for r in rows}
+        pids = {p.pid for p in roots}
+        jobs = {r.pid: lifecycle.job_of(r.tie) for r in rows if r.pid in pids and lifecycle.job_of(r.tie)}
+        out = lifecycle.end_trees(roots, Signal.KILL if sig is Signal.KILL else Signal.TERM, wait, table=self.table,
+                                  killer=self.killer, clock=self.clock, sleep=self.sleep, protect=self.protected(),
+                                  rows=rows, escalate=force and sig is not Signal.KILL, force=named or ())
+        known = {p.pid: p for p in roots} | {p.pid: p for p in self.table.list()}
+        left = held = False
+        for r in out:
+            p = known.get(r["pid"])
+            if r["how"] != "left":
+                self.say(Line(_said(p) if p else "a child", r["how"], r["pid"], r.get("why", "")))
+                continue
+            left = True
+            held |= bool(r.get("holdsData"))
+            row = of.get(r["pid"])
+            owner = row.owner if row is not None else "Liminal's by what it runs" if p is not None and \
+                lifecycle.is_liminal(p, self.venvs) else "started by one of Liminal's"
+            self.say(Line(_said(p) if p else "a child", "left", r["pid"],
+                          f"{r.get('why', '')}; owner {owner}; asked {max(self.clock() - began, 0.0):.1f} s ago"))
+        # what a row's own job holds (the interpreter its redirector started): ended at once, read from the ledger
+        # before the trees were ended (1.87.0); 1.88.4: only when forcing, and never a data holder's job
+        end_job = getattr(self.killer, "end_job", None)
+        for pid, job in jobs.items() if force and callable(end_job) else ():
+            row = of.get(pid)
+            if row is not None and lifecycle.row_holds_data(row) and pid not in (named or ()):
+                continue
+            if end_job(job):
+                self.say(Line(f"job {job}", "killed", pid, "everything in it"))
+        if left and not force:
+            self.say(Line("Liminal", "not ended", None, f"what is left was asked and not killed: {lifecycle.KILL_HINT} "
+                                                         "(a data holder only when named: --pid N --kill)"))
+        elif held:
+            self.say(Line("Liminal", "not ended", None, "a data holder is never forced: name it (--pid N --kill) to "
+                                                         "force it"))
+        return left
+
+    def one(self, pid: int, sig: Signal, timeout: float, listing: bool = False, kill: bool = False) -> int:
+        """--pid N: that process and what it started asked to end (TERM; mongod, its shutdown); `kill`: what is left
+        of them after the timeout forced, the process named even while it holds data (what it started that holds data
+        is not). Only a process of Liminal's (the ledger's, or Liminal's by what it runs), never this command."""
+        began = self.clock()
+        p = next((x for x in self.table.list() if x.pid == pid), None)
+        if p is None:
+            self.say(Line("process", "not running", pid))
+            return EXIT_LEFT
+        row = next((r for r in self.ledger.rows() if r.pid == pid and r.started == p.started), None)
+        if pid in self.protected():
+            self.say(Line(_said(p), "refused", pid, "this command, or what started it"))
+            return EXIT_REFUSED
+        if row is None and not lifecycle.is_liminal(p, self.venvs):
+            self.say(Line(_said(p), "refused", pid, "not Liminal's (in no ledger row, nor Liminal's by what it runs): "
+                                                    "never touched"))
+            return EXIT_REFUSED
+        if listing:
+            self.say(Line(_said(p), "would end", pid))
+            return EXIT_OK
+        if sig is Signal.KILL and not kill:
+            sig = Signal.TERM
+        return EXIT_LEFT if self.end([p], sig, max(timeout, 0.0), began, force=kill, named={pid} if kill else None) \
+            else EXIT_OK
 
     def ask(self, plugin: str | None, what: str = "status", every: bool = False) -> int:
         """ASK: one plugin asked what it is (through an app holding it, else its node, started on demand within its start
@@ -406,7 +477,11 @@ def signal_main(argv: list[str] | None = None, command: SignalCommand | None = N
     ap.add_argument("--all", action="store_true", help="every app and plugin on this machine")
     ap.add_argument("--app", action="append", choices=sorted(APPS), help="this app (more than once: these)")
     ap.add_argument("--plugin", help="this plugin")
-    ap.add_argument("--timeout", type=float, default=lifecycle.TERM_TIMEOUT_S, help="seconds TERM is given before KILL")
+    ap.add_argument("--pid", type=int, help="this process of Liminal's (and what it started) alone")
+    ap.add_argument("--timeout", type=float, default=lifecycle.TERM_TIMEOUT_S,
+                    help="seconds TERM is given; what is left then is reported (forced only with --kill)")
+    ap.add_argument("--kill", action="store_true",
+                    help="force what is left after the timeout, if it holds no data (with --pid N: that process too)")
     ap.add_argument("--list", action="store_true", help="say what would be ended, and change nothing")
     ap.add_argument("--check", action="store_true", help="ASK --all: every plugin, its mode and deadlines, what runs")
     try:
@@ -422,17 +497,24 @@ def signal_main(argv: list[str] | None = None, command: SignalCommand | None = N
     except ValueError as e:
         print(f"liminal-signal: {e}", file=sys.stderr)
         return EXIT_USAGE
-    if not (args.all or args.app or args.plugin):
-        print("liminal-signal: say what to signal: --all, --app NAME or --plugin NAME", file=sys.stderr)
+    if sig is Signal.KILL and not args.kill:
+        print("liminal-signal: KILL forces: say --kill as well (TERM, the default, asks and reports what is left)",
+              file=sys.stderr)
+        return EXIT_USAGE
+    if not (args.all or args.app or args.plugin or args.pid is not None):
+        print("liminal-signal: say what to signal: --all, --app NAME, --plugin NAME or --pid N", file=sys.stderr)
         return EXIT_USAGE
     return command.signal(sig, apps=None if args.all else args.app, plugin=None if args.all else args.plugin,
-                          timeout=args.timeout, listing=args.list)
+                          timeout=args.timeout, listing=args.list, kill=args.kill, pid=args.pid)
 
 
 def stop_main(argv: list[str] | None = None, command: SignalCommand | None = None) -> int:
-    """liminal-stop: liminal-signal TERM --all (--kill: KILL; --app NAME: those apps only)."""
+    """liminal-stop: liminal-signal TERM --all (--kill: what is left after the timeout forced, if it holds no data;
+    --app NAME: those apps only; --pid N: that process alone, which --kill may force even while it holds data)."""
     ap = argparse.ArgumentParser(prog="liminal-stop", description="end every Liminal app, plugin and process here")
-    ap.add_argument("--kill", action="store_true", help="KILL: no waiting")
+    ap.add_argument("--kill", action="store_true",
+                    help="force what is left after the timeout, if it holds no data (with --pid N: that process too)")
+    ap.add_argument("--pid", type=int, help="this process of Liminal's (and what it started) alone")
     ap.add_argument("--list", action="store_true", help="say what would be ended, and change nothing")
     ap.add_argument("--timeout", type=float, default=lifecycle.TERM_TIMEOUT_S)
     ap.add_argument("--app", action="append", choices=sorted(APPS))
@@ -441,8 +523,8 @@ def stop_main(argv: list[str] | None = None, command: SignalCommand | None = Non
     except SystemExit as e:
         return EXIT_USAGE if e.code else EXIT_OK
     command = command or SignalCommand()
-    return command.signal(Signal.KILL if args.kill else Signal.TERM, apps=args.app, timeout=args.timeout,
-                          listing=args.list)
+    return command.signal(Signal.TERM, apps=args.app, timeout=args.timeout, listing=args.list, kill=args.kill,
+                          pid=args.pid)
 
 
 if __name__ == "__main__":

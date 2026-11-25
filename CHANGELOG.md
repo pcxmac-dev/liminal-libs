@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.88.4 (2026-11-24)
+
+- Every shutdown is clean (the user, 2026-11-24: "all shutdowns need to be clean"). Nothing is forced by default:
+  `lifecycle.end_trees` sends TERM and reports what has not ended in its time ("left"), where it sent KILL after it;
+  KILL is sent only when asked for outright, and never to a data holder.
+- Data holders: `Row.holds_data` in the process ledger, set by `lifecycle.spawn(holds_data=True)` for mongod and every
+  host (`Host.start`: the recorder, the fetcher, the MongoDB keeper); mongod is one by what it runs too, and so is every
+  row of `host:mongo` (`lifecycle.holds_data`). One is never sent KILL: it is asked to end in its own clean way
+  (`OsKiller.shutdown`: mongod, MongoDB's `shutdown` command on its own port, sent only when the server there says it is
+  that process) and reported when it has not ended, unless named by its id (`end_trees(force=)`).
+- `liminal-stop` and `liminal-signal`: TERM, and nothing else without `--kill`. What is still running after the timeout
+  is reported with its id, what it runs, its owner and how long it was asked, a line says to run again with --kill, and
+  the exit code is 1. `--kill` forces what is left after the timeout if it holds no data (a row's job, too, never a
+  data holder's); a data holder only when named, `--pid N --kill` (`--pid N` alone: that process asked, TERM; only one
+  of Liminal's, never this command). `liminal-signal KILL` is refused without `--kill`.
+- An app: a plugin that misses its stop deadline (`deliver(within=)`, `deliver_all`) is reported late and its trees
+  are asked again (TERM) and left, their rows kept for liminal-stop; `App.detach`, `App.terminate` and a host's end
+  give TERM its deadline and report the rest. An explicit KILL (App.terminate(KILL), a node's `kill`) still kills,
+  but never a data holder. A plugin node's start past its deadline is asked to end, not killed. What each is given is
+  read before its thread starts (a stand-in clock its own end moved left it none: the conformance's grok check failed
+  now and then). The conformance's node check now asks that a child ignoring TERM be given its deadline and then left
+  and reported, never killed.
+- `mongo.stop()`: its shutdown, then up to 60 s (a look every 0.5 s) for the server's process to exit; still running,
+  it is reported and False returned, never killed (1.87.0 killed its tree after 10 s). `keep()`'s end shuts the server
+  down the same way and says when it is left.
+- Jobs: a data holder is never in a job that ends it with its owner (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE): it gets a
+  named job of its own, tied or not, and leaves its starter's jobs (CREATE_BREAKAWAY_FROM_JOB; a job that allows none
+  is noted in its row); on Linux no PR_SET_PDEATHSIG. The boot keeper's job (`machines.keep`) allows the breakaway.
+  Other children stay tied.
+- The library's other forcing places ask and report: `proctree.run`'s timeout asks the tree (taskkill /T without /F,
+  SIGTERM to its group) and raises `StillRunning` (a TimeoutExpired) when it is still running, not waited for;
+  `proctree.ask_end` for one child; the AI plugins' short commands, zstd's unpacking, the terminal's close (its input
+  closed first), the route tracer, the link's helper, the boot keeper's command, bpftrace (`_halt`: SIGTERM and no
+  SIGKILL, the watch's error says it is left) and the recorder's strays (asked TERM, never TerminateProcess). Kept:
+  a child that could not be resumed after its job (it never ran), and machines/children.py, endpoint.py,
+  apps/binding.py and web.py, not changed here.
+
 ## 1.88.3 (2026-11-24)
 
 - The closed months' copy to DuckDB is no longer refused for bars before 1970. Its check after the write compares the

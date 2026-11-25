@@ -549,8 +549,9 @@ def node_problems(p: Plugin) -> list[str]:
     ledger and clock; no process is started and no host reached (each refused). It must keep the login it is attached
     with and refuse a signal from anyone but its app; answer ASK (interface, mode, processes, node, status) in shape;
     end on TERM within its STOP_DEADLINE_S with nothing left (no child of it in the ledger, none running, no claim
-    held, let go of its app and login, its node ended); and, when a child of it ignores TERM, have that child killed
-    at its deadline, not before. Each plugin repository's tests/test_contract.py calls it through
+    held, let go of its app and login, its node ended); and, when a child of it ignores TERM, have that child given
+    its deadline and then left running and reported, never killed (1.88.4, "all shutdowns need to be clean"), its row
+    kept so liminal-stop finds it. Each plugin repository's tests/test_contract.py calls it through
     assert_module_serves."""
     import os
     import time
@@ -612,9 +613,9 @@ def node_problems(p: Plugin) -> list[str]:
                 out.append(f"{tag}: TERM came to {how}: {answer.get('why')}")
             if took > deadline:
                 out.append(f"{tag}: TERM took {took:.1f} s, past its STOP_DEADLINE_S ({deadline:g} s)")
-            if pid in table.rows:
+            if pid in table.rows and not ignores:
                 out.append(f"{tag}: TERM left its child running")
-            if lifecycle.mine(p.name) or [r for r in ledger.kept if r.owner == p.name]:
+            if not ignores and (lifecycle.mine(p.name) or [r for r in ledger.kept if r.owner == p.name]):
                 out.append(f"{tag}: TERM left its child in the ledger")
             if lifecycle.claims_held():
                 out.append(f"{tag}: TERM left claims held: {lifecycle.claims_held()}")
@@ -623,10 +624,14 @@ def node_problems(p: Plugin) -> list[str]:
             if not node.stopped:
                 out.append(f"{tag}: TERM did not end its node")
             if ignores:
-                if (pid, "KILL") not in table.sent:
-                    out.append(f"{tag}: a child ignoring TERM was not killed")
+                if (pid, "KILL") in table.sent:
+                    out.append(f"{tag}: a child ignoring TERM was killed: a shutdown is clean, what is left reported")
+                elif (pid, "TERM") not in table.sent:
+                    out.append(f"{tag}: a child ignoring TERM was never asked to end")
                 elif clock() - at < deadline - 1e-6:
-                    out.append(f"{tag}: a child ignoring TERM was killed before its deadline ({clock() - at:g} s)")
+                    out.append(f"{tag}: a child ignoring TERM was given less than its deadline ({clock() - at:g} s)")
+                elif not [r for r in ledger.kept if r.pid == pid]:
+                    out.append(f"{tag}: a child still running was dropped from the ledger: liminal-stop would miss it")
             with lifecycle._MINE_LOCK:  # nothing of the check is left behind
                 lifecycle._MINE.pop(pid, None)
     return out

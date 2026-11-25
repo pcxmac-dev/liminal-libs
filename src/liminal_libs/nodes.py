@@ -16,8 +16,8 @@ It fires `lifecycle` (a stream signal: {"stage", "signal", "why"}) as it ends, t
 A plugin node is on demand (lifecycle.ON_DEMAND, the only mode allowed): started when reached (`launcher`, by
 lifecycle.spawn, written in the ledger), ended by liminal-net when nobody has been attached for its grace, its data
 secured first (`shutdown`). The plugin is attached to the node's own app, and holds that app's login, as every plugin.
-A start that misses the plugin's START_DEADLINE_S is reported and what was started for it ended with its tree
-(reach_or_start).
+A start that misses the plugin's START_DEADLINE_S is reported and what was started for it asked to end (TERM) with
+its tree, never killed (reach_or_start; 1.88.4).
 
 Why requests and not signals: liminal-net's signals (idl.SignalKind: state, stream) go out along a node's axon to the
 nodes linked for them; nothing sends one *to* a node. TERM, KILL and ASK are what a node is asked, so they are methods
@@ -324,8 +324,9 @@ def reach_or_start(me, name: str, scope: Path | None = None, *, start: bool = Tr
                    launch: Callable[[], None] | None = None, ledger=None, table=None, killer=None) -> dict:
     """Plugin `name`'s node reached from node `me` (a liminal_net.Node): the one answering, or (`start`) one started by
     its launcher. A start not answering within `deadline_s` (its START_DEADLINE_S, 10 s by default) is reported, and
-    what was started for it (the ledger's rows owned by node:NAME, started since) ended with its tree. Returns {"remote"}
-    or {"remote": None, "why", "ended"}."""
+    what was started for it (the ledger's rows owned by node:NAME, started since) asked to end with its tree: TERM, and
+    what still runs reported in "ended" as left, never killed (1.88.4, "all shutdowns need to be clean"). Returns
+    {"remote"} or {"remote": None, "why", "ended"}."""
     deadline_s = lifecycle.START_DEADLINE_S if deadline_s is None else deadline_s
     began = time.time()
     box: dict = {}
@@ -351,8 +352,8 @@ def reach_or_start(me, name: str, scope: Path | None = None, *, start: bool = Tr
         except OSError:
             rows = []
         if rows:
-            ended = lifecycle.end_trees([r.as_proc() for r in rows], Signal.KILL, 0, table=table, killer=killer,
-                                        protect={os.getpid()})
+            ended = lifecycle.end_trees([r.as_proc() for r in rows], Signal.TERM, 0, table=table, killer=killer,
+                                        protect={os.getpid()}, rows=rows)
     return {"remote": None, "why": why, "ended": ended}
 
 

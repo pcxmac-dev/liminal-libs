@@ -183,7 +183,7 @@ def test_a_kill_while_a_term_is_under_way_kills_what_was_started_at_once():
     assert release.is_set() and (4010, "KILL") in table.sent and (4010, "TERM") not in table.sent
 
 
-def test_a_plugin_that_does_not_end_within_its_deadline_is_late_and_its_trees_are_killed():
+def test_a_plugin_that_does_not_end_within_its_deadline_is_late_and_its_trees_are_asked_again_never_killed():
     record: list[str] = []
     proc, row = child_of("stuck", 4020)
     table, clock, ledger, held = machine(proc, ignores={4020})
@@ -206,7 +206,9 @@ def test_a_plugin_that_does_not_end_within_its_deadline_is_late_and_its_trees_ar
                 out = app.signal_plugin("stuck", Signal.TERM)
     finally:
         gate.set()
-    assert out["how"] == "late" and (4020, "KILL") in table.sent and 4020 not in table.rows
+    # 1.88.4 ("all shutdowns need to be clean"): asked again (TERM) and left, its row kept for liminal-stop
+    assert out["how"] == "late" and "not killed" in out["why"] and (4020, "KILL") not in table.sent
+    assert (4020, "TERM") in table.sent and 4020 in table.rows and [r.pid for r in ledger.kept] == [4020]
 
 
 def test_stop_is_terminate_and_a_request_while_ending_is_refused(tmp_path):
@@ -344,20 +346,25 @@ def test_an_on_demand_plugins_children_end_when_its_last_client_detaches():
 def test_a_reused_pid_is_never_signalled():
     table = FakeTable([Proc(5001, 1, "x", "someone else's", started=99)])
     out = lifecycle.end_trees([Proc(5001, 1, "x", "ours", started=7)], Signal.KILL, 0, table=table, killer=table)
-    assert out == [{"pid": 5001, "how": "gone", "why": "it had ended (or its id is another's now)"}] and table.sent == []
+    assert [(r["pid"], r["how"], r["why"]) for r in out] == [(5001, "gone", "it had ended (or its id is another's now)")]
+    assert table.sent == []
     # a "child" that started before its parent is another process under a parent id given again: left alone
     table = FakeTable([Proc(5002, 1, "x", "ours", 50), Proc(5003, 5002, "x", "older than its parent", 10)])
     lifecycle.end_trees([Proc(5002, 1, "x", "ours", 50)], Signal.KILL, 0, table=table, killer=table)
     assert table.sent == [(5002, "KILL")]
 
 
-def test_term_waits_its_timeout_then_kills_what_is_left():
+def test_term_waits_its_timeout_then_reports_what_is_left_and_escalate_kills_it():
     table = FakeTable([Proc(6001, ME, "x", "heeds", 1), Proc(6002, ME, "x", "ignores", 1)], ignores={6002})
     clock = FakeClock()
     out = lifecycle.end_trees([table.rows[6001], table.rows[6002]], Signal.TERM, 3.0, table=table, killer=table,
-                              clock=clock, sleep=clock.sleep)
-    assert {r["pid"]: r["how"] for r in out} == {6001: "terminated", 6002: "killed"}
-    assert clock.now - 1000.0 >= 3.0 and table.sent == [(6001, "TERM"), (6002, "TERM"), (6002, "KILL")]
+                              clock=clock, sleep=clock.sleep, rows=[])
+    # 1.88.4: TERM alone, what is left reported, never killed
+    assert {r["pid"]: r["how"] for r in out} == {6001: "terminated", 6002: "left"}
+    assert clock.now - 1000.0 >= 3.0 and table.sent == [(6001, "TERM"), (6002, "TERM")]
+    out = lifecycle.end_trees([table.rows[6002]], Signal.TERM, 3.0, table=table, killer=table, clock=clock,
+                              sleep=clock.sleep, rows=[], escalate=True)  # --kill: forced once its time is up
+    assert {r["pid"]: r["how"] for r in out} == {6002: "killed"} and table.sent[-2:] == [(6002, "TERM"), (6002, "KILL")]
 
 
 def test_the_ledger_file_is_written_whole_and_drops_the_rows_of_processes_gone(tmp_path):
@@ -556,7 +563,7 @@ def test_kill_ends_a_plugin_nodes_own_process_after_its_trees():
     assert table.sent == [(4050, "KILL")] and node.stopped == ["KILL"] and exits == [nodes.KILL_EXIT]
 
 
-def test_a_start_that_misses_its_deadline_is_reported_and_its_tree_ended():
+def test_a_start_that_misses_its_deadline_is_reported_and_its_tree_asked_to_end():
     table = FakeTable([Proc(4060, ME, "py", "python -m liminal_libs.nodes serve acme", 3)])
     ledger = MemoryLedger(table)
     ledger.add(Row(pid=4060, started=3, owner="node:acme", owner_pid=ME, owner_started=None, kind="plugin-node",
@@ -573,7 +580,7 @@ def test_a_start_that_misses_its_deadline_is_reported_and_its_tree_ended():
                                    table=table, killer=table)
     finally:
         gate.set()
-    assert out["remote"] is None and "start deadline" in out["why"] and table.sent == [(4060, "KILL")]
+    assert out["remote"] is None and "start deadline" in out["why"] and table.sent == [(4060, "TERM")]  # 1.88.4
 
 
 # -- the command -------------------------------------------------------------------------------------------------------
@@ -620,7 +627,7 @@ class _NoNode:
         raise ConnectionError("no node answers")
 
 
-def test_the_stop_command_asks_the_apps_waits_then_ends_what_is_left_by_its_tree():
+def test_the_stop_command_asks_the_apps_waits_then_asks_what_is_left_by_its_tree():
     me = Proc(ME, 1, f"{VENV}/python.exe", "python -m liminal_libs.stop", 1)
     charts = Proc(9001, 1, f"{VENV}/python.exe", "python -m liminal_charts serve", 2)
     sync = Proc(9002, 9001, f"{VENV}/python.exe", "python -m liminal_charts sync --extras-only", 3)
@@ -631,11 +638,12 @@ def test_the_stop_command_asks_the_apps_waits_then_ends_what_is_left_by_its_tree
                    command=["mongod"]))
     apps = Apps({"charts": 9001}, b"k" * 32)
     cmd, out = command(table, apps, ledger)
-    assert cmd.signal(Signal.TERM, timeout=5) == stop.EXIT_OK
+    assert cmd.signal(Signal.TERM, timeout=5) == stop.EXIT_LEFT  # 1.88.4: what did not end is reported
     assert ("POST", "charts", "/api/app/signal") in apps.asked
     assert "app charts (pid 9001): asked: TERM through its route" in out
-    # what was left after the timeout ended by its tree: the sync under the charts, the charts, mongod by the ledger
-    assert (9002, "KILL") in table.sent and (9001, "KILL") in table.sent and (9003, "TERM") in table.sent
+    # what was left after the timeout asked by its tree: the sync under the charts, the charts; mongod its shutdown
+    assert (9002, "TERM") in table.sent and (9001, "TERM") in table.sent and (9003, "SHUTDOWN") in table.sent
+    assert not [s for s in table.sent if s[1] == "KILL"] and 9001 in table.rows and 9002 in table.rows
     assert ME in table.rows and not any(pid == ME for pid, _ in table.sent)  # never the command itself
 
 
@@ -700,6 +708,7 @@ def test_the_executables_say_what_they_were_not_told():
     cmd, out = command(FakeTable([]), Apps({}, b"k" * 32))
     assert stop.signal_main(["TERM"], cmd) == stop.EXIT_USAGE  # neither --all, --app nor --plugin
     assert stop.signal_main(["HUP", "--all"], cmd) == stop.EXIT_USAGE
+    assert stop.signal_main(["KILL", "--all"], cmd) == stop.EXIT_USAGE  # 1.88.4: KILL forces, and only with --kill
     assert stop.stop_main(["--list"], cmd) == stop.EXIT_OK
 
 
@@ -727,7 +736,8 @@ FOUND = _found()
 @pytest.mark.parametrize("plugin", [p for _, p in FOUND], ids=[n for n, _ in FOUND])
 def test_every_plugin_found_is_served_as_its_node_answers_ask_and_ends_on_term_within_its_deadline(plugin):
     """node_problems: attached with its app's login, ASK answered in shape, TERM ended within its deadline with nothing
-    left (ledger, children, claims), a child ignoring TERM killed at the deadline. One that cannot be served yet is a
+    left (ledger, children, claims), a child ignoring TERM given its deadline, then left and reported, never killed
+    (1.88.4). One that cannot be served yet is a
     named xfail with its reason."""
     found = node_problems(plugin)
     cannot = [w for w in found if "cannot be attached and served" in w or "no copy of it can be made" in w]

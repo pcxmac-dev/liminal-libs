@@ -1217,12 +1217,14 @@ def test_stop_ends_bpftrace_with_sigterm_and_reaps_it():
                                  for t in threading.enumerate()))
 
 
-def test_stop_kills_and_still_reaps_a_bpftrace_that_ignores_sigterm():
+def test_stop_leaves_and_says_a_bpftrace_that_ignores_sigterm_never_killing_it():
+    # 1.88.4 ("all shutdowns need to be clean"): asked (SIGTERM), waited for, then left and said
     proc = FakePopen(ignores_term=True)
     w = BpftraceWatch({"net"}, runner=lambda argv: proc, timeout=5.0)
     w.start()
     w.stop()
-    assert proc.calls == ["terminate", "wait", "kill", "wait"]
+    assert proc.calls == ["terminate", "wait"] and "not killed" in w.error
+    proc.killed.set()  # its reader let go
 
 
 def test_bpftrace_is_spawned_in_its_own_session_with_its_words_on_the_pipe():

@@ -886,9 +886,9 @@ def test_a_short_command_keeps_a_bounded_part_of_what_it_writes(tool, monkeypatc
     assert code == 3 and out == "x" * ai.SHORT_KEPT and err == "e" * ai.SHORT_KEPT and ai.SHORT_KEPT == 64 << 10
     hangs = popen_of(b"tool 1.2.3\n", hangs=True)
     monkeypatch.setattr(ai.subprocess, "Popen", hangs)
-    with pytest.raises(children.ChildError, match="took more than 3 s"):
+    with pytest.raises(children.ChildError, match="took more than 3 s .*left, not killed"):
         tool.short(["tool", "--version"], 3)
-    assert hangs.made[0].killed is True  # ended, not left running
+    assert hangs.made[0].killed is False  # asked to end, never killed (1.88.4, "all shutdowns need to be clean")
     monkeypatch.setattr(ai.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no such program")))
     with pytest.raises(children.ChildError, match="could not run: no such program"):
         tool.short(["tool", "--version"])

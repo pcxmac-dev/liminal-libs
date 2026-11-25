@@ -18,8 +18,15 @@ So:
   ends, however the owner ends (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE); on Linux it starts in a session of its own and is
   sent SIGTERM when its owner ends (PR_SET_PDEATHSIG). What fails there is noted, never fatal.
 - `end_trees`: processes ended with everything they started, found by parent in a process table and checked by start
-  time before each signal: TERM first and KILL once the time is up, or KILL at once.
+  time before each signal: TERM, and what has not ended in its time reported, not killed; KILL only when asked for
+  outright (liminal-stop --kill, an explicit Signal.KILL), and never to a process that holds data.
 The machine-wide command is liminal_libs.stop (`liminal-signal`, `liminal-stop`).
+
+1.88.4 (the user, 2026-11-24: "all shutdowns need to be clean"): nothing is forced by default. A TERM that is not heeded
+in its time is reported ("left"), never followed by a KILL; a KILL is sent only on the explicit paths, and never to a
+data holder (`holds_data`: mongod, the MongoDB host, a ledger row written with `holds_data=True`), which is asked to
+end in its own clean way instead (mongod: MongoDB's `shutdown` command) and reported when it has not ended. Only a
+process named by its id (liminal-stop --pid N --kill: `end_trees(force=)`) may be forced while it holds data.
 """
 from __future__ import annotations
 
@@ -56,6 +63,11 @@ JOB_KILL_ON_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 JOB_BREAKAWAY_OK = 0x0800  # JOB_OBJECT_LIMIT_BREAKAWAY_OK: a child started detached (a host) may leave the job
 EXTENDED_LIMITS = 9  # JobObjectExtendedLimitInformation
 PR_SET_PDEATHSIG = 1
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000  # a data holder leaves its starter's jobs (one that ends them with it) (1.88.4)
+DATA_KINDS = ("mongod",)  # a ledger row of these kinds holds data (1.88.4)
+DATA_OWNERS = ("host:mongo",)  # ... and of these owners: the MongoDB host and the mongod it keeps
+DATA_EXES = ("mongod", "mongod.exe")  # a process running these holds data, written in the ledger or not
+KILL_HINT = "run again with --kill to force what holds no data"
 
 
 class Signal(str, enum.Enum):
@@ -183,8 +195,9 @@ def deliver(obj, sig: Signal, deadline: float, sender=None, name: str = "", with
     """`sig` passed to `obj`: its own `signal` when it has one; else, for TERM, its `app_stopping` or its `close`. What
     came of it: {"name", "how": signalled | stopped | closed | nothing | refused | failed | late, "why"}. Nothing
     raised. `within`: the object is given until `deadline` and no longer (its answer waited for on a thread of its
-    own): one that has not answered by then is "late", and what it started (spawn, owned by `name`) is killed with
-    its trees, as KILL ends them."""
+    own): one that has not answered by then is "late", and what it started (spawn, owned by `name`) is asked again,
+    TERM, and left as it is: never killed (1.88.4, "all shutdowns need to be clean"), its ledger rows kept for
+    liminal-stop."""
     sig = Signal.of(sig)
     name = name or str(getattr(obj, "name", "") or getattr(obj, "NAME", "") or type(obj).__name__)
     box: dict = {}
@@ -198,13 +211,14 @@ def deliver(obj, sig: Signal, deadline: float, sender=None, name: str = "", with
             box["failed"] = f"{type(e).__name__}: {e}"
 
     if within:
+        # what it is given, read before it starts: a stand-in clock its own end moves would otherwise leave it none
+        given = left(deadline, clock)
         worker = threading.Thread(target=run, name=f"liminal-signal-{name}", daemon=True)
         worker.start()
-        worker.join(left(deadline, clock))
+        worker.join(given)
         if worker.is_alive():
-            killed = end_owned(name, Signal.KILL, deadline_in(0))
-            return {"name": name, "how": "late", "why": f"it did not end within its deadline: killed what it "
-                                                       f"started ({len(killed)} processes)", "processes": killed}
+            asked = end_owned(name, Signal.TERM, deadline_in(0))
+            return {"name": name, "how": "late", "why": _late_why(asked, "its deadline"), "processes": asked}
     else:
         run()
     if "refused" in box:
@@ -213,6 +227,13 @@ def deliver(obj, sig: Signal, deadline: float, sender=None, name: str = "", with
         return {"name": name, "how": "failed", "why": box["failed"]}
     how = box.get("how", "nothing")
     return {"name": name, "how": how, "why": "it has nothing to end" if how == "nothing" else ""}
+
+
+def _late_why(asked: list[dict], within: str) -> str:
+    """What a late object is told it came to (1.88.4): what it started asked again, and how much of it still runs."""
+    still = sum(1 for r in asked if r.get("how") == "left")
+    return (f"it did not end within {within}: what it started was asked again (TERM) and left as it is, not killed "
+            f"({len(asked)} processes, {still} still running)")
 
 
 PLUGINS_DEADLINE_S = 10.0  # an app's plugins told TERM together are given this long in all (1.87.0)
@@ -224,10 +245,12 @@ def deliver_all(items, sig: Signal, deadline: float, sender=None, grace: float =
     """`sig` passed to each of `items` ((name, object)) at once, each on a thread of its own, under one `deadline`
     and `grace` seconds more (1.87.0; the shutdown audit of 2026-11-24: the platform told its plugins one after
     another, about 54 s and more): what each came to, in their order (deliver's); one still at it then is "late", and
-    what was started for it is killed with its trees."""
+    what was started for it is asked again (TERM) and left, never killed (1.88.4)."""
     sig = Signal.of(sig)
     box: dict[str, dict] = {}
     threads = []
+    given = left(deadline, clock)  # read before they start (deliver's): their ends may move a stand-in clock
+    began = time.monotonic()
     for name, obj in items:
         def run(name=name, obj=obj) -> None:
             box[name] = deliver(obj, sig, deadline, sender=sender, name=name)
@@ -236,17 +259,16 @@ def deliver_all(items, sig: Signal, deadline: float, sender=None, grace: float =
         t.start()
         threads.append((name, t))
     for _, t in threads:
-        t.join(left(deadline, clock))
+        t.join(max(given - (time.monotonic() - began), 0.0))
     end = time.monotonic() + max(grace, 0.0)
     for _, t in threads:
         t.join(max(end - time.monotonic(), 0.0))
     out = []
     for name, t in threads:
         if t.is_alive():
-            killed = end_owned(name, Signal.KILL, deadline_in(0))
-            out.append({"name": name, "how": "late", "processes": killed,
-                        "why": f"it did not end within the deadline and its grace: killed what it started "
-                               f"({len(killed)} processes)"})
+            asked = end_owned(name, Signal.TERM, deadline_in(0))
+            out.append({"name": name, "how": "late", "processes": asked,
+                        "why": _late_why(asked, "the deadline and its grace")})
         else:
             out.append(box.get(name) or {"name": name, "how": "failed", "why": "it said nothing"})
     return out
@@ -333,7 +355,17 @@ def job_of(tie: str) -> str | None:
 class OsKiller:
     """How a signal reaches one process: Linux's os.kill (or its group's, os.killpg, when it leads one); on Windows
     TERM is taskkill without /F (a polite close: what has a window or a console may hear it) and KILL is
-    TerminateProcess (os.kill)."""
+    TerminateProcess (os.kill). A data holder is never sent KILL by end_trees: it is asked by `shutdown` instead."""
+
+    def shutdown(self, p: "Proc") -> bool:
+        """A data holder asked to end in its own clean way (1.88.4): mongod, MongoDB's `shutdown` command on the port
+        its command line names, sent only when the server answering there says it is that process. Whether it was
+        asked; anything else is sent TERM."""
+        if is_mongod(p):
+            from . import mongo
+
+            return mongo.ask_shutdown(mongo.port_of(p.cmdline), pid=p.pid)
+        return self.send(p.pid, Signal.TERM, group=True)
 
     def end_job(self, name: str) -> bool:
         """Everything in the named job ended at once (Windows: OpenJobObjectW, TerminateJobObject). Whether it was."""
@@ -410,45 +442,118 @@ def _same(table, p: Proc) -> bool:
     return table.alive(p.pid) and table.started(p.pid) == p.started
 
 
+def _base(path: str) -> str:
+    return re.split(r"[\\/]", str(path or "").strip().strip('"'))[-1].lower()
+
+
+def is_mongod(p: Proc) -> bool:
+    """Whether a process runs mongod (by its executable, or its command line's first word)."""
+    words = (p.cmdline or "").split()
+    return _base(p.exe) in DATA_EXES or (bool(words) and _base(words[0]) in DATA_EXES)
+
+
+def row_holds_data(row) -> bool:
+    """Whether a ledger row's process holds data (1.88.4): written so (`holds_data`), or mongod, or the MongoDB host."""
+    return bool(getattr(row, "holds_data", False)) or getattr(row, "kind", "") in DATA_KINDS or \
+        getattr(row, "owner", "") in DATA_OWNERS
+
+
+def holds_data(p: Proc, rows: Iterable = ()) -> bool:
+    """Whether a process holds data (1.88.4): mongod by what it runs, or one whose ledger row (of `rows`, by its id and
+    start time) says it does. Such a process is never forced by end_trees unless named in its `force`."""
+    if is_mongod(p):
+        return True
+    return any(r.pid == p.pid and r.started == p.started and row_holds_data(r) for r in rows or ())
+
+
+def _rows_known(rows) -> list:
+    """The ledger rows a data holder is told by: those given, else this process's own (mine) and a stand-in ledger's.
+    The real ledger's file is never read here: a test's table would have its rows dropped from it."""
+    if rows is not None:
+        return list(rows)
+    out = mine()
+    given = _STANDINS.get("ledger")
+    if given is not None:
+        try:
+            out += given.rows()
+        except OSError:
+            pass
+    return out
+
+
 def end_trees(roots: Iterable[Proc], sig: Signal, timeout: float = TERM_TIMEOUT_S, *, table=None, killer=None,
               clock: Callable[[], float] | None = None, sleep: Callable[[float], None] | None = None,
-              protect: Iterable[int] = ()) -> list[dict]:
-    """Each of `roots` ended with everything it started (its descendants in `table`): TERM to each, deepest first,
-    then KILL to whatever is left once `timeout` is up; KILL: at once. Before each signal the process is looked at
-    again: one gone, or whose start time is another's (its id given again), is left. `protect`: ids never signalled
-    (the caller and its parents). Returns, for each process: {"pid", "how": terminated | killed | gone | left,
-    "why"}."""
+              protect: Iterable[int] = (), rows: Iterable | None = None, escalate: bool = False,
+              force: Iterable[int] = ()) -> list[dict]:
+    """Each of `roots` ended with everything it started (its descendants in `table`), deepest first. Before each
+    signal the process is looked at again: one gone, or whose start time is another's (its id given again), is left.
+    `protect`: ids never signalled (the caller and its parents).
+
+    1.88.4 (the user, 2026-11-24: "all shutdowns need to be clean"): TERM is sent to each and `timeout` given; what
+    is still running then is reported "left", never killed. KILL (asked for outright) ends at once what holds no data;
+    `escalate` (liminal-stop --kill) sends TERM first and KILL once `timeout` is up to what holds no data. A data holder
+    (holds_data, by `rows`: the ledger's, else this process's own) is never sent KILL: it is asked to end in its own
+    clean way (the killer's `shutdown`: mongod's shutdown command), given `timeout`, and reported when it has not
+    ended, unless its id is in `force` (named outright: --pid N --kill). Returns, for each process: {"pid", "how":
+    terminated | killed | gone | left, "why", "holdsData", "asked" (the seconds it was given)}."""
     table, killer, clock, sleep = _table(table), _killer(killer), _clock(clock), _sleep(sleep)
     sig = Signal.of(sig)
-    protect = set(protect)
-    rows = table.list()
+    protect, force = set(protect), set(force)
+    known = _rows_known(rows)
+    listed = table.list()
     targets: dict[int, Proc] = {}
     for root in roots:
-        for p in [*descendants(root, rows), root]:
+        for p in [*descendants(root, listed), root]:
             if p.pid not in protect and p.pid not in targets:
                 targets[p.pid] = p
+    holders = {pid for pid, p in targets.items() if holds_data(p, known)}
+    forceable = (lambda p: p.pid in force or p.pid not in holders)
+    shutdown = getattr(killer, "shutdown", None)
     out: dict[int, dict] = {}
-    if sig is Signal.TERM:
+    began = clock()
+
+    def said(p: Proc, how: str, why: str = "") -> None:
+        out[p.pid] = {"pid": p.pid, "how": how, "why": why, "holdsData": p.pid in holders,
+                      "asked": round(max(clock() - began, 0.0), 1)}
+
+    def kill(p: Proc) -> None:
+        if not _same(table, p):
+            said(p, "gone", "it had ended (or its id is another's now)")
+            return
+        sent = killer.send(p.pid, Signal.KILL, group=True)
+        said(p, "killed" if sent else "left", "" if sent else "the system refused to end it (another user's, or elevated)")
+
+    if sig is Signal.KILL:  # what holds no data ended at once, before the holders are asked and waited for
         for p in targets.values():
-            if not _same(table, p):
-                out[p.pid] = {"pid": p.pid, "how": "gone", "why": "it had ended (or its id is another's now)"}
-                continue
-            killer.send(p.pid, Signal.TERM, group=True)
-        end = clock() + max(timeout, 0.0)
-        while clock() < end and any(p.pid not in out and _same(table, p) for p in targets.values()):
-            sleep(STEP_S)
-        for p in targets.values():
-            if p.pid not in out and not _same(table, p):
-                out[p.pid] = {"pid": p.pid, "how": "terminated", "why": ""}
+            if forceable(p):
+                kill(p)
+    asked: list[Proc] = []
     for p in targets.values():
         if p.pid in out:
             continue
         if not _same(table, p):
-            out[p.pid] = {"pid": p.pid, "how": "gone", "why": "it had ended (or its id is another's now)"}
+            said(p, "gone", "it had ended (or its id is another's now)")
             continue
-        sent = killer.send(p.pid, Signal.KILL, group=True)
-        out[p.pid] = {"pid": p.pid, "how": "killed" if sent else "left",
-                      "why": "" if sent else "the system refused to end it (another user's, or elevated)"}
+        if p.pid in holders and callable(shutdown):
+            shutdown(p)  # its own clean end (mongod: its shutdown command)
+        else:
+            killer.send(p.pid, Signal.TERM, group=True)
+        asked.append(p)
+    end = clock() + max(timeout, 0.0)
+    while clock() < end and any(p.pid not in out and _same(table, p) for p in asked):
+        sleep(STEP_S)
+    for p in asked:
+        if p.pid not in out and not _same(table, p):
+            said(p, "terminated")
+    for p in asked:
+        if p.pid in out:
+            continue
+        if (sig is Signal.KILL or escalate) and forceable(p):
+            kill(p)
+        elif p.pid in holders:
+            said(p, "left", "it holds data: asked to end cleanly (its own shutdown), never forced; still running")
+        else:
+            said(p, "left", f"still running {max(timeout, 0.0):g} s after TERM: left, not killed ({KILL_HINT})")
     return list(out.values())
 
 
@@ -468,6 +573,7 @@ class Row:
     command: list = field(default_factory=list)
     at: float = 0.0
     tie: str = ""
+    holds_data: bool = False  # 1.88.4: it keeps data (mongod, the MongoDB host, a host): never forced, never tied to die
 
     def as_proc(self) -> Proc:
         return Proc(self.pid, self.owner_pid, "", " ".join(str(c) for c in self.command), self.started)
@@ -731,15 +837,23 @@ _MINE_LOCK = threading.Lock()
 
 
 def spawn(args, owner: str, kind: str, *, tied: bool = True, ledger: Ledger | None = None, popen: Callable | None = None,
-          job: JobTie | None = None, libc=None, **kwargs) -> subprocess.Popen:
+          job: JobTie | None = None, libc=None, holds_data: bool = False, **kwargs) -> subprocess.Popen:
     """A process started for `owner` (an app's or a plugin's name), of `kind`, written in the ledger. `tied` (the
     default): it ends with this process (Windows: this process's job object; Linux: PR_SET_PDEATHSIG, and a session of
     its own so its tree can be signalled as one). Not tied: a process meant to outlive its starter (a host started by
     a client, mongod), written down all the same so the stop command finds it. Popen's own arguments are passed as
-    given (creationflags, start_new_session ...); windowless on Windows unless said otherwise."""
+    given (creationflags, start_new_session ...); windowless on Windows unless said otherwise.
+
+    `holds_data` (1.88.4; mongod, the MongoDB host, a server that keeps data): written so in its row (never forced by
+    end_trees), and never in a job that ends it with its owner (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE): tied or not, it
+    gets a named job of its own without that limit, leaves its starter's jobs (CREATE_BREAKAWAY_FROM_JOB, where they
+    allow it: noted in its row where they do not), and on Linux no PR_SET_PDEATHSIG. Its owner dying never ends it; the
+    next keeper adopts it."""
     popen = popen or subprocess.Popen
     nt = os.name == "nt"
     tie = ""
+    if holds_data:
+        tied = False  # never ended with its owner: what it holds is secured by its own clean shutdown alone
     if nt:
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | NO_WINDOW
     else:
@@ -763,7 +877,15 @@ def spawn(args, owner: str, kind: str, *, tied: bool = True, ledger: Ledger | No
     suspended = bool(holder is not None and holder.can_resume())
     if suspended:
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_SUSPENDED
-    child = popen(args, **kwargs)
+    noted = ""
+    if nt and holds_data:
+        try:
+            child = popen(args, **{**kwargs, "creationflags": kwargs.get("creationflags", 0) | CREATE_BREAKAWAY_FROM_JOB})
+        except PermissionError:  # a job of its starter's that allows no breakaway: started in it, and said so
+            child = popen(args, **kwargs)
+            noted = "in its starter's job: it allows no breakaway"
+    else:
+        child = popen(args, **kwargs)
     if holder is not None:
         try:
             tie = holder.tie(child)
@@ -776,14 +898,16 @@ def spawn(args, owner: str, kind: str, *, tied: bool = True, ledger: Ledger | No
         if not tied:
             tie = f"{tie}; untied: it outlives its starter by design"
     elif not tied:
-        tie = "untied: it outlives its starter by design"
+        tie = f"{tie}; untied: it outlives its starter by design" if tie else "untied: it outlives its starter by design"
+    if noted:
+        tie = f"{tie}; {noted}" if tie else noted
     pid = getattr(child, "pid", None)
     started = _proc.started(pid) if isinstance(pid, int) and not isinstance(pid, bool) else None
     if started is None:  # no process to tell apart from a later one with its id (ended already, or a stand-in's)
         return child
     row = Row(pid=pid, started=started, owner=owner, owner_pid=os.getpid(),
               owner_started=_proc.started(os.getpid()), kind=kind, command=[str(a) for a in args], at=time.time(),
-              tie=tie)
+              tie=tie, holds_data=bool(holds_data))
     with _MINE_LOCK:
         _MINE[row.pid] = row
     try:
@@ -800,18 +924,23 @@ def mine(owner: str | None = None) -> list[Row]:
 
 
 def end_owned(owner: str | None, sig: Signal, deadline: float, *, table=None, killer=None, ledger: Ledger | None = None,
-              clock: Callable[[], float] | None = None, sleep: Callable[[float], None] | None = None) -> list[dict]:
-    """What this process started for `owner` (None: for anyone) ended, each with its tree (end_trees): TERM, then KILL
-    at `deadline`; KILL at once. Taken from memory: nothing is read when nothing was started. Returns end_trees'."""
+              clock: Callable[[], float] | None = None, sleep: Callable[[float], None] | None = None,
+              escalate: bool = False) -> list[dict]:
+    """What this process started for `owner` (None: for anyone) ended, each with its tree (end_trees): TERM, and what
+    has not ended by `deadline` reported, not killed (1.88.4); KILL (asked for outright) at once, never to a data
+    holder. Taken from memory: nothing is read when nothing was started. A process still running ("left") keeps its
+    ledger row, so liminal-stop finds it; this process lets it go from memory all the same (asked once, it is not
+    waited for again by its next end). Returns end_trees'."""
     rows = mine(owner)
     if not rows:
         return []
     out = end_trees([r.as_proc() for r in rows], sig, left(deadline, clock), table=table, killer=killer,
-                    clock=clock, sleep=sleep, protect={os.getpid()})
+                    clock=clock, sleep=sleep, protect={os.getpid()}, rows=rows, escalate=escalate)
+    still = {r["pid"] for r in out if r.get("how") == "left"}
     with _MINE_LOCK:
         for r in rows:
             _MINE.pop(r.pid, None)
-    for r in rows:
+    for r in [r for r in rows if r.pid not in still]:
         try:
             _ledger(ledger).forget(r.pid)
         except OSError:
@@ -1115,6 +1244,12 @@ class FakeTable:
         self.sent.append((pid, Signal.of(sig).value))
         if pid in self.rows and (Signal.of(sig) is Signal.KILL or pid not in self.ignores):
             del self.rows[pid]
+        return True
+
+    def shutdown(self, p: Proc) -> bool:  # a data holder's own clean end (OsKiller.shutdown's), heeded as TERM is
+        self.sent.append((p.pid, "SHUTDOWN"))
+        if p.pid in self.rows and p.pid not in self.ignores:
+            del self.rows[p.pid]
         return True
 
 

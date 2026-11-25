@@ -1090,14 +1090,20 @@ def recorders() -> list[int]:
 
 
 def reap_strays(log=print, others=None, terminate=None) -> int:
-    """End every other recorder on this machine (run by the one holding the machine lock): a
-    duplicate doubles the connections to the exchanges. Returns how many were ended."""
-    from .proc import terminate as end
+    """Ask every other recorder on this machine to end (run by the one holding the machine lock): a
+    duplicate doubles the connections to the exchanges. Returns how many were asked. 1.88.4 (the user,
+    2026-11-24: "all shutdowns need to be clean"): asked, TERM (lifecycle's killer: taskkill without /F
+    on Windows, SIGTERM elsewhere), never forced: a recorder holds its trades' database, and
+    TerminateProcess ended it before its flush."""
+    from . import lifecycle
+
+    def end(pid: int) -> bool:
+        return lifecycle.OsKiller().send(pid, lifecycle.Signal.TERM)
 
     strays = recorders() if others is None else others
     ended = sum(1 for pid in strays if (terminate or end)(pid))
     if ended:
-        log(f"live: ended {ended} other recorder process{'es' if ended > 1 else ''} (one recorder per machine)")
+        log(f"live: asked {ended} other recorder process{'es' if ended > 1 else ''} to end (one recorder per machine)")
     return ended
 
 

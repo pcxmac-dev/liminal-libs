@@ -186,11 +186,13 @@ class Host:
         flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NEW_GROUP | NO_WINDOW
         env = {**os.environ, "LIMINAL_DB": str(db_path)}
         # written in the process ledger (1.86.0, lifecycle.spawn: owner host:NAME), so liminal-stop finds it; not tied
-        # to its starter, which it outlives by design (it ends when its last client has gone)
+        # to its starter, which it outlives by design (it ends when its last client has gone). 1.88.4: a host keeps
+        # data (the recorder's trades, the fetcher's requests, the MongoDB keeper's server), so it is written as holding
+        # data: never forced, never in a job that ends it with its starter
         from . import lifecycle
 
         lifecycle.spawn([str(pythonw), "-m", APP_MODULE, "host", name], owner=f"host:{name}", kind="host", tied=False,
-                        creationflags=flags, close_fds=True, env=env, stdin=subprocess.DEVNULL,
+                        holds_data=True, creationflags=flags, close_fds=True, env=env, stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != "nt")
 
     def clients(self) -> list[int]:
@@ -251,7 +253,8 @@ class Host:
                 if secure is not None:
                     secure()
             finally:
-                # what it started ends after its data is secured (1.86.0): TERM, KILL at its deadline
+                # what it started ends after its data is secured (1.86.0): TERM, and what has not ended by its
+                # deadline is reported, never killed (1.88.4)
                 lifecycle.end_owned(None, lifecycle.Signal.TERM, lifecycle.deadline_in(lifecycle.STOP_DEADLINE_S))
                 restore()
         self.log(f"host {self.name}: down ({self.reason})")
@@ -266,7 +269,8 @@ class Host:
     def signal(self, sig, deadline: float, sender=None) -> dict:  # noqa: ARG002 - the lifecycle's signature
         """Told to end (1.86.0; liminal_libs.lifecycle): TERM ends the work at once, whoever is attached, and serve
         secures its data (its `secure`) and ends what it started, as when its last client has gone; KILL ends what it
-        started with its trees now, then the work. A host is on demand: it never stays for nobody."""
+        started with its trees now (never what holds data, which is asked to end cleanly: 1.88.4), then the work. A
+        host is on demand: it never stays for nobody."""
         from . import lifecycle
 
         sig = lifecycle.Signal.of(sig)

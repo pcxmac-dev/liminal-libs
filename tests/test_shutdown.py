@@ -361,19 +361,15 @@ def test_the_keepers_look_is_keep_seconds_as_set_when_it_runs(monkeypatch):
     assert asked == [0.05]
 
 
-def test_mongo_stop_waits_for_the_server_then_kills_its_tree():
+def test_mongo_stop_waits_for_the_servers_process_to_exit():
+    # 1.88.4: its own shutdown, then a wait for its process (never a kill: test_clean_shutdowns has the one left)
     clock = FakeClock(0.0)
-    answering, killed = [True] * 200, []
+    alive = [True] * 4
     import liminal_libs.mongo as m
 
-    original = (m.running, m._shutdown)
-    try:
-        m.running = lambda timeout_ms=500: answering.pop(0) if answering else False
-        m._shutdown = lambda: None
-        assert m.stop(wait_s=10, clock=clock, sleep=clock.sleep, kill=lambda: killed.append(True)) is True
-    finally:
-        m.running, m._shutdown = original
-    assert killed == [True] and 10.0 <= clock() <= 10.5
+    assert m.stop(clock=clock, sleep=clock.sleep, log=lambda s: None, answers=lambda: True, shutdown=lambda: 4242,
+                  alive=lambda pid: alive.pop(0) if alive else False, started_of=lambda pid: 7) is True
+    assert clock() == 2.0  # four looks of 0.5 s
 
 
 # -- 7. a child and what its redirector starts, in one job ---------------------------------------------------------------

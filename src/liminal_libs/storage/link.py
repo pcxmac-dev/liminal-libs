@@ -607,7 +607,9 @@ class Link:
         try:
             link = cls(proc.stdout, proc.stdin, owner_path=owner_path, proc=proc, name=name)
         except BaseException as e:
-            proc.kill()
+            from .. import proctree
+
+            proctree.ask_end(proc, 5.0)  # never forced (1.88.4): it never came up, and ends with its pipe besides
             said = _last_words(err)
             err.close()
             if isinstance(e, sqlite3.OperationalError):  # its pipe ended before it said hello: it never came up
@@ -704,7 +706,9 @@ class Link:
             try:
                 self.proc.wait(timeout=10)
             except (subprocess.TimeoutExpired, OSError):
-                self.proc.kill()
+                from .. import proctree
+
+                proctree.ask_end(self.proc, 5.0)  # asked, never forced (1.88.4): one still running is left
 
 
 def _who() -> str:
