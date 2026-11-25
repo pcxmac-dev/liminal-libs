@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.94.0 (2026-11-25)
+
+`ContainedService`, the base of a service plugin (Monday list item 34, and item 35's next; service-containers-design
+§3.8, with the user's answers of 2026-11-25: "Containers only", "Containers too", a service starting and stopping with
+its app with service mode provided for and not offered, never a restart after a crash, an engine that is off never
+started, "Seeded, PC-only first"). Added beside 1.93.0's interface; nothing of it is changed.
+- **`machines/containedservice.py`**: `ContainedService(MachinePlugin)`. A subclass gives `spec_for(system, name,
+  options)` and, where its software says more, `ready`, `lan_ready`, `after` and `address`; the base answers `hosts`
+  (a read: every attached container plugin asked `hosting` with one spec per system of its recipe, holding no lock,
+  kept READ_S; each target offered for Install… only while here, ready, taking the recipe, granted to it, and, while
+  `NEEDS_LOOPBACK` holds, reached at a loopback address; every container plugin the platform knows and has not attached
+  listed with `plugin_state`'s words), and five changes that are the page's alone (declared PAGE_ONLY_HOOKS and checked
+  again inside each): `service_install(plugin, target, name, lan, boot, memory_mb, *ports)`, `service_change(action,
+  name, choice)`, `service_carry(plugin, plan, log)` (the job, cancellable: refused before its first line unless the
+  plan is approved; its work followed, a Cancel passed on once, its software waited for READY_S at most, the placement
+  kept through its login as `<NAME>_SERVICES`, `after` run), `service_log` and `service_forget` (deletes nothing).
+  Install… and every change answer `containers.approval_answer` (the plans to approve and `service_carry` as `then`).
+  `LAN_FIRST = False` installs on this PC alone and lets Expose… open it only once `lan_ready` says yes; `boot` and At
+  boot are refused in the service-mode words; a pin whose digest is `UNREAD` (all zeros: not read from its registry yet)
+  is refused before any plan; an update needs pins newer than the placement's. Turned off (its detach while the platform
+  says it is disabled), it asks `release_owned` of each container plugin hosting its services; a detach for invalidity
+  asks nothing. Its page: Run <it> in a container, Its services (each change's button), Waiting to be carried out, and
+  their forms. Helpers a seed may hold: `pbkdf2_hash`/`pbkdf2_check` (salted PBKDF2-SHA256) and `sha1_b64` (GoCD's
+  file sign-in); `loopback`, `unread_pins`.
+- **`machines/servicestandins.py`**: a service plugin's tests' world: `Frame` (an App saying who is off, who is known and
+  the platform's word), `JobLog` (a job's output with `cancelled`), `ServiceWorld` (the plugin under test beside the
+  stand-in container plugin over a FakeDocker, the stand-in firewall and WSL plugin; `grant`, `approve`, `carry`,
+  `through`, `install`).
+- Tests: `test_contained_service.py` (36), through a real apps.App on the stand-ins; each of its 28 gates taken out once
+  made a test fail.
+- Found, not changed (1.93.0's `ContainerHost._check_secrets`): a secret whose pair the asker itself declares among its
+  keys is refused as "another plugin's" (`_others_declare` does not leave the asker out), so a service plugin cannot
+  hand a secret it lets you set in its own Settings (Jenkins' agent secret). The fix is one condition: skip `who`.
+
 ## 1.93.0 (2026-11-25)
 
 The one "run a service" interface between service plugins and container plugins (Monday list items 34 and 35's
