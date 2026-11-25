@@ -14,10 +14,10 @@ import pytest
 
 from liminal_libs import lifecycle, nodes, stop
 from liminal_libs.apps.app import App, Refused
-from liminal_libs.apps.authorization import EnvironmentLogin, NoLogin
+from liminal_libs.apps.authorization import EnvironmentLogin, lent_login
 from liminal_libs.lifecycle import FakeClock, FakeTable, MemoryLedger, Proc, Row, Signal
 from liminal_libs.sources.conformance import node_problems, problems
-from liminal_libs.sources.plugin import FeedPlugin, NoLoginAttached
+from liminal_libs.sources.plugin import FeedPlugin
 
 ME = os.getpid()
 
@@ -217,26 +217,38 @@ def test_stop_is_terminate_and_a_request_while_ending_is_refused(tmp_path):
 
 
 # -- the plugins' login ----------------------------------------------------------------------------------------------
-def test_a_plugin_attached_by_an_app_holds_that_apps_login_and_detach_drops_it():
+def test_a_plugin_asked_before_it_is_attached_is_lent_the_environments_login_and_its_app_replaces_it(caplog,
+                                                                                                    monkeypatch):
+    from liminal_libs.sources import plugin as contract
+
+    monkeypatch.setattr(contract, "_LENT_SAID", set())
+    class Holder(Acme):
+        def build(self, settings, request_budget):
+            return self.login  # what it holds while it is asked
+
     app = Demo([])
-    p = Acme()
-    with pytest.raises(NoLoginAttached, match="holds no login"):
-        p.ask("build", None, 1)
+    p = Holder()
+    assert p.login is None
+    with caplog.at_level("INFO", logger="liminal_libs.sources.plugin"):
+        held = [p.ask("build", None, 1), p.ask("build", None, 2)]
+    assert held == [lent_login()] * 2 and isinstance(held[0], EnvironmentLogin) and held[0].env is None
+    assert p.login is None  # between asks none again, as before 1.86.0
+    assert [r.getMessage() for r in caplog.records].count(
+        "acme was asked before an app attached it: lent the environment's login") == 1  # said once
     app.attach(p)
-    assert p.login is app.login and p.app is app and p.ask("build", None, 1) is None
+    assert p.login is app.login and p.app is app and p.ask("build", None, 1) is app.login
     app.detach("acme")
     assert p.login is None and p.app is None
 
 
-def test_an_app_given_no_login_lends_one_that_holds_no_one():
+def test_an_app_given_no_login_lends_the_environments():
     class Bare(App):
         NAME, TITLE, ICON = "bare", "Bare", "plug"
 
     app = Bare(log=lambda m: None)
     p = Acme()
     app.attach(p)
-    assert isinstance(p.login, NoLogin) and p.login is app.lent_login() and app.login is None
-    assert p.login.variables(["ACME_API_KEY"]) == {} and not p.login.signed_in
+    assert p.login is lent_login() and p.login is app.lent_login() and app.login is None
 
 
 def test_a_signal_from_anyone_but_its_app_or_its_login_is_refused():
@@ -258,7 +270,7 @@ def test_a_plugin_that_replaces_its_login_is_refused_by_its_app_and_by_the_confo
 
         def attach(self, app, login):
             out = super().attach(app, login)
-            object.__setattr__(self, "login", NoLogin())  # another in its place
+            object.__setattr__(self, "login", EnvironmentLogin(env={}))  # another in its place
             return out
 
     app = Demo([])

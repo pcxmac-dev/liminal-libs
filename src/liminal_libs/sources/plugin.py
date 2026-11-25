@@ -48,6 +48,7 @@ from __future__ import annotations
 import copy
 import inspect
 import math
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from types import MappingProxyType
@@ -343,14 +344,16 @@ class Plugin:
     def ask(self, hook: str, *args, **kwargs):
         """One of this plugin's hooks called by name (the app's `ask`; across the pipe once the
         plugin is resident): only a hook `interface` lists; LookupError for any other name. A plugin
-        holding no login (not attached by an app) refuses, in words (NoLoginAttached, 1.86.0)."""
+        holding no login (asked before an app attached it) is lent the user's environment's for the
+        time of the ask (authorization.lent_login), said once in the log; attached, it holds its app's
+        (1.86.0: every plugin always has a login). Between asks it holds none again, as before."""
         if hook not in self.interface()["hooks"]:
             raise LookupError(f"{self.name or type(self).__name__} offers no {hook!r}")
-        if self.login is None:
-            raise NoLoginAttached(f"{self.name or type(self).__name__} holds no login: it is asked only once an app "
-                                  "has attached it (its login with it)")
         given = self.__dict__.get(hook) if hook in self.__dict__ else getattr(self, hook)
-        return given(*args, **kwargs)
+        if self.login is not None:
+            return given(*args, **kwargs)
+        with _lent(self):
+            return given(*args, **kwargs)
 
     def signal(self, sig, deadline: float, sender=None) -> dict:
         """Told to end (1.86.0; liminal_libs.lifecycle), only by its own app or that app's login (SignalRefused for
@@ -377,8 +380,51 @@ class Plugin:
         return databases_refused(self.databases)
 
 
-class NoLoginAttached(LookupError):
-    """A plugin asked to work with no login attached (1.86.0): attached by an app first, its login with it."""
+_LENT_SAID: set = set()
+_LENT_LOCK = threading.Lock()
+_LENT_HELD: dict[int, int] = {}  # the asks under way in which a plugin (by id) holds the lent login
+
+
+class _lent:
+    """The environment's login lent to a plugin asked before an app attached it, for the time of the ask (one lent
+    however many asks are under way at once); taken back after the last, unless an app attached it meanwhile."""
+
+    def __init__(self, plugin):
+        self.plugin = plugin
+
+    def __enter__(self):
+        from ..apps.authorization import lent_login
+
+        with _LENT_LOCK:
+            n = _LENT_HELD.get(id(self.plugin), 0)
+            if n == 0 and getattr(self.plugin, "login", None) is None:
+                object.__setattr__(self.plugin, "login", lent_login())
+            _LENT_HELD[id(self.plugin)] = n + 1
+        _said_lent(self.plugin.name or type(self.plugin).__name__)
+        return self
+
+    def __exit__(self, *exc):
+        from ..apps.authorization import lent_login
+
+        with _LENT_LOCK:
+            n = _LENT_HELD.get(id(self.plugin), 1) - 1
+            if n <= 0:
+                _LENT_HELD.pop(id(self.plugin), None)
+                if getattr(self.plugin, "login", None) is lent_login() and getattr(self.plugin, "app", None) is None:
+                    object.__setattr__(self.plugin, "login", None)
+            else:
+                _LENT_HELD[id(self.plugin)] = n
+        return False
+
+
+def _said_lent(name: str) -> None:
+    """A plugin lent the environment's login, said once for each (the log of liminal_libs.sources.plugin)."""
+    if name in _LENT_SAID:
+        return
+    _LENT_SAID.add(name)
+    import logging
+
+    logging.getLogger(__name__).info("%s was asked before an app attached it: lent the environment's login", name)
 
 
 class IntegratorPlugin(Plugin):

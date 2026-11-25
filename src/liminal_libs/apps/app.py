@@ -165,7 +165,6 @@ class App:
         self._login_missing = False  # the login class could not be had: said once, not tried again
         # its end (1.86.0, terminate): once begun nothing new is taken; KILL may come while a TERM is under way
         self._lent: dict[str, object] = {}  # the login each plugin was attached with, by name (attach)
-        self._no_login = None  # the login lent to its plugins when this app was given none (lent_login)
         self._term_lock = threading.Lock()
         self._terminating = False
         self._terminated: dict | None = None  # the report of its end, once ended
@@ -246,16 +245,14 @@ class App:
         return [login.tray().as_dict()] if login is not None else []
 
     def lent_login(self):
-        """The login this app lends its plugins: the one it was given; when it was given none, one that holds no one
-        (authorization.NoLogin), made once, so every plugin attached has a login all the same (1.86.0; the user,
-        2026-11-24: "all the plugins, need a login-app class attached/inherited")."""
+        """The login this app lends its plugins: the one it was given; when it was given none, the user's environment
+        (authorization.lent_login, an EnvironmentLogin), so every plugin attached has a login all the same (1.86.0; the
+        user, 2026-11-24: "all the plugins, need a login-app class attached/inherited")."""
         if self.login is not None:
             return self.login
-        if self._no_login is None:
-            from .authorization import NoLogin
+        from .authorization import lent_login
 
-            self._no_login = NoLogin()
-        return self._no_login
+        return lent_login()
 
     def login_for(self, name: str):
         """The login `name` (a plugin, or the app itself by its own name) is lent: the app's (lent_login); noting what

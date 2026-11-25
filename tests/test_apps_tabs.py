@@ -13,13 +13,6 @@ import pytest
 from liminal_libs.apps.tabs import ID, MIN_EVERY, Tab
 from liminal_libs.machines.plugin import MachinePlugin
 
-def hold_login(plugin):
-    """A plugin given a login as its app lends one (1.86.0: a plugin holding none refuses to be asked)."""
-    from liminal_libs.apps.authorization import NoLogin
-
-    object.__setattr__(plugin, "login", NoLogin())
-    return plugin
-
 
 def test_a_tab_says_itself_as_it_travels():
     t = Tab("world", "World Wide Web", "world", 2.0)
@@ -77,5 +70,4 @@ def test_a_machine_plugin_declares_no_tabs_by_default_and_its_own_when_it_has_th
 
     w = Walled()
     assert [t.id for t in w.TABS] == ["world", "filter"] and all(t.hook in w.interface()["hooks"] for t in w.TABS)
-    hold_login(w)  # asked as an attached plugin is: holding a login (1.86.0)
     assert w.ask("world") == {"title": "Who reaches this machine"}  # its hook asked by name, as the platform asks it

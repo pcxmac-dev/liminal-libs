@@ -69,13 +69,6 @@ PLACES = [("81.2.69.0/24", city("GB", "United Kingdom", "London", 51.5142, -0.09
           ("8.8.8.0/24", city("US", "United States", "Mountain View", 37.386, -122.0838)),
           ("1.2.3.0/24", {"country": {"iso_code": "AU", "names": {"en": "Australia"}}})]  # its country, not where in it
 
-def hold_login(plugin):
-    """A plugin given a login as its app lends one (1.86.0: a plugin holding none refuses to be asked)."""
-    from liminal_libs.apps.authorization import NoLogin
-
-    object.__setattr__(plugin, "login", NoLogin())
-    return plugin
-
 
 def pk(at, src, sport, dst, dport, flags=0, proto="tcp", length=60) -> Packet:
     """A packet as a capture hands it, its direction judged against this machine's addresses."""
@@ -429,7 +422,6 @@ def test_an_ask_starts_the_watching_which_stops_by_itself_after_its_timeout(tmp_
         return feeds[-1]
     fw = Walled(capture_factory=factory, geo_folder=tmp_path, clock=clock, wall=Clock(NOW), timeout=20.0)
     assert feeds == [] and watching() == []  # nothing runs before the tab is asked
-    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     page = fw.ask("world")  # the platform asks it so, every two seconds while the tab is shown
     view = fw.world_view()
     assert view.running and feeds[0].opened == 1 and len(watching()) == 1 and fw.made == 1
@@ -673,7 +665,6 @@ def test_the_geoip_file_is_installed_only_once_its_licence_is_accepted(tmp_path)
     form = page["forms"][0]
     assert form["hook"] in fw.interface()["hooks"]  # a hook the platform may ask
     # the platform's page asks it with the form's fields in order: the accept field false until its own confirmation
-    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     with pytest.raises(LicenceRefused) as refused:
         fw.ask(form["hook"], False)
     assert refused.value.accept == "accept_licence" == form["fields"][0]["name"]  # what the second confirmation sets
@@ -688,7 +679,6 @@ def test_the_geoip_file_is_installed_only_once_its_licence_is_accepted(tmp_path)
         f"{world.size_words((folder / 'dbip-city-lite-2026-11.mmdb').stat().st_size)})"
     assert out["lines"][0] == "downloaded from geoip.example" and out["file"]["date"] == "2026-11-01"
     assert [p.name for p in folder.iterdir()] == ["dbip-city-lite-2026-11.mmdb"]
-    object.__setattr__(fw, "login", None)  # its page read as before, with no login held
     page = fw.world()  # placed from now on, and nothing more offered
     assert "forms" not in page and page["globe"]["attribution"] == MARK
     again = fw.world_geoip(True)  # this month's is there already: not downloaded again
@@ -1259,7 +1249,6 @@ def test_the_geoip_install_is_a_job_saying_its_progress_at_most_every_two_second
     [form] = fw.world()["forms"]
     assert form["job"] is True and form["hook"] in fw.JOB_HOOKS  # run by the platform as a job, its lines followed
     assert "its progress shows in the panel below" in form["confirm"]["words"]
-    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     with pytest.raises(LicenceRefused):
         fw.ask("world_geoip", False, log=lines.append)
     assert lines == []  # refused before its first line
@@ -1533,7 +1522,6 @@ def test_the_asn_file_is_offered_once_the_geoip_file_is_in_and_installed_beside_
     assert "the ASN file's licence, in words" in form["confirm"]["words"] and "geoip.example" in form["confirm"]["words"]
     assert {"form": "world-asn", "title": "Install the ASN file…",
             "note": "Each network's number and operator, once you accept its licence"} in page["actions"]
-    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     with pytest.raises(LicenceRefused) as refused:
         fw.ask(form["hook"], False)
     assert refused.value.accept == "accept_licence" == form["fields"][0]["name"] and len(downloads.asked) == 1
@@ -1543,7 +1531,6 @@ def test_the_asn_file_is_offered_once_the_geoip_file_is_in_and_installed_beside_
     assert out["lines"][1] == f"kept in {folder / 'asn'}, beside the GeoIP file, in place of any older ASN file"
     assert [p.name for p in folder.iterdir() if p.is_file()] == ["dbip-city-lite-2026-11.mmdb"]  # the GeoIP file kept
     assert [p.name for p in (folder / "asn").iterdir()] == ["dbip-asn-lite-2026-11.mmdb"]
-    object.__setattr__(fw, "login", None)  # its page read as before, with no login held
     assert "forms" not in fw.world()  # nothing more offered
     london = fw.world_view().geoip().lookup(LONDON)
     assert (london.city, london.asn, london.org) == ("London", 20712, "Andrews & Arnold Ltd")

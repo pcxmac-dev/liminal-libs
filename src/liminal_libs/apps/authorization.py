@@ -191,30 +191,19 @@ class EnvironmentLogin(Login):
         return "this process's environment, until it ends (no user environment to keep it in here)"
 
 
-class NoLogin(Login):
-    """The login an app lends its plugins when it was given none (App.lent_login, 1.86.0): it holds no one, so every
-    plugin attached has a login and asks it as any other, and is refused every pair (401)."""
+_LENT: list = []  # the environment's login, made once (lent_login)
+_LENT_LOCK = __import__("threading").Lock()
 
-    NAMESPACE = "none"
 
-    def user(self) -> dict:
-        raise Unauthorized("no one is signed in: this app was given no login")
-
-    def vector(self, name: str) -> str:
-        raise Unauthorized(f"no {name} here: this app was given no login")
-
-    def names(self) -> set[str]:
-        return set()
-
-    def save(self, variable: str, value: str | None) -> str:
-        raise Unauthorized("nothing can be kept: this app was given no login", 405)
-
-    @property
-    def signed_in(self) -> bool:
-        return False
-
-    def describe(self) -> dict:
-        return {"namespace": self.NAMESPACE, "signedIn": False, "kind": type(self).__name__}
+def lent_login() -> "EnvironmentLogin":
+    """The login a plugin holds when no app has lent it one (1.86.0; the user, 2026-11-24: every plugin always has a
+    login): the user's environment, what every app holds when it has no login of its own (EnvironmentLogin, this
+    process's variables). One object, shared: an app given no login lends it, and a plugin asked before it is attached
+    is lent it; attached, it holds its app's."""
+    with _LENT_LOCK:
+        if not _LENT:
+            _LENT.append(EnvironmentLogin())
+        return _LENT[0]
 
 
 def saved_variables() -> dict[str, str]:

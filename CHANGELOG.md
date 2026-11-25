@@ -21,9 +21,10 @@
   An app's stop now lets its plugins go, where it left them attached before.
 - Plugins: `MODE` "on_demand" (the only one allowed: "service" is refused by the conformance, "service mode is not
   yet allowed: on demand only"), START_DEADLINE_S 10 and STOP_DEADLINE_S 15 by default, and `Plugin.signal`, taken
-  only from the plugin's own app or its login. Every plugin attached holds its app's login: an app given none lends
-  `authorization.NoLogin`; a plugin whose attach puts another login in its place is refused; a plugin asked with no
-  login refuses in words (`NoLoginAttached`). A detach ends what was started for the plugin.
+  only from the plugin's own app or its login. Every plugin always has a login: attached, its app's (an app given
+  none lends the user's environment's, `authorization.lent_login`, an EnvironmentLogin); asked before an app attached
+  it, that same login is lent for the time of the ask (said once in the log), so it answers as before; a plugin whose
+  attach puts another login in its place is refused. A detach ends what was started for the plugin.
 - `nodes.py`: a plugin served as a liminal-net node (`PluginHillock`: its hooks, and `term`, `kill` and `ask` any
   node may request; its `lifecycle` stream signal as it ends), on demand by a launcher written in the ledger, a start
   past its deadline ended; an app as a node too (`AppHillock`, opt-in `serve_app`).

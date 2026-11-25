@@ -13,13 +13,6 @@ from liminal_libs.machines.firewall import (APP_PORTS, Firewall, FirewallError, 
 from liminal_libs.machines.plugin import CommandError
 from liminal_libs.sources.conformance import problems
 
-def hold_login(plugin):
-    """A plugin given a login as its app lends one (1.86.0: a plugin holding none refuses to be asked)."""
-    from liminal_libs.apps.authorization import NoLogin
-
-    object.__setattr__(plugin, "login", NoLogin())
-    return plugin
-
 
 class FakeFirewall(Firewall):
     name = "fake-firewall"
@@ -110,7 +103,6 @@ def test_the_firewall_plugin_conforms_and_reports():
     # what it says of them sound (its tabs' hooks, a read that is no job and accepts no refusal, each with its line)
     assert set(netstat.HOOKS) <= set(fw.interface()["hooks"]) and internal.problems(fw) == []
     assert fw.READ_HOOKS == ("wanted", "world_layer") and fw.netstat_listeners() == {}
-    hold_login(fw)  # asked as an attached plugin is: holding a login (1.86.0)
     assert fw.ask("allow", "asked", [9000]).name == "asked" and fw.ask("remove", "asked") is True
     fw.allow("web", (8443,), detail="a test")
     with pytest.raises(FirewallError):

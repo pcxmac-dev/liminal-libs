@@ -51,13 +51,6 @@ PACKAGE = Package("Tool", "1.2.3", 52_428_800, "MIT (its maker's).", ("downloads
 DECLARED = ("MASSIVE_API_KEY", "OPENAI_API_KEY", "TOOL_PLAN")  # what the registry says the installed plugins declare
 BEING_CHANGED = "Tool is being installed or removed: wait for that to end"  # what a start says meanwhile
 
-def hold_login(plugin):
-    """A plugin given a login as its app lends one (1.86.0: a plugin holding none refuses to be asked)."""
-    from liminal_libs.apps.authorization import NoLogin
-
-    object.__setattr__(plugin, "login", NoLogin())
-    return plugin
-
 
 class Pairs(Login):
     """The platform's login as a test has it: pairs kept in memory, each save noted."""
@@ -1004,7 +997,6 @@ def test_a_subclasses_own_hooks_refuse_with_a_library_too_old(tmp_path, monkeypa
             return {"said": f"{model} pulled", "ok": True}
 
     p = Puller(Outside(env={}, home=tmp_path, variables=lambda: ()))
-    hold_login(p)  # asked as an attached plugin is: holding a login (1.86.0)
     assert p.ask("pull", "qwen3:8b")["ok"] is True
     monkeypatch.setattr(liminal_libs, "__version__", "1.61.2")
     assert "Tool needs liminal-libs 1.62.0 or newer" in str(refusal(lambda: p.ask("pull", "qwen3:8b")))

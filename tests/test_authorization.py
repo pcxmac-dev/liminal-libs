@@ -12,7 +12,7 @@ import pytest
 
 from liminal_libs.apps import App, EnvironmentLogin, Login, LoginClient, LoginRefused, LoginUnreachable, Unauthorized
 from liminal_libs.sources.conformance import problems
-from liminal_libs.sources.plugin import FeedPlugin, NoLoginAttached
+from liminal_libs.sources.plugin import FeedPlugin
 from liminal_libs.sources.registry import Provider
 from liminal_libs.sources.publisher import PublisherPlugin
 
@@ -92,19 +92,17 @@ def test_a_plugin_enumerates_the_hooks_it_offers_and_asks_its_login_for_its_key(
     face = p.interface()
     assert face["name"] == "acme" and face["kind"] == "feed" and face["system"] == "integrator" and face["attached"] is False
     assert set(face["hooks"]) == {"build", "serves"} and face["hooks"]["build"] == "(settings, request_budget)"
-    with pytest.raises(NoLoginAttached, match="acme holds no login"):  # 1.86.0: asked only holding its app's login
-        p.ask("build", None, 7)
+    assert p.ask("build", None, 7).budget == 7
     with pytest.raises(LookupError):
         p.ask("rate", None)  # the contract's default is not offered as the plugin's own
     with pytest.raises(LookupError):
         p.ask("interface")
-    assert p.login is None and p.app is None
+    assert p.login is None and p.app is None and p.ask("serves", None) == frozenset()
     # attached by an app: its login furnishes the key, and nothing else does
     DemoApp.STATIC = tmp_path
     app = DemoApp(log=lambda m: None, login=FakeLogin({"acme-account-api-key": "k"}))
     assert app.attach(p)["attached"] is True and p.app is app and p.login is app.login
     assert p.login.key("acme") == "k" and p.ask("serves", None) == frozenset({"stock"})
-    assert p.ask("build", None, 7).budget == 7
     assert app.plugins() == {"acme": p.interface()} and app.ask("acme", "build", None, 3).budget == 3
     with pytest.raises(LookupError):
         app.ask("nobody", "build")
@@ -171,11 +169,9 @@ def test_a_record_and_a_publisher_offer_their_hooks_the_same_way():
     record = Provider(name="acme-rec", title="Acme", build=lambda s, b: AcmeSource(b), assets=frozenset({"stock"}))
     face = record.interface()
     assert face["kind"] == "feed" and set(face["hooks"]) == {"build"} and face["hooks"]["build"] == "(s, b)"
-    with pytest.raises(NoLoginAttached):
-        record.ask("build", None, 9)
+    assert record.ask("build", None, 9).budget == 9
     login = FakeLogin({"acme-rec-account-api-key": "k"})
     record.attach("the app", login)  # frozen, still attachable
-    assert record.ask("build", None, 9).budget == 9
     assert record.login is login and record.app == "the app" and record.login.key("acme-rec") == "k"
     record.detach()
     assert record.login is None
@@ -188,7 +184,6 @@ def test_a_record_and_a_publisher_offer_their_hooks_the_same_way():
 
     pub = Agency()
     assert pub.interface()["hooks"] == {"moments": "(day)"} and pub.HOOKS[0] == "moments"
-    pub.attach("the app", login)
     assert pub.ask("moments", None) == ()
 
 
