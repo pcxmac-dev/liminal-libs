@@ -170,6 +170,7 @@ class ImagePin:
     licence: str = ""
     page: str = ""
     tar: bool = True
+    shell: bool | None = None  # 1.95.0: whether the image has a shell (None: not said; a runtime takes `tar` as the sign)
 
     @property
     def pinned(self) -> str:
@@ -179,7 +180,14 @@ class ImagePin:
     def as_dict(self) -> dict:
         d = asdict(self)
         d["platforms"] = list(self.platforms)
+        if self.shell is None:  # 1.95.0's word left out unless said: a 1.93.0 spec's sha stays what it was
+            d.pop("shell")
         return d
+
+    @property
+    def has_shell(self) -> bool:
+        """Whether a runtime may run the image's shell (its `shell`, or its `tar` when that is not said)."""
+        return self.tar if self.shell is None else self.shell
 
     @classmethod
     def of(cls, m, path: str = "image") -> "ImagePin":
@@ -203,8 +211,11 @@ class ImagePin:
         size = _int(m, "size", 0, path)
         if size < 0:
             raise Refusal(f"{path}.size is 0 or more")
+        shell = m.get("shell")
+        if shell is not None and not isinstance(shell, bool):
+            raise Refusal(f"{path}.shell is true, false or null, not {shell!r}"[:200])
         return cls(ref, dig, system, platforms, _int(m, "os_build", 0, path), _str(m, "version", "", path),
-                   size, _str(m, "licence", "", path), _str(m, "page", "", path), _bool(m, "tar", True, path))
+                   size, _str(m, "licence", "", path), _str(m, "page", "", path), _bool(m, "tar", True, path), shell)
 
 
 @dataclass(frozen=True)
@@ -242,9 +253,16 @@ class Volume:
     path: str
     holds: str  # what it holds, said on every plan naming it
     owner: int | None = None
+    # 1.95.0: the least it needs, in bytes (0: not said). Never a size given to it: where a runtime asks a size (a
+    # Kubernetes claim), the size is yours to set on the container plugin's page (the user, 2026-11-25: "user has to
+    # define these things before creating instances"); a plan whose size is below this is refused.
+    least: int = 0
 
     def as_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not self.least:  # left out unless said: a 1.93.0 spec's sha stays what it was
+            d.pop("least")
+        return d
 
     @classmethod
     def of(cls, m, path: str = "volume") -> "Volume":
@@ -261,7 +279,10 @@ class Volume:
         owner = m.get("owner")
         if owner is not None and (isinstance(owner, bool) or not isinstance(owner, int) or owner < 0):
             raise Refusal(f"{path}.owner is a uid (0 or more) or null")
-        return cls(name, where, holds, owner)
+        least = _int(m, "least", 0, path)
+        if least < 0:
+            raise Refusal(f"{path}.least is 0 or more bytes")
+        return cls(name, where, holds, owner, least)
 
 
 @dataclass(frozen=True)
@@ -688,6 +709,8 @@ class Target:
     platform: str = ""
     where_data: str = ""  # where its volumes live, in words
     version: str = ""
+    os_build: int = 0  # 1.95.0: a Windows host's build (20348, 26100...): what a Windows pin is chosen by (choose_pin)
+    isolation: str = ""  # 1.95.0: a Windows engine's isolation for a pin of its own build ("process" or "hyperv")
 
     @property
     def ready(self) -> bool:
@@ -700,6 +723,140 @@ class Target:
     def of(cls, m) -> "Target":
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in dict(m).items() if k in known})
+
+
+def choose_pin(pins, target) -> ImagePin:
+    """The pin of a part for one target, from the pins a recipe has for it (1.95.0): on a Windows target, the newest pin
+    whose os_build is the target's own (process isolation), else the newest one older than it (Hyper-V isolation runs
+    an older build on a newer host), else a Refusal in words; on a Linux target, the first pin published for its
+    architecture. `pins`: ImagePins or their dicts; `target`: a Target or its dict. A service plugin asks this rather
+    than importing a container plugin."""
+    got = [p if isinstance(p, ImagePin) else ImagePin.of(p) for p in pins or ()]
+    t = target if isinstance(target, Target) else Target.of(target or {})
+    if not got:
+        raise Refusal("no pin was given to choose from")
+    if t.system == "windows":
+        build = int(t.os_build or 0)
+        mine = [p for p in got if p.system == "windows"]
+        if not mine:
+            raise Refusal(f"no Windows image is pinned for {t.id or 'this target'}")
+        if not build:
+            raise Refusal(f"{t.id or 'this target'} does not say its Windows build: no pin is chosen for it")
+        same = [p for p in mine if p.os_build == build]
+        older = sorted((p for p in mine if 0 < p.os_build < build), key=lambda p: p.os_build)
+        if same:
+            return same[0]
+        if older:
+            return older[-1]
+        raise Refusal(f"no pinned image runs on Windows build {build}: " + ", ".join(
+            f"{p.ref} is for {p.os_build or 'no build said'}" for p in mine[:4]))
+    for p in got:
+        if p.system == "linux" and any(x.split("/")[1] == t.arch for x in p.platforms):
+            return p
+    raise Refusal(f"no pinned Linux image is published for {t.arch}")
+
+
+# -- what you define on a container plugin's page before any instance (1.95.0) ------------------------------------------
+SET_SETTING = "set_target_setting"
+SETTING_KINDS = ("text", "number", "size", "choice")
+SETTING_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+@dataclass(frozen=True)
+class Setting:
+    """A place or a size of the user's that a container plugin needs for a target, which Liminal never picks for you
+    (the user, 2026-11-25: "user has to define these things before creating instances"): a Kubernetes namespace, a
+    storage class, a claim's size. Kept through the login as the container plugin's <NAME>_TARGET_SETTINGS; until each
+    `required` one is set, every plan on that target (or, `per_service`, of that service) is refused in words.
+    `choices`: what may be picked (the storage classes the cluster has), () for any value its plugin's check takes."""
+
+    name: str  # "namespace"
+    label: str  # "Namespace"
+    about: str = ""
+    kind: str = "text"
+    per_service: bool = False  # one value per service on that target (a claim's size)
+    required: bool = True
+    choices: tuple = ()
+    example: str = ""
+
+    def as_dict(self) -> dict:
+        d = asdict(self)
+        d["choices"] = list(self.choices)
+        return d
+
+    @classmethod
+    def of(cls, m) -> "Setting":
+        if isinstance(m, Setting):
+            return m
+        _exact_keys(cls, m, "setting")
+        s = cls(**{**dict(m), "choices": tuple(m.get("choices") or ())})
+        if not SETTING_NAME.match(s.name) or s.kind not in SETTING_KINDS:
+            raise Refusal(f"a setting is named a-z, 0-9 and _ and is one of {', '.join(SETTING_KINDS)}: not "
+                          f"{s.name[:32]!r} ({s.kind[:16]!r})")
+        return s
+
+
+SIZE = re.compile(r"^([1-9][0-9]{0,6})(Mi|Gi|Ti)$")
+_SIZE_UNITS = {"Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40}
+
+
+def size_bytes(text: str) -> int:
+    """A size as you set it (20Gi; Mi, Gi or Ti) in bytes; a Refusal in words otherwise."""
+    m = SIZE.match(str(text or "").strip())
+    if not m:
+        raise Refusal(f"a size is a whole number of Mi, Gi or Ti (20Gi), not {str(text)[:20]!r}")
+    return int(m.group(1)) * _SIZE_UNITS[m.group(2)]
+
+
+# -- 1.95.0: words a runtime answers the base with -----------------------------------------------------------------------
+# pull's answer when its engine pulls <ref>@<digest> itself when the container is made (a cluster's kubelet): the base
+# says "pulled by its engine by digest" instead of "the digest checked". "" (or any other digest) is still refused.
+PULLED_BY_ENGINE = "pulled-by-engine"
+# how a runtime backs up a volume before an update (Runtime.backup_kind): through the image's own tar into a file here
+# (an image without tar asks accept_no_backup), by the engine's own snapshot (no tar needed; its words kept in a
+# <volume>.snapshot.json beside the tars), or not at all (asks accept_no_backup)
+BACKUP_KINDS = ("tar", "snapshot", "none")
+# A container plugin's own accepts (MORE_ACCEPTS): named accept_<word>, never one of ACCEPTS
+MORE_ACCEPT = re.compile(r"^accept_[a-z][a-z0-9_]{1,30}$")
+
+# The stack a target names (segments.STACKS), decided 2026-11-25 for every container plugin: the network stack a
+# packet lands in. Every Linux inside WSL 2 shares one VM's stack, so a target there (Docker in Liminal-Ubuntu, LXD or
+# k3s in your Ubuntu, from the Windows platform or from the Linux suite inside WSL) is "wsl"; "linux" is a Linux
+# machine's own kernel outside WSL; "windows" this PC's own. The firewall plugin of the platform that runs inside WSL
+# owns "wsl" (and takes the Linux half of the pool by its platform, segments.NetworkHost._half).
+STACK_WORDS = ("wsl: any Linux inside WSL 2 (one VM's network); linux: a Linux machine's own, outside WSL; "
+               "windows: this PC's own")
+
+
+def stack_of(system_is_linux: bool, in_wsl: bool) -> str:
+    """The stack a target on this machine names (STACK_WORDS): every container plugin says it alike."""
+    return "wsl" if in_wsl else "linux" if system_is_linux else "windows"
+
+
+def same_part(a: Part, b: Part) -> bool:
+    """Whether two parts are the same but for their seeds' texts (a runtime's label leaves those out)."""
+    def flat(p: Part) -> dict:
+        d = p.as_dict()
+        for s in d.get("seeds") or []:
+            s["text"] = ""
+        return d
+
+    return flat(a) == flat(b)
+
+
+def labelled_spec_of(rows: list[Mapping]) -> Mapping | None:
+    """Of a service's current containers' labels ({"spec": ..., "made": ...} each), the spec the service is now: the
+    one with the most parts, then the newest made (a part added by an update is labelled with the whole spec; the
+    parts made before keep their older label). A runtime's hosted() answers it as the service's spec."""
+    best, key = None, None
+    for r in rows:
+        spec = r.get("spec")
+        if not isinstance(spec, Mapping):
+            continue
+        k = (len(spec.get("parts") or ()), str(r.get("made") or ""))
+        if key is None or k > key:
+            best, key = r, k
+    return best
 
 
 def approval_answer(plugin: str, plans: list[str], then: dict | None, said: str) -> dict:

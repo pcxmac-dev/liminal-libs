@@ -166,7 +166,9 @@ class ContainedService(MachinePlugin):
     # -- what a subclass says -------------------------------------------------------------------------------------------
     def spec_for(self, system: str, name: str, options: Mapping) -> ServiceSpec:
         """Its recipe for that system: options are `lan` (bool), `memory_mb` (0: its own default), `ports` (host ports in
-        its recipe's order; none: its own) and `fit` (True: only for reading the fit, so a seed may be left out)."""
+        its recipe's order; none: its own), `fit` (True: only for reading the fit, so a seed may be left out) and, at
+        Install… (1.95.0), `target`: the target's row as its container plugin answered it (its os_build and mechanism),
+        so that a recipe with several pins for a part picks one with containers.choose_pin."""
         raise Refusal(f"{self.title or self.name} has no recipe for {system}")
 
     def ready(self, hosted: Mapping) -> tuple[bool, str]:
@@ -298,6 +300,9 @@ class ContainedService(MachinePlugin):
             return f"its recipe has no {t.get('system')} image"
         if fit.get("takes"):
             return f"it cannot take {self._title()}: {fit['takes']}"
+        if t.get("unset"):  # 1.95.0: places and sizes of yours its container plugin needs, set on its page first
+            return (f"set {', '.join(str(x) for x in t['unset'])} for {t.get('id')} on {title}'s page first: Liminal "
+                    "picks none of them for you")
         if self.NEEDS_LOOPBACK and not loopback(str(t.get("reach") or "")):
             return (f"its API would be asked at {t.get('reach')} over plain http, and {self._title()}'s token goes "
                     "over plain http to this machine alone")
@@ -424,7 +429,7 @@ class ContainedService(MachinePlugin):
         if t["offer"]:
             raise Refusal(t["offer"])
         spec = self.spec_for(str(t.get("system")), name, {"lan": str(lan) == "yes", "memory_mb": memory,
-                                                          "ports": host_ports})
+                                                          "ports": host_ports, "target": dict(t)})
         spec = ServiceSpec.of(spec.as_dict()) if isinstance(spec, ServiceSpec) else ServiceSpec.of(spec)
         unread = unread_pins(spec)
         if unread:
@@ -469,7 +474,7 @@ class ContainedService(MachinePlugin):
             if pins == dict(placed.get("image") or {}):
                 raise Refusal(f"{sid} runs this plugin's pins already: an update comes with a release that pins newer "
                               "images")
-            spec = spec.as_dict()
+            spec = self._update_first(plugin, sid, spec).as_dict()
         elif act == "expose":
             on = (choice or "on") == "on"
             options = {"lan": on}
@@ -486,6 +491,23 @@ class ContainedService(MachinePlugin):
         plan = self.ask_plugin(plugin, C.PLAN, act, sid, spec, target, options)
         return self._approval(plugin, plan, act, name, {"target": str(placed.get("target") or ""),
                                                         "options": options})
+
+    def _update_first(self, plugin: str, sid: str, spec: ServiceSpec) -> ServiceSpec:
+        """1.95.0: an update whose recipe both adds a part (Jenkins' agent, once its secret is set) and changes a part
+        it runs is two plans in turn (the container plugin refuses them as one): this one updates the parts it runs,
+        and the next Update… adds the new part. A recipe that only adds, or only changes, goes as it is."""
+        try:
+            hosted = self.ask_plugin(plugin, C.HOSTED, sid)
+        except Exception:  # noqa: BLE001 - not read: asked as it is, and the container plugin says
+            return spec
+        running = {str(p.get("name")) for p in (hosted or {}).get("parts") or [] if isinstance(p, Mapping)}
+        if not running or all(p.name in running for p in spec.parts):
+            return spec
+        kept = tuple(p for p in spec.parts if p.name in running)
+        placed = (self.placement(sid.split("/", 1)[1]) or {}).get("image") or {}
+        if not kept or all(placed.get(p.name) == p.image.digest for p in kept):
+            return spec  # only adds: one plan
+        return ServiceSpec.of({**spec.as_dict(), "parts": [p.as_dict() for p in kept]})
 
     # -- carrying it out -------------------------------------------------------------------------------------------------
     def service_carry(self, plugin, plan, log=None) -> dict:

@@ -4,6 +4,9 @@ plugin's tests and no test starts a process, pulls an image, opens a port or run
 - `FakeDocker`: the docker command as a runner and a streamer (DockerRuntime's), answering from memory: containers,
   volumes, networks and images, each command recorded with the environment and standard input it was given (`calls`).
   `before` runs a test's function before a command (a barrier, to force a race's order); `fail` makes one fail.
+- `FakeWindowsDocker` (1.95.0, from the Windows containers plugin's tests): FakeDocker as docker.exe at a pipe answers
+  (its global -H skipped, --isolation taken, Windows paths inside a container, the engine's own nat network whose members
+  HNS addresses, an image's OsVersion, PowerShell in throwaway containers).
 - `StandInHost`: a container plugin on ContainerHost with stand-in targets, each on a DockerRuntime over a FakeDocker.
 - `StandInNetworkHost`: a firewall plugin on NetworkHost that carries out its steps in memory, counting each
   elevation it would ask (`elevations`).
@@ -72,6 +75,7 @@ class FakeDocker:
         self.exits_on_start: dict[str, int] = {}  # a container name -> the code it exits with when started
         self.pulled_as: dict[str, str] = {}  # a pinned ref -> the digest a pull finds instead
         self.logs: dict[str, list[str]] = {}
+        self.root = "/var/lib/docker"  # docker info's DockerRootDir
 
     # -- the runner -------------------------------------------------------------------------------------------------
     def _words(self, argv) -> list[str]:
@@ -137,6 +141,8 @@ class FakeDocker:
                 "NetworkSettings": {"Networks": nets}, "HostConfig": {"RestartPolicy": {"Name": c["restart"]}}}
 
     def _answer(self, key, args, stdin, env, out):
+        if key == "info":
+            return 0, json.dumps(self.root), ""
         if key == "version":
             return 0, json.dumps({"Client": {"Version": self.version}, "Server": {"Version": self.version, "Os": "linux",
                                                                                  "Arch": self.arch}}), ""
@@ -399,8 +405,110 @@ class FakeDocker:
 
     def changes(self) -> list[str]:
         reads = ("ps", "inspect", "volume ls", "volume inspect", "network ls", "network inspect", "image inspect",
-                 "logs", "version", "exec")
+                 "logs", "version", "exec", "info")
         return [c["key"] for c in self.calls if c["key"] not in reads and not (c["key"] == "cp" and c["stdin"] is None)]
+
+
+def _norm(path: str) -> str:
+    return str(path or "").replace("\\", "/").rstrip("/")
+
+
+WINDOWS_BUILDS = {20348: "10.0.20348.2655", 17763: "10.0.17763.7792", 26100: "10.0.26100.6899", 26400: "10.0.26400.1"}
+NAT_PREFIX = "172.29.16.0/20"
+
+
+class FakeWindowsDocker(FakeDocker):
+    """The library's FakeDocker as docker.exe at a pipe answers (1.95.0, taken from the Windows containers plugin's
+    tests): its global -H skipped, --isolation taken, Windows' paths inside a container (C:\\...), the engine's own nat
+    network (HNS hands its members their addresses), an image's OsVersion, and PowerShell in throwaway containers."""
+
+    VALUED = (*FakeDocker.VALUED, "--isolation", "-H")
+
+    def __init__(self, nat: bool = True, build: int = 20348, version: str = "27.3.1", prefix: str = NAT_PREFIX):
+        super().__init__(version=version)
+        self.build = build
+        self.next_ip = 10
+        self.root = "C:\\ProgramData\\docker"
+        base = prefix.split("/")[0].rsplit(".", 1)[0]
+        self.nat_base = base
+        if nat:
+            self.networks["nat"] = {"id": "e" * 64, "labels": {}, "options": {}, "subnet": prefix,
+                                    "gateway": f"{base}.1", "ip_range": "", "driver": "nat"}
+
+    def _words(self, argv):
+        argv = [str(a) for a in argv]
+        if len(argv) > 2 and argv[1] == "-H":
+            return argv[3:]
+        return super()._words(argv)
+
+    def _answer(self, key, args, stdin, env, out):
+        if key == "image inspect" and "{{.OsVersion}}" in args:
+            ref = args[-1]
+            return (0, WINDOWS_BUILDS.get(self.build, f"10.0.{self.build}.1"), "") if ref in self.images else \
+                (1, "", f"Error: No such image: {ref}")
+        if key == "version":
+            return 0, json.dumps({"Client": {"Version": self.version}, "Server": {"Version": self.version,
+                                                                                 "Os": "windows", "Arch": "amd64"}}), ""
+        return super()._answer(key, args, stdin, env, out)
+
+    def _create(self, args, env):
+        code, cid, err = super()._create(args, env)
+        if code == 0:
+            c = next(x for x in self.containers.values() if x["id"] == cid)
+            c["mounts"] = []
+            for v in [args[i + 1] for i, a in enumerate(args) if a == "-v"]:
+                vol, _, path = v.partition(":")
+                c["mounts"].append((vol, path[:-3] if path.endswith(":ro") else path))
+            if c["network"] == "nat":
+                self.next_ip += 1
+                c["ip"] = f"{self.nat_base}.{self.next_ip}"
+        return code, cid, err
+
+    def _volume_at(self, c, path):
+        best = None
+        for vol, mount in c["mounts"]:
+            m = _norm(mount)
+            p = _norm(path)
+            if p == m or p.startswith(m + "/"):
+                if best is None or len(m) > len(best[1]):
+                    best = (vol, m)
+        return best
+
+    def _read_path(self, c, path):
+        found = self._volume_at(c, path)
+        if found is None:
+            return None
+        vol, mount = found
+        return self.volumes.get(vol, {}).get("files", {}).get(_norm(path)[len(mount):].lstrip("/"))
+
+    def _cp(self, args, stdin):
+        words = [a for a in args[1:] if a != "-a"]
+        if words[0] == "-":
+            c = self._find(words[1].split(":", 1)[0])
+            if c is None:
+                return 1, "", "Error: No such container"
+            if words[1].split(":", 1)[1] != "C:\\":
+                return 1, "", "the stand-in takes seeds at C:\\ alone"
+            with tarfile.open(fileobj=io.BytesIO(stdin or b""), mode="r:") as tar:
+                for m in tar.getmembers():
+                    path = "C:/" + m.name
+                    found = self._volume_at(c, path)
+                    if found is None:
+                        return 1, "", f"the stand-in writes seeds into volumes alone, not {path}"
+                    vol, mount = found
+                    rel = _norm(path)[len(mount):].lstrip("/")
+                    if rel in self.volumes[vol]["files"]:
+                        return 1, "", f"the stand-in: {path} is there already"
+                    self.volumes[vol]["files"][rel] = tar.extractfile(m).read()
+            return 0, "", ""
+        return super()._cp(args, stdin)
+
+    def _run(self, args, stdin, out):
+        if "--entrypoint" in args and args[args.index("--entrypoint") + 1] == "powershell":
+            vol = [args[i + 1] for i, a in enumerate(args) if a == "-v"][0].split(":")[0]
+            self.volumes[vol]["files"].clear()
+            return 0, "", ""
+        return super()._run(args, stdin, out)
 
 
 class StandInHost(ContainerHost):

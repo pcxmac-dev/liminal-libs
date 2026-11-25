@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.95.0 (2026-11-25)
+
+The gaps the container-plugin builders found in the one "run a service" interface (Windows containers 0.3.0, LXD
+0.4.0, Kubernetes 0.3.0; INTERFACE-GAPS.md), each closed by a hook with a default, so that every plugin built on
+1.93.0/1.94.0 (Docker 0.4.0, Windows containers, LXD, Kubernetes, Jenkins, GoCD, Buildbot) runs unchanged; with the
+user's words of 2026-11-25: Kubernetes services are bare Pods, never restarted, and "user has to define these things
+before creating instances" (no default namespace, storage class or size). Nothing renamed or removed.
+- **Fixed: the asker's own secret.** `ContainerHost._check_secrets` refused a secret whose pair the asking service
+  plugin itself declares among its keys (`_others_declare` now leaves the asker out): Jenkins' agent secret, set in its
+  own Settings, is handed over. Another plugin's pair is still refused.
+- **Yours to define** (`containers.Setting`; `ContainerHost.TARGET_SETTINGS`, `target_settings(target)`,
+  `setting_values`, `setting_value`, `unset_settings`, `check_target_setting`, and the page-only change
+  `set_target_setting(target, setting, value, service="", confirm=False)`, kept through the login as
+  `<NAME>_TARGET_SETTINGS`): a container plugin declares the places and sizes of yours a target needs (a namespace, a
+  storage class, a per-service claim size, kinds text/number/size/choice); every plan on that target is refused in words
+  until each is set; `hosting` says each target's `settings` and `unset`, and ContainedService offers no Install… there
+  meanwhile; a "size" setting below a volume's `least` is refused; its page draws "Yours to define" and Set….
+- **A container plugin's own accepts**: `MORE_ACCEPTS` (accept_<word>) and `more_accepts(act, sid, target, runtime,
+  spec, facts)`; `plan_words`' `approve_args` lists them after the base's, and `approve_plan` takes them after its six
+  (positionally or by name); an accept it does not declare is refused.
+- **An update that adds a part** (Jenkins' agent after its setup) is planned as that addition alone: "Add <part> to
+  …", its images pulled, its volumes made, its containers created on the service's network with addresses and names
+  from the firewall's new `add` network action, seeded, started; nothing it ran is stopped or backed up; its own accepts
+  (kept secret, your network). An update that adds a part and changes another is refused (ContainedService's Update…
+  then plans the change first and the addition at the next Update…); one that drops a part is refused; a rollback needs
+  a previous container of every part. `containers.labelled_spec_of`: a service's spec is its current containers' newest
+  whole one (DockerRuntime.hosted uses it).
+- **The engine's own network** (`Runtime.network_want(spec, sid)`, default {}; `segments.Want` gains `found`,
+  `assigns`, `shared`, `route`, `behind`; ports may carry `here`): Windows' one NAT network reserved as it is and
+  shared, its addresses HNS's; a cluster's pod range with no route (N27 a); a nested segment (LXD's Docker inside
+  liminal-oci) routed through the instance's address on its own stack; a network that is not the service's own is
+  never dropped; the install's line names the network its containers join. An Expose's proxy points at the port's
+  `here` (a NodePort). `segments.ASSIGNS` gains "kubernetes".
+- **Words for the rest**: `ContainerHost.no_spec_fit(target, owner)` (a target's "not yet" for an owner without a spec
+  of its system); `keep_targets(targets)` and `service_status(targets=...)` (targets its plugin read are not read
+  again); `Runtime.data_root()` (DockerRuntime: `docker info`'s DockerRootDir, said on each plan);
+  `Runtime.kept_secret_words(spec)`; `Runtime.backup_kind(part)` ("tar", "snapshot": no tar needed, its words kept in
+  <volume>.snapshot.json and handed to restore, or "none"); `Runtime.make_volume_for(name, labels, volume)` (the
+  volume's owner and least); `containers.PULLED_BY_ENGINE` (a pull its engine makes by digest itself, said so; any other
+  digest still refused); `Target.os_build`, `Target.isolation` and `containers.choose_pin(pins, target)` (a Windows pin
+  by the host's build, so that no service plugin imports a container plugin); ContainedService hands `spec_for` the
+  target's row at Install… (`options["target"]`); `ImagePin.shell` and `Volume.least` (left out of a spec's dict
+  unless said, so a 1.93.0 spec's sha stays); `containers.size_bytes`, `same_part`, `stack_of`, `STACK_WORDS`.
+- **WSL's one stack, decided**: every Linux inside WSL 2 (Docker in Liminal-Ubuntu, LXD or k3s in your Ubuntu, from
+  either platform) names the stack "wsl"; "linux" is a Linux machine's own outside WSL. A firewall that owns "wsl" from
+  the Linux platform inside it takes the Linux half of the pool (`NetworkHost._half` by its platform).
+- **`standins.FakeWindowsDocker`**, taken from the Windows containers plugin's tests (docker.exe at a pipe, --isolation,
+  C:\ paths, the nat network HNS addresses, OsVersion, PowerShell throwaways); FakeDocker answers `docker info`.
+- Tests: `test_service_gaps.py` (33); each of its 24 new gates taken out once made a test fail.
+  SERVICE-INTERFACE.md §9 says what each container plugin changes to use them.
+
 ## 1.94.0 (2026-11-25)
 
 `ContainedService`, the base of a service plugin (Monday list item 34, and item 35's next; service-containers-design

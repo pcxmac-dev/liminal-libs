@@ -11,7 +11,7 @@ bytes, `out` a path its output is written to (a backup). A pull is streamed: `st
 distribution by environment, never on a command line.
 
 What it runs, and nothing else (the plugin's API card names the same):
-- read: `ps -a --filter label=liminal=service -q`, `inspect --type container`, `volume ls --filter label=liminal=volume`,
+- read: `info --format {{json .DockerRootDir}}` (where its data lives, 1.95.0), `ps -a --filter label=liminal=service -q`, `inspect --type container`, `volume ls --filter label=liminal=volume`,
   `volume inspect`, `network ls --filter label=liminal=segment -q`, `network inspect`, `image inspect`, `logs --tail
   --timestamps`, `exec <c> cat <path>` (a running container's readable file) and `cp <c>:<path> -` (a stopped one's);
 - change, inside an approved plan's work alone: `pull <ref>@<digest>`, `volume create --label ...`, `network create
@@ -179,7 +179,11 @@ class DockerRuntime(Runtime):
                 "since": str(state.get("StartedAt") or "")}
 
     def hosted(self) -> list[dict]:
+        """Liminal's services here by their labels. The service's spec is its current containers' newest whole one
+        (containers.labelled_spec_of: a part added by an update carries the whole spec, the parts before keep theirs);
+        a previous container's only while no current one is there."""
         by: dict[str, dict] = {}
+        labelled: dict[str, list[dict]] = {}
         for c in self._containers():
             labels = (c.get("Config") or {}).get("Labels") or {}
             sid = labels.get("liminal.service", "")
@@ -189,15 +193,32 @@ class DockerRuntime(Runtime):
                                       "lifecycle": "page", "made": ""})
             part = self._part_row(c)
             row["parts"].append(part)
-            if part["role"] == "current" or row["spec"] is None:
-                try:
-                    row["spec"] = json.loads(labels.get("liminal.spec") or "null")
-                except ValueError:
-                    row["spec"] = None
-                row.update({"spec_sha": labels.get("liminal.spec-sha", ""),
-                            "platform": labels.get("liminal.platform", ""),
-                            "lifecycle": labels.get("liminal.lifecycle", "page"), "made": labels.get("liminal.made", "")})
+            try:
+                spec = json.loads(labels.get("liminal.spec") or "null")
+            except ValueError:
+                spec = None
+            labelled.setdefault(sid, []).append({
+                "current": part["role"] == "current", "spec": spec, "spec_sha": labels.get("liminal.spec-sha", ""),
+                "platform": labels.get("liminal.platform", ""), "lifecycle": labels.get("liminal.lifecycle", "page"),
+                "made": labels.get("liminal.made", "")})
+        for sid, row in by.items():
+            rows = labelled.get(sid) or []
+            pick = C.labelled_spec_of([r for r in rows if r["current"]]) or C.labelled_spec_of(rows) or (
+                rows[0] if rows else None)
+            if pick is not None:
+                row.update({k: pick[k] for k in ("spec", "spec_sha", "platform", "lifecycle", "made")})
         return list(by.values())
+
+    def data_root(self) -> str:
+        """Where this engine keeps its data (docker info's DockerRootDir), read once: "" when it does not say."""
+        if getattr(self, "_root", None) is None:
+            code, out, _ = self.run("info", "--format", "{{json .DockerRootDir}}", check=False)
+            try:
+                got = json.loads(str(out or "").strip() or '""') if code == 0 else ""
+            except ValueError:
+                got = ""
+            self._root = got if isinstance(got, str) else ""
+        return self._root
 
     def volumes(self) -> list[dict]:
         rows = self._json_lines("volume", "ls", "--filter", "label=liminal=volume")

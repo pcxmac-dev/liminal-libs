@@ -35,9 +35,11 @@ from .plugin import MachinePlugin
 
 STACKS = ("windows", "wsl", "linux")  # this PC's Windows; WSL 2's one VM; a Linux machine's own
 KINDS = ("docker-bridge", "hns-nat", "incus-bridge", "k8s-pods", "k8s-services", "desktop", "nested")
-ASSIGNS = ("reserved", "docker", "hns", "incus", "k3s", "dhcp")  # who gave a member its address
+# who gave a member its address: the firewall's ("reserved"), or the runtime's own (1.95.0: "kubernetes", any cluster's)
+ASSIGNS = ("reserved", "docker", "hns", "incus", "k3s", "dhcp", "kubernetes")
 VIEWS = ("inside", "lan", "wan")
-NET_ACTIONS = ("install", "start", "expose", "conceal", "remove", "delete_data")
+# 1.95.0: "add", a part added to a service whose network is made (its address and names beside the others')
+NET_ACTIONS = ("install", "start", "expose", "conceal", "remove", "delete_data", "add")
 POOL = "10.77.0.0/16"
 HALVES = {"windows": "10.77.0.0/17", "linux": "10.77.128.0/17"}  # N5: each platform allocates its own half
 SEGMENT_PREFIX, WIDEST = 24, netguard.WIDEST
@@ -69,15 +71,33 @@ def _of(cls, m):
 
 @dataclass(frozen=True)
 class Want:
-    """What a container plugin asks for: never a prefix, an address or a name of its own."""
+    """What a container plugin asks for: never a prefix, an address or a name of its own to be handed out. Since
+    1.95.0 it may say what its engine has already, to be reserved and recorded as it is (Runtime.network_want):
+
+    - `found`: a prefix its engine's own network has (Windows' one NAT network, a cluster's pod range): reserved for
+      this service, never handed out of the pool, never routed unless `route`;
+    - `assigns`: who gives the parts their addresses: "reserved" (the firewall, from `found` or the pool) or the
+      runtime's own word of ASSIGNS ("hns", "kubernetes", "incus", "docker"): the firewall then hands none out and
+      records the members' addresses as the container plugin's segments() read them;
+    - `shared`: the found network is shared by several services (Windows' nat): each reserves it, none frees it;
+    - `route`: whether a route to it is wanted from this machine's own stack (False: a cluster's pods, N27 (a));
+    - `behind`: the address a nested segment sits behind (LXD's Docker inside liminal-oci: liminal-oci's address on
+      its bridge): the route's next hop on the target's own stack, instead of none.
+    Each published port may carry `here`: where this machine reaches it (a NodePort at the node's address), so that
+    an Expose's proxy points there and not at 127.0.0.1:<host>."""
 
     stack: str
     target: str
     network: str  # "liminal-jenkins-ci"
     parts: tuple  # ("controller",): an address and names each
-    ports: tuple = ()  # the published ports, each {"name", "host", "protocol"}
+    ports: tuple = ()  # the published ports, each {"name", "host", "protocol"} (and "here", 1.95.0)
     lan: bool = False  # the form's "your network"
     needs: tuple = ()  # the sids it must reach (later, with agents across services)
+    found: str = ""
+    assigns: str = "reserved"
+    shared: bool = False
+    route: bool = True
+    behind: str = ""
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -92,6 +112,17 @@ class Want:
             raise Refusal("a network is wanted for one part at least")
         if w.needs:
             raise Refusal("reaching another service comes later (with agents across services)")
+        if w.assigns not in ASSIGNS:
+            raise Refusal(f"a network's addresses are given by one of {', '.join(ASSIGNS)}, not {str(w.assigns)[:20]!r}")
+        for word, value in (("found", w.found), ("behind", w.behind)):
+            if value:
+                try:
+                    (ipaddress.ip_network if word == "found" else ipaddress.ip_address)(str(value))
+                except ValueError:
+                    raise Refusal(f"a network's {word} is {'a prefix' if word == 'found' else 'an address'}, not "
+                                  f"{str(value)[:40]!r}") from None
+        if w.shared and not w.found:
+            raise Refusal("a shared network is one its engine has: say its prefix (found)")
         return w
 
 
@@ -284,6 +315,9 @@ class Allocation:
     route: dict | None = None  # the route made: {"next_hop", "interface"}
     exposed: list = field(default_factory=list)  # the ports opened to your network
     made: float = 0.0
+    found: bool = False  # 1.95.0: a prefix its engine has, reserved (never handed out of the pool)
+    shared: bool = False  # 1.95.0: that found network is shared by several services
+    assigns: str = "reserved"  # 1.95.0: who gives its members their addresses
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -400,8 +434,13 @@ class NetworkHost(MachinePlugin):
         return claims.instance()
 
     def _half(self) -> str:
+        """Its platform's half of the pool (N5): the Linux half for a firewall that owns a Linux stack, or owns WSL's
+        from a Linux platform inside it (1.95.0: every Linux inside WSL is the stack "wsl"), the Windows half
+        otherwise."""
         own = str(self.stacks().get("own") or "windows")
-        return HALVES["linux"] if own == "linux" else HALVES["windows"]
+        if own == "linux" or (own == "wsl" and str(self._platform()).lower().startswith("linux")):
+            return HALVES["linux"]
+        return HALVES["windows"]
 
     def _var(self, what: str) -> str:
         return f"{self.name.upper().replace('-', '_')}_{what}"
@@ -549,7 +588,12 @@ class NetworkHost(MachinePlugin):
         narrows = act in ("remove", "delete_data", "conceal")
         extra: dict = {"stack": w.stack, "network": w.network, "segment": f"{owner}/{w.target}/{w.network}"}
         if act == "install":
-            if a is not None and a.state in ("made", "removed") and set(a.addresses) == set(w.parts):
+            if w.found:
+                subnet, gateway, addresses = self._reserve_found(sid, w)
+                extra["found"] = (f"{subnet}, {w.target}'s own network, reserved for {sid}"
+                                  + (" (shared with the other services there)" if w.shared else "")
+                                  + ("" if w.assigns == "reserved" else f"; its addresses given by {w.assigns}"))
+            elif a is not None and a.state in ("made", "removed") and set(a.addresses) == set(w.parts):
                 subnet, gateway, addresses = a.prefix, a.gateway, dict(a.addresses)
                 extra["kept"] = f"{subnet}, kept from before (the same addresses and names)"
             else:
@@ -561,19 +605,46 @@ class NetworkHost(MachinePlugin):
                 if skipped:
                     extra["skipped"] = skipped
             facts["allocation"] = subnet
-            extra.update({"subnet": subnet, "gateway": gateway, "addresses": addresses})
-            if w.stack != own:
+            extra.update({"subnet": subnet, "gateway": gateway, "addresses": addresses, "assigns": w.assigns,
+                          "shared": w.shared, "is_found": bool(w.found)})
+            if w.behind and w.stack != own:
+                raise Refusal(f"{sid}'s segment sits behind {w.behind} on {w.stack}: a nested segment is routed by the "
+                              f"firewall of its own stack ({w.stack}) alone in this release")
+            if w.behind and w.route:
+                route = Route(w.stack, subnet, w.behind, 0, extra["segment"], self._net_wall())
+                steps.append(Step("route", f"a route to {subnet} through {w.behind} (the instance it sits behind)",
+                                  route.as_dict()))
+                extra["routes"] = [route.as_dict()]
+            elif w.stack != own and w.route:
                 hop, iface, why = facts["next_hop"], facts["interface"], facts["hop_why"]
                 if not hop:
                     raise Refusal(f"no route can be made to {sid}'s segment: {why}")
                 route = Route(w.stack, subnet, hop, iface, extra["segment"], self._net_wall())
                 steps.append(Step("route", f"a route to {subnet} through {hop} (the {w.stack} VM)", route.as_dict()))
                 extra["routes"] = [route.as_dict()]
+            elif not w.route:
+                extra["no_route"] = f"no route to {subnet} is made: {w.target}'s engine reaches it its own way"
             if w.lan and w.ports:
                 steps += self._lan_steps(sid, w, make=True)
                 accepts.append(self._lan_accept(w))
             names = names_for(sid, list(w.parts), self.domain(), addresses, linux=own == "linux")
             extra["names"] = [r.as_dict() for r in names]
+        elif act == "add":
+            if a is None or a.state != "made":
+                raise Refusal(f"{sid} has no network made by {self.title or self.name}: install it first")
+            new = [p for p in w.parts if p not in a.addresses]
+            if not new and not (a.assigns != "reserved" and w.lan and w.ports):
+                return {"nothing": f"every part of {sid} has its place on {a.prefix} already", "plan": "",
+                        "narrows": False, "subnet": a.prefix, "gateway": a.gateway, "addresses": dict(a.addresses)}
+            addresses = dict(a.addresses)
+            if a.assigns == "reserved":
+                addresses.update(self._more_addresses(a, new))
+            extra.update({"subnet": a.prefix, "gateway": a.gateway, "addresses": addresses, "adds": new})
+            if w.lan and w.ports:
+                steps += self._lan_steps(sid, w, make=True)
+                accepts.append(self._lan_accept(w))
+            names = names_for(sid, [*a.addresses, *new], self.domain(), addresses, linux=own == "linux")
+            extra["names"] = [r.as_dict() for r in names if r.part in new]
         elif act == "start":
             if a is None or a.state != "made":
                 return {"nothing": f"{sid} has no network made by {self.title or self.name}: install it first",
@@ -615,9 +686,43 @@ class NetworkHost(MachinePlugin):
                                     extra={**extra, "_steps": [s.as_dict() for s in steps], "want": w.as_dict()})
         if act == "install" and "kept" not in extra:
             self._book.put(Allocation(extra["subnet"], w.stack, extra["segment"], sid, owner, self._platform(),
-                                      extra["gateway"], extra["addresses"], "held", plan.plan))
+                                      extra["gateway"], extra["addresses"], "held", plan.plan, found=bool(w.found),
+                                      shared=w.shared, assigns=w.assigns))
         out = plan.as_dict(self._net.plans.clock())
         out.pop("_steps", None)
+        return out
+
+    def _reserve_found(self, sid: str, w: Want) -> tuple[str, str, dict]:
+        """A prefix its engine has (Want.found), reserved for `sid` as it is (1.95.0): refused where it meets another
+        service's allocation, unless both say the one same shared network. Its gateway and addresses are handed out
+        only when the firewall gives the addresses (assigns "reserved")."""
+        net = ipaddress.ip_network(str(w.found), strict=False)
+        subnet = str(net)
+        for x in self._book.all():
+            if x.sid == sid or not netguard.overlaps(net, [x.prefix]):
+                continue
+            if w.shared and x.shared and x.prefix == subnet:
+                continue
+            raise Refusal(f"{subnet} meets {x.prefix}, {x.sid}'s network: it is not reserved for {sid}")
+        if w.assigns != "reserved":
+            return subnet, "", {}
+        gateway, addresses = addresses_in(subnet, list(w.parts))
+        return subnet, gateway, addresses
+
+    def _more_addresses(self, a: Allocation, parts: list[str]) -> dict[str, str]:
+        """The next free fixed addresses of a made segment (.10 and on) for parts added to its service."""
+        net = ipaddress.ip_network(a.prefix)
+        used = set(a.addresses.values())
+        out: dict[str, str] = {}
+        n = FIRST_PART
+        for part in parts:
+            while str(ipaddress.ip_address(int(net.network_address) + n)) in used:
+                n += 1
+            if n >= FIRST_PART + 40:
+                raise Refusal("a segment holds 40 parts' fixed addresses at most")
+            addr = str(ipaddress.ip_address(int(net.network_address) + n))
+            out[part] = addr
+            used.add(addr)
         return out
 
     def _held(self, plan: str) -> bool:
@@ -641,9 +746,13 @@ class NetworkHost(MachinePlugin):
     def _words(self, act: str, sid: str, w: Want, extra: dict, steps: list[Step]) -> str:
         said = [f"{self.title or self.name} {'makes' if act in ('install', 'start', 'expose') else 'takes away'} "
                 f"{sid}'s network on {w.target} ({w.stack})"]
-        if extra.get("subnet"):
+        if extra.get("found"):
+            said.append(f"its segment {extra['found']}")
+        elif extra.get("subnet"):
             said.append(f"its segment {extra['subnet']} (gateway {extra.get('gateway')}), "
                         + ", ".join(f"{p} at {a}" for p, a in (extra.get("addresses") or {}).items()))
+        if extra.get("no_route"):
+            said.append(extra["no_route"])
         said += [s.words for s in steps]
         if extra.get("names"):
             said.append("its names: " + ", ".join(r["name"] for r in extra["names"] if r["type"] == "A"))
@@ -709,12 +818,17 @@ class NetworkHost(MachinePlugin):
             route = (p.extra.get("routes") or [None])[0]
             if a is None:
                 a = Allocation(str(p.extra["subnet"]), str(p.extra["stack"]), str(p.extra["segment"]), sid, p.owner,
-                               self._platform(), str(p.extra["gateway"]), dict(p.extra["addresses"]))
+                               self._platform(), str(p.extra["gateway"]), dict(p.extra["addresses"]),
+                               found=bool(p.extra.get("is_found")), shared=bool(p.extra.get("shared")),
+                               assigns=str(p.extra.get("assigns") or "reserved"))
             a.state, a.plan, a.made = "made", p.plan, a.made or now
             a.route = {"next_hop": route["next_hop"], "interface": route["interface"]} if route else a.route
             a.exposed = [s.detail for s in steps if s.kind == "proxy"] or a.exposed
             self._book.put(a)
         elif a is not None:
+            if p.action == "add":
+                a.addresses = dict(p.extra.get("addresses") or a.addresses)
+                a.exposed = [*a.exposed, *(s.detail for s in steps if s.kind == "proxy")]
             if p.action == "start" and p.extra.get("routes"):
                 r = p.extra["routes"][0]
                 a.route = {"next_hop": r["next_hop"], "interface": r["interface"]}
