@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .. import layout, mounts
-from ..sources.plugin import IntegratorPlugin
+from ..sources.plugin import PlatformPlugin
 from .instances import (ACCESS, DATA, DATABASE, ENGINES, HOLDS, HOST, INSTANCES, MAX_INSTANCES, MAX_KEPT,  # noqa: F401 - plugins import them from here
                         MAX_SHARES, MAX_TITLE, METHODS, NAME, NONE, OWN_FOLDERS, POLICY_S, PORTS, SQLITE, SUFFIXES, VERSION,
                         WHO, Instance, Instances, Kept, Made, Method, Refusal, Share, SharePolicy, clean_holds, clean_name,
@@ -68,12 +68,18 @@ def data_folder(app=None) -> Path:
 
 
 # -- the contract ------------------------------------------------------------------------------------------------------
-class DatabasePlugin(IntegratorPlugin):
+class DatabasePlugin(PlatformPlugin):
     """A database engine's plugin. A subclass sets `name`, `title`, `about`, its ENGINE, METHODS and HOLDS, lists its
-    variable among its `options` (`variable_of(name)`), and answers the hooks: `builtin`, `open`, `probe`, `make`."""
+    variable among its `options` (`variable_of(name)`), and answers the hooks: `builtin`, `open`, `probe`, `make`.
+
+    A platform plugin since 1.90.0 (Monday list item 30, step 1; the user, 2026-11-25: the instance forms move to the
+    platform's Databases section): SYSTEM "platform", KIND "database" kept, drawn in the platform's Databases section
+    (SECTION). The registry finds the packages as before, under their entry points, and their names and kept settings
+    are as they were; the integrator still holds them until it inherits the platform (step 4: attach_registry)."""
 
     CONTRACT = True
     KIND = "database"
+    SECTION = "databases"  # the platform's Databases section (apps/platform.py: Platform.sections)
     HOOKS = ("builtin", "open", "probe", "make", "own_port", "scan", "settings")
     READ_HOOKS = ("builtin", "probe")  # its reads (Plugin.READ_HOOKS), agreed 2026-11-16 with the session of this file
     ICON = "database"  # its icon on a page (icons.js)

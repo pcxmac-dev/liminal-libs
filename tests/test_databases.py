@@ -228,7 +228,7 @@ def test_what_a_form_gives_is_checked_and_refused_in_words():
 def test_a_database_plugin_conforms_and_says_what_it_offers():
     flat_, served_ = Flat(), Served()
     for p in (flat_, served_):
-        assert problems(p) == [] and p.KIND == "database" and p.SYSTEM == "integrator"
+        assert problems(p) == [] and p.KIND == "database" and p.SYSTEM == "platform"  # (1.90.0, item 30)
         assert_conforms(p)
         assert set(p.interface()["hooks"]) >= {"open", "probe", "make"} and p.interface()["kind"] == "database"
     assert flat_.gives("builtin") and not served_.gives("builtin") and not flat_.gives("scan")
@@ -276,7 +276,8 @@ def test_the_registry_finds_database_plugins_as_the_integrators_own_kind(install
     row = registry.database_menu()[0]
     assert (row["name"], row["engine"], row["engineTitle"], row["server"], row["variable"]) == (
         "sqlite", "sqlite", "SQLite", False, "SQLITE_INSTANCES") and row["methods"] == ["file", "helper"]
-    # attached by the integrator's frame with its other plugins, never by the platform's
+    # attached by the integrator's frame with its other plugins, never by the platform's (platform plugins since 1.90.0,
+    # still the integrator's until it inherits the platform: apps/platform.py attaches them by declared need)
     app = SimpleNamespace(attached=[], attach=lambda p: app.attached.append(p.name))
     assert attach_registry(app, only="platform") == [] and attach_registry(app, only="integrator") == ["sqlite", "postgres"]
     # a selection leaves them out like any plugin

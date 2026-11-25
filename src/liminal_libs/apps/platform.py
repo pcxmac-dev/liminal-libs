@@ -1,0 +1,300 @@
+"""The platform's core, the base the apps inherit (1.90.0, Monday list item 30, step 1).
+
+The user, 2026-11-24: "through the rust interface", then "inheritance bro": the charts and the integrator inherit a
+platform base class (`ChartsApp(Platform)`, `IntegratorApp(Platform)`), and liminal-platform's PlatformApp inherits the
+same base and adds the machine and AI sections. 2026-11-25: the instance forms move to the platform's Databases
+section, the platform the only writer of instance settings. The design is item-30-design.md in the sessions folder.
+
+`Platform(App)` is the core alone, not the whole liminal-platform app:
+- it holds its plugins by section (`sections`: a plugin's SECTION, else its kind's: KIND_SECTIONS);
+- it attaches the kinds a subclass declares it needs (`PLATFORM_NEEDS`, e.g. ("database",): `attach_needs`), with its
+  own login as every App does (the login object it includes, LOGIN, is the App frame's own: nothing changes there);
+- it answers the Databases section's routes when it needs "database" (apps/databases.py, moved from the integrator):
+  `GET /api/databases/plugins` and `POST /api/databases/instances`, the same shapes as the integrator's;
+- the one-writer rule: instance settings are read, changed and written back with no lock across processes, so only the
+  running platform changes them (`PLATFORM_WRITER`, the flag liminal-platform's app sets; or `writer=` given). A
+  Platform that is not it (a part included in another app's process) reads them and opens its databases itself, and
+  its change routes answer 409, "change this on the platform's Databases section";
+- across processes, through liminal-net, never HTTP (NETWORK.md; decision of 2026-11-24): the running platform serves
+  its Databases section as a node (`serve_databases`: DatabasesHillock, its interface DATABASES_INTERFACE), and a part
+  in another process reaches it as a Remote for a change (`change_on_platform`). Opening a database stays in each
+  app's own process: the data path pays no hop.
+
+Nothing here starts a process: a node is served only when the platform asks (`serve_databases`), and a part reaches
+the platform's node without a launcher (a platform not running is said, never started)."""
+from __future__ import annotations
+
+import threading
+from http import HTTPStatus
+from pathlib import Path
+from typing import Callable
+
+from .app import App, Refused
+from . import databases as section
+
+# a plugin's place on the platform's list when its class names none (MachinePlugin.SECTION names its own)
+KIND_SECTIONS = {"database": "databases", "machine": "machine", "assistant": "ai"}
+NEEDS = tuple(KIND_SECTIONS)  # the kinds a Platform can be declared to need
+ELSEWHERE = "change this on the platform's Databases section"  # a part that is not the platform, asked to change
+NOT_RUNNING = "the platform is not running: start it to change an instance"
+DATABASES_NODE = "platform-databases"  # the running platform's Databases section, as a node
+DATABASES_TRAIT = "liminal.platform.Databases"
+SECTION_TRAIT = "liminal.PlatformSection"
+_FORM = [{"name": "form", "type": "map"}]
+DATABASES_READS = ("overview", "elsewhere", "test")  # what any peer may ask: changes nothing anywhere
+DATABASES_CHANGES = ("change",)  # what changes an instance's settings: the running platform's alone
+DATABASES_INTERFACE = {  # (NETWORK.md §6's shape: what crosses is args, returns and the signature the pages show)
+    "trait": DATABASES_TRAIT, "base": [SECTION_TRAIT],
+    "methods": {
+        "overview": {"args": [], "returns": "map", "signature": "()"},  # GET /api/databases/plugins' answer
+        "elsewhere": {"args": [], "returns": "list<map>", "signature": "()"},  # the file instances outside the folder
+        "test": {"args": _FORM, "returns": "map", "signature": "(form)"},  # the Test form: opened for reading
+        "change": {"args": _FORM, "returns": "map", "signature": "(form)"},  # new, connect, share, port, credentials,
+    },                                                                        # forget: confirmed on a page
+    "signals": {},
+}
+
+
+def section_of(plugin) -> str:
+    """The section a plugin is drawn under: its class's SECTION, else its kind's (KIND_SECTIONS), else none ("")."""
+    return str(getattr(plugin, "SECTION", "") or KIND_SECTIONS.get(getattr(plugin, "KIND", ""), ""))
+
+
+def _finders() -> dict[str, Callable[[], dict]]:
+    from ..sources import registry
+
+    return {"database": registry.databases, "machine": registry.machines, "assistant": registry.assistants}
+
+
+class Platform(App):
+    """The platform core. A subclass declares PLATFORM_NEEDS (the kinds it attaches); liminal-platform's app sets
+    PLATFORM_WRITER. ChartsApp and IntegratorApp inherit it from their next releases (steps 4 and 5)."""
+
+    PLATFORM_NEEDS: tuple[str, ...] = ()  # the plugin kinds it attaches (NEEDS): ("database",) for the charts, the integrator
+    PLATFORM_WRITER = False  # the running platform: the one writer of instance settings (liminal-platform's app sets it)
+    PLATFORM_SCOPE: Path | None = None  # where its nodes are reached (None: nodes.default_scope, the data folder)
+
+    def __init__(self, log=print, login=None, *, writer: bool | None = None, node_factory=None):
+        super().__init__(log=log, login=login)
+        unknown = [k for k in self.PLATFORM_NEEDS if k not in NEEDS]
+        if unknown:
+            raise ValueError(f"{type(self).__name__}: PLATFORM_NEEDS names {unknown}, none of {list(NEEDS)}")
+        self._writer = self.PLATFORM_WRITER if writer is None else bool(writer)
+        self._node_factory = node_factory  # liminal_net.Node, or a test's stand-in (nodes.make_node)
+        self._platform_lock = threading.Lock()
+        self._node = None  # this part's own node, to reach the platform's (made when first needed)
+        self.databases_node = None  # the platform's Databases section served as a node (serve_databases)
+
+    # -- what it is -----------------------------------------------------------------------------------------------
+    @property
+    def is_platform(self) -> bool:
+        """Whether this is the running platform, the one writer of instance settings."""
+        return self._writer
+
+    def needs(self, kind: str) -> bool:
+        return kind in self.PLATFORM_NEEDS
+
+    # -- its plugins, by section ----------------------------------------------------------------------------------
+    def attach_needs(self) -> list[str]:
+        """Every plugin of the kinds it needs that the registry loaded, attached here with this app's login unless
+        another app holds it; the names attached (one attached here already is not attached again)."""
+        finders, out = _finders(), []
+        for kind in self.PLATFORM_NEEDS:
+            for p in finders[kind]().values():
+                if getattr(p, "KIND", "") != kind or p.app is self:
+                    continue
+                if p.app is not None:
+                    continue  # another app's
+                self.attach(p)
+                out.append(p.name)
+        return out
+
+    def sections(self) -> dict[str, dict]:
+        """The plugins attached here by section ({section: {name: plugin}}), the sections in NEEDS' order first; a
+        plugin of no section is left out."""
+        out: dict[str, dict] = {}
+        for name, p in self._plugins.items():
+            where = section_of(p)
+            if where:
+                out.setdefault(where, {})[name] = p
+        order = [KIND_SECTIONS[k] for k in NEEDS]
+        return dict(sorted(out.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else len(order), kv[0])))
+
+    def section(self, name: str) -> dict:
+        return dict(self.sections().get(name, {}))
+
+    # -- the Databases section ------------------------------------------------------------------------------------
+    def database_plugins(self) -> dict:
+        """The database plugins held here (attached at the first ask: apps/databases.plugins)."""
+        if not self.needs("database"):
+            return {}
+        return section.plugins(self)
+
+    def databases_overview(self) -> dict:
+        """What `GET /api/databases/plugins` answers: the integrator's shape, and `writer` (whether a change is made
+        here). On a part that is not the platform, no change is offered and each plugin says where it is made."""
+        out = section.overview(self)
+        out["writer"] = self.is_platform
+        if not self.is_platform:
+            for row in out["plugins"]:
+                can = row.get("can")
+                if isinstance(can, dict):
+                    row["can"] = {**{k: False for k in can if k != "why"}, "why": ELSEWHERE}
+        return out
+
+    def instances_asked(self, body: dict) -> dict:
+        """What `POST /api/databases/instances` answers: a test anywhere; a change on the running platform alone (409,
+        ELSEWHERE, on any other part, before anything is read or asked)."""
+        body = body if isinstance(body, dict) else {}
+        if section.text_of(body, "action") in section.CHANGES and not self.is_platform:
+            raise Refused(HTTPStatus.CONFLICT, ELSEWHERE)
+        return section.ask(self, body)
+
+    def api(self, handler, method: str, path: str, query: dict, body: dict | None):
+        if self.needs("database"):
+            if method == "GET" and path == "/api/databases/plugins":
+                return 200, self.databases_overview()
+            if method == "POST" and path == "/api/databases/instances":
+                return 200, self.instances_asked(body if isinstance(body, dict) else {})
+        return super().api(handler, method, path, query, body)
+
+    # -- through liminal-net --------------------------------------------------------------------------------------
+    def serve_databases(self, scope: Path | None = None, node_factory=None, start: bool = True):
+        """The running platform's Databases section served as its node (DATABASES_NODE), in the background when
+        `start`; the node. Only the platform serves it: a part that is not is refused (RuntimeError)."""
+        if not self.is_platform:
+            raise RuntimeError(f"{self.NAME or 'this app'} is not the running platform: it serves no Databases section")
+        from .. import nodes
+
+        hillock = DatabasesHillock(self)
+        node = nodes.make_node(DATABASES_NODE, "platform", hillock, DATABASES_INTERFACE, scope or self.PLATFORM_SCOPE,
+                               node_factory or self._node_factory)
+        self.databases_node = node
+        if start:
+            node.start()
+        return node
+
+    def _end_server(self) -> None:
+        """Its page's server ended (App.terminate's last step), and the Databases section's node with it: a node served
+        here ends with the platform that serves it."""
+        node, self.databases_node = self.databases_node, None
+        if node is not None:
+            try:
+                node.stop("the platform is ending")
+            except Exception:  # noqa: BLE001 - a node already ended
+                pass
+        super()._end_server()
+
+    def own_node(self):
+        """This part's own node (app-<NAME>-platform), made when first needed, not served: what reaches the platform's
+        node (a node reaches another through its axon; its own dendrites need not listen)."""
+        with self._platform_lock:
+            if self._node is None:
+                from .. import nodes
+
+                self._node = nodes.make_node(f"app-{self.NAME or 'part'}-platform", "app", _PartHillock(self),
+                                             _PART_INTERFACE, self.PLATFORM_SCOPE, self._node_factory)
+            return self._node
+
+    def platform_remote(self):
+        """The running platform's Databases section, as a Remote (liminal_net), reached without a launcher: a
+        platform not running is said (Refused 503, NOT_RUNNING), never started from here."""
+        from .. import nodes
+
+        node = self.own_node()
+        try:
+            return node.reach(DATABASES_NODE, str(self.PLATFORM_SCOPE or nodes.default_scope()), None)
+        except ConnectionError as e:  # liminal_net.NetworkError: nobody answers, refused
+            raise Refused(HTTPStatus.SERVICE_UNAVAILABLE, f"{NOT_RUNNING} ({e})") from None
+
+    def change_on_platform(self, body: dict) -> dict:
+        """A form's change made where it may be: here on the running platform, else asked of the platform's node (its
+        refusal back as it was said there: Asked, its status, its words and what accepts it)."""
+        if self.is_platform:
+            return self.instances_asked(body)
+        remote = self.platform_remote()
+        try:
+            return remote.request("change", body if isinstance(body, dict) else {})
+        except ConnectionError as e:
+            raise Refused(HTTPStatus.SERVICE_UNAVAILABLE, f"{NOT_RUNNING} ({e})") from None
+        except Exception as e:  # noqa: BLE001 - liminal_net.RemoteError: the platform's refusal, as it crossed
+            raise from_remote(e) from None
+
+    def ask_platform(self, method: str, *args):
+        """One of the platform's reads (DATABASES_READS) asked of its node."""
+        if method not in DATABASES_READS:
+            raise LookupError(f"the platform's Databases section offers no read {method!r}: {', '.join(DATABASES_READS)}")
+        remote = self.platform_remote()
+        try:
+            return remote.request(method, *args)
+        except ConnectionError as e:
+            raise Refused(HTTPStatus.SERVICE_UNAVAILABLE, f"{NOT_RUNNING} ({e})") from None
+        except Exception as e:  # noqa: BLE001
+            raise from_remote(e) from None
+
+
+def from_remote(e: BaseException) -> Refused:
+    """A refusal that crossed liminal-net (a RemoteError: its kind, message, status, accept) as the Refused it was."""
+    status = getattr(e, "status", None)
+    words = getattr(e, "message", None) or str(e)
+    return section.Asked(int(status) if isinstance(status, int) and 400 <= status < 600 else HTTPStatus.BAD_GATEWAY,
+                         str(words), getattr(e, "accept", None) or None)
+
+
+class DatabasesHillock:
+    """The running platform's Databases section as a node's code (liminal_net.Node's hillock): its reads for any peer,
+    its change only while the app is the platform (a part that stopped being it refuses: 409)."""
+
+    def __init__(self, app: Platform):
+        self.app = app
+        self.node = None
+        self.interface = DATABASES_INTERFACE
+        self.peers: dict[int, dict] = {}
+        self._lock = threading.Lock()
+
+    def request(self, peer, method: str, args, kwargs):
+        args, kwargs = list(args or ()), dict(kwargs or {})
+        form = (args[0] if args else kwargs.get("form")) or {}
+        if method == "overview":
+            return self.app.databases_overview()
+        if method == "elsewhere":
+            return section.elsewhere(self.app)
+        if method == "test":
+            return self.app.instances_asked({**form, "action": "test"})
+        if method == "change":
+            if not self.app.is_platform:
+                raise Refused(HTTPStatus.CONFLICT, ELSEWHERE)
+            who = (peer or {}).get("name") or "a peer"
+            out = self.app.instances_asked(form if isinstance(form, dict) else {})
+            self.app.log(f"{self.app.NAME or 'platform'}: asked by {who} through its node: "
+                         f"{section.text_of(form, 'plugin')} {section.text_of(form, 'action')}")
+            return out
+        raise Refused(HTTPStatus.NOT_FOUND, f"the Databases section offers no {method!r}")
+
+    def attach(self, peer) -> None:
+        with self._lock:
+            self.peers[int((peer or {}).get("pid") or 0)] = dict(peer or {})
+
+    def detach(self, peer) -> None:
+        with self._lock:
+            self.peers.pop(int((peer or {}).get("pid") or 0), None)
+
+    def shutdown(self) -> None:
+        pass  # the section ends with the platform; nothing of its own to secure
+
+
+_PART_INTERFACE = {"trait": "liminal.PlatformPart", "base": [SECTION_TRAIT], "methods": {}, "signals": {}}
+
+
+class _PartHillock:
+    """A part's own node's code: it offers nothing (it only reaches the platform)."""
+
+    def __init__(self, app: Platform):
+        self.app = app
+        self.node = None
+
+    def request(self, peer, method, args, kwargs):  # noqa: ARG002
+        raise Refused(HTTPStatus.NOT_FOUND, f"{self.app.NAME or 'this part'} offers nothing: it reaches the platform")
+
+    def shutdown(self) -> None:
+        pass

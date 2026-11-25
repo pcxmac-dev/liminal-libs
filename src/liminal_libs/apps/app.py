@@ -823,19 +823,29 @@ class App:
 def attach_registry(app: App, only: str | None = None) -> list[str]:
     """Every plugin the registry loaded (the providers, the publishers, the assistants, the machines, the
     databases, the auditors'; `only`: one system, "integrator" or "platform") attached to `app` unless another app
-    holds it already; returns the names attached. The registry is imported when called (it loads the plugins)."""
+    holds it already; returns the names attached. The registry is imported when called (it loads the plugins).
+
+    The database plugins are platform plugins since 1.90.0 (DatabasePlugin, SYSTEM "platform"), and still the
+    integrator's to hold, with "integrator", until it inherits the platform (Monday list item 30, step 4): a platform
+    attaches them by its declared need (apps/platform.py: Platform.attach_needs), never with "platform" here, so the
+    platform's own attach and the integrator's are as they were."""
     from ..sources.registry import assistants, auditors, databases, machines, providers, publishers
 
     out = []
     for p in [*providers().values(), *publishers().values(), *assistants().values(), *machines().values(),
               *databases().values(), *auditors().values()]:
-        if only is not None and p.SYSTEM != only:
+        if only is not None and _system_of(p) != only:
             continue
         if p.app is not None and p.app is not app:
             continue
         app.attach(p)
         out.append(p.name)
     return out
+
+
+def _system_of(plugin) -> str:
+    """The system attach_registry attaches a plugin with: its SYSTEM, the integrator's for a database plugin (above)."""
+    return "integrator" if getattr(plugin, "KIND", "") == "database" else plugin.SYSTEM
 
 
 def make_handler(app: App):

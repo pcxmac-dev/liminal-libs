@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.90.0 (2026-11-25)
+
+- The platform's core, the base the apps inherit (Monday list item 30, step 1; the user, 2026-11-24: "through the rust
+  interface", "inheritance bro"; 2026-11-25: the instance forms move to the platform's Databases section, the platform
+  the only writer of instance settings). `apps/platform.py`: `Platform(App)` holds its plugins by section (`sections`:
+  a plugin's SECTION, else its kind's), attaches the kinds a subclass declares in `PLATFORM_NEEDS` ("database",
+  "machine", "assistant": `attach_needs`, with its own login; one another app holds is left to it) and includes the
+  login as every App does. ChartsApp and IntegratorApp inherit it in their next releases (steps 4 and 5), and
+  liminal-platform's app in step 2.
+- The Databases section in the library (`apps/databases.py`): `overview`, `ask`, `elsewhere`, `plugins`, `suites`,
+  `load_errors` and `Asked`, moved from liminal-integrator 1.12.0's instances.py with the same answers (a test asks
+  both where the integrator is installed), so its module can become these names imported. A Platform needing
+  "database" answers `GET /api/databases/plugins` (the integrator's shape, and `writer`) and
+  `POST /api/databases/instances`. A plugin left out at loading is said under the renamed packages' names too
+  (plugin-platform-sqlite).
+- One writer: a Platform that is not the running platform (`PLATFORM_WRITER`, the flag liminal-platform's app sets, or
+  `writer=`) reads the instances and tests them, offers no change (each plugin's `can` says where it is made), and its
+  change routes answer 409, "change this on the platform's Databases section"; the platform makes them.
+- Through liminal-net: the running platform serves its Databases section as a node (`serve_databases`:
+  `platform-databases`, trait liminal.platform.Databases, the reads overview, elsewhere and test, and the change
+  `change`; DatabasesHillock refuses a change, 409, once its app is not the platform). A part in another process
+  reaches it from a node of its own, never served and never with a launcher (`change_on_platform`, `ask_platform`): a
+  platform not running is a 503 in words, never started from here, and the platform's refusal comes back as it was said
+  there (status, words, what accepts it). Opening a database stays in each app's own process.
+- `DatabasePlugin` is a `PlatformPlugin` (SYSTEM "platform"; KIND "database" kept; SECTION "databases"). The registry
+  finds the packages as before, their names and kept settings unchanged; `attach_registry(only="integrator")` still
+  attaches them, and `only="platform"` does not, until the integrator inherits the platform (step 4).
+
 ## 1.88.4 (2026-11-24)
 
 - Every shutdown is clean (the user, 2026-11-24: "all shutdowns need to be clean"). Nothing is forced by default:
