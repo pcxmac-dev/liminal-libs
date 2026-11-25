@@ -628,3 +628,17 @@ def test_an_expose_of_a_part_built_here_makes_it_again_from_its_built_image(worl
     assert carried(world, world.plan("expose", options={"lan": False}))["ok"]
     c = world.fake.containers["liminal-jenkins-ci-controller"]
     assert c["image"] == built and c["labels"]["liminal.built"] == built and len(world.fake.builds) == 1
+
+
+def test_the_approve_form_is_approve_plans_arguments_in_order_and_a_stand_ins_read_is_still_a_read(world):
+    import inspect
+
+    form = next(f for f in world.page("standin-host", "status")["forms"] if f["id"] == "approve")
+    params = [p for p in inspect.signature(world.host.approve_plan).parameters if p not in ("more", "named")]
+    assert [f["name"] for f in form["fields"]] == params  # accept_build goes by the dialog's approve_args alone
+    world.grant()
+    assert world.carry("install")["ok"]
+    world.fake.volumes["liminal-jenkins-ci-home"]["files"]["x.txt"] = b"kept"
+    code, said, _ = world.fake(["docker", "exec", "liminal-jenkins-ci-controller", "cmd", "/c", "type",
+                                "/var/jenkins_home/x.txt"], 5)
+    assert (code, said) == (0, b"kept") and world.fake.execs == []

@@ -275,7 +275,7 @@ class FakeDocker:
             c = self._find(args[1])
             if c is None or c["state"] != "running":
                 return 1, "", "Error: container is not running"
-            if args[2:3] != ["cat"]:  # 1.97.0: a recipe's command, recorded and answered
+            if args[2:3] != ["cat"] and self._read_path(c, args[-1]) is None:  # 1.97.0: a recipe's command
                 words = tuple(args[2:])
                 self.execs.append({"container": c["name"], "argv": list(words)})
                 code, said = self.exec_answers.get(words, (0, "done"))

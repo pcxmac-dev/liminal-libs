@@ -2381,8 +2381,9 @@ class ContainerHost(MachinePlugin):
             (ACCEPT_NO_BACKUP, "No backup?", "Update without a backup", "No backup can be made first."),
             (ACCEPT_DATA, "Data deleted or replaced?", "Go on", "Data is deleted or put back: it cannot be undone."),
             *((n, f"{n[len('accept_'):].replace('_', ' ').capitalize()}?", "Accept", "Asked by this plugin's own plan.")
-              for n in self.MORE_ACCEPTS),
-            (C.ACCEPT_BUILD, "An image built here?", "Build it", C.BUILD_WORDS + "."))]
+              for n in self.MORE_ACCEPTS))]
+        # 1.97.0: accept_build is not a field of this form (its fields are approve_plan's arguments in order, and a
+        # plugin's own come first): a plan that builds is approved through the platform's dialog, by approve_args
         forms = [
             {"id": "approve", "hook": C.APPROVE, "title": "Approve a plan", "submit": "Review",
              "fields": [{"name": "plan", "label": "Plan", "type": "fixed"}, *accept],
