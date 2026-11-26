@@ -11,12 +11,12 @@ from liminal_libs import internal
 from liminal_libs.apps import EnvironmentLogin, as_user
 from liminal_libs.apps.asking import PAGE, asking
 from liminal_libs.apps.authorization import LICENCE
-from liminal_libs.machines import geosources, satellites as S
+from liminal_libs.machines import geosources, satellites as S, world
 from liminal_libs.machines.infrastructure import Index
 from liminal_libs.machines.netstat import NetstatView
 
 from test_firewall import FakeFirewall
-from test_firewall_geoip import Sourced, Store
+from test_firewall_geoip import Sourced, Store, licences  # noqa: F401 - the licences file's fixture
 from test_satellites import SETS, pin
 from test_world import NOW, Clock, socket_table
 
@@ -43,6 +43,8 @@ def installs(monkeypatch):
     asked = []
 
     def install(package, data_dir=None, *, accept_licence=False, log=None, cancel=None, opener=None):
+        if accept_licence is not True:
+            raise world.LicenceRefused("The sgp4 package is downloaded only once you accept its licence.")
         asked.append((package.version, accept_licence))
         return {"said": f"installed the sgp4 package {package.version}", "ok": True, "lines": []}
     monkeypatch.setattr(S, "install_package", install)
@@ -87,4 +89,31 @@ def test_the_package_asked_at_the_page_is_downloaded_and_removed(tmp_path, insta
         out = fw.world_sky_get(True)
         assert out["ok"] and installs == [("2.27", True)]
         assert fw.world_sky_remove()["ok"]
+    fw.detach()
+
+
+def test_the_packages_licence_accepted_at_the_page_is_kept_as_its_pair_and_nowhere_else(tmp_path, installs, licences):
+    fw = Skied(tmp_path)
+    assert dict(fw.KEEPS)["licence-sgp4"].startswith("your acceptance of the sgp4 package's licence")
+    alice = Store()
+    with asking(PAGE), as_user(alice):
+        with pytest.raises(world.LicenceRefused):
+            fw.world_sky_get(False)
+        assert alice.pairs == {}
+        out = fw.world_sky_get(True)
+    assert out["ok"] and installs[-1] == ("2.27", True) and "kept in your own login store" in out["lines"][-1]
+    kind, raw = alice.pairs["licence-sgp4"]
+    record = json.loads(raw)
+    assert kind == LICENCE and record["title"] == "The sgp4 package 2.27" and record["version"] == "MIT"
+    assert record["acceptedBy"] == "alice" and record["words"].startswith("MIT License")
+    assert not licences.exists()
+    fw.detach()
+
+
+def test_a_store_that_refuses_the_packages_licence_ends_it_with_nothing_fetched(tmp_path, installs, licences):
+    fw = Skied(tmp_path)
+    with asking(PAGE), as_user(Store(refuse=True)):
+        with pytest.raises(ValueError, match="sgp4 package's licence could not be kept in your login store"):
+            fw.world_sky_get(True)
+    assert installs == [] and not licences.exists()
     fw.detach()
