@@ -51,15 +51,21 @@ def test_a_set_is_put_and_read_whole_and_by_area(tmp_path):
     assert store.layer("cables") == {}
 
 
-def test_a_long_segment_is_found_in_the_cells_it_crosses_and_a_long_line_kept_in_pieces(tmp_path):
+def test_a_long_segment_is_found_in_the_cells_it_crosses_and_a_long_line_kept_in_pieces(tmp_path, monkeypatch):
     store = Store(tmp_path)
     store.put(SET, features([([(0.0, 0.0), (20.0, 0.0)], "long")]), fetched=1.0)
     assert store.layer("roads", area=(10.2, -0.5, 10.4, 0.5))["ne-roads"]["lines"]["names"] == ["long"]
     line = [(i * 0.1, 0.0) for i in range(600)]
     out = store.put(SET, features([(line, "pieces")]), fetched=2.0)
-    assert out["counts"]["roads"]["lines"] == 3  # 256, then 256 more from the last one's end, then the rest
+    # kept in 3 pieces (256, then 256 more from the last one's end, then the rest), and counted as the one line of 600
+    # vertices it is (the review: each piece's shared vertex was counted twice, and each piece as a line)
+    assert out["counts"]["roads"] == {"points": 0, "lines": 1, "vertices": 600}
     got = xy(store.layer("roads")["ne-roads"]["lines"])
     assert len(got) == 256 + 256 + 90 and got[255] == got[256]
+    monkeypatch.setattr(infrastructure, "MAX_VERTICES", 600)  # a layer full to its last vertex is drawn whole
+    assert store.layer("roads")["ne-roads"]["cut"] is False
+    monkeypatch.setattr(infrastructure, "MAX_VERTICES", 599)
+    assert store.layer("roads")["ne-roads"]["cut"] is True
     assert cell_of(180.0, 90.0) == 179 * 360 + 359 and cell_of(-180.0, -90.0) == 0
 
 

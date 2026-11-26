@@ -31,6 +31,7 @@ from . import infrastructure as infra
 FILE = "infrastructure.db"
 USER_VERSION = 1
 PIECE = 256  # vertices a line's piece holds at most: a cell's read then reads little more than it shows
+POINT, LINE, PIECE_KIND = 0, 1, 2  # a feature's kind: a point, a line (its first piece), a line's further piece
 COARSE = 0.25  # degrees between a coarse line's kept vertices (the whole globe's view)
 SAMPLE = 0.5  # degrees between the points a long segment's cells are found at
 CELLS = 360 * 180
@@ -266,7 +267,12 @@ class Store:
                         break
                     xs, ys = [p[0] for p in piece], [p[1] for p in piece]
                     coarse = _thin(piece, round(COARSE * infra.SCALE))
-                    rows.append((layer, 1, infra._name(name), "", (min(xs), min(ys), max(xs), max(ys)), len(piece),
+                    # the review: a line's first piece is its line (kind LINE), each further one a piece (PIECE_KIND)
+                    # whose count leaves out the vertex it shares with the one before, so the line's vertices are
+                    # counted as they were kept, once each
+                    first = at == 0
+                    rows.append((layer, LINE if first else PIECE_KIND, infra._name(name), "",
+                                 (min(xs), min(ys), max(xs), max(ys)), len(piece) if first else len(piece) - 1,
                                  _blob(v for p in piece for v in p), _blob(v for p in coarse for v in p),
                                  _cells([(x / infra.SCALE, y / infra.SCALE) for x, y in piece])))
         count = int(features.get("features") or len(rows)) if isinstance(features, Mapping) else len(rows)
@@ -329,7 +335,8 @@ class Store:
         return tuple(out)
 
     def counts(self, set_id: str | None = None) -> dict:
-        """Each set's layers' counts: {set: {layer: {"points", "lines", "vertices"}}}, or one set's alone."""
+        """Each set's layers' counts: {set: {layer: {"points", "lines", "vertices"}}}, or one set's alone: a line kept
+        as pieces is one line, and the vertex its pieces share is counted once, as the parse kept it."""
         def work(con):
             out: dict = {}
             sql = "SELECT set_id, layer, kind, COUNT(*), SUM(count) FROM features"
@@ -338,10 +345,10 @@ class Store:
                 sql, args = sql + " WHERE set_id = ?", (set_id,)
             for sid, layer, kind, n, vertices in con.execute(sql + " GROUP BY set_id, layer, kind", args):
                 entry = out.setdefault(sid, {}).setdefault(layer, {"points": 0, "lines": 0, "vertices": 0})
-                if kind == 0:
+                if kind == POINT:
                     entry["points"] += n
                 else:
-                    entry["lines"] += n
+                    entry["lines"] += n if kind == LINE else 0
                     entry["vertices"] += int(vertices or 0)
             return out
         found = self._read(work) or {}
@@ -381,8 +388,8 @@ class Store:
                         continue
                     points += 1
                     part["_p"].append((blob, name, sub))
-                else:
-                    n = len(blob) // 8
+                else:  # a piece's vertex shared with the one before is not counted again (its count leaves it out)
+                    n = min(int(count), len(blob) // 8)
                     if vertices + n > infra.MAX_VERTICES:
                         part["cut"] = True
                         continue
