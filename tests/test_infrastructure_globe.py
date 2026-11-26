@@ -211,3 +211,118 @@ def test_a_layer_is_read_by_area_and_coarse_below_its_zoom(tmp_path):
                   {"zoom": True}):
         with pytest.raises(ValueError):
             index.layer("roads", **wrong)
+
+
+# -- items 28 and 29: TopoHub's backbones and RIPE Atlas, sources of the composite database ---------------------------
+TOPOHUB = {"id": "topohub-world", "title": "The world's backbones, a model (TopoHub)", "format": "topohub",
+           "url": "https://raw.topohub.example/topohub/master/data/backbone/world.json", "size": 1_040_000,
+           "source": "TopoHub", "licence_name": "MIT (the repository's)",
+           "licence": "TopoHub's repository is under the MIT licence; no licence is stated for its data.",
+           "credit": {"text": "TopoHub (P. Jurkiewicz)", "url": "https://topohub.example/"}}
+ATLAS_TERMS = "RIPE Atlas's data, for non-commercial use on this PC: commercial use needs the RIPE NCC's permission."
+PROBES = {"id": "atlas-probes", "title": "RIPE Atlas probes and anchors", "format": "atlas-probes",
+          "url": "https://ftp.atlas.example/ripe/atlas/probes/archive/meta-latest", "size": 2_000_000,
+          "source": "RIPE Atlas (RIPE NCC)", "licence_name": "RIPE Atlas terms 3.5 (non-commercial)",
+          "licence": ATLAS_TERMS, "credit": {"text": "RIPE Atlas (RIPE NCC)", "url": "https://atlas.example/"}}
+LATEST = {**PROBES, "id": "atlas-traceroutes", "title": "RIPE Atlas traceroutes from its anchors",
+          "format": "atlas-latest", "url": "https://atlas.example/api/v2/measurements/5151/latest/",
+          "query": "format=json", "size": 5_000_000, "needs": "atlas-probes"}
+WORLD = {"directed": False, "multigraph": False, "graph": {},
+         "nodes": [{"id": 0, "pos": [-0.13, 51.51], "type": "City", "name": "London"},
+                   {"id": 1, "pos": [2.35, 48.86], "type": "City", "name": "Paris"},
+                   {"id": 2, "pos": [-5.55, 50.12], "type": "Seacable Landing Point", "name": "Porthcurno"},
+                   {"id": 3, "type": "City", "name": "Nowhere"}],
+         "links": [{"source": 0, "target": 1, "dist": 343.5, "type": "land"},
+                   {"source": 0, "target": 2, "dist": 400.1, "type": "seacable"},
+                   {"source": 1, "target": 3, "dist": 10.0}]}
+
+
+def test_topohubs_model_is_read_into_its_layers_and_the_composite_database(tmp_path):
+    import json
+    import sqlite3
+    from liminal_libs.machines import composite
+    got = parse(TOPOHUB, json.dumps(WORLD).encode())
+    assert [p[2] for p in got["layers"]["pops"]["points"]] == ["London", "Paris"]  # a city alone: no landing point
+    assert [name for _, name in got["layers"]["models"]["lines"]] == ["London to Paris", "Porthcurno to London"]
+    assert got["layers"]["models"]["lines"][1][0] == [(-5.55, 50.12), (-0.13, 51.51)]  # its seacable edge: a model's
+    assert "cables" not in got["layers"] and got["dropped"] == {"with no place": 1, "between points not drawn": 1}
+    folder = tmp_path / "layers"
+    out = install(TOPOHUB, folder, accept_licence=True,
+                  fetch=Downloads({DataSet.of(TOPOHUB).address(): json.dumps(WORLD).encode()}), clock=Clock())
+    assert "given to the composite database: 2 places, 2 links" in out["lines"]
+    with sqlite3.connect(folder / composite.FILE) as con:
+        rows = con.execute("SELECT n.kind, n.key, e.source FROM evidence e JOIN entities n ON n.id = e.entity "
+                           "ORDER BY n.kind, n.key").fetchall()
+    assert rows == [("link", "topohub:London|51.51,-0.13>Paris|48.86,2.35", "topohub"),
+                    ("link", "topohub:Porthcurno|50.12,-5.55>London|51.51,-0.13", "topohub"),
+                    ("place", "London|51.51,-0.13", "topohub"), ("place", "Paris|48.86,2.35", "topohub")]
+    assert composite.SOURCES["topohub"][0] == 0.3 and composite.SOURCES["atlas"][0] == 0.7
+
+
+def probes_file() -> bytes:
+    import bz2
+    import json
+    objects = [{"id": 6001, "is_anchor": True, "status": {"id": 1, "name": "Connected"}, "country_code": "nl",
+                "asn_v4": 3333, "asn_v6": 3333, "geometry": {"type": "Point", "coordinates": [4.89, 52.37]},
+                "description": "Someone's own words", "tags": [{"name": "home"}]},
+               {"id": 6002, "is_anchor": True, "status": {"id": 2, "name": "Disconnected"}, "country_code": "DE",
+                "geometry": {"type": "Point", "coordinates": [13.4, 52.5]}},
+               {"id": 7, "is_anchor": False, "status": 1, "country_code": "FR", "asn_v4": 12322,
+                "geometry": {"type": "Point", "coordinates": [2.35, 48.86]}},
+               {"id": 8, "is_anchor": False, "status": 1, "geometry": None}]
+    return bz2.compress(json.dumps({"meta": {}, "objects": objects}).encode())
+
+
+def test_ripe_atlas_probes_are_kept_without_their_owners_words(tmp_path):
+    from liminal_libs.machines.infrastore import Store
+    folder = tmp_path / "layers"
+    out = install(PROBES, folder, accept_licence=True, fetch=Downloads({DataSet.of(PROBES).address(): probes_file()}),
+                  clock=Clock())
+    assert out["file"]["layers"] == {"probes": 3}
+    rows = Store(folder).probes()
+    assert [(p["id"], p["country"], p["anchor"], p["connected"]) for p in rows] == [
+        (7, "FR", 0, 1), (6001, "NL", 1, 1), (6002, "DE", 1, 0)]
+    part = Index(folder, [PROBES]).layer("probes")["parts"][0]["points"]
+    assert part["names"] == ["Anchor 6001", "Anchor 6002", "Probe 7"]
+    assert part["subs"] == ["NL · AS3333", "DE · not connected", "FR · AS12322"]
+    kept = b"".join(p.read_bytes() for p in folder.iterdir())
+    assert b"Someone" not in kept and b"home" not in kept
+
+
+def test_ripe_atlas_traceroutes_need_the_probes_and_place_routers_near_an_anchor(tmp_path):
+    import json
+    import sqlite3
+    import urllib.error
+    from liminal_libs.machines import composite
+    folder = tmp_path / "layers"
+    with pytest.raises(ValueError, match="read with the data set atlas-probes: download that first"):
+        install(LATEST, folder, accept_licence=True, fetch=Downloads({}), clock=Clock())
+    index = Index(folder, [PROBES, LATEST], clock=Clock())
+    assert [f["id"] for f in index.forms()] == ["world-layer-atlas-probes"]  # not offered before the probes
+    assert index.table()["rows"][1][4] == {"text": "needs RIPE Atlas probes and anchors"}
+    install(PROBES, folder, accept_licence=True, fetch=Downloads({DataSet.of(PROBES).address(): probes_file()}),
+            clock=Clock())
+    at = "https://atlas.example/api/v2/measurements/5151/latest/?format=json&probe_ids=6001"
+    assert DataSet.of(LATEST).addresses(range(1, 701))[2].endswith("probe_ids=" + ",".join(map(str, range(601, 701))))
+    result = [{"prb_id": 6001, "from": "192.0.2.7", "result": [
+        {"hop": 1, "result": [{"from": "10.0.0.1", "rtt": 0.2}]},  # private: never kept
+        {"hop": 2, "result": [{"from": "193.0.0.1", "rtt": 0.8}, {"from": "193.0.0.1", "rtt": 0.6}]},
+        {"hop": 3, "result": [{"x": "*"}]},
+        {"hop": 4, "result": [{"from": "8.8.4.1", "rtt": 9.5}]},
+        {"hop": 5, "result": [{"from": "8.8.8.8", "rtt": 10.1}]}]},
+        {"prb_id": 999, "result": []}]  # a probe not in the table: left out
+    out = install(LATEST, folder, accept_licence=True, fetch=Downloads({at: json.dumps(result).encode()}),
+                  clock=Clock())
+    assert out["ok"] is True and "given to the composite database: 1 router placed, 1 link" in out["lines"]
+    with sqlite3.connect(folder / composite.FILE) as con:
+        claims = con.execute("SELECT n.key, e.source, e.claim FROM evidence e JOIN entities n ON n.id = e.entity "
+                             "WHERE n.kind = 'router'").fetchall()
+        links = con.execute("SELECT n.key FROM entities n WHERE n.kind = 'link'").fetchall()
+    (address, source, claim), = claims
+    assert (address, source) == ("193.0.0.1", "atlas")
+    assert json.loads(claim) == {"lat": 52.37, "lon": 4.89, "ms": 0.6, "within_km": 30.0,
+                                 "label": "near RIPE Atlas anchor 6001"}
+    assert links == [("8.8.4.1>8.8.8.8",)]  # the hops on either side of a silent one are not linked
+    refused = Downloads({at: urllib.error.HTTPError(at, 403, "Forbidden", {}, None)})
+    with pytest.raises(InfrastructureError, match="it asks for credentials, and none is ever sent from here"):
+        install(LATEST, folder, accept_licence=True, fetch=refused, clock=Clock())

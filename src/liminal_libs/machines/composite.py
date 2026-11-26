@@ -42,6 +42,9 @@ FOUND_KEYS = ("network", "handle", "org", "country", "range")  # an rdap claim's
 SOURCES = {
     "geoip": (0.3, "the GeoIP file on this machine: often the network's home rather than the router itself"),
     "name": (0.6, "the router's own name, read with the airports' and the cities' lists"),  # 1.73.0
+    # 1.104.0 (Monday list items 28 and 29), each behind its download
+    "topohub": (0.3, "TopoHub's model of the world's backbones: cities and cables, a model and not an operator's map"),
+    "atlas": (0.7, "a RIPE Atlas probe within a millisecond of the router"),
 }
 PLACE_LEFT = ("routers' names (reverse DNS: your switch)", "RIPE IPmap (your switch)", "PeeringDB (your switch)",
               "CAIDA's router-level map (your download)")
@@ -178,11 +181,13 @@ class Composite:
         return {"lat": lead["lat"], "lon": lead["lon"], "label": str(lead.get("label") or ""),
                 "confidence": round(confidence, 4), "sources": sources, "by": by}
 
-    def record(self, routers=(), legs=None, licence: str = "", claims=(), links=()) -> bool:
+    def record(self, routers=(), legs=None, licence: str = "", claims=(), links=(), places=()) -> bool:
         """One batch, from a tab's ask: `routers` [{"address", "n", "ms", "after", "lat", "lon", "label"}] as the
         routes traced here and the GeoIP file say them (lat None: no place); `legs` {key: (what, why)} as the network
         found them ("" why: on the lines); `licence` the GeoIP file's words; `claims` more sources' [(address, source,
-        licence, {"lat", "lon", "label"})]. Only what is new, changed or not written within REWRITE_S is written.
+        licence, {"lat", "lon", "label"})]; `links` [(key, said)] as the routes traced here say them, or (1.104.0)
+        [(key, said, source, licence)] as a download's; `places` (1.104.0) [(key, source, licence, said)], the places a
+        download names (TopoHub's cities). Only what is new, changed or not written within REWRITE_S is written.
         False when nothing could be written (closed, another system's folder, a file that will not open: `problem`)."""
         now = self.clock()
         with self._lock:
@@ -215,10 +220,16 @@ class Composite:
                 if self._fresh((source, address), claim, now):  # a place only where it says where (1.72.0)
                     placed = isinstance(said, dict) and said.get("lat") is not None and said.get("lon") is not None
                     rows.append(("claim", (str(address), source, words, claim, placed)))
-            for key, said in links:  # 1.74.0: the links between routers, as the routes traced here say them
+            for given in links:  # 1.74.0: the links between routers, as the routes traced here say them
+                key, said = given[0], given[1]
+                source, words = (given[2], given[3]) if len(given) > 3 else ("trace", "measured here")
                 claim = json.dumps(said, sort_keys=True)
-                if self._fresh(("link", key), claim, now):
-                    rows.append(("link", (str(key), claim)))
+                if self._fresh(("link", source, key), claim, now):
+                    rows.append(("link", (str(key), claim, source, words)))
+            for key, source, words, said in places:  # 1.104.0: a download's places (TopoHub's cities)
+                claim = json.dumps(said, sort_keys=True)
+                if self._fresh(("place-of", source, key), claim, now):
+                    rows.append(("place", (str(key), source, words, claim)))
             for key, (what, why) in (legs or {}).items():
                 if self._fresh(("segment", key), why, now):
                     rows.append(("wait", ("segment", key, what, why, SEGMENT_LEFT)) if why
@@ -251,12 +262,12 @@ class Composite:
                         if placed:
                             touched[entity] = address
                             self._done(conn, "place", address, now)
-                    elif do == "link":
-                        key, claim = args
-                        entity = self._entity(conn, "link", key, now)
+                    elif do in ("link", "place"):
+                        key, claim, source, words = args if do == "link" else (args[0], args[3], args[1], args[2])
+                        entity = self._entity(conn, do, key, now)
                         conn.execute("INSERT INTO evidence (entity, source, licence, claim, first, last) VALUES (?, ?,"
                                      " ?, ?, ?, ?) ON CONFLICT (entity, source, claim) DO UPDATE SET last ="
-                                     " excluded.last", (entity, "trace", "measured here", claim, now, now))
+                                     " excluded.last", (entity, source, words, claim, now, now))
                     elif do == "wait":
                         kind, key, what, why, left = args
                         if kind == "place":

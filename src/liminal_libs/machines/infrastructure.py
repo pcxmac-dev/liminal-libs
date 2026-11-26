@@ -98,15 +98,25 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
     # is mapped the roads and railways long-haul fibre most often runs beside, drawn dashed as the stand-ins they are
     ("fibre", "Fibre on land", "lines", "line", 7, True, 4.0),
     ("roads", "Major roads (a stand-in for fibre)", "lines", "dash", 5, False, 7.0),
-    ("railways", "Railways (a stand-in for fibre)", "lines", "dash", 4, False, 7.0))
+    ("railways", "Railways (a stand-in for fibre)", "lines", "dash", 4, False, 7.0),
+    # 1.104.0 (items 28 and 29): TopoHub's model of the world's backbones (its cities go to the points of presence),
+    # and the places RIPE Atlas measures from
+    ("models", "Backbone model (TopoHub)", "lines", "line", 6, False, 5.0),
+    ("probes", "RIPE Atlas probes and anchors", "points", "circle", 5, False, 6.0))
 LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
-FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt")  # what an answer is
-# read as
-AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile", "mvt")  # whose query, where they have one, is
-# sent as written
-AS_BYTES = ("gml", "ourairports", "geonames", "shapefile")  # the formats read from the answer's bytes, not as JSON
+FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub",
+           "atlas-probes", "atlas-latest")  # what an answer is read as
+AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub", "atlas-probes",
+              "atlas-latest")  # whose query, where they have one, is sent as written
+AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes")  # read from the answer's bytes, not as JSON
+MANY = ("mvt", "atlas-latest")  # the formats asked in several requests, one after another, on the one click
+ATLAS_BATCH = 300  # anchors' ids asked in one request of RIPE Atlas's latest results
+ATLAS_RESULTS = 2000  # results read of its answers, at most
+ATLAS_HOPS = 64  # hops read of a result, at most
+NEAR_MS = 1.0  # a router this near a probe (its least RTT) is claimed at the probe's place
+KM_PER_MS = 100.0  # how far light goes in fibre in a millisecond, there and back halved below
 STEPS = (0.001, 1.0)  # the degrees a data set's `step` may be, from and to (1.104.0)
 HOST_FORM = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 CHOICES = 32  # fields a data set's keep or drop names, and values a field, at most
@@ -156,7 +166,9 @@ OPERATORS = ("operator", "owner")  # else its operator's
 DEGREES = ("4326", "crs84")  # how a GeoJSON answer's `crs` ends when its coordinates are longitude and latitude
 ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for",
          "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file",
-         "shapefile": "the file asked for", "mvt": "the map tiles asked for"}
+         "shapefile": "the file asked for", "mvt": "the map tiles asked for", "topohub": "the file asked for",
+         "atlas-probes": "the file asked for",
+         "atlas-latest": "the measurement's newest results for the anchors' ids (nothing about this machine)"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -255,6 +267,7 @@ class DataSet:
     step: float = STEP
     hosts: tuple = ()
     tiles: tuple = ()  # an mvt set's tiles, (z, x, y) each, asked one after another
+    needs: str = ""  # another data set this one is read with, downloaded first (atlas-latest: the probes)
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -332,8 +345,13 @@ class DataSet:
         """The host it is asked of."""
         return world._host(self.url).lower()
 
-    def addresses(self) -> list[str]:
-        """Every address asked, in order: the one address(), or (1.104.0) each of a set of map tiles'."""
+    def addresses(self, ids=()) -> list[str]:
+        """Every address asked, in order: the one address(), or (1.104.0) each of a set of map tiles', or of RIPE
+        Atlas's latest results one batch of ATLAS_BATCH anchors' `ids` a request."""
+        if self.format == "atlas-latest":
+            ids = sorted({int(i) for i in ids})
+            return [f"{self.url}?{self.query + '&' if self.query else ''}probe_ids="
+                    f"{','.join(str(i) for i in ids[at:at + ATLAS_BATCH])}" for at in range(0, len(ids), ATLAS_BATCH)]
         if self.format != "mvt":
             return [self.address()]
         return [self._tile(z, x, y) for z, x, y in self.tiles]
@@ -404,6 +422,13 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident}'s hosts are the names a redirect may go to (4 at most), not "
                          f"{world._shown(hosts)}")
     out["hosts"] = tuple(h.lower() for h in hosts)
+    needs = said.get("needs", "")
+    if not isinstance(needs, str) or (needs and (not ID_FORM.fullmatch(needs) or needs == ident)):
+        raise ValueError(f"the data set {ident}'s needs is another data set's id, not {world._shown(needs)}")
+    if form == "atlas-latest" and not needs:
+        raise ValueError(f"the data set {ident} is read with RIPE Atlas's probes: it names the data set it needs")
+    if needs:
+        out["needs"] = needs
     if form == "mvt":
         out["tiles"] = _tiles(ident, said)
         if not out.get("layer"):
@@ -539,6 +564,9 @@ class _Kept:
         self.layers: dict[str, dict] = {}
         self.dropped: dict[str, int] = {}
         self.remarks: list[str] = []  # what the server remarked that is no error, said on
+        self.extra: dict = {}  # 1.104.0: what a reader gives beside the layers (the composite's rows, the probes)
+        self.counted: int | None = None  # and how many it read, where that is not its features (atlas-latest)
+        self.probes: dict = {}  # the probes an atlas-latest answer is read with, by id
         self._seen: dict[str, set] = {}
         self._vertices: dict[str, int] = {}
 
@@ -580,7 +608,8 @@ class _Kept:
     def features(self) -> dict:
         layers = {layer: self.layers[layer] for layer, *_ in LAYERS
                   if layer in self.layers and (self.layers[layer]["points"] or self.layers[layer]["lines"])}
-        return {"layers": layers, "features": sum(len(e["points"]) + len(e["lines"]) for e in layers.values()),
+        count = sum(len(e["points"]) + len(e["lines"]) for e in layers.values())
+        return {**self.extra, "layers": layers, "features": count if self.counted is None else self.counted,
                 "dropped": dict(self.dropped), "remarks": list(self.remarks)}
 
 
@@ -1095,17 +1124,190 @@ def _mvt(doc, kept: _Kept, host: str, free: bool) -> None:
     kept.remarks.append(f"{world._plural(len(doc), 'tile')} asked: {world._plural(read, 'tile')} with features")
 
 
+def _place_key(name: str, lat: float, lon: float) -> str:
+    """A place's key in the composite database: its name and where it is, to two decimals."""
+    return f"{name}|{lat:.2f},{lon:.2f}"
+
+
+def _topohub(doc, kept: _Kept, host: str, free: bool) -> None:
+    """TopoHub's model of the backbones (1.104.0, item 28: networkx node-link JSON, each node's `pos` [longitude,
+    latitude]): each City a point of pops, each edge a line of models from the end further west (its seacable edges
+    too: a model's links are no cable routes), and for the composite database each city a place and each edge a link
+    ({"a", "b", "km", "type", "source": "topohub"}). A node without a place is left out, and its edges with it."""
+    nodes = doc.get("nodes") if isinstance(doc, Mapping) else None
+    edges = (doc.get("links") if isinstance(doc.get("links"), list) else doc.get("edges")) \
+        if isinstance(doc, Mapping) else None
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no graph of nodes and links)")
+    placed, places, links = {}, [], []
+    for node in nodes:
+        pos = node.get("pos") if isinstance(node, Mapping) else None
+        if not isinstance(pos, list) or len(pos) < 2 or _spot(pos[0], pos[1]) is None:
+            kept.drop(UNPLACED)
+            continue
+        lon, lat, name = float(pos[0]), float(pos[1]), _name(node.get("name")) or _name(str(node.get("id", "")))
+        kind = _name(node.get("type"))
+        placed[node.get("id")] = (lon, lat, name)
+        if kind.lower() == "city":
+            kept.point("pops", lon, lat, name, "TopoHub's model")
+            places.append((_place_key(name, lat, lon), {"lat": round(lat, 4), "lon": round(lon, 4), "label": name,
+                                                        "type": kind}))
+    for edge in edges:
+        ends = (placed.get(edge.get("source")), placed.get(edge.get("target"))) if isinstance(edge, Mapping) else ()
+        if len(ends) != 2 or None in ends:
+            kept.drop(ENDS)
+            continue
+        a, b = sorted(ends)
+        kind = _name(edge.get("type"))
+        kept.line("models", [(a[0], a[1]), (b[0], b[1])], f"{a[2] or 'a point'} to {b[2] or 'a point'}")
+        km = edge.get("dist")
+        links.append((f"topohub:{_place_key(a[2], a[1], a[0])}>{_place_key(b[2], b[1], b[0])}",
+                      {"a": _place_key(a[2], a[1], a[0]), "b": _place_key(b[2], b[1], b[0]), "type": kind,
+                       "km": round(float(km), 1) if isinstance(km, (int, float)) and not isinstance(km, bool) else None,
+                       "source": "topohub"}))
+    kept.extra["composite"] = {"places": places, "links": links}
+
+
+def _bunzipped(data, host: str) -> bytes:
+    """A bzip2 answer unpacked, MAX_UNPACKED bytes at most; one that is not bzip2 as it is."""
+    import bz2
+    if bytes(data[:3]) != b"BZh":
+        return bytes(data)
+    out, view = bytearray(), memoryview(data)
+    unzip = bz2.BZ2Decompressor()
+    try:
+        out += unzip.decompress(view, MAX_UNPACKED + 1)
+        while not unzip.eof and unzip.needs_input is False and len(out) <= MAX_UNPACKED:
+            out += unzip.decompress(b"", MAX_UNPACKED + 1 - len(out))
+    except (OSError, EOFError, ValueError) as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it does not unpack: "
+                                  f"{_text(str(e))[:REMARK]})") from None
+    if len(out) > MAX_UNPACKED:
+        raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(MAX_UNPACKED)}, the most a data "
+                                  "set may be")
+    return bytes(out)
+
+
+def _atlas_probes(doc, kept: _Kept, host: str, free: bool) -> None:
+    """RIPE Atlas's probes file (1.104.0, item 29: bzip2 JSON, its `objects`): each probe and anchor with a place a
+    point of probes (its id, its country and networks its sub), and a row of the database's probes table: id, place,
+    country, IPv4 and IPv6 networks, whether an anchor and whether connected. Its description and tags (its owner's own
+    words) are never kept."""
+    raw = _bunzipped(doc, host)
+    try:
+        if jsonread.too_deep(raw):
+            raise ValueError("nested too deeply")
+        found = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no JSON: "
+                                  f"{_begins(raw)})") from None
+    objects = found.get("objects") if isinstance(found, Mapping) else found
+    if not isinstance(objects, list):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it holds no list of probes)")
+    rows = []
+    for p in objects:
+        if not isinstance(p, Mapping) or isinstance(p.get("id"), bool) or not isinstance(p.get("id"), int):
+            kept.drop(OTHER)
+            continue
+        geometry = p.get("geometry")
+        where = geometry.get("coordinates") if isinstance(geometry, Mapping) else None
+        lon, lat = (where[0], where[1]) if isinstance(where, list) and len(where) >= 2 else (p.get("longitude"),
+                                                                                              p.get("latitude"))
+        if _spot(lon, lat) is None:
+            kept.drop(UNPLACED)
+            continue
+        status = p.get("status")
+        status = status.get("name") if isinstance(status, Mapping) else p.get("status_name", status)
+        connected = status in (1, "1", "Connected")
+        anchor = p.get("is_anchor") is True
+        country = _name(p.get("country_code"))[:2].upper()
+        asn4, asn6 = (v if isinstance(v, int) and not isinstance(v, bool) else None
+                      for v in (p.get("asn_v4"), p.get("asn_v6")))
+        nets = ", ".join(f"AS{n}" for n in dict.fromkeys(v for v in (asn4, asn6) if v))
+        kept.point("probes", lon, lat, f"{'Anchor' if anchor else 'Probe'} {p['id']}",
+                   " · ".join(x for x in (country, nets, "" if connected else "not connected") if x))
+        rows.append((p["id"], float(lat), float(lon), country, asn4, asn6, int(anchor), int(connected)))
+    kept.extra["probes"] = rows
+
+
+def _global(address) -> str:
+    """An address as it is kept: a global one's text; "" for a private, a shared or a local one (never kept)."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(str(address))
+    except ValueError:
+        return ""
+    return str(ip) if ip.is_global else ""
+
+
+def _atlas_latest(doc, kept: _Kept, host: str, free: bool) -> None:
+    """RIPE Atlas's newest traceroutes of its anchors (1.104.0, item 29), its answers one a batch of ids: of each
+    result its probe (its place from the probes table, `kept.probes`), each hop's addresses and RTTs. Into the
+    composite database: a router whose least RTT from its probe is NEAR_MS or under claimed at the probe's place,
+    within RTT x KM_PER_MS / 2 km (source atlas); every two answering hops one after the other a link. Private and
+    shared addresses are never kept, nor the probe's own."""
+    probes = kept.probes
+    claims, links, read = {}, {}, 0
+    for _, raw in doc:
+        try:
+            if jsonread.too_deep(raw):
+                raise ValueError("nested too deeply")
+            results = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no JSON: "
+                                      f"{_begins(raw)})") from None
+        if not isinstance(results, list):
+            raise InfrastructureError(f"{host}'s answer is not the data asked for (it holds no list of results)")
+        for r in results:
+            if read >= ATLAS_RESULTS:
+                kept.drop(OVER)
+                continue
+            probe = probes.get(r.get("prb_id")) if isinstance(r, Mapping) else None
+            hops = r.get("result") if isinstance(r, Mapping) else None
+            if probe is None or not isinstance(hops, list):
+                kept.drop(OTHER)
+                continue
+            read += 1
+            before = ""
+            for hop in hops[:ATLAS_HOPS]:
+                answers = hop.get("result") if isinstance(hop, Mapping) else None
+                seen: dict[str, float] = {}
+                for a in answers if isinstance(answers, list) else ():
+                    address = _global(a.get("from")) if isinstance(a, Mapping) else ""
+                    rtt = a.get("rtt") if isinstance(a, Mapping) else None
+                    if address and isinstance(rtt, (int, float)) and not isinstance(rtt, bool) and rtt >= 0:
+                        seen[address] = min(rtt, seen.get(address, rtt))
+                    elif address:
+                        seen.setdefault(address, float("inf"))
+                if not seen:
+                    before = ""
+                    continue
+                first = next(iter(seen))
+                for address, rtt in seen.items():
+                    if rtt <= NEAR_MS and (address not in claims or rtt < claims[address]["ms"]):
+                        claims[address] = {"lat": probe["lat"], "lon": probe["lon"], "ms": round(rtt, 3),
+                                           "within_km": round(rtt * KM_PER_MS / 2, 1),
+                                           "label": f"near RIPE Atlas anchor {probe['id']}"}
+                if before and before != first:
+                    links[f"{before}>{first}"] = {"a": before, "b": first, "source": "atlas"}
+                before = first
+    kept.extra["composite"] = {"claims": list(claims.items()), "links": list(links.items())}
+    kept.counted = read
+
+
 _READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
-            "geonames": _geonames, "shapefile": _shapefile, "mvt": _mvt}
+            "geonames": _geonames, "shapefile": _shapefile, "mvt": _mvt, "topohub": _topohub,
+            "atlas-probes": _atlas_probes, "atlas-latest": _atlas_latest}
 
 
-def _features(dataset: DataSet, doc, free: bool) -> dict:
+def _features(dataset: DataSet, doc, free: bool, probes=None) -> dict:
     kept = _Kept(dataset)
+    kept.probes = probes or {}
     _READERS[dataset.format](doc, kept, dataset.host, free)
     return kept.features()
 
 
-def parse(dataset, data) -> dict:
+def parse(dataset, data, probes=None) -> dict:
     """The features of a data set's answer, by layer: {"layers": {layer: {"points": [(lon, lat, name, sub)], "lines":
     [(vertices, name)]}}, "features": how many, "dropped": {why: how many}, "remarks": [what the server remarked]}.
     `data` is the answer's bytes or text, or the answer decoded already. Degrees are kept to 1e-5; a line's `vertices`
@@ -1130,7 +1332,7 @@ def parse(dataset, data) -> dict:
     one whose remark says the query did not finish."""
     dataset = DataSet.of(dataset)
     doc = _decoded(dataset, data)
-    return _features(dataset, doc, free=doc is not data)
+    return _features(dataset, doc, free=doc is not data, probes=probes)
 
 
 def _packed(values: array) -> str:
@@ -1328,6 +1530,8 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
               say):
     """On the download's thread: the answer's bytes (_one), or (1.104.0) for a set of map tiles each tile's in turn,
     [(z, x, y, bytes)], a tile not there (HTTP 404) as no bytes, any other failure the whole install's."""
+    if dataset.format == "atlas-latest":
+        return _batches(dataset, fetch, agent, cutoff, halt, deadline, took, clock, say)
     if dataset.format != "mvt":
         return _one(dataset, dataset.address(), fetch, agent, cutoff, halt, deadline, took, clock, say)
     out, last = [], len(dataset.tiles) - 1
@@ -1340,6 +1544,29 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
         except _Missing:
             raw = bytearray()
         out.append((z, x, y, bytes(raw)))
+    with cutoff.lock:
+        if not cutoff.why:
+            cutoff.ended = True
+    return out
+
+
+def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, took: str, clock, say) -> list:
+    """RIPE Atlas's latest results, a batch of anchors' ids a request (dataset.asked, set by the install from the
+    probes it needs), one after another: [(the batch's number, its bytes)]. A refusal that asks for credentials stops
+    it with nothing kept: no key is ever asked for or sent."""
+    asked, out = list(getattr(dataset, "asked", ()) or ()), []
+    for i, address in enumerate(asked):
+        if i:
+            say(f"request {i + 1} of {len(asked)}")
+        try:
+            raw = _one(dataset, address, fetch, agent, cutoff, halt, deadline, took, clock,
+                       say if not i else (lambda _line: None), final=i == len(asked) - 1)
+        except InfrastructureError as e:
+            if getattr(e, "code", None) in (401, 403):
+                raise InfrastructureError(f"{dataset.host} refused the request: it asks for credentials, and none "
+                                          "is ever sent from here. Nothing was installed.") from None
+            raise
+        out.append((i, bytes(raw)))
     with cutoff.lock:
         if not cutoff.why:
             cutoff.ended = True
@@ -1377,7 +1604,9 @@ def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: thread
                 say(f"{host} is busy (HTTP {code}): it is asked once more in {world._seconds(RETRY_S)} s")
                 _pause(until, deadline, clock, cutoff, halt)
                 continue
-            raise InfrastructureError(_refusal(dataset, e, wait)) from None
+            refused = InfrastructureError(_refusal(dataset, e, wait))
+            refused.code = code  # 1.104.0: what the server answered, for a caller that tells refusals apart
+            raise refused from None
         try:
             if cutoff.why:  # it came after the stop: let go unread
                 raise InfrastructureError(cutoff.why)
@@ -1488,6 +1717,7 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     if accept_licence is not True:
         raise LicenceRefused(LICENCE_FIRST)
     agent = _agent(agent)
+    dataset = _with_needs(dataset, target)
     if not _INSTALLING.acquire(blocking=False):
         raise ValueError(ALREADY)
     try:
@@ -1501,6 +1731,47 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
         with _STATE:
             _NOW["id"] = ""
         _INSTALLING.release()
+
+
+def _with_needs(dataset: DataSet, target: Path) -> DataSet:
+    """A data set that is read with another (its `needs`): ValueError, in words, before anything is asked, while that
+    one is not installed here; an atlas-latest set given its anchors' ids (`asked`) and the probes by id."""
+    if not dataset.needs:
+        return dataset
+    from .infrastore import Store
+    store = Store(target)
+    if dataset.needs not in store.sets():
+        raise ValueError(f"{dataset.title} is read with the data set {dataset.needs}: download that first")
+    if dataset.format != "atlas-latest":
+        return dataset
+    probes = store.probes()
+    anchors = [p["id"] for p in probes if p["anchor"] and p["connected"]]
+    if not anchors:
+        raise ValueError(f"{dataset.title} asks for the anchors' results, and the data set {dataset.needs} holds no "
+                         "connected anchor")
+    object.__setattr__(dataset, "asked", tuple(dataset.addresses(anchors)))
+    object.__setattr__(dataset, "probes_by_id", {p["id"]: p for p in probes})
+    return dataset
+
+
+def _composite(dataset: DataSet, target: Path, rows: Mapping) -> str:
+    """What a data set gives the composite database (TopoHub's places and links, RIPE Atlas's claims and links),
+    written beside the layers; the words of a line for the job, "" when nothing was given."""
+    from . import composite
+    places, claims, links = rows.get("places") or [], rows.get("claims") or [], rows.get("links") or []
+    if not (places or claims or links):
+        return ""
+    c = composite.Composite(target / composite.FILE)
+    try:
+        source = "topohub" if dataset.format == "topohub" else "atlas"
+        ok = c.record(claims=[(a, source, dataset.licence_name, said) for a, said in claims],
+                      links=[(k, said, source, dataset.licence_name) for k, said in links],
+                      places=[(k, source, dataset.licence_name, said) for k, said in places])
+    finally:
+        c.close()
+    parts = [world._plural(len(x), w) for x, w in ((places, "place"), (claims, "router placed"), (links, "link")) if x]
+    return (f"given to the composite database: {', '.join(parts)}" if ok
+            else f"not given to the composite database: {c.problem or 'it could not be written'}")
 
 
 def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clock, wall, agreed: float) -> dict:
@@ -1533,11 +1804,11 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
         raise
     finally:
         halt.set()
-    size = sum(len(t[3]) for t in data) if isinstance(data, list) else len(data)
+    size = sum(len(t[-1]) for t in data) if isinstance(data, list) else len(data)
     say(f"{size_words(size)} downloaded: reading it")
     doc = _decoded(dataset, data)
     del data  # the answer's bytes are not held beside what is read of them
-    features = _features(dataset, doc, free=True)
+    features = _features(dataset, doc, free=True, probes=getattr(dataset, "probes_by_id", None))
     del doc
     for remark in features["remarks"]:
         say(remark)
@@ -1553,6 +1824,7 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
     try:
         put = store.put(dataset, features, fetched, accepted=agreed, size=size, orbits=features.get("orbits") or (),
                         probes=features.get("probes") or ())
+        composite_rows = features.get("composite") or {}
     except StoreError as e:
         raise InfrastructureError(f"{dataset.title} could not be kept: {e}. Nothing was installed, and what was "
                                   "installed before stays.") from None
@@ -1562,6 +1834,9 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
              f"credited on the globe as {dataset.credit['text']}"]
     if left:
         lines.append(left)
+    given = _composite(dataset, target, composite_rows)
+    if given:
+        lines.append(given)
     counts = {layer: c["points"] + c["lines"] for layer, c in put["counts"].items()}
     return {"said": f"installed {dataset.title}: {world._plural(put['features'], 'feature')} ({size_words(size)})",
             "ok": True, "lines": lines,
@@ -1973,8 +2248,11 @@ class Index:
         if not can or installing() or self.elsewhere():
             return []
         base, out = self.folder, []
+        installed = {s["id"] for s in self.sets() if s["installed"]}
         for s in self.sets():
             dataset = self.dataset(s["id"])
+            if dataset.needs and dataset.needs not in installed:
+                continue  # 1.104.0: offered once the data set it is read with is here
             out.append(form(dataset, base, update=s["installed"]))
             if s["installed"] or s["problem"]:
                 out.append(remove_form(dataset, base))
@@ -2002,6 +2280,9 @@ class Index:
                 here = "not downloaded"
             there = s["installed"] or bool(s["problem"])
             get = {"form": FORM + s["id"], "title": "Update…" if s["installed"] else "Download…"}
+            needs = self.dataset(s["id"]).needs
+            if needs and not next((x["installed"] for x in self.sets() if x["id"] == needs), False):
+                get = {"text": "needs " + next((x["title"] for x in self.sets() if x["id"] == needs), needs)}
             rows.append([{"text": s["title"], "sub": s["about"]} if s["about"] else s["title"], s["source"],
                          s["licence_name"], here, get if offer else "",
                          {"form": REMOVE_FORM + s["id"], "title": "Remove…"} if offer and there else ""])
