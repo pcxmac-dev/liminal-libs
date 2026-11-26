@@ -283,6 +283,8 @@ class NetstatView:
         self._once = False  # a one-shot app: the recording thread never starts
         self.closed = False  # close(): for good, the plugin detached
         self.error = ""  # the recording thread's last problem, until a reading works again
+        self._refresh_lock = threading.Lock()  # 1.104.0: one data set refreshed by itself at a time (refresh)
+        self._refreshing: threading.Thread | None = None
 
     # -- the book, the login, the names ----------------------------------------------------------------------------
     @property
@@ -1239,6 +1241,34 @@ class NetstatView:
     def drop(self, dataset) -> dict:
         """A data set's file removed (infrastructure.remove): the globe no longer draws it."""
         return infrastructure.remove(self.index.dataset(dataset), self.index.folder)
+
+    def refresh(self) -> str:
+        """1.104.0 (the user, 2026-11-26, CelesTrak's "Refresh by itself"): the first data set due to be downloaded
+        again by itself (Index.refresh_due) started on a thread of its own; its id, "" when none is due or one runs.
+        Asked by the World Wide Web tab's page while it is open (Firewall.world, a person signed in at the page) and
+        by no timer: nothing is refreshed while nobody looks. The download is infrastructure.install's, as on the
+        user's click (one at a time, its deadline; the view's close cancels it); a refusal is kept in the database and
+        stops the refreshing until the user's own Update succeeds."""
+        if self.closed:
+            return ""
+        with self._refresh_lock:
+            if self._refreshing is not None and self._refreshing.is_alive():
+                return ""
+            due = self.index.refresh_due()
+            if not due:
+                return ""
+            dataset = due[0]
+            self._refreshing = threading.Thread(target=self._refresh_one, args=(dataset,), daemon=True,
+                                                name=f"{dataset.id}-refresh")
+            self._refreshing.start()
+            return dataset.id
+
+    def _refresh_one(self, dataset) -> None:
+        try:  # the licence's words are the ones the user accepted for its first download (Index.refresh_due)
+            infrastructure.install(dataset, self.index.folder, accept_licence=True, fetch=self._fetch,
+                                   cancel=lambda: self.closed, agent=self.agent)
+        except Exception:  # noqa: BLE001 - a refusal is kept (infrastructure.install) and said on the tab
+            pass
 
     # -- what asks nothing --------------------------------------------------------------------------------------------
     def describe(self) -> dict:

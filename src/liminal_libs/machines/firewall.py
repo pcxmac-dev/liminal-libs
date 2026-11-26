@@ -720,13 +720,20 @@ class Firewall(MachinePlugin):
         their routes to home, the busiest ports' charts, the ports and the places tabled, and the GeoIP file's install
         form while none is installed; or, while it shows the hosts recorded, each program's remote hosts by place,
         filtered as chosen, with no traffic page made for it. Always what the globe shows and the internet
-        infrastructure's layers and data sets (NetstatView.onto). Not for this machine (not_for_here): a page saying
-        so, and nothing started."""
+        infrastructure's layers and data sets (NetstatView.onto). 1.104.0: asked by a person signed in at the page, the
+        data sets refreshed by themselves that are due (CelesTrak's orbits, every 2 hours at most) are downloaded again
+        (NetstatView.refresh): only while the tab is open. Not for this machine (not_for_here): a page saying so, and
+        nothing started."""
         here = self.not_for_here()
         if here:
             return not_here_page(here)
         view = self.world_view()
         net = self.netstat_view()
+        if self._at_the_page():  # 1.104.0: what is refreshed by itself (CelesTrak's orbits), while a person looks
+            try:
+                net.refresh()
+            except Exception:  # noqa: BLE001 - a refresh never costs the tab its page
+                pass
         seen = net.touch()
         # 1.67.0: every connection open now to an address on the internet has its route traced while the tab is
         # shown (the user, 2026-11-19: "trace all connections"); a place's line then runs through its hops

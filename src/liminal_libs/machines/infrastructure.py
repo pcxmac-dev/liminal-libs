@@ -118,6 +118,12 @@ AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes", "omm-
 # not as JSON
 QUERIES = 8  # queries an omm-csv set may ask, one request each (HughesNet's three satellites by their numbers)
 EVERY_MOST = 7 * 86400.0  # the longest a data set may ask its Update to wait
+# 1.104.0 (the user, 2026-11-26, CelesTrak's "Refresh by itself"): a set whose `refresh` is true is downloaded again by
+# itself once its `every` has passed, asked by the World Wide Web tab's page while it is open (refresh_due), never
+# less than REFRESH_LEAST apart; `pause`: the seconds nothing is asked of its host after it answered 500 or 503
+REFRESH_LEAST = 3600.0
+PAUSE_MOST = 86400.0
+PAUSE_CODES = (500, 503)
 MANY = ("mvt", "atlas-latest")  # the formats asked in several requests, one after another, on the one click
 ATLAS_BATCH = 300  # probes' ids asked in one request of RIPE Atlas's latest results
 ATLAS_RESULTS = 20_000  # results read of its answers, at most (1.104.0: every connected probe's, some 12,000)
@@ -291,6 +297,8 @@ class DataSet:
     ask: str = "anchors"  # an atlas-latest set's: whose results it asks (ATLAS_ASKS)
     family: int = 4  # ... and its measurement's IP version (ATLAS_FAMILIES)
     most: int = 0  # the bytes its answers may be in all, where it raises its own limit (0: MAX_ANSWER, as every set's)
+    refresh: bool = False  # downloaded again by itself every `every` while the tab is open, after the user's first yes
+    pause: float = 0.0  # seconds nothing is asked of its host after a 500 or a 503 (CelesTrak's 15 minutes)
 
     @property
     def limit(self) -> int:
@@ -479,6 +487,16 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident}'s every is the seconds its Update waits, 0 to {EVERY_MOST:g}, not "
                          f"{world._shown(every)}")
     out["every"] = float(every)
+    refresh, pause = said.get("refresh", False), said.get("pause", 0)
+    if not isinstance(refresh, bool):
+        raise ValueError(f"the data set {ident}'s refresh is true or false, not {world._shown(refresh)}")
+    if refresh and every < REFRESH_LEAST:
+        raise ValueError(f"the data set {ident} is refreshed by itself only with an every of {REFRESH_LEAST:g} s or "
+                         "more: the seconds its maker asks between downloads")
+    if isinstance(pause, bool) or not isinstance(pause, (int, float)) or not 0 <= pause <= PAUSE_MOST:
+        raise ValueError(f"the data set {ident}'s pause is the seconds nothing is asked after a 500 or a 503, 0 to "
+                         f"{PAUSE_MOST:g}, not {world._shown(pause)}")
+    out["refresh"], out["pause"] = refresh, float(pause)
     constellation = said.get("constellation", "")
     if not isinstance(constellation, str) or (constellation and not ID_FORM.fullmatch(constellation)):
         raise ValueError(f"the data set {ident}'s constellation is a short id (starlink), not "
@@ -1869,17 +1887,59 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
             accepted()
         with _STATE:
             _NOW["id"] = dataset.id
-        return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall,
-                        float(wall()))
+        try:
+            return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall,
+                            float(wall()))
+        except InfrastructureError as e:
+            if dataset.refresh or dataset.pause:  # 1.104.0: kept, so it is not refreshed by itself, and paused
+                _answered(dataset, target, e, float(wall()))
+            raise
     finally:
         with _STATE:
             _NOW["id"] = ""
         _INSTALLING.release()
 
 
-def held_back(dataset: DataSet, target, now: float, fetched: float | None = None) -> str:
-    """Why a data set's Update waits (1.104.0: CelesTrak's orbits, no more often than every 2 hours), in words; "" when
-    it does not. `fetched`: when it was last downloaded (read from the database when not given)."""
+def _answered(dataset: DataSet, target: Path, e: InfrastructureError, now: float) -> None:
+    """A refused download of a set refreshed by itself or paused after a 500 or 503, kept in the database (its HTTP
+    code, 0 when no answer came): a database that cannot keep it changes nothing of the refusal said."""
+    from .infrastore import Store
+    try:
+        Store(target).answered(dataset.id, getattr(e, "code", None) or 0, now, str(e))
+    except Exception:  # noqa: BLE001 - the refusal is said all the same
+        return
+    _changed()  # every Index looks again: the table says it at once
+
+
+def _answer_of(dataset: DataSet, target) -> dict | None:
+    from .infrastore import Store
+    try:
+        return Store(target).answers().get(dataset.id)
+    except Exception:  # noqa: BLE001 - a database that cannot say: none kept
+        return None
+
+
+def paused(dataset: DataSet, answer: Mapping | None, now: float) -> str:
+    """Why nothing is asked of a data set's host now (1.104.0: CelesTrak asks for nothing for 15 minutes after a 500 or
+    a 503), in words; "" when it may be asked. `answer`: its last answer that was not OK (infrastore.answers)."""
+    if not dataset.pause or not answer or answer.get("code") not in PAUSE_CODES:
+        return ""
+    until = float(answer["at"]) + dataset.pause
+    if now >= until:
+        return ""
+    return (f"{dataset.host} answered HTTP {answer['code']} at {world._iso(float(answer['at']))[11:16]} UTC, and its "
+            f"maker asks that nothing is asked of it for {world._seconds(dataset.pause / 60)} minutes after that: it "
+            f"can be asked again from {world._iso(until)[11:16]} UTC")
+
+
+def held_back(dataset: DataSet, target, now: float, fetched: float | None = None, answer=False) -> str:
+    """Why a data set's Update waits (1.104.0: CelesTrak's orbits, no more often than every 2 hours; nothing for its
+    `pause` after a 500 or 503), in words; "" when it does not. `fetched`: when it was last downloaded, and `answer`
+    its last answer that was not OK (each read from the database when not given)."""
+    if dataset.pause:
+        why = paused(dataset, _answer_of(dataset, target) if answer is False else answer, now)
+        if why:
+            return why
     if not dataset.every:
         return ""
     if fetched is None:
@@ -2070,8 +2130,8 @@ def form(dataset, folder, update: bool = False) -> dict:
                    {"name": ACCEPT, "type": "accept", "title": f"Accept its licence ({dataset.licence_name})?",
                     "words": dataset.licence, "yes": "Accept it and download"}],
         "confirm": {"title": f"{verb} {dataset.title}?", "yes": "Go on",
-                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset, folder)}, made now on "
-                              f"your word (once more {_apart()} later if the server is busy), and kept in "
+                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset, folder)}, made "
+                              f"now on your word (once more {_apart()} later if the server is busy), and kept in "
                               f"{_resolved(folder)} in place of any older copy: {size_words(dataset.size)} (an "
                               f"estimate where its maker gives none).{_limit_words(dataset)} Its progress shows in the "
                               "panel below; it "
@@ -2239,6 +2299,7 @@ class Index:
         self._looked: float | None = None  # when the folder was last looked at (clock)
         self._seen = -1  # the installs and removals of this process at that look
         self._files: dict[str, dict] = {}  # each installed data set's facts, by its id
+        self._answers: dict[str, dict] = {}  # 1.104.0: each set's last answer that was not OK (infrastore.answers)
 
     @property
     def folder(self) -> Path:
@@ -2312,6 +2373,7 @@ class Index:
             store = self.store()
             try:
                 kept = store.sets()
+                self._answers = store.answers() if any(d.refresh or d.pause for d in self.datasets) else {}
                 problems = self._import(store, kept)
                 if not problems and self._files and store.stamp() == getattr(self, "_stamp", None):
                     return self._files
@@ -2335,7 +2397,8 @@ class Index:
                     "credit": {"text": row["credit_text"], "url": row["credit_url"]},
                     "fetched": world._iso(row["fetched"]), "features": row["features"], "dropped": row["dropped"],
                     "counts": counts.get(dataset.id, {}), "problem": "", "bytes": row["bytes"],
-                    "version": row["version"], "stand_in": bool(row["stand_in"])}
+                    "version": row["version"], "stand_in": bool(row["stand_in"]),
+                    "accepted": row["licence"] == dataset.licence}  # 1.104.0: the words accepted are its words now
             self._stamp = store.stamp()
             self._files = files
             return files
@@ -2440,11 +2503,41 @@ class Index:
         return out
 
     def _held(self, dataset: DataSet) -> str:
-        """Why its Update waits (held_back), "" when it does not, from the look's facts."""
+        """Why its download or its Update waits (held_back), "" when it does not, from the look's facts."""
         fact = self._look().get(dataset.id)
-        if not dataset.every or not fact or fact.get("problem"):
-            return ""
-        return held_back(dataset, self.folder, self.wall(), _seconds_of(fact.get("fetched")))
+        why = paused(dataset, self._answers.get(dataset.id), self.wall())  # a first download too (1.104.0)
+        if why or not dataset.every or not fact or fact.get("problem"):
+            return why
+        return held_back(dataset, self.folder, self.wall(), _seconds_of(fact.get("fetched")), answer=None)
+
+    def refresh_due(self) -> list[DataSet]:
+        """The data sets to download again by themselves now (1.104.0, the user's "Refresh by itself"): each whose
+        `refresh` is true, downloaded here before on the user's word (its licence's words the ones accepted then),
+        its `every` passed since, no answer but OK since its last download (any other stops it until a download the
+        user asks succeeds), nothing held back (held_back), and no download under way. Asked by the World Wide Web
+        tab's page while it is open, and by nothing else: nothing is refreshed while nobody looks."""
+        if installing() or self.elsewhere():
+            return []
+        files, now, out = self._look(), self.wall(), []
+        for d in self.datasets:
+            fact = files.get(d.id)
+            if (not d.refresh or not fact or fact.get("problem") or not fact.get("accepted")
+                    or d.id in self._answers or self._held(d)):
+                continue
+            out.append(d)
+        return out
+
+    def _refresh_words(self, dataset: DataSet, fact: Mapping) -> str:
+        """What the table says of a set refreshed by itself: when its next refresh is due, or why it is not."""
+        answer = self._answers.get(dataset.id)
+        if answer:
+            return (f"not refreshed by itself since {world._iso(float(answer['at']))[11:16]} UTC: "
+                    f"{_text(answer['said'])[:REMARK]} Update… to try again")
+        if not fact.get("accepted"):
+            return "not refreshed by itself: its licence's words changed since you accepted them; Update… to read them"
+        due = _seconds_of(fact.get("fetched")) + dataset.every
+        return (f"refreshed by itself every {world._seconds(dataset.every / 3600)} hours while this tab is open: next "
+                f"due at {world._iso(max(due, self.wall()))[11:16]} UTC")
 
     def forms(self, can: bool = True) -> list[dict]:
         """The forms the table's buttons open: each data set's download (an update once it is installed) and, once
@@ -2458,10 +2551,10 @@ class Index:
             dataset = self.dataset(s["id"])
             if dataset.needs and dataset.needs not in installed:
                 continue  # 1.104.0: offered once the data set it is read with is here
-            if s["installed"] and self._held(dataset):
+            if self._held(dataset):
                 if s["installed"] or s["problem"]:
                     out.append(remove_form(dataset, base))
-                continue  # 1.104.0: its Update waits as its maker asks
+                continue  # 1.104.0: its download or its Update waits as its maker asks
             out.append(form(dataset, base, update=s["installed"]))
             if s["installed"] or s["problem"]:
                 out.append(remove_form(dataset, base))
@@ -2484,15 +2577,17 @@ class Index:
                 here = {"text": "not read", "sub": s["problem"]}
             elif s["installed"]:
                 sub = size_words(s["bytes"]) + (f"; {s['dropped']:,} left out" if s["dropped"] else "")
+                if self.dataset(s["id"]).refresh:  # 1.104.0: when it is refreshed next, or why not
+                    sub += "; " + self._refresh_words(self.dataset(s["id"]), self._look().get(s["id"]) or {})
                 here = {"text": f"{world._plural(s['features'], 'feature')}, fetched {s['fetched'][:10]}", "sub": sub}
             else:
                 here = "not downloaded"
             there = s["installed"] or bool(s["problem"])
             get = {"form": FORM + s["id"], "title": "Update…" if s["installed"] else "Download…"}
             needs = self.dataset(s["id"]).needs
-            held = self._held(self.dataset(s["id"])) if s["installed"] else ""
+            held = self._held(self.dataset(s["id"]))
             if held:
-                get = {"text": "Update later", "sub": held}
+                get = {"text": "Update later" if s["installed"] else "Download later", "sub": held}
             if needs and not next((x["installed"] for x in self.sets() if x["id"] == needs), False):
                 get = {"text": "needs " + next((x["title"] for x in self.sets() if x["id"] == needs), needs)}
             rows.append([{"text": s["title"], "sub": s["about"]} if s["about"] else s["title"], s["source"],

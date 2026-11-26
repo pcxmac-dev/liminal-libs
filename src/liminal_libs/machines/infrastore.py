@@ -8,7 +8,8 @@ downloads (infrastructure.install) and read by area, so the globe asks for what 
   vertices packed as the layers' files pack them (little-endian int32 pairs, longitude and latitude in 1e-5 degrees),
   and a line's coarse copy (thinned to COARSE degrees) for the whole globe's view; `cells`: which features cross which
   1-degree cell, the reads by area; `orbits` and `probes`: the satellites' elements and RIPE Atlas's probes (items 32
-  and 28), written with their sets.
+  and 28), written with their sets; `answers`: the last answer that was not OK of a set whose maker asks to be left
+  alone after one (CelesTrak's), kept until it is downloaded again (infrastructure.held_back and refresh_due read it).
 - A set is written in one transaction, its older rows replaced: a write that fails leaves the older copy as it was.
 - The file is opened only while a write or a read is made, and closed after each (it can be removed right after, on
   Windows too); no thread, no timer. Thread-safe."""
@@ -63,6 +64,10 @@ CREATE TABLE IF NOT EXISTS probes (
   anchor INTEGER NOT NULL, connected INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 """
+# the user, 2026-11-26 (CelesTrak's "Refresh by itself"): a set's last answer that was not OK, by its id (no foreign
+# key: a first download that failed has no set yet); made by the writes that use it too, so an older file gains it
+ANSWERS = ("CREATE TABLE IF NOT EXISTS answers (set_id TEXT PRIMARY KEY, code INTEGER NOT NULL, at REAL NOT NULL, "
+           "said TEXT NOT NULL)")
 SET_COLUMNS = ("id", "title", "source", "url", "licence_name", "licence", "accepted", "credit_text", "credit_url",
                "fetched", "features", "dropped", "bytes", "stand_in", "version")
 
@@ -198,6 +203,7 @@ class Store:
                 con.execute("PRAGMA journal_mode = WAL")
                 if con.execute("PRAGMA user_version").fetchone()[0] == 0:
                     con.executescript(SCHEMA)
+                    con.execute(ANSWERS)
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
         except BaseException:
             con.close()
@@ -283,6 +289,8 @@ class Store:
 
         def work(con):
             con.execute("DELETE FROM sets WHERE id = ?", (dataset.id,))
+            con.execute(ANSWERS)
+            con.execute("DELETE FROM answers WHERE set_id = ?", (dataset.id,))  # downloaded: what failed before is past
             con.execute(f"INSERT INTO sets ({', '.join(SET_COLUMNS)}) VALUES ({', '.join('?' * len(SET_COLUMNS))})",
                         (dataset.id, dataset.title, dataset.source, dataset.url, dataset.licence_name, dataset.licence,
                          float(accepted), dataset.credit["text"], dataset.credit["url"], float(fetched), count,
@@ -309,7 +317,21 @@ class Store:
         """A set's rows removed (its features' cells with them): whether it was there."""
         if not self.exists():
             return False
-        return bool(self._write(lambda con: con.execute("DELETE FROM sets WHERE id = ?", (set_id,)).rowcount))
+        def work(con):
+            con.execute(ANSWERS)
+            con.execute("DELETE FROM answers WHERE set_id = ?", (set_id,))
+            return con.execute("DELETE FROM sets WHERE id = ?", (set_id,)).rowcount
+        return bool(self._write(work))
+
+    def answered(self, set_id: str, code: int, at: float, said: str) -> None:
+        """A set's answer that was not OK kept (the HTTP code, 0 for none: no answer came; when, seconds since 1970;
+        its words), in place of any older one: until it is downloaded again, it is not refreshed by itself, and after
+        a 500 or 503 nothing is asked of its host for its `pause` (infrastructure.held_back)."""
+        def work(con):
+            con.execute(ANSWERS)
+            con.execute("INSERT OR REPLACE INTO answers (set_id, code, at, said) VALUES (?, ?, ?, ?)",
+                        (str(set_id), int(code or 0), float(at), str(said)[:infra.TEXT]))
+        self._write(work)
 
     # -- reads ----------------------------------------------------------------------------------------------------
     def sets(self) -> dict[str, dict]:
@@ -317,6 +339,17 @@ class Store:
         def work(con):
             return {row[0]: dict(zip(SET_COLUMNS, row))
                     for row in con.execute(f"SELECT {', '.join(SET_COLUMNS)} FROM sets")}
+        return self._read(work) or {}
+
+    def answers(self) -> dict[str, dict]:
+        """Each set's last answer that was not OK, by its id: {"code", "at", "said"}; none in a database without the
+        table yet."""
+        def work(con):
+            try:
+                rows = con.execute("SELECT set_id, code, at, said FROM answers").fetchall()
+            except sqlite3.OperationalError:  # no such table: an older file, nothing kept
+                return {}
+            return {r[0]: {"code": r[1], "at": r[2], "said": r[3]} for r in rows}
         return self._read(work) or {}
 
     def imported(self) -> dict[str, str]:

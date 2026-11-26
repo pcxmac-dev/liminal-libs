@@ -439,7 +439,8 @@ def test_a_data_set_asked_in_several_requests_is_held_to_its_limit_in_all(tmp_pa
     with pytest.raises(InfrastructureError, match="its answers are larger than .* in all, the most a data set may be"):
         install({**HUGHES, "size": 100}, tmp_path / "a", accept_licence=True, fetch=Downloads(answers),
                 clock=Clock())
-    out = install({**HUGHES, "size": 100, "most": 4 * each}, tmp_path / "b", accept_licence=True, fetch=Downloads(answers),
+    out = install({**HUGHES, "size": 100, "most": 4 * each}, tmp_path / "b", accept_licence=True,
+                  fetch=Downloads(answers),
                   clock=Clock())
     assert out["ok"] is True
 
