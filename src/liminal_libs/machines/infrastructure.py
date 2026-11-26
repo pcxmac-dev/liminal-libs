@@ -68,6 +68,10 @@ CHUNK = 1 << 20  # bytes of an answer read at a time, at most
 MAX_ANSWER = 32 << 20  # bytes of an answer, and of a kept file: twice the largest data set's estimate (15 MB)
 MAX_UNPACKED = 32 << 20  # bytes a gzipped answer unpacks to, and an archive's maps read as, at most (the Topology Zoo's
 # 0.35 MB: a few MB)
+# 1.104.0 (the user, 2026-11-26): a data set may raise its own limit (its `most`: RIPE Atlas's traceroutes of every
+# probe, some 50 MB; Natural Earth's North America roads, 45.6 MB), every other set keeping MAX_ANSWER; this at most.
+# What it unpacks to and the records it holds may then grow as much, in proportion (_scale)
+MOST_LARGEST = 128 << 20
 FEED, FEED_MOST = 256, 64 << 10  # bytes of a gzip member handed to zlib at a time: its first piece, twice as many each
 # time after, and the most (what follows its end in that piece is copied: _unpacked)
 MAX_MAPS = 2000  # files an archive of maps holds, at most (the Topology Zoo's: 261 maps)
@@ -281,6 +285,13 @@ class DataSet:
     constellation: str = ""
     queries: tuple = ()
     beams: tuple = ()  # ((a geostationary satellite's number, (the ids of the countries its beams reach, ...)), ...)
+    most: int = 0  # the bytes its answers may be in all, where it raises its own limit (0: MAX_ANSWER, as every set's)
+
+    @property
+    def limit(self) -> int:
+        """The bytes its answer may be (all its answers together, where it is asked in several requests): its own
+        `most` where it names one, else MAX_ANSWER."""
+        return self.most or MAX_ANSWER
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -478,6 +489,15 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
                        for k, v in beams.items())):
             raise ValueError(f"the data set {ident}'s beams are {{a satellite's number: [the countries' ids]}}")
         out["beams"] = tuple((int(k), tuple(v)) for k, v in beams.items())
+    most = said.get("most", 0)
+    if most:  # the user, 2026-11-26: this set's own limit, said in its confirmation; every other set keeps MAX_ANSWER
+        size = said.get("size")
+        if (isinstance(most, bool) or not isinstance(most, int) or not MAX_ANSWER < most <= MOST_LARGEST
+                or (isinstance(size, int) and most < size)):
+            raise ValueError(f"the data set {ident}'s most is the bytes its answers may be, more than "
+                             f"{size_words(MAX_ANSWER)} (every set's) and {size_words(MOST_LARGEST)} at most, and no "
+                             f"less than its size: not {world._shown(most)}")
+        out["most"] = most
     if form == "mvt":
         out["tiles"] = _tiles(ident, said)
         if not out.get("layer"):
@@ -783,7 +803,7 @@ class _Unread(ValueError):
     """A map that does not read as GML, and why."""
 
 
-def _unpacked(data, host: str):
+def _unpacked(data, host: str, most: int | None = None):
     """A gml answer unpacked: a gzipped one, each of its gzip members in turn as gzip reads them, MAX_UNPACKED bytes at
     most; one that is not gzipped as it is. A member is handed to zlib a piece at a time, FEED bytes first and twice as
     many each time after, FEED_MOST at most: what follows the member's end in its last piece is copied (zlib's
@@ -792,6 +812,7 @@ def _unpacked(data, host: str):
     unpack to more."""
     if bytes(data[:2]) != GZIP:
         return data
+    most = MAX_UNPACKED if most is None else most  # 1.104.0: a set's own limit's, in proportion (_scale)
     view, out, at = memoryview(data), bytearray(), 0
     while len(view) - at >= 2 and bytes(view[at:at + 2]) == GZIP:
         unzip, feed = zlib.decompressobj(16 + zlib.MAX_WBITS), FEED
@@ -800,13 +821,13 @@ def _unpacked(data, host: str):
             if not given:
                 raise InfrastructureError(f"{host}'s answer is not the data asked for (it is cut short)")
             try:
-                piece = unzip.decompress(given, MAX_UNPACKED + 1 - len(out))  # a byte more than may be: too much
+                piece = unzip.decompress(given, most + 1 - len(out))  # a byte more than may be: too much
             except zlib.error as e:
                 raise InfrastructureError(f"{host}'s answer is not the data asked for (it does not unpack: "
                                           f"{_text(str(e))[:REMARK]})") from None
             out += piece
-            if len(out) > MAX_UNPACKED:
-                raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(MAX_UNPACKED)}, the most "
+            if len(out) > most:
+                raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(most)}, the most "
                                           "a data set may be")
             at += len(given) - len(unzip.unconsumed_tail) - len(unzip.unused_data)  # what of the piece zlib read
             feed = min(2 * feed, FEED_MOST)
@@ -1114,7 +1135,8 @@ def _shapefile(doc, kept: _Kept, host: str, free: bool) -> None:
     if not isinstance(doc, (bytes, bytearray)):
         raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no zipped shapefile)")
     try:
-        shapes = shapefile.read(doc, dataset.member or None, most_bytes=shapefile.SHP_MOST)
+        shapes = shapefile.read(doc, dataset.member or None, most_bytes=shapefile.SHP_MOST * _scale(dataset),
+                                most_records=shapefile.RECORDS_MOST * _scale(dataset))
     except shapefile.ShapefileError as e:
         raise InfrastructureError(f"{host}'s answer is not the data asked for ({e})") from None
     points = dataset.layer in POINT_LAYERS
@@ -1219,22 +1241,23 @@ def _topohub(doc, kept: _Kept, host: str, free: bool) -> None:
     kept.extra["composite"] = {"places": places, "links": links}
 
 
-def _bunzipped(data, host: str) -> bytes:
+def _bunzipped(data, host: str, most: int | None = None) -> bytes:
     """A bzip2 answer unpacked, MAX_UNPACKED bytes at most; one that is not bzip2 as it is."""
     import bz2
+    most = MAX_UNPACKED if most is None else most  # 1.104.0: a set's own limit's, in proportion (_scale)
     if bytes(data[:3]) != b"BZh":
         return bytes(data)
     out, view = bytearray(), memoryview(data)
     unzip = bz2.BZ2Decompressor()
     try:
-        out += unzip.decompress(view, MAX_UNPACKED + 1)
-        while not unzip.eof and unzip.needs_input is False and len(out) <= MAX_UNPACKED:
-            out += unzip.decompress(b"", MAX_UNPACKED + 1 - len(out))
+        out += unzip.decompress(view, most + 1)
+        while not unzip.eof and unzip.needs_input is False and len(out) <= most:
+            out += unzip.decompress(b"", most + 1 - len(out))
     except (OSError, EOFError, ValueError) as e:
         raise InfrastructureError(f"{host}'s answer is not the data asked for (it does not unpack: "
                                   f"{_text(str(e))[:REMARK]})") from None
-    if len(out) > MAX_UNPACKED:
-        raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(MAX_UNPACKED)}, the most a data "
+    if len(out) > most:
+        raise InfrastructureError(f"{host}'s answer unpacks to more than {size_words(most)}, the most a data "
                                   "set may be")
     return bytes(out)
 
@@ -1244,7 +1267,7 @@ def _atlas_probes(doc, kept: _Kept, host: str, free: bool) -> None:
     point of probes (its id, its country and networks its sub), and a row of the database's probes table: id, place,
     country, IPv4 and IPv6 networks, whether an anchor and whether connected. Its description and tags (its owner's own
     words) are never kept."""
-    raw = _bunzipped(doc, host)
+    raw = _bunzipped(doc, host, MAX_UNPACKED * _scale(kept.dataset))
     try:
         if jsonread.too_deep(raw):
             raise ValueError("nested too deeply")
@@ -1556,6 +1579,22 @@ def _pause(until: float, deadline: float, clock, cutoff, halt: threading.Event) 
             return
 
 
+def _too_large(dataset: DataSet, several: bool = False) -> str:
+    """The words for an answer (or, `several`, the answers of a set asked in several requests) larger than its data
+    set's limit: MAX_ANSWER, or its own `most`."""
+    what = "its answers are larger than" if several else "the answer is larger than"
+    whose = "the most this data set may be" if dataset.most else "the most a data set may be"
+    return f"{what} {size_words(dataset.limit)}{' in all' if several else ''}, {whose}"
+
+
+def _scale(dataset: "DataSet | None") -> int:
+    """How many times every set's bounds of what an answer unpacks to and of the records it holds a data set's own
+    limit allows: 1 for every set but one that raises it (its `most` over MAX_ANSWER, rounded up)."""
+    if dataset is None or not dataset.most:
+        return 1
+    return max(1, -(-dataset.most // MAX_ANSWER))
+
+
 def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, say, wait: float, final: bool = True,
           most: int | None = None) -> bytearray:
     """The answer's bytes, read on the download's thread a piece at a time (one of the stream's own reads at most:
@@ -1564,9 +1603,9 @@ def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, s
     is left is this machine's own). 1.104.0: `final` false for a tile with more to come (its end is not the
     download's), `most` the bytes it may be (MAX_ANSWER, as it is now, when not given)."""
     host = dataset.host
-    large = (f"the answer is larger than {size_words(MAX_ANSWER)}, the most a data set may be" if most is None
+    large = (_too_large(dataset) if most is None
              else f"a tile is larger than {size_words(most)}, the most one may be")
-    most = MAX_ANSWER if most is None else most
+    most = dataset.limit if most is None else most
     size = world._length(stream)
     if size is not None and size > most:
         raise InfrastructureError(large)
@@ -1614,7 +1653,7 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
         return _batches(dataset, fetch, agent, cutoff, halt, deadline, took, clock, say)
     if dataset.format != "mvt":
         return _one(dataset, dataset.address(), fetch, agent, cutoff, halt, deadline, took, clock, say)
-    out, last = [], len(dataset.tiles) - 1
+    out, last, total = [], len(dataset.tiles) - 1, 0
     for i, (z, x, y) in enumerate(dataset.tiles):
         if i:
             say(f"tile {i + 1} of {len(dataset.tiles)}")
@@ -1623,6 +1662,9 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
                        say if not i else (lambda _line: None), final=i == last, most=TILE_MOST, missing_ok=True)
         except _Missing:
             raw = bytearray()
+        total += len(raw)
+        if total > dataset.limit:  # 1.104.0: its answers in all, as one answer's
+            raise InfrastructureError(_too_large(dataset, several=True))
         out.append((z, x, y, bytes(raw)))
     with cutoff.lock:
         if not cutoff.why:
@@ -1636,7 +1678,7 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
     (HughesNet's satellites by their numbers): [(the request's number, its bytes)]. A refusal of RIPE Atlas that asks
     for credentials stops it with nothing kept: no key is ever asked for or sent."""
     asked = list(dataset.addresses() if dataset.queries else getattr(dataset, "asked", ()) or ())
-    out = []
+    out, total = [], 0
     for i, address in enumerate(asked):
         if i:
             say(f"request {i + 1} of {len(asked)}")
@@ -1648,6 +1690,9 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
                 raise InfrastructureError(f"{dataset.host} refused the request: it asks for credentials, and none "
                                           "is ever sent from here. Nothing was installed.") from None
             raise
+        total += len(raw)
+        if total > dataset.limit:  # 1.104.0: its answers in all, as one answer's
+            raise InfrastructureError(_too_large(dataset, several=True))
         out.append((i, bytes(raw)))
     with cutoff.lock:
         if not cutoff.why:
@@ -2002,10 +2047,20 @@ def form(dataset, folder, update: bool = False) -> dict:
                     "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset)}, made now on "
                               f"your word (once more {_apart()} later if the server is busy), and kept in "
                               f"{_resolved(folder)} in place of any older copy: {size_words(dataset.size)} (an "
-                              "estimate where its maker gives none). Its progress shows in the panel below; it "
+                              f"estimate where its maker gives none).{_limit_words(dataset)} Its progress shows in the "
+                              "panel below; it "
                               f"stops by itself after {world._seconds(INSTALL_S / 60)} minutes. The request holds only "
                               f"{ASKED[dataset.format]}: nothing about this machine or its traffic. Its licence, "
                               f"first: {dataset.licence} You are asked to accept it next.")}}
+
+
+def _limit_words(dataset: DataSet) -> str:
+    """A data set's own limit in words for its confirmation (1.104.0), with a space before; "" for one that keeps every
+    set's (MAX_ANSWER)."""
+    if not dataset.most:
+        return ""
+    return (f" It may be up to {size_words(dataset.limit)} in all, a limit raised for this data set alone (every other "
+            f"set may be {size_words(MAX_ANSWER)} at most).")
 
 
 def _requests(dataset: DataSet) -> str:

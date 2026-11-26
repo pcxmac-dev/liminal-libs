@@ -395,3 +395,55 @@ def test_hughesnets_satellites_are_asked_one_number_a_request(tmp_path):
                           ({"every": -1}, "every is the seconds"), ({"queries": ["a b"]}, "queries are 8 at most")):
         with pytest.raises(ValueError, match=re.escape(words)):
             DataSet.of({**HUGHES, **change})
+
+
+# -- a data set's own limit (the user, 2026-11-26: RIPE Atlas's every probe, Natural Earth's North America roads) -----
+def test_a_data_set_may_raise_its_own_limit_alone_and_its_confirmation_says_so(tmp_path, monkeypatch):
+    from liminal_libs import shapefile
+    roads = DataSet.of(ROADS)
+    assert (roads.most, roads.limit) == (0, infrastructure.MAX_ANSWER)
+    big = DataSet.of({**ROADS, "id": "ne-roads-na", "most": 96 << 20})
+    assert big.limit == 96 << 20 and infrastructure._scale(big) == 3 and infrastructure._scale(roads) == 1
+    words = infrastructure.form(big, tmp_path)["confirm"]["words"]
+    assert f": {size_said(ROADS)} (an estimate" in words  # its size said, as every set's
+    assert ("It may be up to 96.0 MB in all, a limit raised for this data set alone (every other set may be 32.0 MB "
+            "at most)") in words
+    assert "a limit raised" not in infrastructure.form(roads, tmp_path)["confirm"]["words"]
+    for most, why in ((32 << 20, "more than 32.0 MB"), (129 << 20, "128 MB at most"), (True, "most is the bytes"),
+                      (8_000_000, "no less than its size")):
+        with pytest.raises(ValueError, match=re.escape(why)):
+            DataSet.of({**ROADS, "most": most})
+    # the answer, what it unpacks to and its records: every set's bounds, and that set's own raised in proportion
+    answer = roads_zip()
+    monkeypatch.setattr(infrastructure, "MAX_ANSWER", len(answer) // 2)
+    monkeypatch.setattr(shapefile, "RECORDS_MOST", 2)  # the zip holds 3
+    small = {**ROADS, "size": 100}
+    with pytest.raises(InfrastructureError, match="the answer is larger than .*, the most a data set may be"):
+        install(small, tmp_path / "a", accept_licence=True, fetch=Downloads({roads.address(): answer}), clock=Clock())
+    raised = {**small, "most": 2 * len(answer)}
+    out = install(raised, tmp_path / "b", accept_licence=True, fetch=Downloads({roads.address(): answer}),
+                  clock=Clock())
+    assert out["ok"] is True and out["file"]["layers"] == {"roads": 3}
+    with pytest.raises(InfrastructureError, match="the answer is larger than .*, the most this data set may be"):
+        install({**small, "most": len(answer) - 1}, tmp_path / "c", accept_licence=True,
+                fetch=Downloads({roads.address(): answer}), clock=Clock())
+
+
+def test_a_data_set_asked_in_several_requests_is_held_to_its_limit_in_all(tmp_path, monkeypatch):
+    hughes = DataSet.of(HUGHES)
+    urls = hughes.addresses()
+    answers = {u: (HEAD + orbit(n, int(u.split("=")[1][:5]), 1.0027)).encode()
+               for u, n in zip(urls, ("ECHOSTAR 17", "ECHOSTAR 19", "JUPITER 3"))}
+    each = max(len(a) for a in answers.values())
+    monkeypatch.setattr(infrastructure, "MAX_ANSWER", 2 * each)  # each answer fits, the three together do not
+    with pytest.raises(InfrastructureError, match="its answers are larger than .* in all, the most a data set may be"):
+        install({**HUGHES, "size": 100}, tmp_path / "a", accept_licence=True, fetch=Downloads(answers),
+                clock=Clock())
+    out = install({**HUGHES, "size": 100, "most": 4 * each}, tmp_path / "b", accept_licence=True, fetch=Downloads(answers),
+                  clock=Clock())
+    assert out["ok"] is True
+
+
+def size_said(dataset) -> str:
+    from liminal_libs.machines.world import size_words
+    return size_words(DataSet.of(dataset).size)
