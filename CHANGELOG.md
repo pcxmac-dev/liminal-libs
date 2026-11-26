@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.103.0 (2026-11-26, provisional: renumbered at its landing)
+
+What every plugin needs of the machine it runs on, and the judgement of it against this machine (Monday list item 19,
+part two, release 1, round one: the needs plan's revision 2 of 2026-11-24, with the user's twenty answers of
+2026-11-25). The user, 2026-11-18: every plugin has a "needs" requirement (the operating system, the hardware
+platform, GPUs, the internet); a plugin whose needs this machine cannot meet is not shown in the left-most list; the
+Connections view gets a tab of all of the app's plugins, red for those that could but do not meet current conditions,
+shaded for those that never can here. This release is the library's part; liminal-platform 0.40.0 draws it. Additive
+but for one rename (below); the plugin API stays 2.4, and an older library reads no NEEDS at all.
+
+- **`liminal_libs.needs`** (plain: the standard library alone). A plugin says what it needs in `NEEDS`, a plain tuple
+  of rows on its class, `(attribute, value[, strength[, words]])`, added to a base's only through
+  `NEEDS = (*getattr(Base, "NEEDS", ()), ...)`, never a property and never annotated. VOCABULARY 1's attributes:
+  kernel, windows.build, windows.feature, architecture, cpu, virtualization, memory, wsl, linux.feature, init,
+  internet, library, disk, desktop, tool, plugin and rights, with a `windows:` or `linux:` prefix for one system's;
+  the strengths required, part and preferred (tools, rights, other plugins, the disk and the desktop are never
+  required: the user's answer 1). `Plugin` has none, so a plugin that says nothing ("It has not said what it needs
+  yet") is told apart from one that needs nothing (`NEEDS = ()`). `problems(plugin)` is what a plugin's test holds
+  its rows to: an attribute the vocabulary does not know (gpu, libc: release 2) is never a problem, and judged
+  unknown. `judge(rows, facts, ...)` is pure and never raises: each row met, unmet, unknown or na, each unmet one of
+  the machine (shaded: nothing can change it here) or of the moment (red: something can), what was read and what
+  would meet it. A fact that cannot be read never hides a plugin (answer 10); a running hypervisor on bare metal meets
+  the processor's three virtualization flags, which read no while it runs; inside a virtual machine or on Windows on
+  Arm a no never seen read right is unknown; a Windows feature that is off is a need of the moment (answer 18), one
+  absent is the edition's, unknown on a Server; the internet is no only once two readings 15 s apart agree (answer
+  2), taken as there by the platform's switch (answer 3), and not there while the app is set offline
+  (LIMINAL_OFFLINE, LIMINAL_READONLY: answer 5). `state_of` and `held_for` are the rules the platform calls.
+- **`liminal_libs.facts`**: this machine's facts, read without sending anything, one reader a process. On Windows:
+  `sys.getwindowsversion()`, the CurrentVersion key, kernel32 (IsWow64Process2, IsProcessorFeaturePresent, the
+  memory), CPython's own `_wmi` (Win32_ComputerSystem, Win32_Processor, Win32_OperatingSystem, and the features
+  declared in a thread of their own), the Network List Manager's verdict in a COM thread joined at 2 s, the proxies
+  and the hosts file against NCSI's probe hosts (a proxy or a sunk probe host leaves the internet unknown). On Linux:
+  `linuxsys.kernel.read` of its files (it owns the kernel, WSL and container facts: one reading for both readers),
+  then needs' own files and NetworkManager's last verdict through `lifecycle.spawn`, waited 5 s at most and never
+  inside WSL, where nothing judges the internet (answer 4). What cannot change is read once, the internet kept 15 s,
+  the disk, the tools and /dev/kvm 60 s, one read in flight for each slow read. While a test runs every real read is
+  refused, each fact unknown in words, unless `LIMINAL_REAL_FACTS=1` (yours to run, in process only).
+- **`liminal_libs.needs_machines`**: the recorded machines every package's needs test judges against: this PC as the
+  needs plan's map read it on 2026-11-17, ten Windows machines made from Microsoft's documentation, every linuxsys
+  recorded machine by its own name with needs' own files beside it, and six variants (WSL 1, WSL 2 without nesting,
+  NetworkManager, no route, a proxy, a small virtual machine). `facts_of(name)`, `reader(name)`.
+- **`ui/static/needs.js`**: `LiminalNeeds.table`, `line`, `row` and `style`, drawn alike on every app's page; shaded
+  only for what nothing can meet here, red with its words for what is not met now. It asks nothing of any server.
+- **The bases' rows.** FeedPlugin and PublisherPlugin: the internet for their fetching, a part (answer 7: listed and
+  loaded offline, serving what they fetched). AssistantPlugin: the internet, required. AuditorPlugin: `NEEDS = ()`.
+  WslDistribution: Windows, the build from MIN_BUILD, the three virtualization rows, and the internet and a desktop
+  as parts; each distribution adds its architecture and its disk. No other base declares any: each plugin says its
+  own. Conformance checks the rows' shape of a plugin that declares any; their values are its own package's test's.
+- **The frame.** Every app answers `GET /api/needs` (`?fresh=1` reads again, `?plugin=NAME` one, 404 for a name it does
+  not know): this machine's facts and each plugin it knows with its needs judged, asking a plugin nothing but its
+  `not_for_here()`, which a needs-judging app reads as one more unmet need of the machine. `App.needs_of`,
+  `machine_facts` and `needs_report`; `internet_rule()` ("system") and `offline()` (None) are a subclass's to
+  answer. The frame holds nothing by them (`held` and `switch` False): the platform does. `GET
+  /api/plugins/{name}/needs` stays the declaration as `lifecycle.ask_of` gives it.
+- **The Internal API.** The route's row, and `needs_of`, `machine_facts` and `needs_report` among what an app offers; a
+  plugin's rows as it declares them (`internal_of`'s `needs`, never judged: internal.py imports neither needs nor
+  facts) and an app's `needs` ({route, reads}); internal.js's fold "What it needs of this machine", open while a
+  required one is not met.
+- **The Platform core's rename** (the user's "Rename it"): "needs" is what a plugin needs of the machine, so the kinds
+  a Platform attaches are `KINDS`, `PLATFORM_KINDS`, `kinds`, `takes(kind)` and `attach_kinds()`. `NEEDS`,
+  `PLATFORM_NEEDS`, `needs(kind)` and `attach_needs()` still work for this release (the charts and the integrator set
+  the old attribute); the nearest class of its line says which name is read. `attach_kinds` leaves out a plugin
+  whose required needs are unmet here (item 38: never started), a failed judgement hiding nothing.
+- **Tests**: every test's facts are a recorded machine's (conftest's autouse `stand_in_facts`: this-pc). New:
+  test_needs.py (with the rows of codex-cli, lmdeploy, mcp and pi, which declared NEEDS before this module, held as
+  written), test_facts.py, test_needs_machines.py, test_ui_needs.py, test_needs_contract.py, test_needs_frame.py.
+- **Not yet**: `liminal-signal ASK --plugin NAME needs` finds a plugin only where an app holds it attached, and for
+  any other it may start the plugin's node, which attaches it with the environment's login and judges nothing; a
+  change to stop.py and nodes.py is proposed to their owner. GPUs, libc and the AI plugins' rows are release 2.
+
 ## 1.102.0 (2026-11-26)
 
 Liminal's own `liminal` user and group on Linux, made, changed and removed from the Linux administration plugin's page

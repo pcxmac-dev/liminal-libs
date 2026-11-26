@@ -27,6 +27,11 @@ its code calls on its plugins and what it offers them, its routes) and drawn by 
 answers both at `GET /api/app/apis`, and an attached plugin's with `?plugin=NAME` (INTEGRATION.md says what a
 plugin and an app may declare for them).
 
+What a plugin needs of the machine it runs on (1.103.0): its `NEEDS` rows, judged by `needs.py` against this
+machine's facts, which `facts.py` reads without sending anything (the recorded machines every package's test judges
+against are `needs_machines.py`). Every app answers `GET /api/needs`, and `ui/static/needs.js` draws it; a plugin whose
+needs this machine cannot meet is left out of the platform's list (INTEGRATION.md says how a plugin declares them).
+
 The platform's AI plugins (`machines/ai.py`, 1.62.0) come in groups: the model servers (`ModelServer`), the coding
 harnesses (`Harness`) and, from 1.66.0, the protocol plugins (`ProtocolPlugin`, `machines/protocol.py`: MCP's, which
 mediates the local AI agents' connections on the platform's own port). What they stand on is here too: a piped child

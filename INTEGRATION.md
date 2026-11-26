@@ -252,6 +252,52 @@ its plugins than the frame does, `askable(plugin)`, `known_plugins()` and `call_
 `LiminalInternal.style()` its styles. liminal-platform 0.32.0 draws both for its plugins and for itself; the charts,
 the integrator and the login follow.
 
+## What a plugin needs of the machine (liminal-libs 1.103.0)
+
+The user, 2026-11-18: every plugin has a "needs" requirement (the operating system, the hardware platform, GPUs, the
+internet); a plugin whose needs this machine cannot meet is not shown in the left-most list, and the Connections view
+lists every plugin, red for what could be met and is not now, shaded for what never can be here. A plugin says them in
+`NEEDS`, plain rows on its class, read by name and never called, so it imports nothing for them:
+
+```python
+class UbuntuPlugin(WslDistribution):
+    NEEDS = (*getattr(WslDistribution, "NEEDS", ()),
+             ("architecture", "x86-64|arm64", "required", "the systems Ubuntu's WSL image is built for"),
+             ("disk", ">= 4 GiB", "part", "its install"))
+```
+
+- A row is `(attribute, value[, strength[, words]])`: an attribute of `needs.ATTRIBUTES` (a `windows:` or `linux:`
+  prefix makes it one system's), its value (`a|b` is any of them), its strength and its words (200 characters at
+  most). `required`, unmet: out of the list. `part`, unmet: that part is said unavailable in its words, the plugin
+  stays as it is. `preferred`: said, nothing else. A part and a preference need words; tools, rights, other plugins,
+  the disk and the desktop are never required (they are a plugin's validity: its page offers what meets them).
+- Only the getattr idiom adds to a base's rows; NEEDS is never a property and never annotated. `Plugin` has none: a
+  plugin that says nothing is "It has not said what it needs yet", one with `NEEDS = ()` "It needs nothing of this
+  machine". A plugin's own `not_for_here()` counts as one more unmet need of the machine, in its words.
+- An older library reads nothing of them: no floor moves, and the plugin API stays 2.4.
+
+Each package's own test holds its rows to the vocabulary the installed library knows (an attribute it does not know
+is judged unknown, never a problem), then judges them against the recorded machines:
+
+```python
+needs = pytest.importorskip("liminal_libs.needs")
+needs_machines = pytest.importorskip("liminal_libs.needs_machines")
+
+
+def test_what_it_needs_is_sound_and_met_where_it_is_for():
+    assert needs.problems(MACHINE) == []
+    rows = needs.declared(MACHINE)
+    assert needs.judge(rows, needs_machines.facts_of("this-pc"))["met"] is True
+    assert needs.judge(rows, needs_machines.facts_of("wsl-ubuntu-24.04"))["sort"] == "machine"
+```
+
+What an app gives (`apps/app.py`): `needs_of(plugin_or_name, fresh=False)`, `machine_facts(attributes, fresh, names=)`
+and `needs_report(fresh, only)`, and `GET /api/needs` (`?fresh=1`, `?plugin=NAME`); a subclass answers
+`internet_rule()` and `offline()` where it holds a switch or Settings, and `plugin_states()`. A page draws an answer
+with `LiminalNeeds.table(answer)`, `line(answer)` and `style(answer)`. Nothing of it sends anything: `facts.py` reads
+the system's own state (Windows' Network List Manager, NetworkManager's last verdict), never asks it to probe, and
+under a test reads nothing real at all unless `LIMINAL_REAL_FACTS=1`.
+
 ## Containers (liminal-libs 1.18)
 
 `liminal_libs.docker` drives the docker command (or Rancher Desktop's `nerdctl`: LIMINAL_DOCKER_COMMAND) for
