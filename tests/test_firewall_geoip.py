@@ -1,4 +1,4 @@
-"""The firewall base's GeoIP sources (1.102.0, Monday list item 20): the three hooks only a person signed in at the
+"""The firewall base's GeoIP sources (1.101.0, Monday list item 20): the three hooks only a person signed in at the
 platform's page may ask, each refusing any other ask itself; the licence's acceptance kept in that person's own login
 store, or nothing downloaded, and the licences file never written; DB-IP's two old installs downloading as before, with
 no record, for any other asker; a source not offered refused before anything is read; the choice kept through the
@@ -241,7 +241,7 @@ def test_the_tab_draws_the_sources_table_and_the_places_credit_in_use(tmp_path):
 @needs_reader
 @pytest.mark.parametrize("role", ["places", "networks"])
 def test_removing_the_default_sources_file_clears_what_it_placed(tmp_path, licences, role):
-    """Review finding: the default source's places are stamped with the places file's bare date, as before 1.102.0, so
+    """Review finding: the default source's places are stamped with the places file's bare date, as before 1.101.0, so
     a pattern of #dbip:... never met them and removing DB-IP's file kept every place it gave."""
     from liminal_libs.hostbook import HostBook
     from test_geo import ASNS

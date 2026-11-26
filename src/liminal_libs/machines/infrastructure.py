@@ -1234,7 +1234,7 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     place in one step; `wall` says when (seconds since 1970).
 
     InfrastructureError, in words, when nothing was installed: the older file stays as it was. `log`: each step said to
-    it (the platform's job panel). `accepted` (1.102.0): asked with nothing, once the refusals passed and the download
+    it (the platform's job panel). `accepted` (1.101.0): asked with nothing, once the refusals passed and the download
     is this one's, before anything is fetched or said (the plugin keeps the licence's acceptance there): what it raises
     ends the install, nothing fetched."""
     dataset = DataSet.of(dataset)

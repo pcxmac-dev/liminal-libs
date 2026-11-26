@@ -1,4 +1,4 @@
-"""machines/geosources.py (1.102.0, Monday list item 20): the GeoIP sources a firewall plugin names, read and refused in
+"""machines/geosources.py (1.101.0, Monday list item 20): the GeoIP sources a firewall plugin names, read and refused in
 words, their folders, when a file is due, the stamps of the places they give, and their keys checked and kept out of
 every word. Every host here is a stand-in of the test's own; the canary keys are never a real one."""
 import base64

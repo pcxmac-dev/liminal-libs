@@ -396,7 +396,7 @@ def accept_licence(login, name: str, *, title: str, version: str = "", url: str 
                    at: datetime | None = None, path: Path | None = None, file: bool = True) -> dict:
     """A licence accepted, kept as a LICENCE pair of the user `login` serves (licence_record: what, its version and
     address, when, by whom); with a login that keeps none, in the licences file (licences_file). Returns the record
-    with `kept`: where, in words. `file` False (1.102.0, Monday list item 20): kept in the user's own store or not at
+    with `kept`: where, in words. `file` False (1.101.0, Monday list item 20): kept in the user's own store or not at
     all: Unauthorized when the login keeps none, and the store's own Unauthorized when it refuses; the licences file
     is never read or written."""
     record = licence_record(name, title=title, version=version, url=url, words=words, by=by or _who(login), at=at,

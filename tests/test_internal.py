@@ -180,7 +180,7 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert [c["class"] for c in got["chain"]] == ["Firewall", "MachinePlugin", "PlatformPlugin", "Plugin"]
     adds = [h for h in Firewall.HOOKS if h not in MachinePlugin.HOOKS]
     # the critique's count, Firewall's 9, and 1.65.0's 10 more (the Netstat tab, the hosts' recording, the globe's
-    # filters and its layers' data sets), 1.74.0's world_watching, 1.75.0's world_asn and 1.102.0's three GeoIP sources'
+    # filters and its layers' data sets), 1.74.0's world_watching, 1.75.0's world_asn and 1.101.0's three GeoIP sources'
     # hooks (download, use, remove): Firewall's 24, MachinePlugin's 5, Plugin's 2
     assert len(adds) == 24 and "world_watching" in adds and "world_asn" in adds
     assert {"world_geoip_get", "world_geoip_use", "world_geoip_remove"} <= set(adds)
@@ -207,7 +207,7 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     assert {by[h]["kind"] for h in ("hosts_recording", "hosts_forget", "world_show", "world_direction", "world_within",
                                     "world_pick", "world_layer_remove")} == {"change"}
     assert all(by[h]["line"] for h in adds), "each of the base's hooks says what it does"
-    # 1.74.0: world_watching; 1.75.0: world_asn; 1.102.0: world_geoip_get, world_geoip_use, world_geoip_remove
+    # 1.74.0: world_watching; 1.75.0: world_asn; 1.101.0: world_geoip_get, world_geoip_use, world_geoip_remove
     assert got["counts"]["standard"] == 31 and got["counts"]["own"] == 1
     assert got["left"] == ["present", "run", "instances", "scan", "settings"]  # MachinePlugin's defaults (CONTRACT)
 

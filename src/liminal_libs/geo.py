@@ -28,7 +28,7 @@ each place the GeoIP file gives with no network of its own gets the ASN file's: 
 A folder on another system's drive (`foreign`: WSL's /mnt/c, a share, a network drive) holds that system's files: each
 system's platform installs its own, so none there is read or installed from here.
 
-1.102.0 (Monday list item 20, more GeoIP sources): each source's files in a folder of its own (machines/geosources.py),
+1.101.0 (Monday list item 20, more GeoIP sources): each source's files in a folder of its own (machines/geosources.py),
 so an install prunes its own folder alone; a file and its notes (<stem>.json, what its maker said at install) go
 together. An install may insist on a packing (plain or gzipped), name the file from its own build time (`name_of`), and
 compare the bytes as downloaded with the SHA-256 its maker gave before anything is put in place. `GeoIP.find` takes the
@@ -94,9 +94,9 @@ _OPEN: weakref.WeakSet = weakref.WeakSet()  # this process's GeoIPs with a file 
 _OPEN_LOCK = threading.Lock()
 _PLACING = threading.RLock()  # held while an install puts its file in place, and while a file is opened beside it
 _clock = time.monotonic  # an install's deadline and a let-go GeoIP's retries (the tests' stand-in clock)
-NOTES = ".json"  # 1.102.0: a file's notes beside it (<stem>.json), pruned and removed with it
-PACKINGS = ("auto", "mmdb", "mmdb.gz")  # 1.102.0: what an install takes: either, plain only, gzipped only
-BESIDE = object()  # 1.102.0: GeoIP.find's default networks file: the one in the folder's own asn/ (find_asn)
+NOTES = ".json"  # 1.101.0: a file's notes beside it (<stem>.json), pruned and removed with it
+PACKINGS = ("auto", "mmdb", "mmdb.gz")  # 1.101.0: what an install takes: either, plain only, gzipped only
+BESIDE = object()  # 1.101.0: GeoIP.find's default networks file: the one in the folder's own asn/ (find_asn)
 
 
 class GeoError(Exception):
@@ -324,7 +324,7 @@ class GeoIP:
     def __init__(self, path, cache: int = CACHE, asn: GeoIP | None = None, usable=None):
         self.path = Path(path)
         self.asn = asn  # 1.75.0: the ASN file's GeoIP (find_asn), whose networks fill in each place's
-        self.usable = usable  # 1.102.0: usable(path, built) False for a file not to be read (too old): passed over
+        self.usable = usable  # 1.101.0: usable(path, built) False for a file not to be read (too old): passed over
         self._max = max(1, int(cache))
         elsewhere = foreign(self.path, "Reading a GeoIP file")
         if elsewhere:
@@ -405,7 +405,7 @@ class GeoIP:
                     opened = _opened(path)
                 except GeoError:
                     continue
-                if not _usable(self.usable, path, opened[2]):  # 1.102.0: a file too old to be read is passed over
+                if not _usable(self.usable, path, opened[2]):  # 1.101.0: a file too old to be read is passed over
                     opened[0].close()
                     continue
                 self._reader, self.mode, self.built, self.type, self.ip_version = opened
@@ -419,7 +419,7 @@ class GeoIP:
             _PLACING.release()
 
     def usable_now(self) -> bool:
-        """1.102.0: whether its file may still be read (its `usable` test, asked now with the open file's build time
+        """1.101.0: whether its file may still be read (its `usable` test, asked now with the open file's build time
         alone: no file is read). One closed for good says False."""
         with self._lock:
             path, built, gone = self.path, self.built, self._reader is None and not self._moved
@@ -471,7 +471,7 @@ class GeoIP:
         """The newest GeoIP file in `folder`, open: the last written *.mmdb there that opens (a broken one is passed
         over). The data folder's geoip/ when no folder is given. None when there is none, when maxminddb is not here,
         and when the folder is on another system's drive (`foreign`: its files are that system's, not even listed).
-        1.102.0: `asn` is the networks file read beside it: BESIDE, the folder's own asn/ one (find_asn, as before);
+        1.101.0: `asn` is the networks file read beside it: BESIDE, the folder's own asn/ one (find_asn, as before);
         None, none; a GeoIP, that one. `usable(path, built)`: a file it says False of is passed over (too old)."""
         folder = Path(folder) if folder is not None else data_folder()
         found = newest(folder, cache, usable, cls=cls, what="Reading the GeoIP files")
@@ -487,13 +487,13 @@ def asn_folder(folder=None) -> Path:
 
 def find_asn(folder=None, cache: int = CACHE, usable=None) -> GeoIP | None:
     """1.75.0: the newest ASN file beside the GeoIP files in `folder` (its asn_folder), open; None when there is
-    none, none opens, maxminddb is not here, or the folder is on another system's drive. 1.102.0: `usable` as
+    none, none opens, maxminddb is not here, or the folder is on another system's drive. 1.101.0: `usable` as
     GeoIP.find's."""
     return newest(asn_folder(folder), cache, usable, what="Reading the ASN file")
 
 
 def newest(folder, cache: int = CACHE, usable=None, *, cls=None, what: str = "Reading the GeoIP files") -> GeoIP | None:
-    """1.102.0: the newest file in `folder` itself that opens and `usable(path, built)` does not refuse, open, with
+    """1.101.0: the newest file in `folder` itself that opens and `usable(path, built)` does not refuse, open, with
     nothing beside it (a networks file in a folder of its own); None as find_asn says."""
     cls = cls or GeoIP
     folder = Path(folder)
@@ -512,7 +512,7 @@ def newest(folder, cache: int = CACHE, usable=None, *, cls=None, what: str = "Re
 
 
 def _usable(usable, path: Path, built) -> bool:
-    """1.102.0: whether `usable` lets a file built at `built` be read (none given: every file; one that fails: not)."""
+    """1.101.0: whether `usable` lets a file built at `built` be read (none given: every file; one that fails: not)."""
     if usable is None:
         return True
     try:
@@ -522,7 +522,7 @@ def _usable(usable, path: Path, built) -> bool:
 
 
 def remove(path) -> bool:
-    """1.102.0: a GeoIP file removed, its notes (<stem>.json) with it, after every GeoIP of this process reading it is
+    """1.101.0: a GeoIP file removed, its notes (<stem>.json) with it, after every GeoIP of this process reading it is
     closed for good (Windows cannot delete a mapped file). False when the file is still there (another program holds
     it, or the system refused): the caller says so, and it is not read from here meanwhile."""
     path = Path(path)
@@ -693,7 +693,7 @@ def install_mmdb(source, folder, name: str, limit: int = MAX_UNPACKED, timeout: 
     A folder on another system's drive (`foreign`) is that system's: GeoError before anything is read or written there,
     the folder not even made.
 
-    1.102.0: `packing` is "auto" (plain or gzipped, as before), "mmdb" (plain only) or "mmdb.gz" (gzipped only): any
+    1.101.0: `packing` is "auto" (plain or gzipped, as before), "mmdb" (plain only) or "mmdb.gz" (gzipped only): any
     other is refused before anything is read. `name_of(built)`, given the checked file's build time (seconds since
     1970), names it, never before the check. `sha256` (hex): the bytes as downloaded are hashed as they come, and one
     that does not match installs nothing, the current copy kept. Each file's notes (<stem>.json) are pruned with it."""
@@ -825,7 +825,7 @@ class _Download:
 
     def __init__(self, raw, most: int, deadline: float = math.inf, timeout: float | None = None, digest=None):
         self._raw, self._most, self._deadline, self._timeout = raw, most, deadline, timeout
-        self._digest = digest  # 1.102.0: a hash of the bytes as they come, before anything is unpacked
+        self._digest = digest  # 1.101.0: a hash of the bytes as they come, before anything is unpacked
         self.taken = self.idle = 0  # bytes read in all / since the last byte unpacked
 
     def read(self, size: int) -> bytes:
@@ -869,7 +869,7 @@ def _unpack(source, out, limit: int, deadline: float = math.inf, timeout: float 
     with _reading(source) as raw:
         down = _Download(raw, limit + limit // 256 + CHUNK, deadline, timeout, digest)
         head = _read_up_to(down, len(GZIP))
-        if packing == "mmdb" and head == GZIP:  # 1.102.0: a source that gives a plain file, and this is gzipped
+        if packing == "mmdb" and head == GZIP:  # 1.101.0: a source that gives a plain file, and this is gzipped
             raise GeoError("a plain MaxMind DB file was to come, and this one is gzipped")
         if packing == "mmdb.gz" and head != GZIP:
             raise GeoError("a gzipped MaxMind DB file was to come, and this one is not gzipped")
@@ -938,7 +938,7 @@ def _gunzip(data: bytes, down: _Download, out, limit: int) -> int:
 def _check(path: Path) -> int:
     """The unpacked file reads as a GeoIP file, checked as GeoIP.find checks the files it opens (`_opened`: its
     metadata, where its search tree ends, a record it leads to); GeoError saying why not. It is closed again before
-    it is renamed. Its build time (1.102.0: what a source's file is named from)."""
+    it is renamed. Its build time (1.101.0: what a source's file is named from)."""
     opened = _opened(path, "it")
     opened[0].close()
     return opened[2]
@@ -983,7 +983,7 @@ def _prune(folder: Path, keep: Path) -> None:
     for path in _copies(folder):
         if os.path.normcase(path.name) != os.path.normcase(keep.name):
             if _remove(path):
-                _remove(path.with_suffix(NOTES))  # 1.102.0: its notes with it
+                _remove(path.with_suffix(NOTES))  # 1.101.0: its notes with it
     _sweep(folder)
 
 

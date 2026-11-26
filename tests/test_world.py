@@ -229,12 +229,12 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert hooks["world"].startswith("() ") and hooks["world_geoip"].startswith("(accept_licence=False, log=None) ")
     assert hooks["netstat"].startswith("() ") and hooks["world_layer_get"].startswith(
         "(dataset, accept_licence=False, log=None) ")  # a data set's download: a job too, which the page may cancel
-    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get")  # 1.102.0
+    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get")  # 1.101.0
     assert fw.JOB_HOOKS == Firewall.JOB_HOOKS
     assert hooks["world_asn"].startswith("(accept_licence=False, log=None) ")  # 1.75.0: the ASN file's, a job too
     assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
     assert Firewall.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and Firewall.INFRASTRUCTURE == ()
-    assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.102.0
+    assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.101.0
                                         "world_geoip", "world_asn", "world_layer_get")  # the user's 11b
     assert Firewall.GEOIP_SOURCES == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
@@ -1560,7 +1560,7 @@ def test_an_asn_file_from_before_this_month_is_offered_its_update(tmp_path):
     fw.detach()
 
 
-# -- 1.102.0 (Monday list item 20): the hosts a source names, and failures in fixed words ----------------------------------
+# -- 1.101.0 (Monday list item 20): the hosts a source names, and failures in fixed words ----------------------------------
 KEYED = "https://maker.example/data/lite.mmdb"
 
 
@@ -1625,7 +1625,7 @@ def test_a_keyed_downloads_failure_is_said_in_fixed_words():
         assert canary not in said and "token" not in said and "?" not in said, said
 
 
-# -- 1.102.0 (Monday list item 20): the view over GeoIP sources -----------------------------------------------------------
+# -- 1.101.0 (Monday list item 20): the view over GeoIP sources -----------------------------------------------------------
 from liminal_libs.machines import geosources  # noqa: E402
 
 SA = "https://creativecommons.org/licenses/by-sa/4.0/"

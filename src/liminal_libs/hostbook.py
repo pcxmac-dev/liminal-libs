@@ -131,7 +131,7 @@ TEXT = 128  # characters kept of a program, a host, a service, a name or a place
 PATH = 260  # characters kept of a program's path
 CODE = 8  # characters kept of a country's code (as geo.CODE)
 STAMP = 32  # characters kept of a GeoIP file's date
-# 1.102.0 (Monday list item 20): characters kept of a place's stamp, the GeoIP files it came from (machines/geosources:
+# 1.101.0 (Monday list item 20): characters kept of a place's stamp, the GeoIP files it came from (machines/geosources:
 # the default source's date, as before, or #<places>:<date>+<networks>:<date>); a row is placed again whenever its stamp
 # is not the one of the files in use
 PLACE_STAMP = 64
@@ -213,7 +213,7 @@ _CONN_HOSTS_PLACE = ("UPDATE connections SET (country, code, city, lat, lon, asn
                      "hosts.placed IS NOT NULL ORDER BY hosts.placed DESC LIMIT 1) WHERE cid = ? AND placed IS NULL "
                      "AND EXISTS (SELECT 1 FROM hosts WHERE hosts.host = connections.remote AND hosts.placed IS NOT "
                      "NULL)")
-# 1.102.0: once the book knows the stamp of the files in use (place, unplaced), a new connection takes only a host's row
+# 1.101.0: once the book knows the stamp of the files in use (place, unplaced), a new connection takes only a host's row
 # placed by them: "#..." and "2026-..." sort by their letters, not by their age
 _CONN_HOSTS_STAMPED = ("UPDATE connections SET (country, code, city, lat, lon, asn, org, placed) = (SELECT country, "
                        "code, city, lat, lon, asn, org, placed FROM hosts WHERE hosts.host = connections.remote AND "
@@ -565,7 +565,7 @@ class HostBook:
         self.cap = max(1, int(cap))
         self.clock = clock
         self.changes = 0
-        self.stamp: str | None = None  # 1.102.0: the stamp of the GeoIP files in use, once place or unplaced was asked
+        self.stamp: str | None = None  # 1.101.0: the stamp of the GeoIP files in use, once place or unplaced was asked
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._loaded = False  # whether what the file holds of the open connections and of itself is in memory
@@ -1105,7 +1105,7 @@ class HostBook:
             new = [rec[0] for rec in born.values() if rec[15] == INTERNET]
             if self.stamp is None:
                 c.executemany(_CONN_HOSTS_PLACE, [(cid,) for cid in new])
-            else:  # 1.102.0: a host's row placed by the files in use alone
+            else:  # 1.101.0: a host's row placed by the files in use alone
                 c.executemany(_CONN_HOSTS_STAMPED, [(self.stamp, cid, self.stamp) for cid in new])
             for cid, (last, seconds, ended) in touched.items():
                 c.execute(_CONN_TOUCH, (last, last, seconds, ended, cid))
@@ -1434,15 +1434,15 @@ class HostBook:
         (the file's own date, as text): what `place` would take. The GeoIP file needs opening only when it is not 0."""
         sql = "SELECT COUNT(*) FROM hosts WHERE network = ? AND (placed IS NULL OR placed <> ?)"
         stamp = _clip(stamp, PLACE_STAMP)
-        self.stamp = stamp  # 1.102.0: what a new connection's place is taken from
+        self.stamp = stamp  # 1.101.0: what a new connection's place is taken from
         return self._read(lambda conn: conn.execute(sql, (INTERNET, stamp)).fetchone()[0], 0)
 
     def clear_places(self, role: str, pattern: str, *, bare: bool = False) -> int:
-        """1.102.0: the places a source gave in `role` taken out, where no file in use can place them: rows whose
+        """1.101.0: the places a source gave in `role` taken out, where no file in use can place them: rows whose
         stamp is LIKE `pattern` (geosources.cleared) lose country, code, city, lat and lon (places) or asn and org
         (networks), in hosts and connections both, and are placed again at the next ask. `bare`: the source is the
         default one, so the rows stamped with a bare date (not "#...": its places, with its networks or none, as before
-        1.102.0) are its too. How many hosts rows."""
+        1.101.0) are its too. How many hosts rows."""
         columns = ("country = NULL, code = NULL, city = NULL, lat = NULL, lon = NULL" if role == "places" else
                    "asn = NULL, org = NULL")
         where = "placed LIKE ?" + (" OR (placed IS NOT NULL AND substr(placed, 1, 1) <> '#')" if bare else "")

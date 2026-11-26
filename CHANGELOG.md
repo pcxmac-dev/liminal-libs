@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.102.0 (2026-11-26)
+## 1.101.0 (2026-11-26)
 
 More GeoIP sources for the firewalls' World Wide Web tab, phase 1 (Monday list item 20; the user, 2026-11-19: "add a
 way to download different GEOIP sources"; the design of 2026-11-24 with the user's answers of 2026-11-25). The framework

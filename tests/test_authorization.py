@@ -270,7 +270,7 @@ def test_a_setting_is_kept_through_the_login_and_saved_variables_are_read():
 
 
 def test_a_personal_key_is_one_a_person_keeps_and_its_pair_is_asked_as_before():
-    """1.102.0 (Monday list item 20): KeyVar.personal says a key is kept in each person's own login store; it is False
+    """1.101.0 (Monday list item 20): KeyVar.personal says a key is kept in each person's own login store; it is False
     unless a plugin says so, and the login's page lists its pair as any other's (pairs_wanted)."""
     from liminal_libs.apps import pairs_wanted
     from liminal_libs.sources.keys import KeyVar

@@ -9,7 +9,7 @@ rule that is not Liminal's is only ever read. A subclass drives one firewall (Wi
 firewalld or nftables) through the backend methods; this base holds the rules, the framework's ports, the
 status and the setup.
 
-1.102.0 (Monday list item 20; the user, 2026-11-19: "add a way to download different GEOIP sources"): a subclass may
+1.101.0 (Monday list item 20; the user, 2026-11-19: "add a way to download different GEOIP sources"): a subclass may
 name GeoIP sources (GEOIP_SOURCES, machines/geosources.py), places and networks chosen apart, the first the default.
 Three hooks only a person signed in at the platform's page may ask (PAGE_ONLY_HOOKS, and each refuses any other ask
 itself): world_geoip_get (a job: the keys read through the asking person's login, the licence's acceptance kept in
@@ -226,7 +226,7 @@ class Firewall(MachinePlugin):
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
              WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK,  # 1.74.0: world_watching, the traffic watched all the time or not
              ASN_HOOK,  # 1.75.0: world_asn, the ASN file's install
-             # 1.102.0: a GeoIP source's file downloaded (a job), used for its role, and removed
+             # 1.101.0: a GeoIP source's file downloaded (a job), used for its role, and removed
              GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK,
              # 1.65.0: netstat, the Netstat tab's page (a read); hosts_recording and hosts_forget, the hosts database's
              # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
@@ -246,13 +246,13 @@ class Firewall(MachinePlugin):
     # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes; and a data
     # set's download (1.65.0), which the page may ask to stop (CANCEL_HOOKS: liminal-platform 0.31.0's Cancel)
     JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK,  # 1.75.0: the ASN file's install, a job as the GeoIP file's
-                 GEOIP_GET_HOOK)  # 1.102.0: a GeoIP source's file, a job its Cancel stops
+                 GEOIP_GET_HOOK)  # 1.101.0: a GeoIP source's file, a job its Cancel stops
     CANCEL_HOOKS = (netstat.GET_HOOK, GEOIP_GET_HOOK)
-    # 1.102.0: what only a person at the platform's page may ask: the GeoIP sources' download, use and removal (each
+    # 1.101.0: what only a person at the platform's page may ask: the GeoIP sources' download, use and removal (each
     # refuses any other ask itself too: geosources.NotAsked); and the older installs, the GeoIP file's and the ASN
     # file's, and a data set's download (the user's 11b: named by the base, so every firewall plugin has them so)
     PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK)
-    # 1.102.0: the GeoIP sources a subclass names (geosources.of's plain dicts, every host and licence its own): places
+    # 1.101.0: the GeoIP sources a subclass names (geosources.of's plain dicts, every host and licence its own): places
     # and networks chosen apart, the first the default; () keeps the GEOIP_URL and GEOIP_ASN_URL installs as before
     GEOIP_SOURCES: tuple = ()
     # the internet infrastructure the globe may draw (1.65.0): the plugin's data sets, each a plain dict of
@@ -321,7 +321,7 @@ class Firewall(MachinePlugin):
     @property
     def KEEPS(self) -> tuple:
         """What it keeps through its login beside its keys (Plugin.KEEPS, for its Internal API tab): the user's labels
-        and the moves of its rules, under the variable its `groups` are kept in; 1.102.0: the GeoIP sources chosen, and
+        and the moves of its rules, under the variable its `groups` are kept in; 1.101.0: the GeoIP sources chosen, and
         each offered file's licence acceptance (in the asking person's own store), and each data set's of
         INFRASTRUCTURE (licence-<its id>, the same). Said by name: no login is asked."""
         kept = [(self.groups.variable, "the labels and the moves of its rules")]
@@ -506,7 +506,7 @@ class Firewall(MachinePlugin):
         of its own (another adapter, a stand-in in its tests) makes it here."""
         return WorldView(self.name, timeout=self.WORLD_TIMEOUT, sources=self.world_sources())
 
-    # -- 1.102.0: the GeoIP sources ----------------------------------------------------------------------------------
+    # -- 1.101.0: the GeoIP sources ----------------------------------------------------------------------------------
     def world_sources(self):
         """What a WorldView is given of the GeoIP sources (its `sources`): (those that read, what was wrong with the
         others, the choice's reader); None when the plugin names none."""
@@ -649,7 +649,7 @@ class Firewall(MachinePlugin):
         if out.get("ok") and view.chosen()[role]["source"] != named.id:
             net = self.netstat_view(make=False)
             if net is not None and not net.elsewhere():
-                # the default's own rows carry the bare date, as before 1.102.0 (geosources.stamp)
+                # the default's own rows carry the bare date, as before 1.101.0 (geosources.stamp)
                 net.book.clear_places(role, geosources.cleared(role, named.id), bare=named.id == view.default)
         self._geoip_replaced(view)
         return out
@@ -729,12 +729,12 @@ class Firewall(MachinePlugin):
         except Exception:  # noqa: BLE001 - the routes never cost the tab its page
             pass
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
-        if getattr(view, "sources", None):  # 1.102.0: the places file's in use
+        if getattr(view, "sources", None):  # 1.101.0: the places file's in use
             attribution = (view.credits() or {}).get("places") or attribution
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
                  "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL,
                  "asn_source": self.GEOIP_ASN_URL, "asn_licence": self.GEOIP_ASN_LICENCE,  # 1.75.0
-                 "keys": self._geoip_keys(view)}  # 1.102.0: for the sources' table, in either view
+                 "keys": self._geoip_keys(view)}  # 1.101.0: for the sources' table, in either view
         page = None
         if net.shows() == "traffic":
             view.touch()
@@ -759,7 +759,7 @@ class Firewall(MachinePlugin):
         return page
 
     def _geoip_keys(self, view) -> set | None:
-        """1.102.0: the keys the offered sources need that the asking person's login store holds, by name alone (never
+        """1.101.0: the keys the offered sources need that the asking person's login store holds, by name alone (never
         a value); None when none is asked of anyone or the store cannot list."""
         wanted = [n for s in getattr(view, "sources", None) or () if s.offered for n in s.keys]
         if not wanted:
@@ -855,7 +855,7 @@ class Firewall(MachinePlugin):
         here = self.not_for_here()
         if here:
             raise ValueError(f"not for this machine: {here}")
-        if self.GEOIP_SOURCES:  # 1.102.0: the default source's places file
+        if self.GEOIP_SOURCES:  # 1.101.0: the default source's places file
             return self._default_install("places", accept_licence, log, LICENCE_FIRST)
         if not self.GEOIP_URL:
             raise ValueError(f"{self.title or self.name} offers no GeoIP file to download")
@@ -871,7 +871,7 @@ class Firewall(MachinePlugin):
         here = self.not_for_here()
         if here:
             raise ValueError(f"not for this machine: {here}")
-        if self.GEOIP_SOURCES:  # 1.102.0: the default source's networks file
+        if self.GEOIP_SOURCES:  # 1.101.0: the default source's networks file
             return self._default_install("networks", accept_licence, log,
                                          "The ASN file is downloaded only once you accept its licence.")
         if not self.GEOIP_ASN_URL:
@@ -881,9 +881,9 @@ class Firewall(MachinePlugin):
         return self.world_view().install(self.GEOIP_ASN_URL, log=log, kind="asn")
 
     def _default_install(self, role: str, accept_licence, log, first: str) -> dict:
-        """1.102.0: world_geoip and world_asn with GEOIP_SOURCES: the default source's file of `role`. Its acceptance is
+        """1.101.0: world_geoip and world_asn with GEOIP_SOURCES: the default source's file of `role`. Its acceptance is
         kept only for a person signed in at the platform's page (in their own login store, or nothing is downloaded);
-        any other ask downloads as before 1.102.0 and records nothing."""
+        any other ask downloads as before 1.101.0 and records nothing."""
         view = self.world_view()
         named, file = view.source(view.default), view.file_of(view.default, role)
         if file is None:
@@ -1028,7 +1028,7 @@ class Firewall(MachinePlugin):
         one deadline and kept on this machine's disk in place of any older copy (infrastructure.install). ValueError for
         a data set this plugin does not name, and on a machine it is not for.
 
-        1.102.0 (the user's 13a): asked by a person signed in at the platform's page, the acceptance is kept in their
+        1.101.0 (the user's 13a): asked by a person signed in at the platform's page, the acceptance is kept in their
         own login store as licence-<the data set's id>, as DB-IP's are, once the download's own refusals passed and
         before anything is fetched (a store that refuses ends it, nothing fetched); any other ask downloads as before
         and records nothing."""
@@ -1089,7 +1089,7 @@ class Firewall(MachinePlugin):
         view = self.world_view(make=False)
         if view is not None:
             view.forget_setting()
-        self.__dict__.pop("_geoip_choice", None)  # 1.102.0: the GeoIP sources chosen, read anew
+        self.__dict__.pop("_geoip_choice", None)  # 1.101.0: the GeoIP sources chosen, read anew
         net = self.netstat_view(make=False)
         if net is not None:
             net.forget_setting()

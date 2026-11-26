@@ -907,7 +907,7 @@ class NetstatView:
                 page["note"] = made.note
                 page.pop("charts", None)
                 page.pop("watching", None)
-                # 1.102.0: the GeoIP sources' table the frame kept, its buttons with it
+                # 1.101.0: the GeoIP sources' table the frame kept, its buttons with it
                 kept = [t for t in page.get("tables") or ()
                         if isinstance(t, dict) and t.get("title") == world_module.SOURCES_TITLE]
                 tables = [self._first(c, made), *made.tables, *kept]
@@ -938,7 +938,7 @@ class NetstatView:
         """The tab's page with no traffic in it, from the WorldView's own words: the globe's home (the user's place, or
         this network's public address placed), its places' attribution, the notes on the GeoIP file and its install
         offered where none is (an empty count of traffic stands in, so nothing counted is read or thrown away). With
-        GeoIP sources (1.102.0), their table is the one table kept, its buttons shown from `keys` (the key names set in
+        GeoIP sources (1.101.0), their table is the one table kept, its buttons shown from `keys` (the key names set in
         the asking person's login store, as WorldView.page)."""
         if world is None or getattr(world, "closed", False):
             return {"title": world_module.TITLE, "note": "Nothing is shown now: the plugin was detached.", "globe": {}}
@@ -1035,7 +1035,7 @@ class NetstatView:
         return made
 
     def replaced(self) -> None:
-        """1.102.0: the GeoIP files in use changed (a use, an install, a removal, an expiry): the stamp kept is
+        """1.101.0: the GeoIP files in use changed (a use, an install, a removal, an expiry): the stamp kept is
         forgotten, so the hosts are placed again at the next ask, not up to STAMP_S later."""
         with self._lock:
             self._stamp = None
@@ -1054,7 +1054,7 @@ class NetstatView:
         geoip = geoip if geoip is not None else world.geoip()  # one the caller has open already
         if geoip is None:
             return
-        stamped = getattr(world, "stamp", None)  # 1.102.0: the stamp of the files in use (geosources.stamp)
+        stamped = getattr(world, "stamp", None)  # 1.101.0: the stamp of the files in use (geosources.stamp)
         try:
             date = str(stamped(geoip) if callable(stamped) else (geoip.describe() or {}).get("date") or "")
         except Exception:  # noqa: BLE001 - a file that cannot say its date: placed as of none
@@ -1209,7 +1209,7 @@ class NetstatView:
     def get(self, dataset, accept_licence=False, log=None, accepted=None) -> dict:
         """A data set downloaded on the user's word (infrastructure.install, run by the platform as a job: `log` is its
         panel, and its `cancelled` stops it, as the plugin's detach does). ValueError for a data set that is none of
-        the plugin's; world.LicenceRefused until its licence is accepted. `accepted` (1.102.0): asked once the
+        the plugin's; world.LicenceRefused until its licence is accepted. `accepted` (1.101.0): asked once the
         download's refusals passed, before anything is fetched (infrastructure.install's)."""
         found = self.index.dataset(dataset)
 

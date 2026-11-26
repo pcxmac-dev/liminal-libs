@@ -186,7 +186,7 @@ def test_an_app_answers_each_browser_with_its_own_users_theme(files):
 
 
 def test_a_licence_kept_in_the_persons_store_or_not_at_all(files):
-    """1.102.0 (Monday list item 20): accept_licence(file=False) keeps the record in the signed-in user's own store, and
+    """1.101.0 (Monday list item 20): accept_licence(file=False) keeps the record in the signed-in user's own store, and
     refuses (Unauthorized) with a login that keeps none or a store that refuses; the licences file is never written."""
     alice = StoreLogin("alice")
     rec = accept_licence(alice, "dbip-lite", title="DB-IP IP to City Lite, 2026-11", version="CC BY 4.0",

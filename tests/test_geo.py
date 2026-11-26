@@ -953,7 +953,7 @@ def test_a_records_network_is_read_under_the_names_files_use():
         assert geo._network({"autonomous_system_number": bad}) == (None, None)
 
 
-# -- 1.102.0 (Monday list item 20): more GeoIP sources -----------------------------------------------------------------
+# -- 1.101.0 (Monday list item 20): more GeoIP sources -----------------------------------------------------------------
 IPINFO = [("1.1.1.0/24", {"asn": "AS13335", "as_name": "Cloudflare, Inc.", "as_domain": "cloudflare.com",
                           "country": "Australia", "country_code": "AU", "continent": "Oceania", "continent_code": "OC"}),
           ("81.2.69.0/24", {"asn": "AS20712", "as_name": "Andrews & Arnold Ltd", "country_code": "GB"})]

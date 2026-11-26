@@ -293,7 +293,7 @@ def test_texts_are_cut_to_128_characters_and_a_path_to_260(db):
     assert (len(h["program"]), len(h["path"]), len(h["service"]), len(h["name"])) == (128, 260, 128, 128)
     assert b.place(atlas({WEB: geo.Place("G" * 50, "C" * 500, "T" * 500, 1.0, 2.0, 7, "O" * 500)}), "9" * 100) == 1
     h = one(b)
-    # 1.102.0: a place's stamp keeps PLACE_STAMP (64) characters: #<places>:<date>+<networks>:<date>
+    # 1.101.0: a place's stamp keeps PLACE_STAMP (64) characters: #<places>:<date>+<networks>:<date>
     assert [len(h[k]) for k in ("country", "code", "city", "org", "placed")] == [128, 8, 128, 128, 64]
 
 
@@ -875,7 +875,7 @@ def test_place_looks_up_only_the_rows_not_looked_up_yet_or_looked_up_in_an_older
     assert [rows[WEB2][k] for k in ("country", "code", "lat", "lon", "placed")] == ["", "", None, None, NOVEMBER]
     assert rows[PRINTER]["placed"] == ""  # never looked up
     # looked up in this file: none is asked again, though two of them have no point (the file is not even opened)
-    # (1.102.0: any other file's stamp, an older one too, places them again: a switch back is a switch)
+    # (1.101.0: any other file's stamp, an older one too, places them again: a switch back is a switch)
     assert b.unplaced(NOVEMBER) == 0 and b.place(lookup, NOVEMBER) == 0 and b.unplaced(OCTOBER) == 3
     assert asked == [WEB2, SHELL, WEB] and b.changes == before + 1
     # a newer file: asked again, the last seen first, `most` at a time; a mapping answers as a Place does
@@ -1781,7 +1781,7 @@ def test_a_hosts_kept_routes_are_handed_back_the_checks_others_first_the_drawn_o
     assert not (db.parent / "none.db").exists()
 
 
-# -- 1.102.0 (Monday list item 20): the stamps of the GeoIP sources' files ------------------------------------------------
+# -- 1.101.0 (Monday list item 20): the stamps of the GeoIP sources' files ------------------------------------------------
 def test_a_switch_of_source_either_way_places_the_hosts_again_and_the_defaults_stamps_stay(db):
     from liminal_libs.machines import geosources
     b = HostBook(db)
@@ -1842,7 +1842,7 @@ def test_an_older_librarys_statement_takes_the_sources_rows_as_older(db):
     b.flush()
     b.place(atlas({WEB: NUREMBERG}), "#maker:2026-11-24+none")
     conn = sqlite3.connect(db)
-    try:  # what 1.101.0 and before ask: placed < the DB-IP file's date
+    try:  # what 1.100.0 and before ask: placed < the DB-IP file's date
         (n,) = conn.execute("SELECT COUNT(*) FROM hosts WHERE network = 'internet' AND (placed IS NULL OR placed < ?)",
                             (NOVEMBER,)).fetchone()
     finally:

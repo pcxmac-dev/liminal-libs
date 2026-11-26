@@ -348,7 +348,7 @@ def read(sources, declared=()) -> tuple[list[GeoSource], list[str]]:
 
 def folder(base: Path, source: str, role: str, default: str) -> Path:
     """Where a source's file of `role` is kept: the default source's in `base` (places) and base/asn (networks), as
-    before 1.102.0; any other's in base/<id> and base/<id>/asn, so no source's install prunes another's file."""
+    before 1.101.0; any other's in base/<id> and base/<id>/asn, so no source's install prunes another's file."""
     base = Path(base)
     own = base if source == default else base / source
     return own / "asn" if role == "networks" else own
@@ -392,7 +392,7 @@ def usable(file: GeoFile, now):
 
 def stamp(places, networks, default: str) -> str:
     """What a host placed from these files is stamped with. `places` and `networks`: (source id, the file's date) or
-    None for none. The default source's places, with its networks or none: the places file's date, as before 1.102.0
+    None for none. The default source's places, with its networks or none: the places file's date, as before 1.101.0
     (so its rows are not placed again); any other pair: #<id>:<date>+<id>:<date>, `none` for a role with no file."""
     def one(f) -> str:
         return f"{f[0]}:{f[1]}" if f else "none"

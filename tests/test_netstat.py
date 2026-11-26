@@ -1075,7 +1075,7 @@ def test_the_routes_the_hosts_database_keeps_are_handed_to_the_tabs_routes(tmp_p
 
 
 def test_the_hosts_are_stamped_with_the_files_in_use_and_placed_again_once_they_change(tmp_path):
-    """1.102.0 (Monday list item 20): the stamp is the WorldView's (geosources.stamp), and replaced() forgets the one
+    """1.101.0 (Monday list item 20): the stamp is the WorldView's (geosources.stamp), and replaced() forgets the one
     kept, so a switch of source places the hosts again at the next ask rather than STAMP_S later."""
     class Sourced(Globe):
         mark = "#dbip:2026-11-01+ipinfo:2026-11-24"

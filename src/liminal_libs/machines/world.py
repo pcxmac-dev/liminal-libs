@@ -25,7 +25,7 @@ minutes; and tables of the busiest ports and places.
   month's when this month's is not out yet, streamed into geo.install_mmdb with its bounds, under one deadline for all
   of it (geo.INSTALL_S), over https on every hop and from the plugin's own host alone. The address is the plugin's: no
   outside host is named in the library.
-- 1.102.0 (Monday list item 20): a plugin may name GeoIP sources (machines/geosources.py), for places and for networks
+- 1.101.0 (Monday list item 20): a plugin may name GeoIP sources (machines/geosources.py), for places and for networks
   apart, the first the default (today's files and folders). The view then opens the chosen files (`choose`, kept by the
   plugin), checks at every ask that neither is too old to be read, and answers the "GeoIP sources" table, whose
   Download… (`get`), Use… and Remove… (`remove`) take the place of the two install buttons. A source's key is read only
@@ -99,7 +99,7 @@ USER_AGENT = "liminal-libs (GeoIP download)"
 LICENCE_FIRST = "The GeoIP file is downloaded only once you accept its licence."
 DETACHED = "the plugin was detached, so the download was stopped: nothing was installed"
 CANCELLED = "the download was cancelled: nothing was installed"
-# 1.102.0: the GeoIP sources' hooks (each asked from its form alone, by a person signed in at the page) and forms
+# 1.101.0: the GeoIP sources' hooks (each asked from its form alone, by a person signed in at the page) and forms
 GEOIP_GET_HOOK = "world_geoip_get"  # a source's file downloaded, as a job (Cancel stops it)
 GEOIP_USE_HOOK = "world_geoip_use"  # a source's file used for its role
 GEOIP_REMOVE_HOOK = "world_geoip_remove"  # a source's file removed, asked twice
@@ -393,7 +393,7 @@ def _where(url: str) -> str:
 
 
 def _over_https(url: str, host: str, what: str = "a GeoIP file", hosts=()) -> None:
-    """RedirectRefused unless `url` is https on `host`, or (1.102.0) on one of `hosts`, those its plugin names for the
+    """RedirectRefused unless `url` is https on `host`, or (1.101.0) on one of `hosts`, those its plugin names for the
     download to be sent on to (a maker's storage). `what`: what is downloaded, for the words (a GeoIP file; a data set
     of machines/infrastructure.py). The words name a host alone, never an address's path or query."""
     try:
@@ -408,7 +408,7 @@ def _over_https(url: str, host: str, what: str = "a GeoIP file", hosts=()) -> No
 
 
 def _site(url: str) -> str:
-    """1.102.0: an address in words as _where says it, its scheme and host, yet never any of the address itself when
+    """1.101.0: an address in words as _where says it, its scheme and host, yet never any of the address itself when
     no host parses (a keyed address's query may hold a key)."""
     try:
         parts = urlsplit(str(url or ""))
@@ -565,7 +565,7 @@ def _transport() -> tuple[type, type, type]:
 
         def __init__(self, host: str, what: str = "a GeoIP file", hosts=()):
             self.host, self.what = host, what  # `what` is downloaded: for a refusal's words
-            self.hosts = tuple(hosts or ())  # 1.102.0: the other hosts its plugin names for it to be sent on to
+            self.hosts = tuple(hosts or ())  # 1.101.0: the other hosts its plugin names for it to be sent on to
 
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             try:
@@ -593,7 +593,7 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = US
     `agent`: the request's User-Agent, a product's name and its version and nothing of the user's or the machine's: the
     library's own for a GeoIP file, a plugin's name and version for a data set it downloads
     (machines/infrastructure.py). `what`: what is downloaded, for the words of a refusal (a GeoIP file; a data set).
-    `hosts` (1.102.0): the other hosts a redirect may go to, and the answer come from (a GeoIP source's storage, as its
+    `hosts` (1.101.0): the other hosts a redirect may go to, and the answer come from (a GeoIP source's storage, as its
     plugin names them); none: the same host alone, as before."""
     import urllib.request
 
@@ -707,7 +707,7 @@ def _length(stream) -> int | None:
 
 def _came_from(stream, url: str, hosts=()) -> str:
     """The address the download's answer came from (its own, after any redirect: https on the plugin's host, or one of
-    `hosts` (1.102.0), or GeoError); `url` when the stream does not say."""
+    `hosts` (1.101.0), or GeoError); `url` when the stream does not say."""
     where = _answered_from(stream, url)
     host = _host(url).lower()
     try:
@@ -719,7 +719,7 @@ def _came_from(stream, url: str, hosts=()) -> str:
 
 
 def _fixed(e: BaseException, url: str, own=()) -> str:
-    """1.102.0: a keyed download's failure in fixed words: what failed, the HTTP status and the host alone, never the
+    """1.101.0: a keyed download's failure in fixed words: what failed, the HTTP status and the host alone, never the
     exception's own words (they may print the address, its query and the key in it) nor the address. `own`: the maker's
     own hosts, whose 401 or 403 is the key's; any other host's is its storage's, refusing a signed address."""
     code = getattr(e, "code", None)
@@ -860,7 +860,7 @@ def asn_form(licence: str = "", source: str = "", folder=None, update: bool = Fa
                               f"{words} You are asked to accept it next.")}}
 
 
-# -- 1.102.0: the GeoIP sources' forms and helpers ---------------------------------------------------------------------
+# -- 1.101.0: the GeoIP sources' forms and helpers ---------------------------------------------------------------------
 def _fixed_fields(source, file) -> list:
     return [{"name": "source", "type": "fixed", "value": source.id}, {"name": "role", "type": "fixed", "value": file.role}]
 
@@ -1124,7 +1124,7 @@ class WorldView:
                  clock=time.monotonic, resolve=None, fetch=None, wall=time.time, book: traffic.TrafficBook | None = None,
                  sources=None):
         self.name = str(name or "")
-        # 1.102.0: (the GeoIP sources read, what was wrong with the others, the choice's reader: {role: source id})
+        # 1.101.0: (the GeoIP sources read, what was wrong with the others, the choice's reader: {role: source id})
         named, refused, choice_of = sources if sources is not None else ((), (), None)
         self.sources: list = list(named or ())
         self.refused: list[str] = [str(r) for r in refused or ()]
@@ -1229,7 +1229,7 @@ class WorldView:
             return None
         with self._lock:
             if self.sources and self._geoip is not None and not self._still_usable(self._geoip):
-                self._let_go_now()  # 1.102.0: a file too old to be read let go at once, at whichever ask finds it
+                self._let_go_now()  # 1.101.0: a file too old to be read let go at once, at whichever ask finds it
             if self._geoip is not None or self.closed:
                 return self._geoip
             now = self.clock()
@@ -1239,7 +1239,7 @@ class WorldView:
             self._geoip = self._open_chosen() if self.sources else geo.GeoIP.find(self.folder)
             return self._geoip
 
-    # -- 1.102.0: the GeoIP sources ---------------------------------------------------------------------------------
+    # -- 1.101.0: the GeoIP sources ---------------------------------------------------------------------------------
     @property
     def default(self) -> str:
         """The default source's id: the plugin's first ("" when it names none)."""
@@ -1369,7 +1369,7 @@ class WorldView:
 
     def stamp(self, geoip=None) -> str:
         """What a host placed from the files open is stamped with (geosources.stamp): the places file's date alone with
-        the default source's files, as before 1.102.0."""
+        the default source's files, as before 1.101.0."""
         geoip = geoip if geoip is not None else self._geoip
         if geoip is None:
             return ""
@@ -1652,7 +1652,7 @@ class WorldView:
         1.75.0: `kind` "asn" installs the ASN file instead, into the GeoIP folder's asn/ (geo.asn_folder), its own
         folder, so neither install removes the other's file; the GeoIP file is then opened again with it.
 
-        1.102.0: `folder` puts it in a source's own folder (geosources.folder), `packing` insists on how it comes, and
+        1.101.0: `folder` puts it in a source's own folder (geosources.folder), `packing` insists on how it comes, and
         `cancel()` true stops it as a detach does (the platform's Cancel)."""
         say = _sayer(log)
         template = str(template or "").strip()
@@ -2049,7 +2049,7 @@ class WorldView:
                             "since": _iso(snap["since"]) if snap.get("since") else None}}
         if charts is not None:
             out["charts"] = [charts]
-        if self.sources:  # 1.102.0: the sources' table and its forms, in place of the two install buttons
+        if self.sources:  # 1.101.0: the sources' table and its forms, in place of the two install buttons
             table, forms = self.sources_table(keys)
             out["tables"].append(table)
             if forms:
