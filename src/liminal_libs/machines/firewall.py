@@ -7,27 +7,39 @@ Every rule the framework makes is its own, marked as Liminal's (Windows' rule gr
 comment or service named liminal...), so it is listed, changed and removed apart from every other rule; a
 rule that is not Liminal's is only ever read. A subclass drives one firewall (Windows Defender Firewall; ufw,
 firewalld or nftables) through the backend methods; this base holds the rules, the framework's ports, the
-status and the setup."""
+status and the setup.
+
+1.102.0 (Monday list item 20; the user, 2026-11-19: "add a way to download different GEOIP sources"): a subclass may
+name GeoIP sources (GEOIP_SOURCES, machines/geosources.py), places and networks chosen apart, the first the default.
+Three hooks only a person signed in at the platform's page may ask (PAGE_ONLY_HOOKS, and each refuses any other ask
+itself): world_geoip_get (a job: the keys read through the asking person's login, the licence's acceptance kept in
+their own login store or the download refused), world_geoip_use and world_geoip_remove (asked twice)."""
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .. import sockets
+from ..apps import asking
+from ..apps.authorization import PREFERENCE, Unauthorized, accept_licence as keep_licence, asking_login, keep, keeps, recall
 from ..apps.tabs import Tab
 from ..hostbook import HOSTS_KEY
 from ..sources.keys import KeyVar
-from . import netstat, routes as routes_module, world as world_module
+from . import geosources, netstat, routes as routes_module, world as world_module
 from .infrastructure import DataSet, Index
 from .netstat import NetstatView
 from .plugin import CommandError, MachinePlugin
 from .rulegroups import RuleGroups, Sorted
-from .world import (ASN_HOOK, GEOIP_HOOK, HOME_KEY, HOME_PLACE_VAR, HOOK as WORLD_HOOK, LICENCE_FIRST, TAB as WORLD_TAB,
-                    TIMEOUT_S, TITLE as WORLD_TITLE, LicenceRefused, WorldView, not_here_page)
+from .world import (ASN_HOOK, GEOIP_GET_HOOK, GEOIP_HOOK, GEOIP_REMOVE_HOOK, GEOIP_USE_HOOK, HOME_KEY, HOME_PLACE_VAR,
+                    HOOK as WORLD_HOOK, LICENCE_FIRST, SETTING_S, TAB as WORLD_TAB, TIMEOUT_S, TITLE as WORLD_TITLE,
+                    LicenceRefused, WorldView, not_here_page)
 
 # 1.74.0 (the user, 2026-11-22: "lets have a selectable switch on firewall which allows it to run while not selected
 # as far as monitoring traffic"): the traffic watched only while the World Wide Web tab is shown, or all the time
@@ -109,6 +121,13 @@ class Rule:
         return {"name": self.name, "label": self.label, "ports": list(self.ports), "protocol": self.protocol,
                 "direction": self.direction, "action": self.action, "remote": self.remote, "enabled": self.enabled,
                 "owned": self.owned, "detail": self.detail}
+
+
+def geosources_pair(variable: str) -> str:
+    """A key's pair in a login store, by its variable (IPINFO_TOKEN is ipinfo-token)."""
+    from ..apps.authorization import pair_name
+
+    return pair_name(variable)
 
 
 def app_ports(env=None) -> dict[str, int]:
@@ -203,6 +222,8 @@ class Firewall(MachinePlugin):
              # 1.55.0: world, the World Wide Web tab's page (a read); world_geoip, its GeoIP file's install (a change)
              WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK,  # 1.74.0: world_watching, the traffic watched all the time or not
              ASN_HOOK,  # 1.75.0: world_asn, the ASN file's install
+             # 1.102.0: a GeoIP source's file downloaded (a job), used for its role, and removed
+             GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK,
              # 1.65.0: netstat, the Netstat tab's page (a read); hosts_recording and hosts_forget, the hosts database's
              # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
              # globe shows; world_layer, a layer's geometry (a read); world_layer_get and world_layer_remove, a data
@@ -220,8 +241,15 @@ class Firewall(MachinePlugin):
     # hooks the platform runs as a job (liminal-platform 0.19.0), their lines followed in the plugin's panel: the GeoIP
     # file's install, a download of about 60 MB that would otherwise hold the form's dialog for minutes; and a data
     # set's download (1.65.0), which the page may ask to stop (CANCEL_HOOKS: liminal-platform 0.31.0's Cancel)
-    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK)  # 1.75.0: the ASN file's install, a job as the GeoIP file's
-    CANCEL_HOOKS = (netstat.GET_HOOK,)
+    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK,  # 1.75.0: the ASN file's install, a job as the GeoIP file's
+                 GEOIP_GET_HOOK)  # 1.102.0: a GeoIP source's file, a job its Cancel stops
+    CANCEL_HOOKS = (netstat.GET_HOOK, GEOIP_GET_HOOK)
+    # 1.102.0: what only a person at the platform's page may ask: the GeoIP sources' download, use and removal (each
+    # refuses any other ask itself too: geosources.NotAsked)
+    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK)
+    # 1.102.0: the GeoIP sources a subclass names (geosources.of's plain dicts, every host and licence its own): places
+    # and networks chosen apart, the first the default; () keeps the GEOIP_URL and GEOIP_ASN_URL installs as before
+    GEOIP_SOURCES: tuple = ()
     # the internet infrastructure the globe may draw (1.65.0): the plugin's data sets, each a plain dict of
     # infrastructure.DataSet's keys (its address, query, licence and credit are the plugin's, in its apis.py); none here
     INFRASTRUCTURE: tuple = ()
@@ -288,8 +316,20 @@ class Firewall(MachinePlugin):
     @property
     def KEEPS(self) -> tuple:
         """What it keeps through its login beside its keys (Plugin.KEEPS, for its Internal API tab): the user's labels
-        and the moves of its rules, under the variable its `groups` are kept in. Said by name: no login is asked."""
-        return ((self.groups.variable, "the labels and the moves of its rules"),)
+        and the moves of its rules, under the variable its `groups` are kept in; 1.102.0: the GeoIP sources chosen, and
+        each offered file's licence acceptance (in the asking person's own store). Said by name: no login is asked."""
+        kept = [(self.groups.variable, "the labels and the moves of its rules")]
+        if self.GEOIP_SOURCES:
+            kept.append((geosources.VAR, "the GeoIP sources chosen for places and for networks"))
+            read, _ = geosources.read(self.GEOIP_SOURCES, self._declared_keys())
+            for source in read:
+                if source.offered:
+                    kept += [(f"licence-{f.licence.pair}", f"your acceptance of {f.title}'s licence, in your own "
+                              "login store") for f in source.files]
+        return tuple(kept)
+
+    def _declared_keys(self) -> list[str]:
+        return [str(getattr(k, "name", k)) for k in (getattr(self, "keys", None) or ())]
 
     def sorted_rules(self) -> dict[str, Sorted]:
         """Every rule this firewall reads, by its key (rulegroups.key_of), with the group found for it: a subclass's."""
@@ -450,7 +490,154 @@ class Firewall(MachinePlugin):
         """The WorldView the tab watches with: every packet at the adapter of this machine's way out (world.default_capture),
         the GeoIP files in the data folder, WORLD_TIMEOUT seconds of watching after the last ask. A subclass with a capture
         of its own (another adapter, a stand-in in its tests) makes it here."""
-        return WorldView(self.name, timeout=self.WORLD_TIMEOUT)
+        return WorldView(self.name, timeout=self.WORLD_TIMEOUT, sources=self.world_sources())
+
+    # -- 1.102.0: the GeoIP sources ----------------------------------------------------------------------------------
+    def world_sources(self):
+        """What a WorldView is given of the GeoIP sources (its `sources`): (those that read, what was wrong with the
+        others, the choice's reader); None when the plugin names none."""
+        if not self.GEOIP_SOURCES:
+            return None
+        read, refused = geosources.read(self.GEOIP_SOURCES, self._declared_keys())
+        return read, refused, self.geoip_choice
+
+    def geoip_choice(self, fresh: bool = False) -> dict:
+        """The GeoIP sources chosen, {"places": id, "networks": id} ({} for the default's), kept per machine through
+        the plugin's login (geosources.SETTING where it keeps settings, else its own LIMINAL_GEOIP_SOURCES), read at
+        most every world.SETTING_S."""
+        kept = self.__dict__.get("_geoip_choice")
+        if not fresh and kept is not None and time.monotonic() - kept[0] < SETTING_S:
+            return dict(kept[1])
+        login = getattr(self, "login", None)
+
+        def from_variable():
+            try:
+                raw = (login.variables([geosources.VAR]) or {}).get(geosources.VAR) if login is not None else None
+                return json.loads(raw) if raw else None
+            except Exception:  # noqa: BLE001 - nothing kept, or nothing that reads: the default's
+                return None
+        try:
+            value = recall(login, geosources.SETTING, from_variable) if login is not None else None
+        except Exception:  # noqa: BLE001 - a login that cannot say: the default's
+            value = None
+        choice = {r: str(value[r]) for r in geosources.ROLES if isinstance(value, dict) and isinstance(value.get(r), str)}
+        self.__dict__["_geoip_choice"] = (time.monotonic(), choice)
+        return dict(choice)
+
+    @staticmethod
+    def _at_the_page() -> bool:
+        """Whether this ask is a person's, signed in at the platform's page: the page asks it (asking.PAGE), and the
+        asking login keeps settings (a person's own store, not the platform's EnvironmentLogin)."""
+        return asking.asker() == asking.PAGE and keeps(asking_login())
+
+    def _geoip_gate(self, source, role, *, offered: bool = True):
+        """The checks every GeoIP sources hook makes first, each local and in words: not for this machine; no sources,
+        or a source or role the plugin does not name (or, with `offered`, does not offer); not a person signed in at
+        the platform's page (geosources.NotAsked). (the view, the source, its file)"""
+        here = self.not_for_here()
+        if here:
+            raise ValueError(f"not for this machine: {here}")
+        if not self.GEOIP_SOURCES:
+            raise ValueError(f"{self.title or self.name} names no GeoIP sources")
+        view = self.world_view()
+        named, file = view.source(source), view.file_of(source, role)
+        if file is None:
+            raise ValueError(f"{self.title or self.name} names no {world_module._shown(role)} file of a GeoIP source "
+                             f"{world_module._shown(source)}")
+        if offered and not named.offered:
+            raise ValueError(f"{named.title} is not offered: waiting for your word")
+        if not self._at_the_page():
+            raise geosources.NotAsked()
+        return view, named, file
+
+    def _geoip_replaced(self, view) -> None:
+        view.replaced()
+        net = self.netstat_view(make=False)
+        if net is not None:
+            net.replaced()
+
+    def world_geoip_get(self, source, role, accept_licence=False, log=None) -> dict:
+        """A GeoIP source's file downloaded, on the word of a person signed in at the platform's page: run as a job
+        (`log` its panel; Cancel stops it). Refused first, each in words and before anything is read or asked of
+        anyone: not for this machine; a source or role not named or not offered; not a person at the page; a key not
+        set in their login store (by name, no value read); the licence not accepted (world.LicenceRefused, naming
+        accept_licence: the page asks it as a second confirmation with the licence's words); another download under
+        way. Then, in the job: the keys read through the asking person's login and checked, the acceptance kept in
+        their own login store (a store that refuses ends it, nothing fetched), and the download (WorldView.get)."""
+        view, named, file = self._geoip_gate(source, role)
+        login = asking_login()
+        if named.keys:
+            try:
+                have = login.names()
+            except Exception:  # noqa: BLE001 - a store that cannot list: the job reads them and says
+                have = None
+            missing = [n for n in named.keys if have is not None and geosources_pair(n) not in have]
+            if missing:
+                raise ValueError(f"{', '.join(missing)} is not set in your login store: add it "
+                                 f"{geosources.WHERE_KEYS}")
+        if accept_licence is not True:
+            raise LicenceRefused(f"{file.title} is downloaded only once you accept its licence.")
+        if view._installing.locked():
+            raise ValueError("a GeoIP file is being downloaded already: wait for it to finish")
+        return self._geoip_download(view, named, file, login, log)
+
+    def _geoip_download(self, view, named, file, login, log) -> dict:
+        secrets = geosources.credentials(named, login)
+        now = datetime.fromtimestamp(view.wall(), timezone.utc)
+        built = now.strftime("%Y-%m") if file.monthly else now.strftime("%Y-%m-%d")
+        said = geosources.licence_of(file, built)
+        try:
+            keep_licence(login, said.pop("name"), **said, file=False)
+        except Unauthorized as e:
+            raise ValueError(f"your acceptance of {file.title}'s licence could not be kept in your login store "
+                             f"({e.reason}): nothing was downloaded") from None
+        out = view.get(named.id, file.role, secrets, log=log,
+                       cancel=lambda: bool(getattr(log, "cancelled", False)))
+        self._geoip_replaced(view)
+        out.setdefault("lines", []).append("your acceptance of its licence is kept in your own login store")
+        return out
+
+    def world_geoip_use(self, source, role) -> dict:
+        """A GeoIP source's file, installed already, used for its role from now on, on this machine (the choice kept
+        through the plugin's login, as the traffic's watching is): asked by a person signed in at the platform's page.
+        The hosts are placed again from it at the next ask."""
+        view, named, file = self._geoip_gate(source, role)
+        if view.installed(named.id, role) is None:
+            raise ValueError(f"{file.title} is not installed: download it first")
+        login = getattr(self, "login", None)
+        if login is None:
+            raise ValueError("no login to keep the choice through: sign in first")
+        if named.id != view.default and not keeps(login) and sys.platform != "win32":
+            raise ValueError("the choice cannot be kept here: the platform's login on this system keeps a setting only "
+                             "until the platform stops, so the default source stays in use")
+        choice = {**self.geoip_choice(fresh=True), role: named.id}
+
+        def to_variable(value) -> None:
+            login.save(geosources.VAR, json.dumps(value, sort_keys=True))
+        try:
+            where = keep(login, geosources.SETTING, choice, to_variable, PREFERENCE, "the GeoIP sources chosen")
+        except Exception as e:  # noqa: BLE001 - a login that keeps nothing: its own words
+            raise ValueError(f"the choice could not be kept: {e}") from None
+        self.__dict__.pop("_geoip_choice", None)
+        self._geoip_replaced(view)
+        return {"said": f"{file.title} is used for {role}", "ok": True,
+                "lines": [f"kept in {where}", "the hosts are placed again from it at the next ask"]}
+
+    def world_geoip_remove(self, source, role, accept_removal=False) -> dict:
+        """A GeoIP source's file removed, with its notes, on the word of a person signed in at the platform's page,
+        asked twice (geosources.RemovalRefused, naming accept_removal, until the second). A source no longer offered
+        may still be removed. The places it gave are cleared from the hosts database where no file in use gives
+        them, and placed again at the next ask."""
+        view, named, file = self._geoip_gate(source, role, offered=False)
+        if accept_removal is not True:
+            raise geosources.RemovalRefused(f"{file.title} is removed only once you confirm it a second time.")
+        out = view.remove(named.id, role)
+        if out.get("ok") and view.chosen()[role]["source"] != named.id:
+            net = self.netstat_view(make=False)
+            if net is not None and not net.elsewhere():
+                net.book.clear_places(role, geosources.cleared(role, named.id))
+        self._geoip_replaced(view)
+        return out
 
     def world_routes(self) -> routes_module.Routes:
         """The routes of this plugin's World Wide Web tab (1.67.0, machines/routes.py): made when first asked, closed
@@ -527,13 +714,15 @@ class Firewall(MachinePlugin):
         except Exception:  # noqa: BLE001 - the routes never cost the tab its page
             pass
         attribution = dict(self.ATTRIBUTION) if isinstance(self.ATTRIBUTION, dict) and self.ATTRIBUTION else None
+        if getattr(view, "sources", None):  # 1.102.0: the places file's in use
+            attribution = (view.credits() or {}).get("places") or attribution
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
                  "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL,
                  "asn_source": self.GEOIP_ASN_URL, "asn_licence": self.GEOIP_ASN_LICENCE}  # 1.75.0
         page = None
         if net.shows() == "traffic":
             view.touch()
-            page = view.page(**frame)
+            page = view.page(**frame, keys=self._geoip_keys(view))
         page = net.onto(page, view, **frame)
         try:
             routes.onto(page, view.geoip(), remotes, index=net.index, licence=frame["licence"])  # 1.69.0, 1.71.0
@@ -552,6 +741,21 @@ class Firewall(MachinePlugin):
         if under is not None and isinstance(page.get("tables"), list):
             page["tables"].append(under)
         return page
+
+    def _geoip_keys(self, view) -> set | None:
+        """1.102.0: the keys the offered sources need that the asking person's login store holds, by name alone (never
+        a value); None when none is asked of anyone or the store cannot list."""
+        wanted = [n for s in getattr(view, "sources", None) or () if s.offered for n in s.keys]
+        if not wanted:
+            return None
+        login = asking_login()
+        if not keeps(login):
+            return set()
+        try:
+            have = login.names()
+        except Exception:  # noqa: BLE001 - a store that cannot list: not known
+            return None
+        return None if have is None else {n for n in wanted if geosources_pair(n) in have}
 
     # -- 1.74.0: the traffic watched all the time, on the user's switch -------------------------------------------
     def world_watch_mode(self, fresh: bool = False) -> str:
@@ -635,6 +839,8 @@ class Firewall(MachinePlugin):
         here = self.not_for_here()
         if here:
             raise ValueError(f"not for this machine: {here}")
+        if self.GEOIP_SOURCES:  # 1.102.0: the default source's places file
+            return self._default_install("places", accept_licence, log, LICENCE_FIRST)
         if not self.GEOIP_URL:
             raise ValueError(f"{self.title or self.name} offers no GeoIP file to download")
         if accept_licence is not True:
@@ -649,11 +855,32 @@ class Firewall(MachinePlugin):
         here = self.not_for_here()
         if here:
             raise ValueError(f"not for this machine: {here}")
+        if self.GEOIP_SOURCES:  # 1.102.0: the default source's networks file
+            return self._default_install("networks", accept_licence, log,
+                                         "The ASN file is downloaded only once you accept its licence.")
         if not self.GEOIP_ASN_URL:
             raise ValueError(f"{self.title or self.name} offers no ASN file to download")
         if accept_licence is not True:
             raise LicenceRefused("The ASN file is downloaded only once you accept its licence.")
         return self.world_view().install(self.GEOIP_ASN_URL, log=log, kind="asn")
+
+    def _default_install(self, role: str, accept_licence, log, first: str) -> dict:
+        """1.102.0: world_geoip and world_asn with GEOIP_SOURCES: the default source's file of `role`. Its acceptance is
+        kept only for a person signed in at the platform's page (in their own login store, or nothing is downloaded);
+        any other ask downloads as before 1.102.0 and records nothing."""
+        view = self.world_view()
+        named, file = view.source(view.default), view.file_of(view.default, role)
+        if file is None:
+            raise ValueError(f"{self.title or self.name} offers no {role} file to download")
+        if named.keys:
+            raise ValueError(f"{file.title} needs a key: ask it from the GeoIP sources table")
+        if accept_licence is not True:
+            raise LicenceRefused(first)
+        if self._at_the_page():
+            return self._geoip_download(view, named, file, asking_login(), log)
+        out = view.get(named.id, role, log=log, cancel=lambda: bool(getattr(log, "cancelled", False)))
+        self._geoip_replaced(view)
+        return out
 
     # -- the Netstat tab, the hosts database and the globe's filters and layers (1.65.0; machines/netstat.py) ---------
     def netstat_view(self, make: bool = True) -> NetstatView | None:
@@ -826,6 +1053,7 @@ class Firewall(MachinePlugin):
         view = self.world_view(make=False)
         if view is not None:
             view.forget_setting()
+        self.__dict__.pop("_geoip_choice", None)  # 1.102.0: the GeoIP sources chosen, read anew
         net = self.netstat_view(make=False)
         if net is not None:
             net.forget_setting()

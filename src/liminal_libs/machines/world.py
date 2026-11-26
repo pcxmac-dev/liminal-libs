@@ -1387,9 +1387,12 @@ class WorldView:
         return geosources.stamp(places, networks, self.default)
 
     def credits(self) -> dict:
-        """The credits of the files in use, by role ({text, url}), for the globe and the tables."""
+        """The credits of the files in use, by role ({text, url}), for the globe and the tables: the files open, else
+        the ones chosen (before the first ask opens them)."""
         with self._lock:
             ids = dict(self._open_ids)
+        if not any(ids.values()):
+            ids = {role: c["source"] for role, c in self.chosen().items()}
         out = {}
         for role in geosources.ROLES:
             file = self.file_of(ids.get(role), role) if ids.get(role) else None
