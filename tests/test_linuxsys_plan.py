@@ -99,7 +99,7 @@ def test_the_script_runs_its_parts_in_the_plan_s_order():
     text = p.script()
     order = ["exec </dev/null", "LC_ALL=C; export LC_ALL", "umask 077", "set -u", "trap '' PIPE HUP",
              "stop=0; trap 'stop=1' TERM INT", "printf '@@ liminal-begin %s\\n' \"$1\" >&2", "lm_safe() {",
-             "exec 9>>/run/liminal-linux.lock", "flock -n 9", "for lm_p in", "install -d -m 0755 -o root -g root "
+             "}\nlm_next\nexec 9>>", "exec 9>>/run/liminal-linux.lock", "flock -n 9", "for lm_p in", "install -d -m 0755 -o root -g root "
              "/var/lib/liminal-linux", "install -m 0644 -o root -g root /dev/null \"$J\"", "@@ refused guard 1",
              "printf 'run %s apply %s\\n'", "lm_journal=1", "@@ step 1 there", "@@ step 2 there", "lm_exit 0"]
     at = [text.index(o) for o in order]
@@ -108,7 +108,15 @@ def test_the_script_runs_its_parts_in_the_plan_s_order():
     # the chain: every folder from / to the journal's and to sysusers', once each
     assert ("for lm_p in '/' '/var' '/var/lib' '/var/lib/liminal-linux' '/etc' '/etc/sysusers.d'; do") in text
     # every step's tool runs with the lock's fd closed, and every step is followed by the stop check
-    assert text.count("} 9>&-") == 2 and text.count("\nlm_next\n") == 2
+    assert text.count("} 9>&-") == 2 and text.count("\nlm_next\n") == 3
+
+
+def test_the_parent_is_the_one_the_shell_started_under_and_is_checked_before_the_lock():
+    # $PPID is fixed when sh starts: sudo's pid even when sudo was killed before the helpers ran, so the first
+    # lm_next, before the lock, the journal and the guards, ends an orphaned script with nothing changed
+    text = _two_steps().script()
+    assert "\nlm_parent=$PPID\n" in text and "lm_parent=$(lm_ppid)" not in text
+    assert text.index("\nlm_next\n") < text.index("exec 9>>") < text.index("install -d -m 0755")
 
 
 def test_each_step_is_checked_journaled_run_and_journaled_again():

@@ -103,7 +103,9 @@ TOOLS = (
     ("env", "coreutils or BusyBox", "sudo's words in English (LC_ALL=C)"),
 )
 
-# The helpers every script defines after its begin line. A slot of a journal line is one of lm_gid, lm_uid, lm_ugid
+# The helpers every script defines after its begin line. lm_parent is $PPID, which the shell fixed when it started:
+# sudo's pid even when sudo is already gone, so the lm_next run before the lock ends a script whose sudo was killed
+# before its begin line was read (exit 7, nothing changed). A slot of a journal line is one of lm_gid, lm_uid, lm_ugid
 # and lm_sha (journal._SLOT)
 HELPERS = r"""J=/var/lib/liminal-linux/MADE
 lm_journal=0
@@ -118,7 +120,7 @@ lm_ugid() { lm_field /etc/passwd "$1" 4; }
 lm_members() { lm_field /etc/group "$1" 4 | tr ',' '\n' | sed '/^$/d' | sort | tr '\n' ',' | sed 's/,$//'; }
 lm_sha() { if [ -f "$1" ]; then sha256sum "$1" | cut -d ' ' -f 1; fi; }
 lm_ppid() { sed 's/^.*) //' "/proc/$$/stat" | cut -d ' ' -f 2; }
-lm_parent=$(lm_ppid)
+lm_parent=$PPID
 lm_next() {
   if [ "$stop" != 0 ] || [ "$(lm_ppid)" != "$lm_parent" ]; then printf '@@ stopped\n'; lm_exit 7; fi
 }
@@ -286,7 +288,8 @@ class Plan:
         if self.what not in journal.WHATS:
             raise ValueError(f"a plan is one of {', '.join(journal.WHATS)}, not {self.what!r}")
         out = [*ROOT_HEAD, "set -u", "trap '' PIPE HUP", "stop=0; trap 'stop=1' TERM INT",
-               "printf '@@ liminal-begin %s\\n' \"$1\" >&2", "nonce=$1", HELPERS, _lock(self.lock), _chain(self.chains),
+               "printf '@@ liminal-begin %s\\n' \"$1\" >&2", "nonce=$1", HELPERS, "lm_next",
+               _lock(self.lock), _chain(self.chains),
                f"[ -d {journal.FOLDER} ] || install -d -m {journal.FOLDER_MODE} -o root -g root {journal.FOLDER} "
                f"|| exit 1",
                f"[ -f \"$J\" ] || install -m {journal.MODE} -o root -g root /dev/null \"$J\" || exit 1",

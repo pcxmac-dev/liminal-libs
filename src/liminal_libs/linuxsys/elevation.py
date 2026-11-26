@@ -22,7 +22,8 @@ and nothing has run: sudo is ended with SIGKILL at once, then the pipe is closed
 wrong password (WrongPassword: one failed sign-in, the form is offered again), without them a second factor. A first
 marker naming another account than the field's (root's, under targetpw) is ended before anything is written. Neither
 marker nor begin line within CONVERSE_S: SIGKILL. sudo ending before the begin line: its words, scrubbed whole. A
-stop before the begin line ends sudo with SIGKILL (nothing has run); after it, the script is told TERM once and
+stop before the begin line ends sudo with SIGKILL (nothing has run: a script sudo had already started sees its parent,
+$PPID, gone at its first stop check, before the lock, and exits 7); after it, the script is told TERM once and
 finishes the step it is in. The password is never in an argument, the environment, a log line or any words this
 module gives back.
 """

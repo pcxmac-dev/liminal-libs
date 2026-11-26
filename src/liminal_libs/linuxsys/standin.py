@@ -259,6 +259,9 @@ class Machine:
         killed = False
         lock_dir = plan.LOCK
         try:
+            if (yield (0, "begun")) == "term":  # the lm_next before the lock: sudo gone, or told TERM already
+                out("@@ stopped\n")
+                return 7
             if the_plan.lock == "flock":
                 if "flock" not in self.tools:
                     err("sh: flock: not found\n")

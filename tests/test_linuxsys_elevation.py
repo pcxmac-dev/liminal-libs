@@ -200,6 +200,16 @@ def test_a_stop_while_sudo_waits_at_its_marker_kills_it_and_nothing_runs():
     assert not m.eof_at_prompt and m.files.get("/var/lib/liminal-linux/MADE") is None
 
 
+def test_a_sudo_killed_before_its_begin_line_was_read_leaves_a_script_that_changes_nothing():
+    # the script's first lm_next, before the lock: its parent is gone (or it was told TERM), so it exits 7 before
+    # the journal, the guards and step 1
+    m = standin.Machine(UBUNTU)
+    m.term_at = (0, "begun")
+    ran = way(m).run(make_plan(m), standin.PASSWORD, spawn=m.spawn)
+    assert ran.code == 7 and ran.said == "stopped after step 0 of 4: running it again finishes it"
+    assert m.files.get("/var/lib/liminal-linux/MADE") is None and "liminal" not in m.groups()
+
+
 def test_a_stop_while_the_script_runs_lets_its_step_finish_then_it_stops():
     m = standin.Machine(UBUNTU)
     m.hold_at = (2, "tool")
