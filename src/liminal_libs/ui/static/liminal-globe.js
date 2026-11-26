@@ -1611,6 +1611,10 @@
         const s = sky.byId.get(k.id);
         if (!s || !s.n) continue;
         const area = new Path2D(), [own, o] = scratch('a', W, H, ratio);
+        o.save();  // all of it within the globe's disk: a footprint over the horizon is closed along the rim, and the
+        o.beginPath();  // band's outer half there would lie round the limb, which is the view's edge, not the area's
+        o.arc(g.cx, g.cy, g.r, 0, TAU);
+        o.clip();
         let beams = null;
         for (let i = 0; i < s.n; i++) {
           const a = s.now[i], b = s.next[i];
@@ -1667,6 +1671,7 @@
           o.drawImage(mask, 0, 0);
           o.setTransform(ratio, 0, 0, ratio, 0, 0);
         }
+        o.restore();  // the disk's clip off again, so the next constellation's scratch starts clear of it
         c.setTransform(1, 0, 0, 1, 0, 0);
         c.drawImage(own, 0, 0);
         c.setTransform(ratio, 0, 0, ratio, 0, 0);

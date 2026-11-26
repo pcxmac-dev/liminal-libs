@@ -1694,6 +1694,11 @@ def test_the_sky_is_drawn_as_one_merged_area_a_constellation_with_its_faint_band
     fill = paint.index("o.fill(area);  // once: the union")
     assert stroke < out < fill and "o.globalCompositeOperation = 'source-over';" in paint[out:fill]
     assert "m.clip(cap);" in paint and "m.fill(lands);" in paint  # the beams: the countries within the cap
+    # the review: a footprint over the horizon is closed along the rim, so the band is drawn within the globe's disk
+    # alone (its half outside the rim would ring the limb), and the clip is taken off before the next constellation
+    clip = paint.index("o.arc(g.cx, g.cy, g.r, 0, TAU);\n        o.clip();")
+    assert clip < paint.index("o.stroke(lands);") < stroke and clip < paint.index("o.stroke(cap);")
+    assert fill < paint.index("o.restore();  // the disk's clip off") < paint.index("c.drawImage(own, 0, 0);")
     ask = _body(js, "function askSky() {")
     assert "if (!data.sky || data.sky.needs || !skyLoad || Date.now() - skyAsked < data.sky.every * 1000) return;" in ask
     assert "fetch(" not in _body(js, "function skyLayer(g, fr, ratio, W, H) {") and "fetch(" not in ask
