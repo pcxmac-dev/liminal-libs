@@ -630,6 +630,7 @@ def test_the_traffic_view_gains_its_choice_right_under_the_globe_and_the_infrast
                                                     "Ports elsewhere", "Internet infrastructure"]
     g = page["globe"]
     assert g["layer_hook"] == "world_layer" and g["showing"] == "Traffic watched now" and "kinds" not in g
+    assert g["layer_area"] is True  # 1.104.0: the hook reads a layer by area
     assert [(layer["id"], layer["count"]) for layer in g["layers"]] == [("exchanges", 1), ("datacentres", 1)]
     assert "sun" not in g  # no day and night in this version (B-revisions S9)
     infra = page["tables"][-1]

@@ -1012,13 +1012,15 @@ class Firewall(MachinePlugin):
         self._only_here()
         return self.netstat_view().pick(choice)
 
-    def world_layer(self, layer) -> dict:
-        """One infrastructure layer's geometry for the globe, read from this machine's files (a read).
+    def world_layer(self, layer, area=None, zoom=None) -> dict:
+        """One infrastructure layer's geometry for the globe, read from this machine's database (a read).
 
-        The page asks it once a layer's version, with the layer's id (Index.layer); LookupError when none is
-        installed, ValueError on a machine the plugin is not for."""
+        The page asks it once a layer's version, with the layer's id (Index.layer); 1.104.0: and, past the globe's
+        AREA_ZOOM, with the view's `area` ([west, south, east, north] in degrees) and its `zoom`, so the globe asks
+        for what it shows. LookupError when none is installed, ValueError for an area or a zoom that is none and on a
+        machine the plugin is not for."""
         self._only_here()
-        return self.netstat_view().layer(layer)
+        return self.netstat_view().layer(layer, area=area, zoom=zoom)
 
     def world_layer_get(self, dataset, accept_licence=False, log=None) -> dict:
         """A data set of INFRASTRUCTURE downloaded on the user's word, run by the platform as a job (Cancel stops it).

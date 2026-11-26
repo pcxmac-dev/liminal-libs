@@ -18,14 +18,18 @@
 //     country, city, asn, org, count, bytes, kind, ports, hosts, programs, seconds}], local: {count, bytes, hosts},
 //     attribution: {text, url} | null, updated, note, kinds: [the kinds its legend lists], showing: the filter in
 //     words, layers: [{id, title, kind: "points" | "lines", mark: "circle" | "square" | "diamond" | "line" | "dash",
-//     slot: 4 to 7, on, names_from, count, version, credits: [{text, url}], note}], layer_hook}
+//     slot: 4 to 7, on, names_from, count, version, credits: [{text, url}], note}], layer_area, layer_hook}
 //   theme: the page's theme or its base ("dark", "paper", ...), for the colours of a page without liminal.css's
 //     variables
 //   load: (layerId) => a Promise of that layer's geometry, as machines/infrastructure.py's Index.layer answers it:
 //     {id, version, parts: [{set, credit: {text, url}, points: {n, xy, names, subs}, lines: {n, offsets, xy, names}}]},
 //     xy the base64 of little-endian int32 pairs (lon, lat in 1e-5 degrees), offsets the base64 of n + 1 little-endian
 //     uint32 (where each line's vertices begin). The page gives it, and asks the spec's layer_hook with it: the globe
-//     itself asks for nothing but its map. Without it every layer stays off, and its switch says why.
+//     itself asks for nothing but its map. Without it every layer stays off, and its switch says why. 1.104.0: where
+//     the spec says layer_area (its hook reads a layer by area), load(layerId, {zoom}) asks the whole layer, coarse,
+//     and past AREA_ZOOM load(layerId, {area: [west, south, east, north], zoom}) the view's area at every vertex, in
+//     AREA_TILE degrees rounded out, once a view and never while the globe glides; a loader that takes no second
+//     argument answers the whole layer, drawn as it was.
 //   key: a name the layers' switches are remembered under in this browser (localStorage); without it they last as
 //     long as the globe does.
 //
@@ -109,6 +113,8 @@
   const GLIDE_MS = 700;
   const LABELS = 5;  // the busiest places named on the map (the table and the tooltips carry every one)
   const LIGHTS = 64;  // the busiest routes a light travels (the rest stand still: a frame stays cheap)
+  const AREA_ZOOM = 6;  // past this zoom a layer is asked by area (machines/infrastructure.py's COARSE_ZOOM)
+  const AREA_TILE = 10;  // degrees: the area asked is the view's, rounded out to these
   const MAX_LAYERS = 16;  // the infrastructure layers of a spec that are listed (how many more there were is said)
   const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
   const MAX_LAYER_VERTICES = 400000;  // a layer's line vertices kept, the ones filled in among them
@@ -697,7 +703,7 @@
   // A layer asked of the page's loader, once a version: every globe is told when it came or could not. An answer that
   // does not come within LOAD_MS is not waited for: the layer is not loaded, and says so (one that comes later is
   // still taken). After a failure it is not asked again before RETRY_MS (as the map).
-  function askLayer(l, load) {
+  function askLayer(l, load, more) {
     const was = layerData.get(l.key);
     if (was && (was.state !== 'failed' || Date.now() < was.retry)) return;
     const entry = { state: 'loading', geo: null, why: '', retry: 0, timer: 0 };
@@ -712,7 +718,7 @@
       if (entry.state === 'loading') settle(null, `the page gave no answer for it within ${LOAD_MS / 1000} s`);
     }, LOAD_MS);
     let asked = null;
-    try { asked = Promise.resolve(load(l.id)); } catch (e) { asked = Promise.reject(e); }
+    try { asked = Promise.resolve(more ? load(l.id, more) : load(l.id)); } catch (e) { asked = Promise.reject(e); }
     asked.then((answer) => {
       let geo = null;
       try { geo = prepareLayer(answer); } catch (e) { geo = null; }
@@ -878,6 +884,7 @@
       attribution: creditOf(s.attribution), updated: text(s.updated, 40), note: text(s.note, MAX_NOTE),
       // the kinds the legend lists (all of them when the spec names none it knows), the filter in words, the layers
       kinds: kinds.length ? kinds : Object.keys(KINDS), showing: text(s.showing, 200), has, ...layersOf(s.layers),
+      layerArea: s.layer_area === true,  // 1.104.0: its hook reads a layer by area
       // 1.69.0: the routes' heat (machines/network.py); null on an older server's page, whose routes are drawn as before
       heat: Array.isArray(s.heat) ? heatOf(s.heat) : null, heatBy: s.heat_by === 'bytes' ? 'bytes' : 'connections',
       hops: hopsOf(listed),
@@ -1410,13 +1417,30 @@
     // -- the layers: a plugin's infrastructure, between the map and the routes ---------------------------------------
     // Without a loader every layer is off; else a layer is as it was switched here, or as its spec says.
     const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);
+    // 1.104.0: the area the layers are asked for past AREA_ZOOM ("" below it, or before any): the view's, in AREA_TILE
+    // degrees rounded out, [west, south, east, north], west past east across the antimeridian; the whole round of
+    // longitudes where the view takes in a pole or more than half of them.
+    let areaKey = '', area = null;
+    function areaOf(g) {
+      const reach = sightOf(g) * 180 / Math.PI, lat = view.lat, lon = wrap(view.lon);
+      const s = Math.max(-90, Math.floor((lat - reach) / AREA_TILE) * AREA_TILE);
+      const n = Math.min(90, Math.ceil((lat + reach) / AREA_TILE) * AREA_TILE);
+      const across = reach / Math.max(0.05, Math.cos(Math.min(89, Math.abs(lat) + reach) * rad));
+      if (s <= -90 || n >= 90 || across >= 180) return [-180, s, 180, n];
+      const w = Math.floor((lon - across) / AREA_TILE) * AREA_TILE;
+      const e = Math.ceil((lon + across) / AREA_TILE) * AREA_TILE;
+      return [w < -180 ? w + 360 : w, s, e > 180 ? e - 360 : e, n];
+    }
+    // A layer's entry for the area asked: its own key, so every globe looking at the same area shares it.
+    const areaLayer = (l) => ({ id: l.id, key: `${l.key}\n${areaKey}` });
     // The layers switched on whose geometry is here, in the spec's order: [{l, geo}]. Worked out again only after the
     // spec, a switch or what is loaded changed (layersShown = null).
     function shownLayers() {
       if (!layersShown) {
         layersShown = [];
         for (const l of data.layers) {
-          const e = isOn(l) ? layerData.get(l.key) : null;
+          const near = isOn(l) && areaKey ? layerData.get(areaLayer(l).key) : null;  // 1.104.0: the area's, once in
+          const e = near && near.state === 'ready' ? near : isOn(l) ? layerData.get(l.key) : null;
           if (e && e.state === 'ready') layersShown.push({ l, geo: e.geo });
         }
         layersKey = layersShown.map(({ l }) => `${l.key} ${l.mark} ${l.slot} ${l.namesFrom}`).join('|');
@@ -1898,7 +1922,17 @@
       const tiles = coastTiles(g, fr, !glide);  // GSHHG's only past 24x, and only the tiles on the canvas
       const credited = !!(tiles && tiles.drawn.length);
       if (credited !== coastCredited) { coastCredited = credited; renderAttribution(); }  // GSHHG's, while drawn
-      for (const l of data.layers) if (isOn(l)) askLayer(l, load);  // a layer switched on: asked of the page, once
+      // a layer switched on: asked of the page, once; 1.104.0: past AREA_ZOOM by the view's area too, once a view and
+      // none while it glides (the area kept meanwhile)
+      if (data.layerArea && !glide) {
+        const want = zoom >= AREA_ZOOM ? areaOf(g) : null, key = want ? want.join(',') : '';
+        if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }
+      }
+      for (const l of data.layers) {
+        if (!isOn(l)) continue;
+        askLayer(l, load, data.layerArea ? { zoom: 1 } : undefined);
+        if (areaKey) askLayer(areaLayer(l), load, { area, zoom });
+      }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, W, H);
       ctx.drawImage(baseLayer(g, fr, ratio, W, H, tiles), 0, 0);
@@ -2664,7 +2698,8 @@
     const self = {
       handle, root, update, destroy,
       mapArrived() { changed(); },
-      layerKeys: () => (destroyed ? [] : data.layers.map((l) => l.key)),
+      layerKeys: () => (destroyed ? [] : data.layers.flatMap((l) => (areaKey ? [l.key, areaLayer(l).key]
+        : [l.key]))),
       layerArrived() { layersShown = null; renderWords(); changed(); },  // a layer came, or not: its button says so
       left: () => seen && !root.isConnected,
       destroyed: () => destroyed,

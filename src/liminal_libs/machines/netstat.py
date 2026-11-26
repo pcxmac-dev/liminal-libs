@@ -898,6 +898,7 @@ class NetstatView:
             except Exception:  # noqa: BLE001 - a folder that cannot be read: no layer drawn, its table says why
                 globe["layers"] = []
             globe["layer_hook"] = LAYER_HOOK
+            globe["layer_area"] = True  # 1.104.0: the hook reads a layer by area
             globe["showing"] = self._showing(c)
             forms = [f for f in page.get("forms") or () if isinstance(f, dict)]
             if hosts:
@@ -1201,10 +1202,11 @@ class NetstatView:
                 "rows": rows, "empty": empty}
 
     # -- the layers and their data sets -------------------------------------------------------------------------------
-    def layer(self, layer_id) -> dict:
-        """One infrastructure layer's geometry as the files on this machine hold it (Index.layer), for the globe;
-        LookupError when no such layer is installed here."""
-        return self.index.layer(layer_id)
+    def layer(self, layer_id, area=None, zoom=None) -> dict:
+        """One infrastructure layer's geometry as this machine's database holds it (Index.layer), for the globe: whole,
+        or (1.104.0) by `area` [west, south, east, north] and the globe's `zoom`; LookupError when no such layer is
+        installed here, ValueError for an area or a zoom that is none."""
+        return self.index.layer(layer_id, area=area, zoom=zoom)
 
     def get(self, dataset, accept_licence=False, log=None, accepted=None) -> dict:
         """A data set downloaded on the user's word (infrastructure.install, run by the platform as a job: `log` is its

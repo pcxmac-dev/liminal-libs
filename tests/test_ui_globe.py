@@ -584,9 +584,11 @@ def test_the_layers_are_asked_of_the_page_and_their_switches_kept_in_this_browse
     assert "if (more && typeof more.load === 'function') load = more.load;" in update
     assert "chosen = recall(storeName);" in update  # drawn again under another key: the switches kept there
     assert "const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);" in js
-    assert "for (const l of data.layers) if (isOn(l)) askLayer(l, load);" in _body(js, "function render(now) {")
-    ask = _body(js, "function askLayer(l, load) {")
-    assert "try { asked = Promise.resolve(load(l.id)); } catch (e) { asked = Promise.reject(e); }" in ask
+    render = _body(js, "function render(now) {")
+    assert "askLayer(l, load, data.layerArea ? { zoom: 1 } : undefined);" in render
+    ask = _body(js, "function askLayer(l, load, more) {")
+    assert ("try { asked = Promise.resolve(more ? load(l.id, more) : load(l.id)); } catch (e) { asked = "
+            "Promise.reject(e); }") in ask
     assert "const NO_LOADER = 'this page gives the globe no way to load it';" in js
     layers = _body(js, "function renderLayers() {")
     assert "attr(it.b, 'aria-disabled', load ? null : 'true');" in layers
@@ -856,7 +858,7 @@ def test_a_layer_the_page_does_not_answer_for_is_not_waited_on_for_good(js):
     answer that comes after the deadline is still taken. Its timer goes with the layer (pruneLayers), and so with the
     last globe: nothing runs after destroy."""
     assert "const LOAD_MS = 60_000;" in js and "const RETRY_MS = 60_000;" in js
-    ask = _body(js, "function askLayer(l, load) {")
+    ask = _body(js, "function askLayer(l, load, more) {")
     assert "entry.timer = setTimeout(() => {" in ask and "}, LOAD_MS);" in ask
     words = "settle(null, `the page gave no answer for it within ${LOAD_MS / 1000} s`);"
     assert f"if (entry.state === 'loading') {words}" in ask
@@ -899,7 +901,7 @@ def test_the_tabs_globe_line_names_what_the_script_reads(js):
 
 
 LAYERS_CODE = ("function arrange(box, nodes, end = null) {", "function markPath(c, mark, x, y, r) {",
-               "function prepareLayer(answer) {", "function pruneLayers() {", "function askLayer(l, load) {",
+               "function prepareLayer(answer) {", "function pruneLayers() {", "function askLayer(l, load, more) {",
                "function recall(name) {", "function remember(name, chosen) {", "function creditOf(a) {",
                "function layersOf(list) {", "function shownLayers() {", "function forgetMarks() {",
                "function infraLayer(g, fr, ratio, W, H) {", "function paintLayers(c, g, fr, list) {",
@@ -1657,3 +1659,23 @@ def test_a_routers_names_and_networks_are_told_on_its_hover(js):
     assert "h.networks.push(p.network)" in hops
     tip = _body(js, "function hopTip(h, line) {")
     assert "for (const n of h.names) line('', n);" in tip and "line('lg-tip-sub', `network: ${n}`)" in tip
+
+
+def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
+    """1.104.0 (Monday list item 27): where the spec says layer_area, the whole layer is asked coarse ({zoom: 1}) and,
+    past AREA_ZOOM (the library's COARSE_ZOOM), the view's area rounded out to AREA_TILE degrees, once a view, never
+    while the globe glides; the area's answer is drawn once it is in, the whole layer's until then; the area's entries
+    go as the view leaves them (pruneLayers)."""
+    from liminal_libs.machines import infrastructure
+    assert "  const AREA_ZOOM = 6;  // " in js and "  const AREA_TILE = 10;  // " in js
+    assert infrastructure.COARSE_ZOOM == 6.0
+    render = _body(js, "function render(now) {")
+    assert "if (data.layerArea && !glide) {" in render
+    assert "if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }" in render
+    assert "if (areaKey) askLayer(areaLayer(l), load, { area, zoom });" in render
+    shown = _body(js, "function shownLayers() {")
+    assert "const e = near && near.state === 'ready' ? near : isOn(l) ? layerData.get(l.key) : null;" in shown
+    assert "layerArea: s.layer_area === true," in _body(js, "function normal(spec) {")
+    box = _body(js, "function areaOf(g) {")
+    assert "if (s <= -90 || n >= 90 || across >= 180) return [-180, s, 180, n];" in box
+    assert "return [w < -180 ? w + 360 : w, s, e > 180 ? e - 360 : e, n];" in box
