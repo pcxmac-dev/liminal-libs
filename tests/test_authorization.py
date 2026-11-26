@@ -267,3 +267,22 @@ def test_a_setting_is_kept_through_the_login_and_saved_variables_are_read():
     assert client.save("NAMECHEAP_API_KEY", "v") == "your login's pairs" and client.save("NAMECHEAP_API_KEY", None)
     assert calls == [("PUT", "/api/pairs/namecheap-api-key", {"value": "v", "kind": "key", "label": "NAMECHEAP_API_KEY"}),
                      ("DELETE", "/api/pairs/namecheap-api-key", None)]
+
+
+def test_a_personal_key_is_one_a_person_keeps_and_its_pair_is_asked_as_before():
+    """1.102.0 (Monday list item 20): KeyVar.personal says a key is kept in each person's own login store; it is False
+    unless a plugin says so, and the login's page lists its pair as any other's (pairs_wanted)."""
+    from liminal_libs.apps import pairs_wanted
+    from liminal_libs.sources.keys import KeyVar
+
+    assert KeyVar("ACME_API_KEY").personal is False
+    own, personal = KeyVar("ACME_API_KEY"), KeyVar("ACME_TOKEN", label="Token", personal=True)
+
+    class Keyed:
+        name, title, keys = "acme", "Acme", (own, personal)
+
+    class Plain:
+        name, title, keys = "acme", "Acme", (own, KeyVar("ACME_TOKEN", label="Token"))
+
+    assert pairs_wanted([Keyed()]) == pairs_wanted([Plain()])
+    assert personal.pair == "acme-token"

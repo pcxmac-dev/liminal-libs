@@ -393,12 +393,19 @@ _LICENCES_LOCK = threading.Lock()
 
 
 def accept_licence(login, name: str, *, title: str, version: str = "", url: str = "", words: str = "", by: str = "",
-                   at: datetime | None = None, path: Path | None = None) -> dict:
+                   at: datetime | None = None, path: Path | None = None, file: bool = True) -> dict:
     """A licence accepted, kept as a LICENCE pair of the user `login` serves (licence_record: what, its version and
     address, when, by whom); with a login that keeps none, in the licences file (licences_file). Returns the record
-    with `kept`: where, in words."""
+    with `kept`: where, in words. `file` False (1.102.0, Monday list item 20): kept in the user's own store or not at
+    all: Unauthorized when the login keeps none, and the store's own Unauthorized when it refuses; the licences file
+    is never read or written."""
     record = licence_record(name, title=title, version=version, url=url, words=words, by=by or _who(login), at=at,
                             login=type(login).__name__ if login is not None else "")
+    if not file:
+        if not keeps(login):
+            raise Unauthorized("a licence is kept in your own login store: sign in, then accept it again", 401)
+        login.keep_setting(record["licence"], record, LICENCE, f"{record['title']} {record['version']}".strip())
+        return {**record, "kept": "your login's store"}
 
     def to_file(value) -> None:
         with _LICENCES_LOCK:

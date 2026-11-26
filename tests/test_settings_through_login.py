@@ -183,3 +183,27 @@ def test_an_app_answers_each_browser_with_its_own_users_theme(files):
     assert app.api(Asking("b"), "GET", "/api/ui", {}, None)[1]["theme"] == "dark"
     assert app.user_login(Asking("nobody")) is app.login  # nobody signed in there: the app's login (the file)
     assert app.api(Asking("nobody"), "GET", "/api/ui", {}, None)[1]["store"] == "file"
+
+
+def test_a_licence_kept_in_the_persons_store_or_not_at_all(files):
+    """1.102.0 (Monday list item 20): accept_licence(file=False) keeps the record in the signed-in user's own store, and
+    refuses (Unauthorized) with a login that keeps none or a store that refuses; the licences file is never written."""
+    alice = StoreLogin("alice")
+    rec = accept_licence(alice, "dbip-lite", title="DB-IP IP to City Lite, 2026-11", version="CC BY 4.0",
+                         url="https://creativecommons.org/licenses/by/4.0/", words="Summary.", file=False)
+    assert rec["kept"] == "your login's store" and alice.pairs["licence-dbip-lite"][0] == LICENCE
+    assert licence(alice, "dbip-lite")["version"] == "CC BY 4.0"
+    with pytest.raises(Unauthorized, match="sign in"):
+        accept_licence(EnvironmentLogin(env={}), "dbip-lite", title="DB-IP", file=False)
+    with pytest.raises(Unauthorized, match="sign in"):
+        accept_licence(None, "dbip-lite", title="DB-IP", file=False)
+
+    class Closed(StoreLogin):
+        def keep_setting(self, name, value, kind=PREFERENCE, label=""):
+            raise Unauthorized("the vault is closed", 401)
+
+    with pytest.raises(Unauthorized, match="closed"):
+        accept_licence(Closed("bob"), "dbip-lite", title="DB-IP", file=False)
+    assert not (files / "licences.json").exists()
+    assert accept_licence(EnvironmentLogin(env={}), "dbip-lite", title="DB-IP")["kept"] == "the file"  # as 1.88.0
+    assert (files / "licences.json").exists()

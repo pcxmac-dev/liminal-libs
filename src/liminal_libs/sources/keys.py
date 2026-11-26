@@ -40,6 +40,9 @@ class KeyVar:
     aliases: tuple[str, ...] = ()  # also read (Alpaca's own APCA_ names); the key script sets `name`
     secret: bool = True  # typed hidden; False: a detail of yours, typed in the open (never shown back either)
     hint: str = ""  # what to type (its form), for the Plugins view and the key script
+    # 1.102.0 (Monday list item 20): kept in each person's own login store, typed on the login's page and read through
+    # the asking person's login, never through the app's own login (whose Settings leave it out)
+    personal: bool = False
 
     @property
     def names(self) -> tuple[str, ...]:
