@@ -156,7 +156,7 @@ def test_the_password_is_scrubbed_from_an_error_s_words(monkeypatch):
     rec = Recorder([(["sh"], (2, b"", f"boom {PW} boom".encode()))])
     with pytest.raises(CommandError) as e:
         Shell("local", runner=rec).run("sh", "-c", "false", password=PW)
-    # the whole text goes (1.101.0): stars in the password's place would tell where it stood and how long it is
+    # the whole text goes (1.102.0): stars in the password's place would tell where it stood and how long it is
     assert str(e.value) == SCRUBBED and PW not in str(e.value) and "boom" not in str(e.value)
     assert not isinstance(e.value, PasswordRefused)
     # a text the password is not in is said as it is

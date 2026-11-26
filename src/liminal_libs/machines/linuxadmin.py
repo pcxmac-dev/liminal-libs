@@ -1,4 +1,4 @@
-"""The Linux standard interface: Linux administration's base over Admin (1.101.0; Monday list item 19, release one: the
+"""The Linux standard interface: Linux administration's base over Admin (1.102.0; Monday list item 19, release one: the
 user, 2026-11-25, "Accounts and elevation": Liminal's own `liminal` user and group on Linux, made, changed and removed
 from the Linux administration plugin's page or by one root command).
 

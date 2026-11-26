@@ -27,7 +27,7 @@ import sys
 import time
 
 from .. import proctree
-# what the plain package linuxsys shares with this module lives there (1.101.0: the root command loads no plugin
+# what the plain package linuxsys shares with this module lives there (1.102.0: the root command loads no plugin
 # contract, so nothing it needs may live under machines/); it is imported back under the names it had here
 from ..linuxsys.shared import (  # noqa: F401 - DENIED to why_not_native are read from here by the plugins
     DENIED, GRANT_TAGS, PASSWORD_MAX, PASSWORD_REFUSED, ROOT_HEAD, ROOT_PATH, SUDO_LIST, why_not_native,

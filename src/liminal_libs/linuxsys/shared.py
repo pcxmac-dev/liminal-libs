@@ -4,7 +4,7 @@
 may load the plugin contract, an app's frame or the process ledger: a module under `machines/` loads all three before
 its own first line (machines/__init__.py imports the plugin base, which imports `sources/` and `apps/`). So what the
 machine plugins' `machines/linux.py` and this package both need lives here, and linux.py imports it back under the
-names it had there (1.101.0): sudo's words, the PATH and the head of every script run as root, a grant's tags, the
+names it had there (1.102.0): sudo's words, the PATH and the head of every script run as root, a grant's tags, the
 password's check, the scrub, why a machine is no Linux, and the reader of sudo's listing.
 
 New with it: sudo-rs's words beside classic sudo's (Ubuntu 25.10 and later run sudo-rs as `sudo`; read from its
