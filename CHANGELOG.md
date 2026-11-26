@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.99.0 (2026-11-25)
+
+The AI bases' changes are asked only from the page (the sweep after the review's finding PLT-H1; the user, 2026-11-25:
+"Plugin releases"). liminal-platform hands an ask from any program on this PC (`POST /api/machines/<name>/ask` or
+`/job`, with a public header and a Host its client chooses, no sign-in) straight to the plugin's hook, and the seven AI
+plugins take most of their hooks from two bases here. Each base now names its changes in `PAGE_ONLY_HOOKS` (1.66.0's
+word): `App.ask` refuses another plugin's ask of one and an ask that names no asker (`asking.AskRefused`), and
+liminal-platform 0.34.0 answers 401 over HTTP unless its login shows that you are at the page. Nothing else changes: no
+hook is added, renamed or removed, and a platform that holds no login asks them as before. The 401 rests on the
+login's word that your browser is signed in, and a local login signs `secret` and `default` in with no password, so a
+program on this PC can sign itself in and ask them still: a proof that a program cannot make is the login's and the
+platform's to give.
+- **`Harness`** (Aider, Continue, goose, OpenCode): `install`, `uninstall`, `use` and `open`. Before, any program here
+  could start the tool in a folder of its choosing, its server's key in the window's environment, or point it at
+  another server and model. Asked by anyone, as before: `present`, `status`, `refresh`, `command` (the lines to paste,
+  the key's placeholder among them: nothing is started) and `ask_models`.
+- **`ModelServer`** (Ollama, llama.cpp, vLLM): `install`, `uninstall`, `add_instance`, `change_instance`,
+  `remove_instance`, `set_key`, `forget_key`, `share`, `start`, `stop`, `boot` and `try_it`. Before, any program here
+  could start or stop a server, share one beyond this machine (its second confirmation is an argument the asker sets),
+  register its start at boot, point a keyed instance at another address, which was then sent its key with the next
+  ask, or send a prompt of its own to an instance with your key. Asked by anyone, as before: `present`, `status`,
+  `refresh`, `choose`, `log_of`, `models`, and its two services, `serving` and `models_of`, which a harness and the
+  other model servers ask through the platform.
+- `install` and `uninstall` are `AiPlugin`'s, named on each of the two bases: a protocol plugin (`ProtocolPlugin`)
+  answers neither, and its own words are unchanged.
+- **A plugin's own changes.** The names add up along the class line (`internal.declared`): a plugin names only what it
+  adds (`PAGE_ONLY_HOOKS = ("pull", "delete_model")`), and cannot take back what its base says. Until a plugin's own
+  release names them, the changes it adds are still asked by any program: Continue's `extension_install`,
+  `extension_remove` and `editor_config`; Ollama's and llama.cpp's `pull`, `delete_model`, `load` and `unload`, and
+  llama.cpp's `build`; vLLM's `pull` and `delete_model`. Aider, goose and OpenCode add no hook.
+- What calls the code directly is no ask, and works as before: `launch serve` (a start at boot), the platform's stop
+  (`app_stopping`), a plugin's command line and its tests.
+- Tests: `tests/test_who_asks_ai.py`, through the library's own `App` over the bases' stand-ins. Each change of each
+  base, asked by another plugin and by no one, is refused, and keeps, starts and sends nothing; the page's ask opens
+  the stand-in window and starts the stand-in server; the reads and the two services are answered to a plugin; a
+  harness asked by another plugin asks the model server as itself; a subclass's own word is read beside its base's.
+  Each gated hook is named there, so taking one out of a base's tuple fails it.
+
 ## 1.98.0 (2026-11-25)
 
 A request a front handed on, told from one a program on this machine sent: the library's half of LOG-C1 (the

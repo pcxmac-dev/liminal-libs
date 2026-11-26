@@ -207,7 +207,13 @@ listed as a change.
   page, never a program. liminal-platform 0.34.0 refuses them over HTTP (403) and leaves them out of its page.
 - `PAGE_ONLY_HOOKS` (1.66.0): its hooks only its page asks, never another plugin (403). Over HTTP the platform asks
   one when its login says you are there, or when it holds no login (`App.present`), and refuses it (401) when the
-  login says you are not.
+  login says you are not. A base may say them for its plugins, as `ContainedService`, `ContainerHost`,
+  `ProtocolPlugin` and the WSL base do, and from 1.99.0 `ModelServer` and `Harness` (their changes: an install, a
+  start, a stop, a key, a window opened; their reads and a model server's `serving` and `models_of` are asked by
+  anyone). The names add up along the class line, so a plugin names only the changes it adds
+  (`PAGE_ONLY_HOOKS = ("pull", "delete_model")`). What the login says is that a browser is signed in to it, and a
+  local login signs `secret` and `default` in with no password: the word does not stop a program on this machine
+  that signs itself in.
 
 Who asks is handed over in so many words (1.66.0, `liminal_libs.apps.asking`), never taken from what a thread
 inherits: an app's route for its page sets the page (`asking(PAGE)`), `App.ask` sets the plugin that asks for that

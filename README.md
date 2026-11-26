@@ -33,7 +33,8 @@ mediates the local AI agents' connections on the platform's own port). What they
 (`machines/children.py`, `Piped`), a private Node.js and npm (`machines/node.py`), and Hugging Face's cache and its hf
 command (`machines/hub.py`). Who may ask a hook is a plugin's word too (1.66.0): `PLUGIN_ONLY_HOOKS`, asked only by
 another plugin, and `PAGE_ONLY_HOOKS`, asked only from its page (`apps/asking.py` says who asks; INTEGRATION.md says
-the rest).
+the rest). From 1.99.0 the model servers' and the harnesses' bases say theirs: an install, a start, a stop, a key, a
+window opened and every other change is asked only from the page, and their reads by anyone.
 
 An app behind a front (1.98.0). Every app answers 127.0.0.1 alone, and whatever hands requests on to its port (a
 reverse proxy beside it, its TLS end) connects from there as a program of the machine does. It must set

@@ -60,7 +60,11 @@ windows compatibility", and an MCP plugin "that mediates MCP connections to reso
   file or in the lines to paste. Command… gives none. A plugin's launch asks `mcp_wiring` how to write its MCP part.
 - Values a harness would read as more than text are refused (critique 1): a model's id, an option's text and every
   value a plugin writes into its tool's configuration (`clean_value`) hold none of OPENERS (${, $(, {env:, {file:,
-  ${{) and do not begin with "!". A plugin adds its tool's own openers (Harness.OPENERS)."""
+  ${{) and do not begin with "!". A plugin adds its tool's own openers (Harness.OPENERS).
+
+1.99.0 (the sweep after the review's finding PLT-H1, 2026-11-25): its changes are asked only from its page
+(PAGE_ONLY_HOOKS: install, uninstall, use, open). The platform hands an ask from any program on this PC to a hook, so
+another plugin's ask of one is refused, and so is an ask that names no one; its reads are asked by anyone, as before."""
 from __future__ import annotations
 
 import contextvars
@@ -517,6 +521,15 @@ class Harness(ai.AiPlugin):
     # API tab; nothing reads them before it): its reads beside its bases', what it asks of the other plugins through
     # the platform, and what it keeps through the login (KEEPS, below) and reads there (INTERNAL_NOTES: a server's key)
     READ_HOOKS = ("command", "ask_models")
+    # Its changes, asked only from its page (1.99.0, the sweep after the review's finding PLT-H1; apps/asking.py): the
+    # install and its removal (AiPlugin's two, named here because a protocol plugin answers neither), the choice Use…
+    # keeps and the window Open… starts, which is handed its server's key. Another plugin's ask of one is refused, and
+    # so is an ask that names no one; over HTTP liminal-platform 0.34.0 also asks its login whether you are at the
+    # page. Before, any program on this PC asked them with two headers. Its reads (refresh, command, ask_models) are
+    # asked by anyone, as before; its own code and a plugin's command line call the methods and are no asks. A plugin
+    # names only the changes it adds (PAGE_ONLY_HOOKS = ("extension_install",)): the names add up along the class line
+    # (internal.declared), so the base's stay whatever a subclass says.
+    PAGE_ONLY_HOOKS = ("install", "uninstall", "use", "open")
     ASKS = (("", SERVING, "what each model server serves: its instances, their addresses, states and models"),
             ("", MODELS_OF, "one model server's models, asked now (Ask…)"))
     INTERNAL_NOTES = ("A model server's key is read through its login by the variable that server's `serving` row "

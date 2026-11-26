@@ -45,7 +45,13 @@ instance), besides what every AI plugin says (package, installed, install_into, 
 What a server speaks (1.66.0; the user, 2026-11-18: "top 4 inference engines, top 4 agentic harnesses (open
 source)"): each `serving` row says it ("speaks"), so a harness that asks one family alone (Codex CLI asks the
 Responses API and nothing else) can tell before it starts. It is the plugin's word, never asked of the server. The
-base's is chat alone: a plugin that says nothing more is told as speaking chat."""
+base's is chat alone: a plugin that says nothing more is told as speaking chat.
+
+Who may ask (1.99.0; the sweep after the review's finding PLT-H1, 2026-11-25): its changes are asked only from its page
+(PAGE_ONLY_HOOKS: install, uninstall, add_instance, change_instance, remove_instance, set_key, forget_key, share,
+start, stop, boot, try_it). The platform hands an ask from any program on this PC to a hook, so another plugin's ask
+of one is refused, and so is an ask that names no one. Its reads and its two services (`serving`, `models_of`) are
+asked by anyone, as before."""
 from __future__ import annotations
 
 import dataclasses
@@ -514,6 +520,18 @@ class ModelServer(AiPlugin):
     # asks of the others, and what it keeps through the login (KEEPS, below; its keys' names in INTERNAL_NOTES)
     READ_HOOKS = ("choose", "log_of", "models", SERVING, "models_of")
     SERVICE_HOOKS = (SERVING, "models_of")
+    # Its changes, asked only from its page (1.99.0, the sweep after the review's finding PLT-H1; apps/asking.py): the
+    # install and its removal (AiPlugin's two, named here because a protocol plugin answers neither), an instance
+    # added, changed or removed, its key kept or forgotten, its sharing, its start, its stop and its start at boot, and
+    # a prompt sent to it (try_it: the asker's words, answered with the instance's key). Another plugin's ask of one is
+    # refused, and so is an ask that names no one; over HTTP liminal-platform 0.34.0 also asks its login whether you
+    # are at the page. Before, any program on this PC asked them with two headers: a keyed instance pointed at another
+    # address was sent its key with the next ask. Its reads and its two services (serving, models_of: a harness's and
+    # another model server's asks) are asked by anyone, as before; `launch serve`, the platform's stop and a plugin's
+    # command line call the methods and are no asks. A plugin names only the changes it adds (PAGE_ONLY_HOOKS =
+    # ("pull", "delete_model")): the names add up along the class line (internal.declared).
+    PAGE_ONLY_HOOKS = ("install", "uninstall", "add_instance", "change_instance", "remove_instance", "set_key",
+                       "forget_key", "share", "start", "stop", "boot", "try_it")
     ASKS = (("", SERVING, "whether another inference plugin's instance holds a port of this machine"),)
     INTERNAL_NOTES = ("Each instance's key is a secret pair of its own, LIMINAL_AI_<NAME>_<INSTANCE>_KEY "
                       "(key_variable), kept apart from its instances' pair and never in an answer, a log, an "
