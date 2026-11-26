@@ -312,3 +312,194 @@ def unpack_wheel(wheel, into, *, most: int = 16 << 20) -> Path:
         shutil.rmtree(temp, ignore_errors=True)
         raise PackageError(f"the package could not be put in {into}: {e}") from None
     return into
+
+
+# -- the package's offer, and the tab's sky ---------------------------------------------------------------------------
+SKY_HOOK, SKY_GET_HOOK, SKY_REMOVE_HOOK = "world_sky", "world_sky_get", "world_sky_remove"
+PACKAGE_FORM, PACKAGE_REMOVE_FORM = "world-sky-package", "world-sky-package-remove"
+SKY_ASK_S = 60.0  # the page asks the satellites' places again this often at most
+SLOTS = (1, 2, 3)  # the constellations' colours: the theme's --sky-1 to --sky-3
+
+
+class Package:
+    """The sgp4 package as a plugin pins it: its version, its wheel (download.Source: address, name, size, sha256,
+    hosts) and its licence's words (MIT). Plain data in the plugin: the library names no host."""
+
+    def __init__(self, version: str, source, licence: str, licence_name: str = "MIT"):
+        self.version, self.source, self.licence, self.licence_name = version, source, licence, licence_name
+
+    @classmethod
+    def of(cls, said):
+        from . import download
+        if said is None or isinstance(said, cls):
+            return said
+        if not isinstance(said, Mapping):
+            raise ValueError("the sgp4 package's pin is a dict (version, url, name, size, sha256, licence)")
+        version = str(said.get("version") or "")
+        if not version or not all(c.isalnum() or c == "." for c in version):
+            raise ValueError("the sgp4 package's pin names its version (2.27)")
+        size, digest = said.get("size"), str(said.get("sha256") or "")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0 or len(digest) != 64:
+            raise ValueError("the sgp4 package's pin says its size and its sha256: both are checked")
+        name = str(said.get("name") or "")
+        if not name.endswith(".whl") or "/" in name or "\\" in name:
+            raise ValueError("the sgp4 package's pin names its wheel (a .whl)")
+        licence = " ".join(str(said.get("licence") or "").split())
+        if not licence:
+            raise ValueError("the sgp4 package's pin holds its licence's words, shown before it is downloaded")
+        source = download.Source(str(said.get("url") or ""), name, size, digest, tuple(said.get("hosts") or ()))
+        return cls(version, source, licence, str(said.get("licence_name") or "MIT"))
+
+
+def package_form(package: Package, data_dir=None) -> dict:
+    """The package's download form, as a data set's (infrastructure.form): its first confirmation the file, the host,
+    the size, the sha256 and where it is unpacked, its licence's words shown and accepted next."""
+    from .world import size_words, _host
+    where = package_folder(package.version, data_dir)
+    return {
+        "id": PACKAGE_FORM, "hook": SKY_GET_HOOK, "title": f"Download the sgp4 package {package.version}", "job": True,
+        "note": "The orbit math the satellites are placed with, kept on this machine.",
+        "fields": [{"name": "accept_licence", "type": "accept", "title": f"Accept its licence ({package.licence_name})?",
+                    "words": package.licence, "yes": "Accept it and download"}],
+        "confirm": {"title": f"Download the sgp4 package {package.version}?", "yes": "Go on",
+                    "words": (f"{package.source.name} is asked of {_host(package.source.url).lower()} in one request, "
+                              f"made now on your word: {size_words(package.source.size)}, its sha256 "
+                              f"{package.source.sha256} checked, and every file of it checked against its own "
+                              f"RECORD before it is unpacked into {where}. Nothing is installed into Python itself: "
+                              "only the globe imports it, from that folder. Its licence, first: "
+                              f"{package.licence} You are asked to accept it next.")}}
+
+
+def package_remove_form(package: Package, data_dir=None) -> dict:
+    where = package_folder(package.version, data_dir)
+    return {"id": PACKAGE_REMOVE_FORM, "hook": SKY_REMOVE_HOOK, "title": "Remove the sgp4 package",
+            "fields": [], "confirm": {"title": "Remove the sgp4 package?", "yes": "Remove it",
+                                      "words": f"{where} is removed: the satellites are no longer placed until it is "
+                                               "downloaded again."}}
+
+
+def install_package(package: Package, data_dir=None, *, accept_licence=False, log=None, cancel=None,
+                    opener=None) -> dict:
+    """The package downloaded (download.fetch: its size and sha256 checked), its wheel unpacked into its folder
+    (unpack_wheel: every file against its RECORD), the wheel itself removed. world.LicenceRefused until the licence
+    is accepted (exactly True); DownloadError or PackageError, in words, when nothing was put in place."""
+    from . import download
+    from .world import LicenceRefused
+    if accept_licence is not True:
+        raise LicenceRefused("The sgp4 package is downloaded only once you accept its licence.")
+    into = package_folder(package.version, data_dir)
+    downloads = into.parent / ".downloads"
+    say = log if callable(log) else (lambda _line: None)
+    wheel = download.fetch(package.source, downloads, log=log, cancel=cancel, resume=True, limit=16 << 20,
+                           timeout=600.0, opener=opener)
+    try:
+        say(f"unpacking {package.source.name}, each file checked against its RECORD")
+        unpack_wheel(wheel, into)
+    finally:
+        try:
+            wheel.unlink()
+        except OSError:
+            pass
+    return {"said": f"installed the sgp4 package {package.version}", "ok": True,
+            "lines": [f"unpacked into {into}", "the satellites are placed with it from now on"]}
+
+
+def remove_package(package: Package, data_dir=None) -> dict:
+    into = package_folder(package.version, data_dir)
+    if not into.exists():
+        return {"said": "the sgp4 package is not installed here", "ok": True}
+    shutil.rmtree(into)
+    return {"said": "removed the sgp4 package", "ok": True, "lines": [f"{into} is removed"]}
+
+
+def _packed(values, code: str) -> str:
+    from array import array
+    a = array(code, values)
+    if sys.byteorder == "big":
+        a.byteswap()
+    return base64.b64encode(a.tobytes()).decode("ascii")
+
+
+class SkyView:
+    """The World Wide Web tab's sky: the constellations of the plugin's omm-csv data sets, their orbits kept in its
+    database (`index`: infrastructure.Index), placed with the package (`package`: a Package, the plugin's pin) loaded
+    from its folder. Nothing is worked out until the page asks (read)."""
+
+    def __init__(self, index, package=None, data_dir=None, sky: Sky | None = None, clock=time.time):
+        self.index, self.package, self.data_dir, self.clock = index, Package.of(package), data_dir, clock
+        folder = package_folder(self.package.version, data_dir) if self.package else None
+        self.sky = sky if sky is not None else Sky(folder, clock=clock)
+
+    def sets(self) -> list:
+        return [d for d in self.index.datasets if d.format == "omm-csv"]
+
+    def installed(self) -> bool:
+        return bool(self.package) and package_folder(self.package.version, self.data_dir).is_dir()
+
+    def spec(self) -> dict | None:
+        """What the globe is told of the sky: {"hook", "every", "needs", "constellations": [{"id", "title", "slot",
+        "count", "epoch"}]}; None when the plugin names no constellation."""
+        sets = self.sets()
+        if not sets:
+            return None
+        ok, why = self.sky.available() if self.package or self.sky._package else (False, NEEDS_PACKAGE)
+        try:
+            kept = self.index.store().orbits()
+        except Exception:  # noqa: BLE001 - a database that cannot be read: nothing kept
+            kept = []
+        out = []
+        for i, d in enumerate(sets):
+            mine = [o for o in kept if o["constellation"] == d.constellation]
+            out.append({"id": d.constellation, "title": d.title, "slot": SLOTS[i % len(SLOTS)], "count": len(mine),
+                        "epoch": world_iso(max((o["epoch"] for o in mine), default=0)) if mine else ""})
+        return {"hook": SKY_HOOK, "every": SKY_ASK_S, "needs": "" if ok else why, "constellations": out}
+
+    def read(self, t=None, elevation: float = ELEVATION) -> dict:
+        """Each constellation's satellites at `t` (seconds since 1970; now when not given) and a minute later, packed:
+        {"at", "elevation", "constellations": [{"id", "n", "now": base64 int32 lat, lon pairs in 1e-4 degrees, "next"
+        likewise, "radius": base64 int16 footprints in 1e-2 degrees, "geo": [their indexes], "left"}]}; or {"needs":
+        why} without the package. ValueError for a moment that is no number."""
+        if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or t != t):
+            raise ValueError("the moment shown is a number of seconds since 1970")
+        if not self.sets():
+            return {"constellations": []}
+        try:
+            self.sky.package()
+        except SkyUnavailable as e:
+            return {"needs": str(e), "constellations": []}
+        when = self.clock() if t is None else float(t)
+        kept = self.index.store().orbits()
+        out = []
+        for d in self.sets():
+            rows = [o for o in kept if o["constellation"] == d.constellation]
+            got = self.sky.positions(rows, when, elevation)
+            sats = got["satellites"]
+            out.append({"id": d.constellation, "n": len(sats),
+                        "now": _packed([round(v * 1e4) for s in sats for v in (s["lat"], s["lon"])], "i"),
+                        "next": _packed([round(v * 1e4) for s in sats for v in (s["lat2"], s["lon2"])], "i"),
+                        "radius": _packed([min(32767, round(s["footprint"] * 100)) for s in sats], "h"),
+                        "geo": [i for i, s in enumerate(sats) if s["geo"]], "left": got["left"]})
+        return {"at": when, "elevation": elevation, "constellations": out}
+
+    def forms(self) -> list[dict]:
+        if not self.package:
+            return []
+        return [package_remove_form(self.package, self.data_dir) if self.installed()
+                else package_form(self.package, self.data_dir)]
+
+    def row(self) -> list | None:
+        """The package's row in the data sets' table, as theirs are: what it is, from, licence, here, the buttons."""
+        if not self.package or not self.sets():
+            return None
+        from .world import size_words
+        here = self.installed()
+        return [{"text": f"The sgp4 package {self.package.version}", "sub": "the orbit math the satellites are placed "
+                 f"with ({size_words(self.package.source.size)})"}, "PyPI (Brandon Rhodes)", self.package.licence_name,
+                "installed" if here else "not downloaded",
+                "" if here else {"form": PACKAGE_FORM, "title": "Download…"},
+                {"form": PACKAGE_REMOVE_FORM, "title": "Remove…"} if here else ""]
+
+
+def world_iso(seconds: float) -> str:
+    from .world import _iso
+    return _iso(float(seconds))

@@ -156,3 +156,93 @@ def test_the_wheel_is_unpacked_only_as_its_record_says_and_imported_from_there_a
     assert S.package_folder("2.27", tmp_path) == into
     for name in [m for m in sys.modules if m == "sgp4" or m.startswith("sgp4.")]:
         monkeypatch.delitem(sys.modules, name)
+
+
+# -- the tab's sky, and the package's offer (pieces 4 and 5) -----------------------------------------------------------
+ORBITS = {"format": "omm-csv", "url": "https://celestrak.example/NORAD/elements/gp.php", "source": "CelesTrak",
+          "licence_name": "none stated", "licence": "CelesTrak states no licence for its orbits.",
+          "credit": {"text": "CelesTrak", "url": ""}, "size": 1000, "retry": False}
+SETS = ({**ORBITS, "id": "celestrak-starlink", "title": "Starlink's orbits", "constellation": "starlink",
+         "query": "GROUP=starlink&FORMAT=csv"},
+        {**ORBITS, "id": "celestrak-hughesnet", "title": "HughesNet's satellites", "constellation": "hughesnet",
+         "query": "CATNR=38551&FORMAT=csv"})
+
+
+def pin(data: bytes) -> dict:
+    return {"version": "2.27", "url": "https://files.pypi.example/sgp4-2.27-py3-none-any.whl",
+            "name": "sgp4-2.27-py3-none-any.whl", "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            "licence": "MIT License: permission is granted, free of charge, to deal in the software."}
+
+
+def sky_of(tmp_path, package=None, data=b"x"):
+    from liminal_libs.machines.infrastore import Store
+    from liminal_libs.machines.infrastructure import Index, DataSet
+    folder = tmp_path / "layers"
+    now = 1_795_000_000.0
+    Store(folder).put(DataSet.of(SETS[0]), {"layers": {}, "features": 2}, now,
+                      orbits=[(1, "starlink", "STARLINK-1", now - 3600, {"NORAD_CAT_ID": "1"}),
+                              (2, "starlink", "STARLINK-2", now - 3600, {"NORAD_CAT_ID": "2"})])
+    Store(folder).put(DataSet.of(SETS[1]), {"layers": {}, "features": 1}, now,
+                      orbits=[(38551, "hughesnet", "ECHOSTAR 17", now - 3600, {"NORAD_CAT_ID": "38551"})])
+    index = Index(folder, SETS)
+    sky = None if package is None else Sky(package=package, clock=lambda: now)
+    return S.SkyView(index, pin(data), data_dir=tmp_path / "data", sky=sky, clock=lambda: now), now
+
+
+def test_the_sky_says_its_constellations_and_needs_the_package_until_it_is_here(tmp_path):
+    view, _ = sky_of(tmp_path)
+    spec = view.spec()
+    assert spec["hook"] == "world_sky" and spec["every"] == 60.0 and spec["needs"] == S.NEEDS_PACKAGE
+    assert [(c["id"], c["slot"], c["count"]) for c in spec["constellations"]] == [("starlink", 1, 2), ("hughesnet", 2, 1)]
+    assert view.read() == {"needs": S.NEEDS_PACKAGE, "constellations": []}
+    assert view.row()[3:] == ["not downloaded", {"form": "world-sky-package", "title": "Download…"}, ""]
+    (form,) = view.forms()
+    words = form["confirm"]["words"]
+    assert form["hook"] == "world_sky_get" and form["job"] is True and form["fields"][0]["name"] == "accept_licence"
+    assert "sgp4-2.27-py3-none-any.whl is asked of files.pypi.example in one request" in words
+    assert "its sha256 " + hashlib.sha256(b"x").hexdigest() + " checked" in words and "MIT License" in words
+    with pytest.raises(ValueError, match="a number of seconds"):
+        view.read("now")
+
+
+def test_the_places_are_packed_for_the_page(tmp_path):
+    import struct
+    stand = StandIn({1: at_longitude(10.0), 2: at_longitude(-20.0), 38551: at_longitude(-101.0, S.GEO_KM)})
+    view, now = sky_of(tmp_path, package=stand)
+    assert view.spec()["needs"] == ""
+    out = view.read(now)
+    star, hughes = out["constellations"]
+    assert (star["id"], star["n"], hughes["n"]) == ("starlink", 2, 1)
+    now_xy = struct.unpack("<4i", base64.b64decode(star["now"]))
+    assert [round(v / 1e4) for v in now_xy] == [0, 10, 0, -20]
+    radius = struct.unpack("<2h", base64.b64decode(star["radius"]))
+    assert [r / 100 for r in radius] == [pytest.approx(S.footprint_deg(550), abs=0.01)] * 2
+    assert struct.unpack("<1h", base64.b64decode(hughes["radius"]))[0] / 100 == pytest.approx(57.12, abs=0.02)
+    assert star["geo"] == [] and hughes["geo"] == [] and out["at"] == now  # its stand-in orbit: no OMM to call GEO
+
+
+def test_the_package_is_downloaded_checked_and_unpacked_on_the_users_word(tmp_path, monkeypatch):
+    from liminal_libs.machines.endpoint import Reply
+    from liminal_libs.machines.world import LicenceRefused
+    data = wheel(PACKAGE)
+    view, _ = sky_of(tmp_path, data=data)
+    asked = []
+
+    def opener(url, headers, timeout):
+        asked.append(url)
+        return Reply(200, {"Content-Length": str(len(data))}, [data], lambda: None)
+    with pytest.raises(LicenceRefused):
+        S.install_package(view.package, view.data_dir, opener=opener)
+    assert asked == []
+    out = S.install_package(view.package, view.data_dir, accept_licence=True, opener=opener)
+    into = S.package_folder("2.27", view.data_dir)
+    assert out["ok"] is True and (into / "sgp4" / "omm.py").is_file() and asked == [view.package.source.url]
+    assert list((into.parent / ".downloads").iterdir()) == []  # the wheel itself is not kept
+    assert view.installed() and view.row()[3:] == ["installed", "", {"form": "world-sky-package-remove",
+                                                                      "title": "Remove…"}]
+    assert S.remove_package(view.package, view.data_dir)["said"] == "removed the sgp4 package" and not into.exists()
+    bad, _ = sky_of(tmp_path / "bad", data=b"another file")
+    from liminal_libs.machines.download import ChecksumError
+    with pytest.raises(ChecksumError):
+        S.install_package(bad.package, bad.data_dir, accept_licence=True, opener=opener)
+    assert not S.package_folder("2.27", bad.data_dir).exists()

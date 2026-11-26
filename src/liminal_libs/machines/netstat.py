@@ -70,9 +70,10 @@ RECORDING_FORM, FORGET_FORM = "hosts-recording", "hosts-forget"  # the forms' id
 RECORDING_HOOK, FORGET_HOOK = "hosts_recording", "hosts_forget"
 SHOW_HOOK, DIRECTION_HOOK, WITHIN_HOOK, PICK_HOOK = "world_show", "world_direction", "world_within", "world_pick"
 LAYER_HOOK, GET_HOOK, REMOVE_HOOK = infrastructure.LAYER_HOOK, infrastructure.GET_HOOK, infrastructure.REMOVE_HOOK
+SKY_HOOK, SKY_GET_HOOK, SKY_REMOVE_HOOK = "world_sky", "world_sky_get", "world_sky_remove"  # 1.104.0: satellites.py's
 # the Firewall base's hooks of this module, in the order its HOOKS name them
 HOOKS = (HOOK, RECORDING_HOOK, FORGET_HOOK, SHOW_HOOK, DIRECTION_HOOK, WITHIN_HOOK, PICK_HOOK, LAYER_HOOK, GET_HOOK,
-         REMOVE_HOOK)
+         REMOVE_HOOK, SKY_HOOK, SKY_GET_HOOK, SKY_REMOVE_HOOK)
 SHOWS = ("traffic", "hosts")  # what the globe shows
 DIRECTIONS = ("", "out", "in")  # "": both
 WITHIN = {"hour": 3600, "day": 86400, "week": 604800, "month": 2592000}  # a host last seen within it
@@ -899,6 +900,13 @@ class NetstatView:
                 globe["layers"] = []
             globe["layer_hook"] = LAYER_HOOK
             globe["layer_area"] = True  # 1.104.0: the hook reads a layer by area
+            sky = getattr(self, "sky", None)  # 1.104.0: the satellites, where the plugin names any
+            try:
+                told = sky.spec() if sky is not None else None
+            except Exception:  # noqa: BLE001 - the sky never costs the tab its page
+                told = None
+            if told:
+                globe["sky"] = told
             globe["showing"] = self._showing(c)
             forms = [f for f in page.get("forms") or () if isinstance(f, dict)]
             if hosts:
@@ -918,6 +926,11 @@ class NetstatView:
                     page["note"] = (str(page.get("note") or "") + " Hosts recorded needs no capture: choose it under "
                                     "What the globe shows.").strip()
             tables.append(self._infrastructure())
+            if sky is not None:  # 1.104.0: the sgp4 package offered as the data sets are, its row in their table
+                row = sky.row()
+                if row:
+                    tables[-1].setdefault("rows", []).append(row)
+                forms += sky.forms()
             if not hosts:  # 1.68.0: the connections recorded with no place yet placed (the hosts view places its own)
                 self._place(world)
             try:

@@ -268,7 +268,8 @@ def plain(page: dict) -> dict:
 def test_the_tab_its_hooks_and_the_module_name_no_address_and_start_nothing():
     assert (TAB, TITLE, HOOK, EVERY, HOSTS_S) == ("netstat", "Netstat", "netstat", 3.0, 10.0)
     assert netstat.HOOKS == ("netstat", "hosts_recording", "hosts_forget", "world_show", "world_direction",
-                             "world_within", "world_pick", "world_layer", "world_layer_get", "world_layer_remove")
+                             "world_within", "world_pick", "world_layer", "world_layer_get", "world_layer_remove",
+                             "world_sky", "world_sky_get", "world_sky_remove")  # 1.104.0: the satellites
     assert (netstat.FLOW_ROWS, netstat.LISTEN_ROWS, netstat.TABLE_ROWS, netstat.PICKS) == (2000, 200, 100, 8)
     assert netstat.WITHIN == {"hour": 3600, "day": 86400, "week": 604800, "month": 2592000}
     source = Path(netstat.__file__).read_text(encoding="utf-8")
@@ -904,7 +905,8 @@ def test_on_a_machine_it_is_not_for_no_hook_records_keeps_forgets_or_removes_any
     given = {"hosts_recording": ("always",), "hosts_forget": (True,), "world_show": ("hosts",),
              "world_direction": ("out",), "world_within": ("day",), "world_pick": ("port=tcp/443",),
              "world_layer": ("datacentres",), "world_layer_get": ("osm-datacentres", True),
-             "world_layer_remove": ("osm-datacentres",)}
+             "world_layer_remove": ("osm-datacentres",),
+             "world_sky": (), "world_sky_get": (True,), "world_sky_remove": ()}  # 1.104.0
     assert set(given) == set(netstat.HOOKS) - {netstat.HOOK}  # every hook of the module but the tab's page
     for hook, args in given.items():
         with pytest.raises(ValueError, match="^not for this machine: for a Windows machine$"):

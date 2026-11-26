@@ -229,7 +229,8 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert hooks["world"].startswith("() ") and hooks["world_geoip"].startswith("(accept_licence=False, log=None) ")
     assert hooks["netstat"].startswith("() ") and hooks["world_layer_get"].startswith(
         "(dataset, accept_licence=False, log=None) ")  # a data set's download: a job too, which the page may cancel
-    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get")  # 1.101.0
+    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get",  # 1.101.0
+                                  "world_sky_get")  # 1.104.0
     assert fw.JOB_HOOKS == Firewall.JOB_HOOKS
     assert hooks["world_asn"].startswith("(accept_licence=False, log=None) ")  # 1.75.0: the ASN file's, a job too
     assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
