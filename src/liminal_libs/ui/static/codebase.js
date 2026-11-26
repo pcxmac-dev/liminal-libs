@@ -9,6 +9,9 @@
 //   `send(path, body)` are the page's own way to ask its app (a JSON answer, an Error when refused); `confirm(words)`
 //   answers whether the user said yes (the remotes are asked only then). LiminalCodebase.unmount() when the view is left.
 //   LiminalCodebase.html(d, view) and .side(d, view) give the two panes' HTML for a page that draws by itself.
+//   1.105.0 (Monday list item 31; docs/PAGES.md): with {panel} (a LiminalSide panel over the side pane) and {scope}, the
+//   side's whole is the panel's top, the tool, and the repository picked in the middle is told in full under it (the
+//   pick, LiminalSide.rows), in place of the side drawn again with it. Without a panel, as before.
 //
 // The shares are of the bytes of code and markup, as apps/codebase.py counts them; prose and data are listed with their
 // lines and have no share. A language keeps its colour whatever its rank (the themes' --series-1..7, in a fixed order);
@@ -149,7 +152,7 @@
     const rows = kept.map((r) => {
       const i = repos.indexOf(r);
       const far = remoteWords(r);
-      return `<tr data-cb-repo="${i}" tabindex="0"${v.picked === i ? ' class="picked"' : ''}><td>${esc(r.name)}${(r.used || []).length ? `<span class="sub">${esc(r.used.join(', '))} runs from it</span>` : ''}</td>`
+      return `<tr data-cb-repo="${i}" data-pick="${esc(`repo:${r.path || r.name}`)}" tabindex="0"${v.picked === i ? ' class="picked"' : ''}><td>${esc(r.name)}${(r.used || []).length ? `<span class="sub">${esc(r.used.join(', '))} runs from it</span>` : ''}</td>`
         + `<td class="words">${esc(r.kind || 'none')}</td><td>${esc(r.branch || (r.kind === 'git' && r.commit ? 'no branch' : ''))}</td>`
         + `<td>${esc(r.commit)}${r.when ? `<span class="sub">${esc(String(r.when).slice(0, 10))}</span>` : ''}</td>`
         + `<td>${far.html || esc(far.words)}${far.sub ? `<span class="sub">${esc(far.sub)}</span>` : ''}</td>`
@@ -194,6 +197,24 @@
       + `</dl><p class="muted small">How far behind is what each working copy knew when it last asked its remote. "Ask the remotes" asks them now.</p></div>`;
   }
 
+  // A repository picked, as side.js tells it (1.105.0): every fact the side said of it, its languages as words
+  function repoSpec(r) {
+    if (!r) return null;
+    const far = remoteWords(r);
+    const farWords = far.html ? far.html.replace(/<[^>]*>/g, '') : far.words;  // remoteWords' own markup, as text
+    return {
+      title: r.name, sub: r.kind ? `a ${r.tool || r.kind} working copy` : 'a folder in no repository',
+      facts: [['Where', r.path], ['Branch', r.branch], ['Commit', [r.commit, String(r.when || '').slice(0, 16).replace('T', ' ')].filter(Boolean).join(' · ')],
+        ['Its words', r.subject], ['Remote', r.remote], ['Follows', r.upstream],
+        ['From its remote', [farWords, far.sub].filter(Boolean).join(', ')],
+        ['Last asked', r.kind === 'git' && r.remote ? ago(r.asked) : ''], ['Not committed', changeWords(r)],
+        ['Runs here', (r.used || []).join(', ')], ['Counted', `${num(r.files)} files, ${num(r.lines)} lines`]]
+        .filter(([, v]) => v !== '' && v !== null && v !== undefined),
+      sections: [{ title: 'Its languages', facts: parts(r.languages).map((s) => [s.name, `${pct(s.share)} · ${num(s.lines)} lines`]) }],
+    };
+  }
+  const repoOf = (m, key) => ((m.d && m.d.repositories) || []).find((r) => `repo:${r.path || r.name}` === key) || null;
+
   // -- a page's two panes kept current ----------------------------------------------------------------------------------
   let M = null;
   const getJson = async (path) => { const r = await fetch(path, { cache: 'no-store', credentials: 'same-origin' }); if (!r.ok) throw new Error(`the app answered ${r.status}`); return r.json(); };
@@ -205,6 +226,13 @@
   function draw() {
     const m = M;
     if (!m) return;
+    if (m.panel) {  // 1.105.0: the side's whole on top, the repository picked under it
+      m.dataEl.innerHTML = html(m.d, { ...m.view, picked: undefined });
+      m.panel.tool(m.scope, side(m.d, { ...m.view, picked: undefined }));
+      window.LiminalSide.rows(m.dataEl, { selector: 'tr[data-pick]', panel: m.panel, describe: (tr, key) => repoSpec(repoOf(m, key)) });
+      m.panel.refresh((key) => repoSpec(repoOf(m, key)));
+      return;
+    }
     m.dataEl.innerHTML = html(m.d, m.view);
     if (m.sideEl) m.sideEl.innerHTML = side(m.d, m.view);
   }
@@ -232,7 +260,8 @@
       load(false);
       return;
     }
-    if (filter) { m.view.filter = filter.dataset.cbFilter; m.view.picked = undefined; draw(); return; }
+    if (filter) { m.view.filter = filter.dataset.cbFilter; m.view.picked = undefined; if (m.panel) m.panel.unpick(); draw(); return; }
+    if (repo && m.panel) return;  // picked by LiminalSide.rows
     if (repo) {
       if (e.type === 'keydown') e.preventDefault();
       m.view.picked = repo.dataset.cbRepo === '' ? undefined : Number(repo.dataset.cbRepo);
@@ -243,7 +272,8 @@
     unmount();
     const o = opts || {};
     M = { dataEl, sideEl, view: { filter: 'all' }, d: null, timer: 0, get: o.get || getJson, send: o.send || sendJson,
-      confirm: o.confirm || ((words) => Promise.resolve(window.confirm(words))) };
+      confirm: o.confirm || ((words) => Promise.resolve(window.confirm(words))),
+      panel: o.panel && window.LiminalSide ? o.panel : null, scope: o.scope || 'codebase' };
     for (const el of [dataEl, sideEl]) {
       if (!el) continue;
       el.addEventListener('click', clicked);
@@ -256,6 +286,7 @@
     const m = M;
     if (!m) return;
     clearTimeout(m.timer);
+    if (m.panel) m.panel.unpick();
     for (const el of [m.dataEl, m.sideEl]) {
       if (!el) continue;
       el.removeEventListener('click', clicked);
@@ -264,5 +295,5 @@
     M = null;
   }
 
-  window.LiminalCodebase = { html, side, mount, unmount, colorOf, parts };
+  window.LiminalCodebase = { html, side, mount, unmount, colorOf, parts, repoSpec };
 })();

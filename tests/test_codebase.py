@@ -344,7 +344,7 @@ def test_the_drawing_and_its_icon_come_with_the_library():
     from liminal_libs import ui
 
     js = (ui.STATIC / "codebase.js").read_text(encoding="utf-8")
-    assert "window.LiminalCodebase = { html, side, mount, unmount, colorOf, parts };" in js
+    assert "window.LiminalCodebase = { html, side, mount, unmount, colorOf, parts, repoSpec };" in js
     assert "/api/codebase" in js and "/api/codebase/fetch" in js and "'X-Liminal-Charts': '1'" in js  # a write is the page's own
     # a language keeps its colour whatever its rank: the themes' series in a fixed order, the rest together
     assert "const ORDER = ['Python', 'JavaScript', 'Rust', 'CSS', 'HTML', 'TypeScript', 'Shell'];" in js
@@ -352,3 +352,22 @@ def test_the_drawing_and_its_icon_come_with_the_library():
     assert "await m.confirm(" in js and js.index("await m.confirm(") < js.index("m.send('/api/codebase/fetch'")  # asked first
     assert "http://" not in js and "https://" not in js  # it names no place outside the app
     assert "    branch: '<g stroke-width=" in (ui.STATIC / "icons.js").read_text(encoding="utf-8")
+
+
+def test_with_a_panel_the_side_is_the_tool_and_the_repository_picked_is_told_under_it():
+    """1.105.0 (Monday list item 31; docs/PAGES.md): mounted with a LiminalSide panel, the side's whole is the panel's top
+    and a repository picked in the middle is the pick, told in full; without one, as before."""
+    from liminal_libs import ui
+
+    js = (ui.STATIC / "codebase.js").read_text(encoding="utf-8")
+    assert "panel: o.panel && window.LiminalSide ? o.panel : null, scope: o.scope || 'codebase'" in js
+    draw = js.split("function draw() {", 1)[1].split("\n  }", 1)[0]
+    assert "m.panel.tool(m.scope, side(m.d, { ...m.view, picked: undefined }));" in draw
+    assert "window.LiminalSide.rows(m.dataEl, { selector: 'tr[data-pick]'" in draw and "m.panel.refresh(" in draw
+    assert "if (m.sideEl) m.sideEl.innerHTML = side(m.d, m.view);" in draw  # no panel: as before
+    assert 'data-pick="${esc(`repo:${r.path || r.name}`)}"' in js
+    assert "if (repo && m.panel) return;  // picked by LiminalSide.rows" in js
+    spec = js.split("function repoSpec(r) {", 1)[1].split("\n  }", 1)[0]
+    for fact in ("'Where'", "'Branch'", "'Commit'", "'Remote'", "'From its remote'", "'Not committed'", "'Its languages'"):
+        assert fact in spec, fact
+    assert "far.html.replace(/<[^>]*>/g, '')" in spec  # its own markup as words: side.js escapes everything it is given

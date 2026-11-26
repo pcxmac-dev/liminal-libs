@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.105.0 (provisional: the next free number at landing)
+
+The right-hand panel, and the page standard (Monday list item 31; the user, 2026-11-22: "the right hand menu holds the
+'tool' selected on the left hand menu in the top portion of it's menu. However, if there is amplifying information
+selected from the main screen (in between) it shows up as amplifying information underneath the plugin or tools' info
+in the right hand menu, this needs to be global for all apps too"; "a global interface standard"). Additive: nothing
+renamed or removed, and a page that passes none of the new options sees nothing change.
+
+- **docs/PAGES.md, the page standard.** The five spaces (the controller menu, the left-hand menu, the main screen, the
+  tools overhead, the right-hand menu), each app's, the controller menu in an app built on others, and what a page does
+  with a pick.
+- **`ui/static/standard.json` and `ui.standard`.** Which tools can be picked at the same time, app by app, as data: each
+  group's space, how many at once (one, one-or-none, any), what it belongs to (`of`) and when it may hold anything but
+  its default (`with`, `only`). `after`, `problems` and `check`; tests/data/ui_standard_cases.json is the table both
+  this and side.js's twin are run on.
+- **`ui/static/side.js`, `LiminalSide`.** The right-hand menu's two slots: the tool picked on the left at its top, drawn
+  again alone, and the row picked in the middle told in full under it. Rows picked by a click, Enter, Space or a tap;
+  Escape, Unpick or a second click let go; a pick kept by its key through a redraw, marked "no longer shown as of" when
+  its row goes; a phone scrolled to it. liminal.css styles it on the themes' variables.
+- **`apps.tabs.detail()`, and a table's `details` and `pick`.** What each row of a tab page's table tells when picked,
+  plain words cut at the caps. The World Wide Web tab gives them for its ports (here and elsewhere), its places, the
+  hosts view's hosts and the hops' routers; the GeoIP sources' table is not picked.
+- **The globe's `onPick`.** `LiminalGlobe.draw(el, spec, {onPick})`: what a click, a tap or Enter picked (a place, home,
+  a router, a layer's feature) in the tooltip's own words, in full, and null when let go; a hover never picks. The
+  handle's `describe(key)` and `unpick()`; `LiminalGlobe.describe(item)`.
+- **Codebase with a panel.** `LiminalCodebase.mount(data, side, {panel, scope})`: the side's whole is the panel's top
+  and the repository picked is the pick; `repoSpec(r)`.
+
 ## 1.104.0 (2026-11-26)
 
 The firewalls' globe gets its Monday list items 24, 27, 28, 29 and 32: fibre on land and its stand-ins, the
