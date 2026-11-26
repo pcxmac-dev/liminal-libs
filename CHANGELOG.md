@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.103.0 (2026-11-26, provisional: renumbered at its landing)
+## 1.103.0 (2026-11-26)
 
 What every plugin needs of the machine it runs on, and the judgement of it against this machine (Monday list item 19,
 part two, release 1, round one: the needs plan's revision 2 of 2026-11-24, with the user's twenty answers of
