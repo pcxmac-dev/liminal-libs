@@ -71,6 +71,7 @@ class LinuxSystem:
         self._facts_at = 0.0
         self._listing = None
         self._listing_at: float | None = None
+        self._asked_at: float | None = None  # when sudo asked for a password its listing said it would not (M5)
         self._lock = threading.Lock()
 
     # ---- what it knows ------------------------------------------------------------------------------------------
@@ -98,7 +99,13 @@ class LinuxSystem:
         return self._listing
 
     def elevation(self) -> _elevation.Elevation:
-        return _elevation.elevation(self.facts(), self.listing(), python=self.python)
+        """The way root is had, from the facts and the listing. Where sudo asked for a password its listing said it
+        would not (PasswordNeeded), the listing is not taken for SUDO_S after, so the form is offered with its field
+        and the password typed there reaches sudo (M5)."""
+        listing = self.listing()
+        if self._asked_at is not None and self.clock() - self._asked_at <= SUDO_S:
+            listing = None
+        return _elevation.elevation(self.facts(), listing, python=self.python)
 
     def accounts(self) -> _accounts.AccountTool:
         return _accounts.tool(self.facts(), self.who)
@@ -163,6 +170,7 @@ class LinuxSystem:
             ran = self.elevation().run(a_plan, password, spawn=self.spawn, stop=stop, clock=self.clock)
         except _elevation.PasswordNeeded:
             self.forget()
+            self._asked_at = self.clock()
             raise
         finally:
             self._lock.release()
