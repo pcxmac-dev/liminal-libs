@@ -102,9 +102,7 @@ def test_the_charts_lists_are_named_as_their_page_has_them():
 
 def test_side_js_holds_no_rule_of_its_own():
     """side.js reads standard.json (relative, caught) and keeps, until it has, only the platform's three groups."""
-    side = (STATIC / "side.js").read_text(encoding="utf-8") if (STATIC / "side.js").exists() else None
-    if side is None:
-        pytest.skip("side.js comes with the next piece")
+    side = (STATIC / "side.js").read_text(encoding="utf-8")
     assert "fetch('standard.json'" in side and ".catch(" in side
     fallback = json.loads(re.search(r"const FALLBACK = (\{.*?\});\s*// end of FALLBACK", side, re.S).group(1))
     assert fallback == {"v": 1, "spaces": standard.RULES["spaces"], "apps": {"platform": standard.RULES["apps"]["platform"]}}

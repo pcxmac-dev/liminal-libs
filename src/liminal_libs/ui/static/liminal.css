@@ -276,6 +276,7 @@ button, select, input, textarea, summary, label, a[href], [role="button"], [role
   summary { min-height: 40px; box-sizing: border-box; padding-top: 10px; padding-bottom: 10px; }
   .chart-table summary { padding: 10px 0; }
   .chart svg.plot { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  tr[data-pick] td { height: 44px; }  /* a row that picks (side.js): a finger's target */
 }
 /* a chart's plot (charts.js): a sideways finger scrubs it, an upward or downward one scrolls the page, two pinch it
    (Chrome, Edge, Firefox). Safari knows no pinch-zoom here and keeps pan-y alone: there a pinch begun on a plot does
@@ -292,6 +293,21 @@ html:not(.touch) .touch-only, html.touch .mouse-only { display: none !important;
 /* The on-screen keyboard laid over the page (touch.js: Safari, or a browser without the viewport's
    interactive-widget=resizes-content): the frame fits the height left above it, its panes scrolling as before */
 @media not all and (max-width: 700px) { html.keyboard body { height: var(--vvh, 100%); } }
+
+/* The right-hand menu (side.js, liminal-libs 1.105.0; docs/PAGES.md): the tool picked on the left at its top, the one
+   picked in the middle told under it. A row that picks: a pointer over it, the accent's tint on the one picked */
+.side-pick { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.side-pick[hidden] { display: none; }
+.side-pick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.side-pick-head h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
+.side-unpick { flex: none; padding: 0 8px; line-height: 22px; font-size: 16px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; }
+.side-pick h4 { margin: 14px 0 6px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.side-gone { margin: 6px 0 0; font-style: italic; }
+.side-back-row { margin: 6px 0 0; }
+tr[data-pick] { cursor: pointer; }
+tr[data-pick]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+tr.picked td { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+@media (hover: hover) { tr[data-pick]:hover td { background: var(--hover); } tr.picked:hover td { background: color-mix(in srgb, var(--accent) 24%, transparent); } }
 
 /* Phones (the user, 2026-11-10: below about 700 px wide an app's panes stack in one column in the same order, the
    list, then the data, then the specifics, and the page scrolls as one; larger screens keep their layout exactly).

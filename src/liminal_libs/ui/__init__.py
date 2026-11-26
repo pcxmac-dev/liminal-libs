@@ -24,7 +24,9 @@ is given the file's, once, and the file is left as it was.
 1.105.0 (Monday list item 31; the user, 2026-11-22: "a global interface standard"): the page standard, written down in
 docs/PAGES.md: the five spaces (the controller menu, the left-hand menu, the main screen, the tools overhead, the
 right-hand menu), each app's, and which of its tools can be picked at the same time. Those rules are data,
-`static/standard.json`, read by the pages and by `ui.standard` (after, problems, check), both run on one table of cases."""
+`static/standard.json`, read by the pages and by `ui.standard` (after, problems, check), both run on one table of cases.
+`static/side.js` is the shared piece every app's right-hand menu is drawn with (`LiminalSide`: the tool picked on the
+left at its top, the row picked in the middle told under it), loaded after icons.js."""
 from __future__ import annotations
 
 import json
