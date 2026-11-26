@@ -635,7 +635,8 @@ class Firewall(MachinePlugin):
         if out.get("ok") and view.chosen()[role]["source"] != named.id:
             net = self.netstat_view(make=False)
             if net is not None and not net.elsewhere():
-                net.book.clear_places(role, geosources.cleared(role, named.id))
+                # the default's own rows carry the bare date, as before 1.102.0 (geosources.stamp)
+                net.book.clear_places(role, geosources.cleared(role, named.id), bare=named.id == view.default)
         self._geoip_replaced(view)
         return out
 

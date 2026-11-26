@@ -1437,12 +1437,15 @@ class HostBook:
         self.stamp = stamp  # 1.102.0: what a new connection's place is taken from
         return self._read(lambda conn: conn.execute(sql, (INTERNET, stamp)).fetchone()[0], 0)
 
-    def clear_places(self, role: str, pattern: str) -> int:
+    def clear_places(self, role: str, pattern: str, *, bare: bool = False) -> int:
         """1.102.0: the places a source gave in `role` taken out, where no file in use can place them: rows whose
         stamp is LIKE `pattern` (geosources.cleared) lose country, code, city, lat and lon (places) or asn and org
-        (networks), in hosts and connections both, and are placed again at the next ask. How many hosts rows."""
+        (networks), in hosts and connections both, and are placed again at the next ask. `bare`: the source is the
+        default one, so the rows stamped with a bare date (not "#...": its places, with its networks or none, as before
+        1.102.0) are its too. How many hosts rows."""
         columns = ("country = NULL, code = NULL, city = NULL, lat = NULL, lon = NULL" if role == "places" else
                    "asn = NULL, org = NULL")
+        where = "placed LIKE ?" + (" OR (placed IS NOT NULL AND substr(placed, 1, 1) <> '#')" if bare else "")
         with self._lock:
             if not self._ready():
                 return 0
@@ -1454,9 +1457,9 @@ class HostBook:
                 counted = []
 
                 def write(c: sqlite3.Connection) -> None:
-                    counted.append(c.execute(f"UPDATE hosts SET {columns}, placed = NULL WHERE placed LIKE ?",
+                    counted.append(c.execute(f"UPDATE hosts SET {columns}, placed = NULL WHERE {where}",
                                              (pattern,)).rowcount)
-                    c.execute(f"UPDATE connections SET {columns}, placed = NULL WHERE placed LIKE ?", (pattern,))
+                    c.execute(f"UPDATE connections SET {columns}, placed = NULL WHERE {where}", (pattern,))
                 self._transaction(conn, write)
             except (sqlite3.Error, OSError) as e:
                 self._failed("written", e)

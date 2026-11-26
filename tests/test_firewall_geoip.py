@@ -234,3 +234,39 @@ def test_the_tab_draws_the_sources_table_and_the_places_credit_in_use(tmp_path):
     assert page["globe"]["attribution"]["text"] == "IP Geolocation by DB-IP"
     assert not any(a.get("form") in (world.FORM, world.ASN_FORM) for a in page.get("actions", []))
     fw.detach()
+
+
+@needs_reader
+@pytest.mark.parametrize("role", ["places", "networks"])
+def test_removing_the_default_sources_file_clears_what_it_placed(tmp_path, licences, role):
+    """Review finding: the default source's places are stamped with the places file's bare date, as before 1.102.0, so
+    a pattern of #dbip:... never met them and removing DB-IP's file kept every place it gave."""
+    from liminal_libs.hostbook import HostBook
+    from test_geo import ASNS
+    from test_hostbook import NUREMBERG, T0, WEB, atlas, row, win
+    book = HostBook(tmp_path / "hosts" / "hosts.db")
+
+    class Booked(Sourced):
+        def make_netstat_view(self):
+            return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.login,
+                               book=book, clock=Clock(), wall=Clock(NOW))
+    fw = Booked(tmp_path / "geoip", Fetches({}))
+    geo.install_mmdb(mmdb(PLACES, built=NOVEMBER), tmp_path / "geoip", "dbip-city-lite-2026-11")
+    geo.install_mmdb(mmdb(ASNS, kind="DBIP-ASN-Lite"), geo.asn_folder(tmp_path / "geoip"), "dbip-asn-lite-2026-11")
+    win(book, T0, row(started=T0))
+    book.flush()
+    stamp = geosources.stamp(("dbip", "2026-11-01"), ("dbip", "2026-11-01"), "dbip")
+    assert stamp == "2026-11-01"  # the default pair's stamp: the bare date
+    book.place(atlas({WEB: NUREMBERG}), stamp)
+    assert {(h["country"], h["asn"]) for h in book.hosts()} == {("Germany", 64500)}
+    fw.netstat_view()  # made, as the tab's page the remove is asked from made it
+    with asking(PAGE), as_user(Store()):
+        assert fw.world_geoip_remove("dbip", role, True)["ok"]
+    (host,) = book.hosts()
+    if role == "places":
+        assert (host["country"], host["lat"], host["placed"]) == ("", None, "")
+    else:
+        assert (host["asn"], host["org"], host["placed"]) == (None, "", "")
+    gone = "country" if role == "places" else "asn"
+    assert all(c[gone] in (None, "") for c in book.connections())
+    fw.detach()

@@ -404,7 +404,8 @@ def stamp(places, networks, default: str) -> str:
 
 
 def cleared(role: str, source: str) -> str:
-    """The LIKE pattern of the rows a source placed in `role`: #<id>:% (places), %+<id>:% (networks)."""
+    """The LIKE pattern of the rows a source placed in `role`: #<id>:% (places), %+<id>:% (networks). The default
+    source's rows stamped with a bare date are not met by it: HostBook.clear_places(bare=True) takes those too."""
     return f"#{source}:%" if role == "places" else f"%+{source}:%"
 
 
