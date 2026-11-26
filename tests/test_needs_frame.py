@@ -128,6 +128,54 @@ def test_fresh_reads_again_and_the_frame_judges_offline_none():
     assert app.offline() is None and app.internet_rule() == "system"
 
 
+class Fetching(MachinePlugin):
+    name, title = "fetching", "Fetching"
+    NEEDS = (("internet", "yes", "required", "it fetches"),)
+
+
+def test_the_frame_reads_offline_from_its_settings_or_its_environments_login_decision_5():
+    """The integrator's and the charts' GET /api/needs: LIMINAL_OFFLINE (or LIMINAL_READONLY) as their login furnishes
+    it, or the settings an app holds, unmet every internet need; nothing else is asked for a plugin with no such row."""
+    for env, said in (({"LIMINAL_OFFLINE": "1"}, "LIMINAL_OFFLINE"), ({"LIMINAL_READONLY": "yes"}, "LIMINAL_READONLY"),
+                      ({"LIMINAL_OFFLINE": "0"}, None), ({}, None)):
+        app = Knowing([Fetching(), HyperV()], log=lambda m: None, login=EnvironmentLogin(env=env))
+        assert app.offline() == said
+        data = app.api(None, "GET", "/api/needs", {}, None)[1]
+        assert data["internet"]["offline"] == said
+        row = {p["name"]: p for p in data["plugins"]}["fetching"]["needs"]
+        assert row["met"] is (False if said else True), row
+        if said:
+            assert said in row["rows"][0]["said"] and row["sort"] == "moment"
+
+    class Held(Knowing):
+        settings = type("S", (), {"offline": True, "read_only": False})()
+
+    assert Held(log=lambda m: None, login=EnvironmentLogin(env={})).offline() == "LIMINAL_OFFLINE"
+    asked = []
+
+    class Now(Knowing):
+        def settings_now(self):
+            asked.append(1)
+            return type("S", (), {"offline": True, "read_only": True})()
+
+    app = Now([HyperV()], log=lambda m: None, login=EnvironmentLogin(env={}))
+    app.needs_of("hyperv")
+    assert asked == []  # no internet row: the settings are not read for it
+    assert app.offline() == "LIMINAL_READONLY" and asked == [1]
+
+    class Other(EnvironmentLogin):
+        pass
+
+    class Elsewhere:  # a login that is not the environment's is asked nothing
+        signed_in = True
+
+        def variables(self, wanted):
+            raise AssertionError("asked")
+
+    assert Knowing(log=lambda m: None, login=Elsewhere()).offline() is None
+    assert Knowing(log=lambda m: None, login=Other(env={"LIMINAL_OFFLINE": "on"})).offline() == "LIMINAL_OFFLINE"
+
+
 def test_the_platform_core_leaves_an_unmet_plugin_detached():
     from liminal_libs.apps.platform import Platform
 

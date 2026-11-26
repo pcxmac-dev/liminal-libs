@@ -51,8 +51,8 @@ but for one rename (below); the plugin API stays 2.4, and an older library reads
 - **The frame.** Every app answers `GET /api/needs` (`?fresh=1` reads again, `?plugin=NAME` one, 404 for a name it does
   not know): this machine's facts and each plugin it knows with its needs judged, asking a plugin nothing but its
   `not_for_here()`, which a needs-judging app reads as one more unmet need of the machine. `App.needs_of`,
-  `machine_facts` and `needs_report`; `internet_rule()` ("system") and `offline()` (None) are a subclass's to
-  answer. The frame holds nothing by them (`held` and `switch` False): the platform does. `GET
+  `machine_facts` and `needs_report`; `internet_rule()` ("system") is a subclass's to answer, `offline()` read
+  from the app's settings or its login (below). The frame holds nothing by them (`held` and `switch` False): the platform does. `GET
   /api/plugins/{name}/needs` stays the declaration as `lifecycle.ask_of` gives it.
 - **The Internal API.** The route's row, and `needs_of`, `machine_facts` and `needs_report` among what an app offers; a
   plugin's rows as it declares them (`internal_of`'s `needs`, never judged: internal.py imports neither needs nor
@@ -71,6 +71,10 @@ but for one rename (below); the plugin API stays 2.4, and an older library reads
   `PLATFORM_KINDS` (liminal-platform 0.40.0) gave the base's `()`; it is now read as the kinds declared by either
   name, the nearest class of its line winning, and a subclass that sets it (the charts, the integrator) sets it as
   before.
+- **After the review: the frame reads offline.** The frame's `offline()` always said None, so the integrator's and
+  the charts' `GET /api/needs` ignored LIMINAL_OFFLINE; it now reads the settings an app holds (`settings_now()`,
+  else `settings`: their `read_only` and `offline`), else LIMINAL_READONLY and LIMINAL_OFFLINE as an
+  `EnvironmentLogin` furnishes them (no other login is asked), and only for a plugin with an internet row.
 - **Tests**: every test's facts are a recorded machine's (conftest's autouse `stand_in_facts`: this-pc). New:
   test_needs.py (with the rows of codex-cli, lmdeploy, mcp and pi, which declared NEEDS before this module, held as
   written), test_facts.py, test_needs_machines.py, test_ui_needs.py, test_needs_contract.py, test_needs_frame.py.

@@ -43,6 +43,7 @@ TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom:
 CODEBASE_PATH = "/api/codebase"  # its repositories, its code and how much of it is which language (apps.codebase)
 APIS_PATH = "/api/app/apis"  # its own External and Internal API (1.63.0); ?plugin=NAME: an attached plugin's two
 NEEDS_PATH = "/api/needs"  # every plugin it knows, its needs judged against this machine (1.103.0); ?plugin=NAME: one
+OFFLINE_VARIABLES = ("LIMINAL_READONLY", "LIMINAL_OFFLINE")  # the settings that make an app send nothing (App.offline)
 KEPT_INTERNAL = 256  # plugins' Internal APIs an app keeps at the most (App.plugin_internal), one for each object
 SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
 LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
@@ -616,9 +617,33 @@ class App:
         return "system"
 
     def offline(self) -> str | None:
-        """The name of the setting that makes this app send nothing (LIMINAL_OFFLINE, LIMINAL_READONLY), or None. The
-        frame loads no Settings: None."""
-        return None
+        """The name of the setting that makes this app send nothing (LIMINAL_READONLY, else LIMINAL_OFFLINE), or None.
+        The frame loads no Settings: it reads the ones the app holds (its `settings_now()`, else a `settings` it holds,
+        their `read_only` and `offline` flags), else the two variables as its login furnishes them where that login is
+        the environment's (EnvironmentLogin: the process's variables, or a test's own), asking no other login; None
+        when none says so or they cannot be read."""
+        flags = self._offline_flags()
+        if flags is None:
+            return None
+        read_only, offline = flags
+        return "LIMINAL_READONLY" if read_only else "LIMINAL_OFFLINE" if offline else None
+
+    def _offline_flags(self) -> tuple[bool, bool] | None:
+        """(read only, offline) from the settings the app holds, else from its environment's login; None: unread."""
+        try:
+            now = getattr(self, "settings_now", None)
+            held = now() if callable(now) else getattr(self, "settings", None)
+            if held is not None and not callable(held) and isinstance(getattr(held, "offline", None), bool):
+                return getattr(held, "read_only", False) is True, held.offline is True
+            from .authorization import EnvironmentLogin
+
+            if not isinstance(self.login, EnvironmentLogin):
+                return None
+            found = self.login.variables(OFFLINE_VARIABLES)
+        except Exception:  # noqa: BLE001 - settings that cannot be read set nothing
+            return None
+        on = {n for n in OFFLINE_VARIABLES if str(found.get(n) or "").strip().lower() in ("1", "true", "yes", "on")}
+        return "LIMINAL_READONLY" in on, bool(on)  # LIMINAL_READONLY is offline too (config.Settings.load)
 
     def plugin_states(self) -> dict[str, str]:
         """Each plugin's state as this app knows it, for a `plugin` need: the frame's, "attached"."""
@@ -634,8 +659,11 @@ class App:
     def _needs_judged(self, plugin, read: dict) -> dict:
         from .. import needs
 
-        return needs.judge(needs.declared(plugin), read, own=needs.own_words(plugin), plugins=self.plugin_states(),
-                           internet=self.internet_rule(), offline=self.offline(), declared=needs.says(plugin))
+        rows = needs.declared(plugin)
+        net = any(str(r.get("attribute", "")).rpartition(":")[2] == "internet" for r in rows)
+        return needs.judge(rows, read, own=needs.own_words(plugin), plugins=self.plugin_states(),
+                           internet=self.internet_rule(), offline=self.offline() if net else None,
+                           declared=needs.says(plugin))  # the settings read for an internet row alone
 
     def _known_plugin(self, name: str):
         p = next((k for k in self.known_plugins() if getattr(k, "name", "") == name), None)

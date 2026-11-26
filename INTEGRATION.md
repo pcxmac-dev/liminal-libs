@@ -293,10 +293,12 @@ def test_what_it_needs_is_sound_and_met_where_it_is_for():
 
 What an app gives (`apps/app.py`): `needs_of(plugin_or_name, fresh=False)`, `machine_facts(attributes, fresh, names=)`
 and `needs_report(fresh, only)`, and `GET /api/needs` (`?fresh=1`, `?plugin=NAME`); a subclass answers
-`internet_rule()` and `offline()` where it holds a switch or Settings, and `plugin_states()`. A page draws an answer
-with `LiminalNeeds.table(answer)`, `line(answer)` and `style(answer)`. Nothing of it sends anything: `facts.py` reads
-the system's own state (Windows' Network List Manager, NetworkManager's last verdict), never asks it to probe, and
-under a test reads nothing real at all unless `LIMINAL_REAL_FACTS=1`.
+`internet_rule()` where it holds a switch, and `plugin_states()`; the frame's `offline()` reads the Settings an app
+holds (`settings_now()`, else `settings`), else LIMINAL_READONLY and LIMINAL_OFFLINE from its environment's login,
+for an internet row alone. A page draws an answer with `LiminalNeeds.table(answer)`, `line(answer)` and
+`style(answer)`. Nothing of it sends anything: `facts.py` reads the system's own state (Windows' Network List
+Manager, NetworkManager's last verdict), never asks it to probe, and under a test reads nothing real at all unless
+`LIMINAL_REAL_FACTS=1`.
 
 ## Containers (liminal-libs 1.18)
 
