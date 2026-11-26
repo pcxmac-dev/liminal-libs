@@ -7,8 +7,8 @@ section, the platform the only writer of instance settings. The design is item-3
 
 `Platform(App)` is the core alone, not the whole liminal-platform app:
 - it holds its plugins by section (`sections`: a plugin's SECTION, else its kind's: KIND_SECTIONS);
-- it attaches the kinds a subclass declares it needs (`PLATFORM_NEEDS`, e.g. ("database",): `attach_needs`), with its
-  own login as every App does (the login object it includes, LOGIN, is the App frame's own: nothing changes there);
+- it attaches the kinds a subclass declares it takes (`PLATFORM_KINDS`, e.g. ("database",): `attach_kinds`; 1.103.0's
+  names: "needs" is what a plugin needs of the machine, liminal_libs.needs), with its own login as every App does (the login object it includes, LOGIN, is the App frame's own: nothing changes there);
 - it answers the Databases section's routes when it needs "database" (apps/databases.py, moved from the integrator):
   `GET /api/databases/plugins` and `POST /api/databases/instances`, the same shapes as the integrator's;
 - the one-writer rule: instance settings are read, changed and written back with no lock across processes, so only the
@@ -34,7 +34,8 @@ from . import databases as section
 
 # a plugin's place on the platform's list when its class names none (MachinePlugin.SECTION names its own)
 KIND_SECTIONS = {"database": "databases", "machine": "machine", "assistant": "ai"}
-NEEDS = tuple(KIND_SECTIONS)  # the kinds a Platform can be declared to need
+KINDS = tuple(KIND_SECTIONS)  # the kinds a Platform can be declared to attach (1.103.0: PLATFORM_KINDS)
+NEEDS = KINDS  # the old name (1.90.0-1.102.0), kept for one release: "needs" is what a plugin needs of the machine
 ELSEWHERE = "change this on the platform's Databases section"  # a part that is not the platform, asked to change
 NOT_RUNNING = "the platform is not running: start it to change an instance"
 DATABASES_NODE = "platform-databases"  # the running platform's Databases section, as a node
@@ -60,6 +61,16 @@ def section_of(plugin) -> str:
     return str(getattr(plugin, "SECTION", "") or KIND_SECTIONS.get(getattr(plugin, "KIND", ""), ""))
 
 
+def _declared_kinds(cls) -> tuple[str, ...]:
+    """The kinds a Platform class takes: PLATFORM_KINDS or the old PLATFORM_NEEDS, whichever the nearest class of its
+    line sets (so a subclass of one that set the old name, setting the new, is read by the new)."""
+    for k in cls.__mro__:
+        for name in ("PLATFORM_KINDS", "PLATFORM_NEEDS"):
+            if name in vars(k):
+                return tuple(vars(k)[name])
+    return ()
+
+
 def _finders() -> dict[str, Callable[[], dict]]:
     from ..sources import registry
 
@@ -67,18 +78,21 @@ def _finders() -> dict[str, Callable[[], dict]]:
 
 
 class Platform(App):
-    """The platform core. A subclass declares PLATFORM_NEEDS (the kinds it attaches); liminal-platform's app sets
+    """The platform core. A subclass declares PLATFORM_KINDS (the kinds it attaches); liminal-platform's app sets
     PLATFORM_WRITER. ChartsApp and IntegratorApp inherit it from their next releases (steps 4 and 5)."""
 
-    PLATFORM_NEEDS: tuple[str, ...] = ()  # the plugin kinds it attaches (NEEDS): ("database",) for the charts, the integrator
+    PLATFORM_KINDS: tuple[str, ...] = ()  # the plugin kinds it attaches (KINDS): ("database",) for the charts, the integrator
+    PLATFORM_NEEDS: tuple[str, ...] = ()  # the old name of PLATFORM_KINDS (1.90.0-1.102.0), read for one release where a
+    # subclass still sets it
     PLATFORM_WRITER = False  # the running platform: the one writer of instance settings (liminal-platform's app sets it)
     PLATFORM_SCOPE: Path | None = None  # where its nodes are reached (None: nodes.default_scope, the data folder)
 
     def __init__(self, log=print, login=None, *, writer: bool | None = None, node_factory=None):
         super().__init__(log=log, login=login)
-        unknown = [k for k in self.PLATFORM_NEEDS if k not in NEEDS]
+        self._kinds = _declared_kinds(type(self))
+        unknown = [k for k in self._kinds if k not in KINDS]
         if unknown:
-            raise ValueError(f"{type(self).__name__}: PLATFORM_NEEDS names {unknown}, none of {list(NEEDS)}")
+            raise ValueError(f"{type(self).__name__}: PLATFORM_KINDS names {unknown}, none of {list(KINDS)}")
         self._writer = self.PLATFORM_WRITER if writer is None else bool(writer)
         self._node_factory = node_factory  # liminal_net.Node, or a test's stand-in (nodes.make_node)
         self._platform_lock = threading.Lock()
@@ -91,33 +105,57 @@ class Platform(App):
         """Whether this is the running platform, the one writer of instance settings."""
         return self._writer
 
-    def needs(self, kind: str) -> bool:
-        return kind in self.PLATFORM_NEEDS
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        """The plugin kinds it attaches (PLATFORM_KINDS, or the old PLATFORM_NEEDS a subclass still sets)."""
+        return self._kinds
+
+    def takes(self, kind: str) -> bool:
+        """Whether it attaches plugins of `kind`."""
+        return kind in self._kinds
+
+    needs = takes  # the old name (1.90.0-1.102.0), kept for one release
 
     # -- its plugins, by section ----------------------------------------------------------------------------------
-    def attach_needs(self) -> list[str]:
-        """Every plugin of the kinds it needs that the registry loaded, attached here with this app's login unless
-        another app holds it; the names attached (one attached here already is not attached again)."""
+    def attach_kinds(self) -> list[str]:
+        """Every plugin of the kinds it takes that the registry loaded, attached here with this app's login unless
+        another app holds it; the names attached (one attached here already is not attached again). One whose
+        required needs this machine does not meet is not attached (liminal_libs.needs, 1.103.0; item 38: a plugin
+        whose needs are unmet is never started)."""
         finders, out = _finders(), []
-        for kind in self.PLATFORM_NEEDS:
+        for kind in self._kinds:
             for p in finders[kind]().values():
                 if getattr(p, "KIND", "") != kind or p.app is self:
                     continue
                 if p.app is not None:
                     continue  # another app's
+                if self._unmet_here(p):
+                    continue
                 self.attach(p)
                 out.append(p.name)
         return out
 
+    attach_needs = attach_kinds  # the old name (1.90.0-1.102.0), kept for one release
+
+    def _unmet_here(self, plugin) -> bool:
+        """Whether a required need of the plugin is unmet here (App.needs_of's judgement); False where it cannot tell."""
+        judge = getattr(self, "needs_of", None)
+        if not callable(judge):
+            return False
+        try:
+            return judge(plugin).get("met") is False
+        except Exception:  # noqa: BLE001 - a judgement that fails hides nothing (the user's answer 10)
+            return False
+
     def sections(self) -> dict[str, dict]:
-        """The plugins attached here by section ({section: {name: plugin}}), the sections in NEEDS' order first; a
+        """The plugins attached here by section ({section: {name: plugin}}), the sections in KINDS' order first; a
         plugin of no section is left out."""
         out: dict[str, dict] = {}
         for name, p in self._plugins.items():
             where = section_of(p)
             if where:
                 out.setdefault(where, {})[name] = p
-        order = [KIND_SECTIONS[k] for k in NEEDS]
+        order = [KIND_SECTIONS[k] for k in KINDS]
         return dict(sorted(out.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else len(order), kv[0])))
 
     def section(self, name: str) -> dict:
@@ -126,7 +164,7 @@ class Platform(App):
     # -- the Databases section ------------------------------------------------------------------------------------
     def database_plugins(self) -> dict:
         """The database plugins held here (attached at the first ask: apps/databases.plugins)."""
-        if not self.needs("database"):
+        if not self.takes("database"):
             return {}
         return section.plugins(self)
 
@@ -151,7 +189,7 @@ class Platform(App):
         return section.ask(self, body)
 
     def api(self, handler, method: str, path: str, query: dict, body: dict | None):
-        if self.needs("database"):
+        if self.takes("database"):
             if method == "GET" and path == "/api/databases/plugins":
                 return 200, self.databases_overview()
             if method == "POST" and path == "/api/databases/instances":

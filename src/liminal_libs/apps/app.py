@@ -827,7 +827,7 @@ def attach_registry(app: App, only: str | None = None) -> list[str]:
 
     The database plugins are platform plugins since 1.90.0 (DatabasePlugin, SYSTEM "platform"), and still the
     integrator's to hold, with "integrator", until it inherits the platform (Monday list item 30, step 4): a platform
-    attaches them by its declared need (apps/platform.py: Platform.attach_needs), never with "platform" here, so the
+    attaches them by its declared kinds (apps/platform.py: Platform.attach_kinds), never with "platform" here, so the
     platform's own attach and the integrator's are as they were.
 
     The login's plugins (1.92.0, LoginPlugin, SYSTEM "login") are attached only with "login": the login app's, never

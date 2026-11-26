@@ -130,6 +130,35 @@ def test_a_subclass_needing_databases_attaches_them_alone_and_holds_them_by_sect
     assert list(w.sections()) == ["databases", "machine", "ai"]
 
 
+def test_platform_kinds_is_the_name_the_old_ones_kept_for_one_release(found):
+    """1.103.0, the user's "Rename it": "needs" is what a plugin needs of the machine (liminal_libs.needs), so the kinds
+    a Platform attaches are PLATFORM_KINDS, `takes` and `attach_kinds`; PLATFORM_NEEDS, `needs` and `attach_needs`
+    still work for one release (the charts and the integrator set the old attribute, the charts' test asks needs)."""
+    assert core.KINDS == core.NEEDS == ("database", "machine", "assistant")
+    new = type("New", (Platform,), {"NAME": "new", "PLATFORM_KINDS": ("database",)})
+    app = made(new, found)
+    assert app.kinds == ("database",) and app.takes("database") and app.needs("database") and not app.takes("machine")
+    assert sorted(app.attach_kinds()) == ["postgres", "sqlite"] and app.attach_needs() == []
+    old = made(Part, found)
+    assert old.kinds == ("database",) and old.takes("database")
+    # the nearest class of its line says which name is read
+    nearer = type("Nearer", (Part,), {"NAME": "nearer", "PLATFORM_KINDS": ()})
+    assert made(nearer, found).kinds == ()
+    with pytest.raises(ValueError, match="PLATFORM_KINDS names"):
+        type("Odd", (Platform,), {"PLATFORM_KINDS": ("feed",)})()
+
+
+def test_a_plugin_whose_needs_are_unmet_here_is_not_attached(found, monkeypatch):
+    """Item 38: a plugin whose required needs this machine does not meet is never started, so never attached."""
+    app = made(type("Judging", (Platform,), {"NAME": "judging", "PLATFORM_KINDS": ("database",)}), found)
+    asked = []
+    monkeypatch.setattr(app, "needs_of", lambda p: (asked.append(p.name), {"met": False if p.name == "postgres"
+                                                                            else None})[1], raising=False)
+    assert app.attach_kinds() == ["sqlite"] and sorted(asked) == ["postgres", "sqlite"]
+    monkeypatch.setattr(app, "needs_of", lambda p: 1 / 0, raising=False)  # a judgement that fails hides nothing
+    assert app.attach_kinds() == ["postgres"]
+
+
 def test_the_integrator_still_attaches_the_database_plugins_and_the_platforms_attach_does_not(found):
     # (the old path: the integrator holds them until it inherits the platform, step 4)
     holder = SimpleNamespace(attached=[], attach=lambda p: holder.attached.append(p.name))
