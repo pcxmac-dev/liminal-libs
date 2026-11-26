@@ -23,6 +23,11 @@ doesn't change so more traffic over this and that, the brighter it gets, lets ke
   globe["heat_by"] ("connections"), globe["waiting"] (the legs not known on the lines: [{"from", "to", "why", "km"}],
   WAITING at most) and each placed origin's "tail": the last TAIL_KM of its way along the lines, from the junction
   nearest it back along the way, where its light travels into it (none where its last leg waits).
+- 1.104.0 (Monday list item 24): fibre on land is a line layer too, and the major roads and railways are stand-ins for
+  fibre where none is mapped (STAND_INS). A way is searched by its weighed km, a stand-in's edge STAND_IN_COST times
+  its own, so a way on cables, backbones, fibre or telecom lines wins where one is near enough; its detour is still
+  measured in km. A leg found along stand-ins alone is said so (STAND_IN_WORDS, in the composite's legs), and so is a
+  run of heat on them alone (its "stand_in": true).
 - Nothing runs when unused: the graph is built when a page asks for the heat and its layers' versions changed, held
   until they change again or the plugin is detached (Network.clear); no thread, no timer, nothing read but the files."""
 from __future__ import annotations
@@ -36,7 +41,11 @@ from collections.abc import Mapping
 
 import numpy as np
 
-LINES = ("cables", "backbones", "lines")  # the infrastructure layers whose lines a route may follow
+LINES = ("cables", "backbones", "lines", "fibre", "roads", "railways")  # the infrastructure layers whose lines a route
+# may follow (1.104.0: fibre on land, and the roads and railways as stand-ins for it)
+STAND_INS = ("roads", "railways")  # the layers that stand in for fibre where none is mapped
+STAND_IN_COST = 1.5  # a stand-in's km weigh this much more in a way's search: real fibre first where it is near enough
+STAND_IN_WORDS = "along roads and railways (a stand-in: no fibre is mapped here)"
 GRID = 0.02  # degrees: points on one cell of this grid are one vertex (infrastructure.STEP)
 SCALE = 100_000  # a file's coordinates are in 1e-5 degrees (infrastructure.SCALE)
 JOIN_KM = 25.0  # a line's end is joined to a point of another line this near
@@ -219,10 +228,13 @@ class Graph:
     @classmethod
     def of(cls, parts) -> "Graph | None":
         """The graph of lines given as the files keep them: each part (xy, offsets), `xy` the points as int32 pairs
-        (longitude, latitude, in 1e-5 degrees), `offsets` where each line begins in them and where the last one ends.
-        A part whose offsets do not read is passed over, a line of fewer than two points too; None when none is left."""
-        lons, lats, sizes = [], [], []
-        for xy, offsets in parts:
+        (longitude, latitude, in 1e-5 degrees), `offsets` where each line begins in them and where the last one ends,
+        and (1.104.0) a third item true for a part of stand-ins for fibre (STAND_INS). A part whose offsets do not read
+        is passed over, a line of fewer than two points too; None when none is left."""
+        lons, lats, sizes, stands = [], [], [], []
+        for given in parts:
+            xy, offsets = given[0], given[1]
+            stand = bool(given[2]) if len(given) > 2 else False
             xy, off = np.asarray(xy, dtype=np.int64), np.asarray(offsets, dtype=np.int64)
             if xy.ndim != 1 or xy.size % 2 or off.ndim != 1 or off.size < 2:
                 continue
@@ -236,11 +248,13 @@ class Graph:
                 lons.append(xy[points, 0])
                 lats.append(xy[points, 1])
                 sizes.append(n[keep])
+                stands.append(np.full(int(keep.sum()), stand, dtype=bool))
         if not sizes:
             return None
         lon_i = np.clip(np.concatenate(lons), -180 * SCALE, 180 * SCALE)
         lat_i = np.clip(np.concatenate(lats), -90 * SCALE, 90 * SCALE)
         size = np.concatenate(sizes)
+        lstand = np.concatenate(stands)  # each line's: a stand-in for fibre
         end = np.cumsum(size)
         start = end - size
         step, cols = round(GRID * SCALE), round(360 / GRID)
@@ -263,15 +277,17 @@ class Graph:
         ekm = np.concatenate((along[p1] - along[p0], jkm))
         ea, eb = np.concatenate((p0, ju)), np.concatenate((p1, jv))  # a run's first and last point; a join's vertices
         joined = np.concatenate((np.zeros(len(p0), dtype=bool), np.ones(len(ju), dtype=bool)))
+        stand = np.concatenate((lstand[line[p0]], np.zeros(len(ju), dtype=bool)))  # a join is no stand-in's
+        cost = np.where(stand, ekm * STAND_IN_COST, ekm)
         pair = np.minimum(eu, ev) * count + np.maximum(eu, ev)
-        order = np.lexsort((ekm, pair))  # of the edges between two vertices, the shortest kept
+        order = np.lexsort((cost, pair))  # of the edges between two vertices, the cheapest kept
         order = order[eu[order] != ev[order]]
         keep = np.ones(len(order), dtype=bool)
         keep[1:] = pair[order][1:] != pair[order][:-1]
         order = order[keep]
         if not len(order):
             return None
-        eu, ev, ekm, ea, eb, joined = (x[order] for x in (eu, ev, ekm, ea, eb, joined))
+        eu, ev, ekm, ea, eb, joined, stand, cost = (x[order] for x in (eu, ev, ekm, ea, eb, joined, stand, cost))
         nodes, idx = np.unique(np.concatenate((eu, ev)), return_inverse=True)
         idx = idx.reshape(-1)
         edges = len(eu)
@@ -282,13 +298,15 @@ class Graph:
         g.inv, g.vlat, g.vlon = inv.astype(np.int32), vlat, vlon
         g.ea, g.eb, g.joined = ea, eb, joined
         g.eu, g.ev, g.ekm = nu.tolist(), nv.tolist(), ekm.tolist()
+        g.stand, g.stands = stand.tolist(), bool(stand.any())  # 1.104.0: each edge's, and whether any is
+        g.ecost = cost.tolist()
         g.nlat, g.nlon = vlat[nodes], vlon[nodes]
         g._rlat, g._rlon = np.radians(g.nlat).tolist(), np.radians(g.nlon).tolist()
         g._clat = np.cos(np.radians(g.nlat)).tolist()
         g._start = np.searchsorted(src[arcs], np.arange(len(nodes) + 1)).tolist()
         g._dst = np.concatenate((nv, nu))[arcs].tolist()
         g._edge = np.concatenate((np.arange(edges), np.arange(edges)))[arcs].tolist()
-        g._akm = [g.ekm[e] for e in g._edge]
+        g._akm = [g.ecost[e] for e in g._edge]  # what the search weighs: a stand-in's km STAND_IN_COST times
         g._cells = _Cells(g.nlat, g.nlon, SNAP_CELL)
         g.points, g.vertices, g.joins = len(inv), count, int(joined.sum())
         return g
@@ -317,7 +335,9 @@ class Graph:
     def way(self, a: int, b: int, limit: float) -> tuple[float, list[tuple[int, int]]] | None:
         """The shortest way from junction a to junction b, if one is no longer than `limit` km: (its km, [(edge, the
         junction it is gone along from), ...]). None without one, or when the search looked on from more than MAX_EXPAND
-        junctions (A*: the great circle to b never overstates what is left, so what is cut off by the limit is none)."""
+        junctions (A*: the great circle to b never overstates what is left, so what is cut off by the limit is none).
+        1.104.0: its km are weighed, a stand-in's STAND_IN_COST times its own (never less: the great circle still
+        understates), and so is `limit`; a graph without stand-ins weighs them as they are."""
         if a == b:
             return 0.0, []
         rlat, rlon, clat = self._rlat, self._rlon, self._clat
@@ -372,6 +392,25 @@ class Graph:
     def runs(self, weights: Mapping[int, float]) -> list[tuple[list[tuple[float, float]], float]]:
         """The edges weighed (edge: weight) as runs: each run goes on through a junction where its edge meets one other
         weighed edge alone, of the same weight; as (its points, its weight), the heaviest first."""
+        return [(points, w) for points, w, _ in self.runs_of(weights)]
+
+    def km_of(self, steps) -> float:
+        """A way's km as they are, not weighed (1.104.0)."""
+        return sum(self.ekm[e] for e, _ in steps)
+
+    def stand_in(self, edges) -> bool:
+        """Whether edges (1.104.0) are along stand-ins for fibre alone: one of them at least, and no other line's (a
+        join is neither)."""
+        found = False
+        for e in edges:
+            if self.stand[e]:
+                found = True
+            elif not self.joined[e]:
+                return False
+        return found
+
+    def runs_of(self, weights: Mapping[int, float]) -> list[tuple[list[tuple[float, float]], float, list[int]]]:
+        """runs(), each with its edges (1.104.0)."""
         at: dict[int, list[int]] = {}
         for e in weights:
             at.setdefault(self.eu[e], []).append(e)
@@ -397,8 +436,10 @@ class Graph:
                     break
                 n, e = across(o, n), o
             points: list = []
+            mine: list[int] = []
             while True:
                 done.add(e)
+                mine.append(e)
                 piece = self.line(e, n)
                 points.extend(piece[1:] if points else piece)
                 n = across(e, n)
@@ -406,7 +447,7 @@ class Graph:
                 if o is None or o in done:
                     break
                 e = o
-            out.append((points, weights[e0]))
+            out.append((points, weights[e0], mine))
         return out
 
 
@@ -489,11 +530,13 @@ class Network:
                     got = index.layer(x["id"])
                 except (LookupError, OSError, ValueError):
                     continue  # gone since it was listed: the next look says so
+                stand = x["id"] in STAND_INS or x.get("stand_in") is True
                 for part in got.get("parts") or () if isinstance(got, Mapping) else ():
                     lines = part.get("lines") if isinstance(part, Mapping) else None
                     if isinstance(lines, Mapping):
                         try:
-                            parts.append((_unpacked(lines.get("xy"), "<i4"), _unpacked(lines.get("offsets"), "<u4")))
+                            parts.append((_unpacked(lines.get("xy"), "<i4"), _unpacked(lines.get("offsets"), "<u4"),
+                                          stand))
                         except (TypeError, ValueError):
                             continue
             self._graph, self._key = Graph.of(parts) if parts else None, key
@@ -535,8 +578,9 @@ class Network:
 
     def leg(self, graph: Graph | None, s, e, names=("", "")):
         """A leg from s to e (lat, lon) on the network: ((its first junction and how far from s, its last and how far
-        from e, its way: [(edge, from junction), ...]), "") or (None, why it is not, in words: "" for a leg within one
-        city, which needs no line). `names`: its ends' names, for the words."""
+        from e, its way: [(edge, from junction), ...], whether it is along stand-ins for fibre alone), "") or (None, why
+        it is not, in words: "" for a leg within one city, which needs no line). `names`: its ends' names, for the
+        words. 1.104.0: the way is searched by weighed km (way()), and its own km held to the detour."""
         gc = km(s, e)
         if gc < CITY_KM:
             return None, ""
@@ -549,10 +593,13 @@ class Network:
         if a[0] == b[0]:
             return None, "both ends are nearest the same junction of the lines"
         limit = DETOUR * gc - a[1] - b[1]
-        found = self._way(graph, a[0], b[0], limit) if limit > 0 else None
+        weighed = limit * (STAND_IN_COST if getattr(graph, "stands", False) else 1.0)
+        found = self._way(graph, a[0], b[0], weighed) if limit > 0 else None
+        if found is not None and graph.km_of(found[1]) > limit:
+            found = None
         if found is None:
             return None, f"no way along the lines within {DETOUR:g} times its distance"
-        return (a, b, found[1]), ""
+        return (a, b, found[1], graph.stand_in(e for e, _ in found[1])), ""
 
     def onto(self, globe: dict, index) -> dict:
         """The heat of the routes on a page's globe (the module's docstring): its "heat", "heat_by", "waiting" and each
@@ -580,7 +627,8 @@ class Network:
             for (s, sn), (e, en) in zip(stops, stops[1:]):
                 on, why = self.leg(graph, s, e, (sn, en))
                 if why or on is not None:  # 1.71.0: for the composite database's queue (a city's leg is none)
-                    legs[f"{s[0]:.3f},{s[1]:.3f}>{e[0]:.3f},{e[1]:.3f}"] = (f"{sn} to {en}", why)
+                    what = f"{sn} to {en}" + (f", {STAND_IN_WORDS}" if on is not None and on[3] else "")
+                    legs[f"{s[0]:.3f},{s[1]:.3f}>{e[0]:.3f},{e[1]:.3f}"] = (what, why)
                 if on is None:
                     if why:  # a leg within one city needs no line: the way before it still leads into the place
                         steps_last = None
@@ -597,15 +645,16 @@ class Network:
                 o.pop("tail", None)
             for edge in mine:
                 edges[edge] = edges.get(edge, 0) + w
-        runs = graph.runs(edges) if graph is not None and edges else []
+        runs = graph.runs_of(edges) if graph is not None and edges else []
         runs.sort(key=lambda r: -r[1])
         heat, total = [], 0
-        for points, w in runs:
+        for points, w, mine in runs:
             if len(heat) >= MAX_RUNS:
                 break
             if total + len(points) > MAX_POINTS:
                 continue
-            heat.append({"points": [[round(lat, 4), round(lon, 4)] for lat, lon in points], "w": w})
+            heat.append({"points": [[round(lat, 4), round(lon, 4)] for lat, lon in points], "w": w,
+                         **({"stand_in": True} if graph.stands and graph.stand_in(mine) else {})})
             total += len(points)
         globe["heat"], globe["heat_by"], globe["waiting"] = heat, "connections", list(waiting.values())
         self.legs = legs
