@@ -78,7 +78,8 @@ DECLARED = ("READ_HOOKS", "SERVICE_HOOKS", "JOB_HOOKS", "CANCEL_HOOKS", PLUGIN_O
             PAGE_ONLY)  # the declarations made of hooks' names
 CONSTANTS = ("SECTION", "ICON", "STEPS", "JOB_HOOKS")  # the class constants an app reads, given by value (`declares`)
 APP_METHODS = ("describe", "tray", "plugins", "attach", "detach", "ask", "interface", "connections")  # interface()'s
-OFFERS = ("plugin_internal", "internal", "own_apis")  # what an app offers code besides them (kept out of interface())
+OFFERS = ("plugin_internal", "internal", "own_apis", "needs_of", "machine_facts",
+          "needs_report")  # what an app offers code besides them (kept out of interface()); the needs' three: 1.103.0
 ROUTE_METHODS = ("GET", "POST", "PUT", "DELETE", "ANY")
 ROUTE_KINDS = ("read", "change", "ask", "stream")  # a route's class, as who talks to whom notes it (apps/traffic.py)
 ROUTE_WHO = ("page", "client", "plugin", "app", "login")  # who asks a route
@@ -103,6 +104,8 @@ FRAME_ROUTES = (  # answered by every app
     ("POST", "/api/codebase/fetch", "its repositories' remotes asked what they have, on the user's click", "change",
      "page"),
     ("GET", "/api/ui", "the UI's preferences every page applies", "read", "page"),
+    ("GET", "/api/needs", "every plugin's needs judged against this machine's facts, read without sending anything "
+                          "(?fresh=1 reads them again, ?plugin=NAME one)", "read", "page"),
     # its end and what its plugins are, with the proof of this user's key (1.86.0; liminal_libs.lifecycle, .stop)
     ("POST", "/api/app/stop", "TERM: it ends in good order, its login, parts and plugins first", "change",
      "client"),
@@ -124,6 +127,7 @@ _PLUGIN = ("liminal_libs.sources.plugin", "Plugin")  # the contract's root, know
 _LOGIN = ("liminal_libs.apps.authorization", "Login")  # the authorization interface a login is
 _FRAME = "liminal_libs.apps.app"  # the frame's module (its LOGIN_PREFIX), loaded wherever an App is
 _REGISTRY = "liminal_libs.sources.registry"  # the registry's (its PLUGIN_API), named only when it is loaded already
+_FACTS = "liminal_libs.facts"  # the needs' reader (its READS), named only when it is loaded already (1.103.0)
 _END = re.compile(r"(?<=[^.\s][.!?])\s+(?=[A-Z`\"'(\[])")  # a sentence's end: a stop, a capital, a quote or a bracket
 _PARAGRAPH = re.compile(r"\n[ \t]*\n")
 _QUOTED = re.compile(r"""["'](/api/[^"'\s]*)["']""")
@@ -770,7 +774,8 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
          "counts": {hooks, answered, standard, own, left, kinds: {read, tab, change, job, service, own}},
          "left": [names], "also": [{name, args, line, doc, how, property}], "attributes": [names], "declares": {...},
          "tabs": [{id, title, hook, every}], "settings": [{variable, pair, label, secret, hint}], "options": [names],
-         "keeps": [{variable, pair, about}], "asks": [{plugin, hook, why, here}], "steps": [names], "notes": [lines]}
+         "keeps": [{variable, pair, about}], "asks": [{plugin, hook, why, here}], "steps": [names], "notes": [lines],
+         "needs": [[attribute, value, strength, words], ...] or None}
 
     What the app says, each optional: `reads`, the hooks it asks as reads (App.READ_HOOKS); `calls`, what its code calls
     on a plugin of this kind, {name: how} (App.CALLS[KIND]): a name among HOOKS gives that hook its `how`, one outside
@@ -792,7 +797,7 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
                  "calls": {}, "hooks": [], "counts": {"hooks": 0, "answered": 0, "standard": 0, "own": 0, "left": 0,
                                                       "kinds": {k: 0 for k in KINDS}},
                  "left": [], "also": [], "attributes": [], "declares": {}, "tabs": [], "settings": [], "options": [],
-                 "keeps": [], "asks": [], "steps": [], "notes": []}
+                 "keeps": [], "asks": [], "steps": [], "notes": [], "needs": None}
     for key, attr in (("name", "name"), ("title", "title"), ("kind", "KIND"), ("system", "SYSTEM")):
         out[key] = _text(_static(plugin, attr, ""))
     if tabs is not None and not isinstance(tabs, (tuple, list)):  # listed once: its tabs and its reads both read them
@@ -847,7 +852,19 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
     steps = _word(plugin, "STEPS")[0]
     out["steps"] = [s for s in steps if isinstance(s, str)][:MAX_HOOKS] if isinstance(steps, (tuple, list)) else []
     out["notes"] = _notes(_word(plugin, "INTERNAL_NOTES")[0])
+    out["needs"] = _try(lambda: _needs_rows(plugin), None)
     return out
+
+
+def _needs_rows(plugin) -> list[list[str]] | None:
+    """What it needs of the machine, as it declares it (NEEDS: rows of two to four str), None when it says nothing;
+    never judged here (liminal_libs.needs judges: it is not imported by this module)."""
+    value = _word(plugin, "NEEDS")[0]
+    if value is None:
+        return None
+    rows = [r for r in (value if isinstance(value, (tuple, list)) else ())
+            if isinstance(r, (tuple, list)) and 2 <= len(r) <= 4 and all(isinstance(x, str) for x in r)]
+    return [[_cut(x, NOTE_CHARS) for x in r] for r in rows[:MAX_WORDS]]
 
 
 def problems(plugin) -> list[str]:
@@ -1083,7 +1100,7 @@ def app_internal(app) -> dict:
          "lends": {traced, kind, interface: [{name, args, line, property}]} or None,
          "routes": [{method, path, about, kind, who, own}], "includes": [{name, on, prefix, variable, class, how}],
          "linked": [{name, how, variable, prefix}], "plugins": [{name, title, kind, system, pluginApi, attached,
-         builtOn}], "counts": {routes, own, plugins}, "notes": [lines]}
+         builtOn}], "counts": {routes, own, plugins}, "notes": [lines], "needs": {route, reads}}
 
     `words` are the app's (App.call_words) for one plugin of each kind it knows, asked of that plugin seen under the
     name NAME (every other attribute its own), so they say NAME where they name it. `pluginApi` is the registry's
@@ -1092,7 +1109,7 @@ def app_internal(app) -> dict:
     out: dict = {"v": VERSION, "of": "app", "name": "", "title": "", "icon": "", "api": "", "port": None, "portVar": "",
                  "url": "", "pluginApi": "", "login": None, "calls": {}, "attributes": {}, "words": {}, "reads": [],
                  "methods": [], "offers": [], "lends": None, "routes": [], "includes": [], "linked": [],
-                 "plugins": [], "counts": {"routes": 0, "own": 0, "plugins": 0}, "notes": []}
+                 "plugins": [], "counts": {"routes": 0, "own": 0, "plugins": 0}, "notes": [], "needs": None}
     for key, attr in (("name", "NAME"), ("title", "TITLE"), ("icon", "ICON"), ("api", "API"), ("portVar", "PORT_VAR")):
         out[key] = _text(_static(app, attr, ""))
     port = _try(lambda: app.port(), None)
@@ -1135,6 +1152,9 @@ def app_internal(app) -> dict:
     out["counts"] = {"routes": len(out["routes"]), "own": sum(1 for r in out["routes"] if r["own"]),
                      "plugins": len(out["plugins"])}
     out["notes"] = _notes(_static(app, "INTERNAL_NOTES", ()))
+    # what its plugins' needs are read against (1.103.0): liminal_libs.facts' table, when that module is loaded already
+    reads = [list(r) for r in getattr(sys.modules.get(_FACTS), "READS", ()) if isinstance(r, tuple)]
+    out["needs"] = {"route": "/api/needs", "reads": reads or "not read yet in this process"}
     return out
 
 

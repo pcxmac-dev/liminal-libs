@@ -174,8 +174,8 @@ def test_a_plugins_tab_leads_with_what_kind_of_middleware_it_is():
     """B1: what it is, how it is called, the standard interface of its base layer by layer (the nearest open), its
     own hooks; then what else the app's code takes from it, what it asks of others, its settings, its steps."""
     js = read()
-    assert ("const PLUGIN_PARTS = [whatHtml, howHtml, standardHtml, ownHtml, alsoHtml, asksHtml, settingsHtml, "
-            "stepsHtml,\n    notesHtml, seenHtml];") in js
+    assert ("const PLUGIN_PARTS = [whatHtml, needsHtml, howHtml, standardHtml, ownHtml, alsoHtml, asksHtml, "
+            "settingsHtml,\n    stepsHtml, notesHtml, seenHtml];") in js
     heads = {"whatHtml": "titleHtml('What it is')", "howHtml": "titleHtml('How it is called')",
              "standardHtml": "esc('The standard interface of ' + whose)", "ownHtml": "titleHtml('Its own hooks')",
              "alsoHtml": "titleHtml('What else ' + c.app + \"'s code takes from it\")",

@@ -35,6 +35,9 @@ and the infrastructure layers' folder moved into the test's own folder (its tmp_
 the first time either is asked); each book made there is let go after it. A test that reads a socket table gives
 the code a reader of its own, or calls the real one taken before any test (`READ = sockets.read`).
 
+`stand_in_facts` (1.103.0), for every test, asked for by none: the needs judgement's facts of this machine are a
+recorded machine's (needs_machines' this-pc), put in place as the one reader of the process and put back after.
+
 `stand_in_environment` (1.100.0): a test that asks for it runs in a stand-in for this process's environment, which
 holds this user's own variables, API keys among them. pytest writes the arguments of the frame an error is raised in
 and the values an assertion looked at, and a load test found a failing test's output holding this user's whole
@@ -249,6 +252,21 @@ def no_saved_variables(monkeypatch) -> None:
 
     for name in ("OpenKey", "OpenKeyEx"):
         monkeypatch.setattr(winreg, name, without(getattr(winreg, name)))
+
+
+@pytest.fixture(autouse=True)
+def stand_in_facts(no_real_hosts):
+    """Every test (1.103.0): this machine's facts for the needs judgement are a recorded machine's, this PC's as the
+    needs plan's map read it (liminal_libs.needs_machines "this-pc"), so nothing of the machine the suite runs on is
+    read for any test, even one that missed its seam (the real reads refuse under a test as well: facts.refused). A
+    test names another machine with facts.use(needs_machines.reader(NAME)); the one before is put back after."""
+    from liminal_libs import facts, needs_machines
+
+    before = facts.use(needs_machines.reader("this-pc"))
+    try:
+        yield
+    finally:
+        facts.use(before)
 
 
 @pytest.fixture

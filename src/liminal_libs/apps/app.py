@@ -42,6 +42,7 @@ from .tray import Tray, TrayItem
 TRAFFIC_PATH = "/api/traffic"  # what the app's page draws of who talks to whom: never noted itself
 CODEBASE_PATH = "/api/codebase"  # its repositories, its code and how much of it is which language (apps.codebase)
 APIS_PATH = "/api/app/apis"  # its own External and Internal API (1.63.0); ?plugin=NAME: an attached plugin's two
+NEEDS_PATH = "/api/needs"  # every plugin it knows, its needs judged against this machine (1.103.0); ?plugin=NAME: one
 KEPT_INTERNAL = 256  # plugins' Internal APIs an app keeps at the most (App.plugin_internal), one for each object
 SIGNIN = "signin.html"  # an app's sign-in while it inherits the login (ui/static, 1.46.0)
 LOGIN_PREFIX = "/login"  # where an app serves the login it inherits
@@ -609,6 +610,71 @@ class App:
         attached."""
         return list(self._plugins.values())
 
+    # -- what its plugins need of this machine (1.103.0, Monday list item 19 part two: liminal_libs.needs, .facts) ---
+    def internet_rule(self) -> str:
+        """How the internet is judged here: "system", as this system judges it (the platform's switch says otherwise)."""
+        return "system"
+
+    def offline(self) -> str | None:
+        """The name of the setting that makes this app send nothing (LIMINAL_OFFLINE, LIMINAL_READONLY), or None. The
+        frame loads no Settings: None."""
+        return None
+
+    def plugin_states(self) -> dict[str, str]:
+        """Each plugin's state as this app knows it, for a `plugin` need: the frame's, "attached"."""
+        return {name: "attached" for name in self._plugins}
+
+    def machine_facts(self, attributes=None, fresh: bool = False, *, names=None) -> dict:
+        """This machine's facts, read without sending anything (liminal_libs.facts, one reader a process); `names`: the
+        Windows features and tools declared ({"windows.feature": [...], "tool": [...]})."""
+        from .. import facts
+
+        return facts.reader().read(attributes, fresh=fresh, names=names)
+
+    def _needs_judged(self, plugin, read: dict) -> dict:
+        from .. import needs
+
+        return needs.judge(needs.declared(plugin), read, own=needs.own_words(plugin), plugins=self.plugin_states(),
+                           internet=self.internet_rule(), offline=self.offline(), declared=needs.says(plugin))
+
+    def _known_plugin(self, name: str):
+        p = next((k for k in self.known_plugins() if getattr(k, "name", "") == name), None)
+        if p is None:
+            raise LookupError(f"no plugin {name!r} is known to {self.NAME}")
+        return p
+
+    def needs_of(self, plugin_or_name, fresh: bool = False) -> dict:
+        """A plugin's needs judged against this machine (liminal_libs.needs.judge): any plugin it knows, attached or not,
+        asked nothing but its not_for_here(), which by contract asks nothing. LookupError for one it does not know."""
+        from .. import facts, needs
+
+        p = self._known_plugin(plugin_or_name) if isinstance(plugin_or_name, str) else plugin_or_name
+        attributes, names = facts.wanted(needs.declared(p))
+        return self._needs_judged(p, self.machine_facts(attributes, fresh=fresh, names=names))
+
+    def needs_report(self, fresh: bool = False, only: str | None = None) -> dict:
+        """GET /api/needs: this machine's facts and each plugin it knows with its needs judged (`only`: one, by name;
+        LookupError for one it does not know). `held`: whether this app holds its plugins by them (the frame judges and
+        holds nothing by them); `switch`: whether it takes the internet switch (the frame does not)."""
+        from .. import facts, needs
+
+        plugins = [self._known_plugin(only)] if only else self.known_plugins()
+        rows = [r for p in plugins for r in needs.declared(p)]
+        attributes, names = facts.wanted(rows)
+        read = self.machine_facts(attributes | {"kernel", "architecture"}, fresh=fresh, names=names)
+        states = self.plugin_states()
+        out = []
+        for p in plugins:
+            out.append({"name": p.name, "title": getattr(p, "title", "") or p.name, "kind": getattr(p, "KIND", ""),
+                        "section": str(getattr(p, "SECTION", "") or ""), "group": str(getattr(p, "GROUP", "") or ""),
+                        "icon": getattr(p, "ICON", "") or "plug", "state": states.get(p.name, ""),
+                        "needs": self._needs_judged(p, read)})
+        internet = read.get("internet") if isinstance(read.get("internet"), dict) else {}
+        return {"v": 1, "vocabulary": needs.VOCABULARY, "facts": read,
+                "internet": {"rule": self.internet_rule(), "by": internet.get("by", ""), "switch": False,
+                             "offline": self.offline()},
+                "held": False, "switch": False, "plugins": out}
+
     def call_words(self, plugin) -> dict:
         """How its code is asked one of a plugin's hooks, in words, for that plugin's Internal API: the frame's, by
         another plugin through its app's ask, the arguments as the hook takes them."""
@@ -706,6 +772,12 @@ class App:
                 raise Refused(HTTPStatus.NOT_FOUND, f"no plugin {name!r} is attached to {self.NAME}")
             apis, facts = _cards_of(plugin)
             return 200, {"name": name, "internal": self.plugin_internal(plugin), "apis": apis, "apiFacts": facts}
+        if method == "GET" and path == NEEDS_PATH:  # read without sending anything; ?fresh=1 reads again (1.103.0)
+            fresh = str(query.get("fresh") or "").lower() in ("1", "true", "yes")
+            try:
+                return 200, self.needs_report(fresh=fresh, only=str(query.get("plugin") or "") or None)
+            except LookupError as e:
+                raise Refused(HTTPStatus.NOT_FOUND, str(e)) from None
         if path in (STOP_PATH, SIGNAL_PATH) and method == "POST":  # its end, asked with this user's key (1.86.0)
             self.proven(handler)
             body = body or {}

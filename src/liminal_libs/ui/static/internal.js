@@ -21,7 +21,8 @@
 //     them (a plugin of several feeds: each a line that opens), an app's (`d.of === 'app'`: internal.app_internal), or
 //     null. opts: {owner (keys what was opened), title, app (the app's title: "{app}'s code"), older (the words when
 //     there is nothing to draw: a server from before), offers (the plugin API the app offers), seen (an address in the
-//     page: '#connections'), pick ((name) => the attributes of a plugin's button in an app's list of its plugins)}.
+//     page: '#connections'), pick ((name) => the attributes of a plugin's button in an app's list of its plugins),
+//     judged (a plugin's needs as GET /api/needs judged them: each row's state and what was read, in its needs fold)}.
 //   LiminalInternal.tabs(list, shown, label)  ->  a row of tabs for a page with none of its own (the charts', the
 //     login's): [{id, title}], each a <button role="tab" data-api-tab="ID">; the page answers the click.
 //   LiminalInternal.style()  ->  its styles, added to the page once (html and tabs add them).
@@ -141,6 +142,7 @@
       rows: rowsOf(d.hooks).filter((h) => str(h.name)), tabs: rowsOf(d.tabs), pageAsks: new Set(names(d.pageAsks)),
       offers: text(o.offers) || text(d.offers), seen: addressOf(o.seen),
       clients: isObj(d.calls) && str(d.calls.clients) };  // a route of the app's own asks its hooks by name
+    c.judged = isObj(o.judged) ? o.judged : null;  // its needs judged here (GET /api/needs' answer of it), if given
     c.layers = layersOf(c.rows);
     c.own = c.rows.filter((h) => !str(h.layer));
     return c;
@@ -192,6 +194,39 @@
       ['Hooks', esc(countsWords(d, c))]]) + sitsHtml;
     return foldHtml(c.key + ':what', titleHtml('What it is'), str(built.class) ? 'built on ' + built.class : '',
       bodyHtml, true);
+  }
+  // 1b. what it needs of this machine (1.103.0: its NEEDS rows as it declares them, internal.py's `needs`; with
+  // opts.judged, liminal_libs.needs' answer of it, each row's state and what was read), open while a required one is
+  // not met. A server from before says nothing of it: no fold.
+  const NEED_STRENGTHS = { required: 'needs', part: 'for its parts', preferred: 'prefers' };
+  const NEED_STATES = { met: 'met', unknown: 'not known here', na: 'not this system’s' };
+  function needsHtml(d, c) {
+    if (d.needs === undefined) return '';
+    const head = titleHtml('What it needs of this machine');
+    if (!Array.isArray(d.needs)) {
+      return foldHtml(c.key + ':needs', head, 'not said', pHtml('It has not said what it needs yet.', 'in-muted'),
+        false);
+    }
+    const rows = d.needs.filter((r) => Array.isArray(r) && r.length >= 2 && r.every(str));
+    if (!rows.length) {
+      return foldHtml(c.key + ':needs', head, 'nothing', pHtml('It needs nothing of this machine.'), false);
+    }
+    const judged = c.judged && Array.isArray(c.judged.rows) ? c.judged.rows.filter(isObj) : [];
+    const judgedOf = (r) => judged.find((j) => j.attribute === r[0].toLowerCase() && text(j.value).toLowerCase()
+      === r[1].toLowerCase()) || null;
+    const unmet = judged.some((j) => j.strength === 'required' && j.state === 'unmet');
+    const rowHtml = (r) => {
+      const j = judgedOf(r);
+      const state = !j ? '' : j.state === 'unmet' ? (j.sort === 'machine' ? 'not for this machine' : 'not met now')
+        : (NEED_STATES[j.state] || '');
+      const said = j && str(j.said) ? ': ' + j.said : '';
+      return `<div class="in-hook"><code class="in-call">${esc(r[0])} ${esc(r[1])}</code>`
+        + ` <span class="in-tag">${esc(NEED_STRENGTHS[r[2] || 'required'] || r[2])}</span>`
+        + (state ? ` <span class="in-tag">${esc(state)}</span>` : '')
+        + pHtml(text(r[3]), 'in-meta') + (said ? pHtml(state + said, 'in-meta') : '') + '</div>';
+    };
+    const gist = count(rows.length, 'row') + (unmet ? ', not met here' : '');
+    return foldHtml(c.key + ':needs', head, gist, rows.map(rowHtml).join(''), unmet);
   }
   // 2. how it is called: by another plugin, by a client, as a job, and on what terms (the app's words)
   function howHtml(d, c) {
@@ -389,8 +424,8 @@
   }
 
   // the parts of a plugin's tab, in the order they are drawn
-  const PLUGIN_PARTS = [whatHtml, howHtml, standardHtml, ownHtml, alsoHtml, asksHtml, settingsHtml, stepsHtml,
-    notesHtml, seenHtml];
+  const PLUGIN_PARTS = [whatHtml, needsHtml, howHtml, standardHtml, ownHtml, alsoHtml, asksHtml, settingsHtml,
+    stepsHtml, notesHtml, seenHtml];
   // one part drawn; one that cannot be (a shape it does not know) is said in a line, and the others are drawn
   function partHtml(part, d, c) {
     try { return part(d, c); } catch (e) { return pHtml('A part could not be drawn: ' + errorWords(e), 'in-none'); }
