@@ -286,6 +286,12 @@ class Machine:
             if self.files.get(journal.PATH) is None:
                 self.files[journal.PATH] = ""
             for n, guard in enumerate(the_plan.guards, 1):
+                if guard.value[0] == "grants":
+                    named = self.grants(guard.value[1])
+                    if named:
+                        out(f"@@ refused grants {' '.join(named)}\n")
+                        return 2
+                    continue
                 if self._value(*guard.value) != guard.expected:
                     out(f"@@ refused guard {n}\n")
                     return 2
@@ -326,6 +332,20 @@ class Machine:
                 self.files.pop(lock_dir + "/pid", None)  # the script's EXIT trap; a SIGKILL leaves the lock
                 self.folders.pop(lock_dir, None)
 
+    def grants(self, name: str) -> list[str]:
+        """The files of sudo's and doas's rules that name the group `name`, as the grants guard reads them as root."""
+        out = []
+        for path in sorted(self.files):
+            text = self.files[path]
+            ours = (path in ("/etc/sudoers", "/etc/doas.conf") or path.startswith("/etc/sudoers.d/")
+                    or (path.startswith("/etc/doas.d/") and path.endswith(".conf")))
+            if text is None or not ours:
+                continue
+            rules = [r for r in text.splitlines() if not r.lstrip(" \t").startswith("#")]
+            if any(f"%{name}" in r or f":{name}" in r for r in rules):
+                out.append(path)
+        return out
+
     def _journal(self, text: str) -> None:
         if self.files.get(journal.PATH) is not None:
             self.files[journal.PATH] += text + "\n"
@@ -357,7 +377,7 @@ class Machine:
         if k == "unfile":
             return self.files.get(a["path"]) is None
         if k == "unfolder":
-            return self.folders.get(a["path"]) is None
+            return self.folders.get(a["path"]) is None or bool(self._inside(a["path"]))
         if k == "regroup":
             f = self.folders.get(a["path"])
             return f is not None and f.gid == 0
@@ -383,7 +403,7 @@ class Machine:
 
     def _do(self, a: plan.Action) -> int:
         """Play one Action on the tree: 0, or the exit code its tool would fail with."""
-        programs = GENERIC.get(a.kind) or (PROGRAMS.get((a.kind, a.get("tool"))),)
+        programs = GENERIC[a.kind] if a.kind in GENERIC else (PROGRAMS.get((a.kind, a.get("tool"))),)
         if None in programs:
             return 127
         for p in programs:
@@ -398,9 +418,7 @@ class Machine:
         elif k == "unfile":
             self.files.pop(a["path"], None)
         elif k == "unfolder":
-            inside = [p for p in [*self.files, *self.folders] if p.startswith(a["path"].rstrip("/") + "/")
-                      and (self.files.get(p) is not None or self.folders.get(p) is not None)]
-            if inside:
+            if self._inside(a["path"]):
                 return 1
             self.folders[a["path"]] = None
         elif k == "regroup":
@@ -416,6 +434,10 @@ class Machine:
         else:
             return self._account(a)
         return 0
+
+    def _inside(self, folder: str) -> list[str]:
+        return [p for p in [*self.files, *self.folders] if p.startswith(folder.rstrip("/") + "/")
+                and (self.files.get(p) is not None or self.folders.get(p) is not None)]
 
     def _account(self, a: plan.Action) -> int:
         k, tool = a.kind, a.get("tool")

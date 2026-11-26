@@ -195,8 +195,10 @@ class Guard:
 
     def sh(self, n: int) -> str:
         helper, arg = self.value
+        if helper == "grants":
+            return _grants_sh(arg)
         if helper not in ("gid", "uid", "ugid", "members", "sha"):
-            raise ValueError(f"a guard reads gid, uid, ugid, members or sha, not {helper!r}")
+            raise ValueError(f"a guard reads gid, uid, ugid, members, sha or grants, not {helper!r}")
         expected = "''" if self.expected == "" else sh_word(self.expected, "a guard's value")
         return (f"[ \"$(lm_{helper} {sh_word(arg, 'a guard')})\" = {expected} ] || "
                 f"{{ printf '@@ refused guard {n}\\n'; lm_exit 2; }}")
@@ -212,6 +214,32 @@ def user_guard(name: str, uid, gid=None) -> tuple[Guard, ...]:
         return (Guard(f"the user {name} is absent", ("uid", name), ""),)
     return (Guard(f"the user {name} is there with uid {uid}", ("uid", name), str(uid)),
             Guard(f"the user {name}'s primary group is {gid}", ("ugid", name), str(gid)))
+
+
+# Where sudo and doas take their rules from: sudoers, the files and folders its include lines name (@include,
+# #include, @includedir, #includedir; one level, as Liminal's own files are), sudoers.d, doas.conf and doas.d
+GRANT_FILES = ("/etc/sudoers", "/etc/sudoers.d", "/etc/doas.conf", "/etc/doas.d")
+
+
+def grants_guard(name: str) -> Guard:
+    """No rule of sudo's or doas's names the group `name` (`%liminal`, `:liminal`), read as root: undo refuses while
+    one does, naming each file (B4's last paragraph)."""
+    return Guard(f"no rule of sudo's or doas's names the group {name}", ("grants", clean_words(name, "a group")), "")
+
+
+def _grants_sh(name: str) -> str:
+    q = sh_word(name, "a group")
+    return ("lm_g=''\n"
+            "for lm_f in /etc/sudoers /etc/doas.conf $(awk '$1 == \"@include\" || $1 == \"#include\" { print $2 } "
+            "$1 == \"@includedir\" || $1 == \"#includedir\" { print $2 \"/*\" }' /etc/sudoers 2>/dev/null) "
+            "/etc/sudoers.d/* /etc/doas.d/*.conf; do\n"
+            "  [ -f \"$lm_f\" ] || continue\n"
+            f"  if awk -v g={q} '/^[ \\t]*#/ {{ next }} {{ if (index($0, \"%\" g) || index($0, \":\" g)) f = 1 }} "
+            "END { exit !f }' \"$lm_f\"; then\n"
+            "    case \" $lm_g \" in *\" $lm_f \"*) ;; *) lm_g=\"$lm_g $lm_f\";; esac\n"
+            "  fi\n"
+            "done\n"
+            "[ -z \"$lm_g\" ] || { printf '@@ refused grants%s\\n' \"$lm_g\"; lm_exit 2; }")
 
 
 def members_guard(name: str, members) -> Guard:
@@ -344,7 +372,21 @@ def _chain(paths) -> str:
             "done")
 
 
-_REFUSED = re.compile(r"^@@ refused (lock held|lock stale|guard|chain) ?(.*)$", re.M)
+_REFUSED = re.compile(r"^@@ refused (lock held|lock stale|guard|chain|grants) ?(.*)$", re.M)
+TAKE_BACK = "/usr/local/libexec/liminal/{grant}/take-back"
+
+
+def grants_words(files) -> str:
+    """Undo's refusal while a rule names the group: each file, and for Liminal's own grants (sudoers.d/liminal-<grant>)
+    the helper that takes it back."""
+    named = []
+    for path in files:
+        base = posixpath.basename(path)
+        grant = base[len("liminal-"):] if base.startswith("liminal-") else ""
+        named.append(f"{path} (Liminal's grant {grant}: {TAKE_BACK.format(grant=grant)} takes it back, or the "
+                     "plugin's own switch)" if grant else path)
+    return ("take the grants back first: " + "; ".join(named) + " name the group liminal, and a number given out "
+            "again would inherit them; nothing was changed")
 
 
 def _refusal(output: str) -> str:
@@ -359,6 +401,8 @@ def _refusal(output: str) -> str:
                 f"changed; remove the lock as root with `rm -r {LOCK}` (a restart empties /run), then try again")
     if kind == "guard":
         return CHANGED
+    if kind == "grants":
+        return grants_words(rest.split())
     return (f"{rest} is not root's alone, so another account could replace what root writes under it: nothing was "
             "changed; make it root's, written by no group but root's and by no one else")
 
@@ -447,8 +491,11 @@ def unfile(path: str) -> Step:
 
 
 def unfolder(path: str) -> Step:
+    """Remove a folder Liminal made, once empty. One that holds another file now is kept (the step finds it "there"):
+    it is no longer Liminal's alone."""
     q = sh_word(path, "a folder")
-    return Step(f"remove the folder {path}, empty", Action.of("unfolder", path=path), f"[ ! -d {q} ]", f"rmdir {q}")
+    return Step(f"remove the folder {path}, if empty", Action.of("unfolder", path=path),
+                f"{{ [ ! -d {q} ] || [ -n \"$(ls -A {q})\" ]; }}", f"rmdir {q}")
 
 
 def regroup(path: str) -> Step:
