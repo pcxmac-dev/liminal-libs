@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.104.0 (2026-11-26, provisional)
+
+The firewalls' globe gets its Monday list items 24, 27, 28, 29 and 32: fibre on land and its stand-ins, the
+infrastructure kept in the plugin's own database and read by area, TopoHub's backbones and RIPE Atlas as sources of the
+composite database, and Starlink, OneWeb and HughesNet in the sky (the user, 2026-11-26: "Build first, ask per
+download"). Every data set and the sgp4 package is offered on the World Wide Web tab for the user's click, its size and
+licence said first, exactly as the eight installed sets are: nothing is downloaded by the library, and no host is named
+in it (each address is its plugin's). Additive for the plugins: a data set's new keys are all optional, the plugin API
+stays 2.4.
+
+- **`liminal_libs.shapefile`**: ESRI shapefiles read from a zip in memory with the standard library (Natural Earth's
+  roads and railways come so, and the venv holds no reader). Lines, points, polygons and multipoints, their Z and M
+  forms read as the plain ones, the .cpg's code page; refused in words: any coordinate system but WGS 84's longitude and
+  latitude, a record or a part that does not fit, a .dbf that does not match, a member or a count over its bound.
+- **`liminal_libs.mvt`**: Mapbox Vector Tiles read with the standard library (AfTerFibre's site now serves its fibre
+  only as its map's tiles): the protocol buffer, the geometry's commands, Web Mercator's inverse, the tiles covering a box.
+  Only the fields asked for are decoded, so a contributor's name or address is never read into anything.
+- **Item 24, `machines/infrastructure.py`.** A data set may name its layer, a shapefile's stem, the records it keeps and
+  leaves out, whether it stands in for fibre, the degrees between kept vertices and the hosts a redirect may go to
+  (Natural Earth's link goes to its CDN). New formats `shapefile` and `mvt` (a set's tiles asked one after another on
+  the one click, the form saying how many requests; a tile not there is empty, any other failure stops it with nothing
+  kept). New layers: fibre on land, and the major roads and railways, dashed, said as stand-ins for fibre.
+  `machines/network.py` follows fibre and, where none is mapped, the stand-ins, a stand-in's km weighed 1.5 times in
+  the search so real fibre wins where it is near enough; a leg or a run of heat on stand-ins alone says so.
+- **Item 27, `machines/infrastore.py`** (the user, 2026-11-23: "Kept here, from my downloads"): infrastructure.db,
+  SQLite, in the data folder's infrastructure/, each system's own. A download is written in one transaction (its older
+  rows replaced, a failed write leaving them), with the licence's words the user accepted and when; each feature with
+  its box, its vertices, a coarse copy, and the 1-degree cells it crosses. install() and Index work on it; an older
+  `<id>.json` of a download made before is read in once and then left where it is (Remove... takes it too).
+  `Index.layer(layer, area, zoom)` reads by area at every vertex from 6x, the coarse whole below it, everything when
+  neither is given; the `world_layer` hook takes them, the tab's globe says `layer_area`, and the globe asks the view's
+  area in 10-degree steps, once a view and never while it glides. The globe lists 16 layers, not 10.
+- **Items 28 and 29.** Format `topohub`: TopoHub's node-link model, its cities to the points of presence and its edges
+  to a new models layer (a model's links, never cables), and into the composite database each city a place and each
+  edge a link. Format `atlas-probes`: RIPE Atlas's bzip2 probes file to a probes layer and table, its owners' words
+  never kept. Format `atlas-latest`: measurement 5151's newest results for the connected anchors, 300 ids a request,
+  read with the probes it `needs` (not offered before them); a router within 1 ms of its anchor is claimed at the
+  anchor's place, consecutive hops are links, private addresses never kept, and a refusal asking for credentials stops
+  it with nothing kept. `Composite.record` takes places and sourced links; SOURCES gains topohub (0.3) and atlas (0.7).
+- **Item 32, `machines/satellites.py`** (the user chose CelesTrak and the sgp4 package). Footprints at 25 degrees'
+  elevation, the IAU 1982 sidereal time, TEME to WGS 84, CelesTrak's CSV; the orbit math is sgp4's, imported only from
+  the folder its download unpacked to, and without it the layer says it needs the package and draws nothing. Format
+  `omm-csv` with the keys CelesTrak's usage policy asks for: no retry (the words say why, and the 15 minutes after a
+  500 or 503), an Update held back two hours, gzip asked (`world.fetch_url`'s `encodings`), a constellation, several
+  queries (HughesNet's satellites by number) and each geostationary satellite's beams (the countries it serves). The
+  plugin pins the package (`Firewall.SKY_PACKAGE`): its row in the data sets' table, a form naming the file, host, size
+  and sha256, the licence accepted next; `world_sky_get` (a job) checks the size and sum, unpacks the wheel only once
+  every file matches its RECORD, into the data folder's packages/sgp4-2.27/; `world_sky_remove` takes it away. The
+  read hook `world_sky` answers each constellation's places, now and a minute later, with their footprints.
+- **`ui/static/liminal-globe.js`.** The sky: each constellation's footprints one path, filled once in its colour
+  (--sky-1 to --sky-3) so the area is brighter inside and never stacked, the band the same path stroked in a very faint
+  pink with the area taken out of it (destination-out) so it lies outside the outer edge alone; a geostationary
+  satellite's footprint its beams' countries cut to its cap; asked of the page's `sky` loader once a minute at most,
+  moved once a second (every ten under reduced motion). The platform's page loaders for areas and for the sky are
+  asked of its own session (the library's globe works without them, as before).
+
 ## 1.103.0 (2026-11-26)
 
 What every plugin needs of the machine it runs on, and the judgement of it against this machine (Monday list item 19,
