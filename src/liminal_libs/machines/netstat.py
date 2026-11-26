@@ -1136,7 +1136,8 @@ class NetstatView:
         with self._lock:
             self._stamp = (now, date)
         if book.unplaced(date):
-            book.place(geoip.lookup, date)
+            known = getattr(geoip, "known", None)  # 1.105.0: places another plugin looked up, for those hosts alone
+            book.place(geoip.lookup, date, **({"only": known} if known is not None else {}))
 
     @staticmethod
     def _sums(drawn: list, rest: dict) -> dict:
