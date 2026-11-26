@@ -20,6 +20,7 @@ from liminal_libs.apps import App, asking
 from liminal_libs import sockets
 from liminal_libs.machines import firewall as firewall_module, routes as routes_module, worldweb
 from liminal_libs.machines.hostsvia import GeoVia, HostsVia, PlacesVia
+from liminal_libs.machines.firewall import Rule
 from liminal_libs.machines.netstat import NetstatView
 from liminal_libs.machines.standins import login as standin_login
 from liminal_libs.machines.world import HOME_PLACE_VAR, WorldView
@@ -127,7 +128,8 @@ def test_it_declares_its_tab_its_asks_and_its_service_soundly():
     assert [t.id for t in web.TABS] == ["world"] and web.TABS[0].every == 2.0
     assert (web.ICON, web.SECTION) == ("globe", "os")
     assert set(internal.declared(web, "SERVICE_HOOKS")) == {"places"}
-    assert {row[1] for row in web.ASKS} >= {"netstat_seen", "hosts_found", "hosts_keep_route", "capture_unseen"}
+    assert {row[1] for row in web.ASKS} >= {"netstat_seen", "hosts_found", "hosts_keep_route", "capture_unseen",
+                                          "rules_covering"}
     assert all(row[0] == "" for row in web.ASKS)  # whichever firewall offers it
     assert [k.name for k in web.keys] == [HOME_PLACE_VAR, firewall_module.WATCH_VAR, FIREWALL_VAR]
 
@@ -271,3 +273,76 @@ def test_the_settings_keep_their_names_and_are_read_through_the_same_login():
     page = page_ask(app, "www", "world")
     assert page["globe"]["home"]["label"] == "Sydney"
     web.detach()
+
+
+def ports_page(*keys):
+    """A page as the tab draws it: Busiest ports here with a pick for each key (here:<port>/<proto>, None for none)."""
+    return {"tables": [{"title": "Busiest ports here", "rows": [[k or "more"] for k in keys],
+                        "details": [{"key": k, "title": k, "facts": [], "sections": [{"title": "Counted", "facts": []}]}
+                                    if k else None for k in keys]},
+                       {"title": "Ports elsewhere", "rows": [["443/tcp"]], "details": [{"key": "there:443/tcp", "title": "x"}]}]}
+
+
+def test_a_port_picked_is_told_the_firewall_rules_covering_it(monkeypatch):
+    """Monday list item 31: the busiest ports here are each told, in their pick, the serving firewall's rules covering
+    them (rules_covering, asked through the platform), those naming the port first; a port no rule covers says so; the
+    far end's ports are not asked (a firewall's rules cover this machine's ports)."""
+    wall = Wall()
+    wall.rules = {"web": Rule("web", ports=(443,), protocol="tcp"),
+                  "all": Rule("Every port", owned=False, protocol="any", action="block")}
+    app, web = framed(wall)
+    page_ask(app, "www", "world")  # the firewall serving chosen
+    asked = []
+    real = worldweb.asks.ask
+    monkeypatch.setattr(worldweb.asks, "ask", lambda me, name, hook, *a: (asked.append((name, hook, a)), real(me, name, hook, *a))[1])
+    page = ports_page("here:443/tcp", "here:22/tcp", None)
+    web._rules_onto(page)
+    d443, d22 = page["tables"][0]["details"][:2]
+    told = d443["sections"][-1]
+    assert told["title"] == "Firewall rules covering it (2, stand-in-wall)"
+    assert [f[0] for f in told["facts"]] == [r["label"] or r["name"] for r in wall.rules_covering(443)]
+    assert told["facts"][1][0] == "Every port" and "Liminal's" in told["facts"][0][1]
+    assert "port 443/tcp" in told["facts"][0][1] and "block" in told["facts"][1][1] and "every port" in told["facts"][1][1]
+    assert [f[0] for f in d22["sections"][-1]["facts"]] == ["Every port"]
+    assert "sections" not in page["tables"][1]["details"][0]
+    assert [(n, h, a) for n, h, a in asked] == [("stand-in-wall", "rules_covering", (443, "tcp")),
+                                                ("stand-in-wall", "rules_covering", (22, "tcp"))]
+    web._rules_onto(ports_page("here:443/tcp"))  # kept a while: not asked again every two seconds
+    assert len(asked) == 2
+    wall.rules = {}
+    monkeypatch.setattr(worldweb, "RULES_S", 0.0)
+    again = ports_page("here:8080/tcp")
+    web._rules_onto(again)
+    assert again["tables"][0]["details"][0]["note"] == "No rule of stand-in-wall covers it."
+
+
+def test_the_rules_are_asked_on_every_page_and_never_cost_it(monkeypatch):
+    wall = Wall()
+    app, web = framed(wall)
+    seen = []
+    monkeypatch.setattr(web, "_rules_onto", lambda page: seen.append(page))
+    page = page_ask(app, "www", "world")
+    assert seen == [page]
+    monkeypatch.setattr(web, "_rules_onto", lambda page: 1 / 0)
+    assert page_ask(app, "www", "world")["title"] == "World Wide Web"  # a failure never costs the page
+    lone, web2 = framed()
+    monkeypatch.setattr(web2, "_rules_onto", lambda page: seen.append("alone"))
+    page_ask(lone, "www", "world")
+    assert "alone" not in seen  # no firewall serving: nothing asked
+
+
+def test_a_firewall_that_refuses_its_rules_is_not_asked_again_at_once(monkeypatch):
+    wall = Wall()
+    app, web = framed(wall)
+    page_ask(app, "www", "world")
+    calls = []
+
+    def refused(*a):
+        calls.append(a)
+        raise ValueError("not for this machine: a stand-in")
+    monkeypatch.setattr(wall, "rules_covering", refused)
+    for _ in range(3):
+        page = ports_page("here:443/tcp")
+        web._rules_onto(page)
+        assert page["tables"][0]["details"][0]["sections"][-1]["title"] == "Counted"
+    assert len(calls) == 1

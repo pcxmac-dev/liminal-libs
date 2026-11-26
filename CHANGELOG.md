@@ -40,6 +40,8 @@ Netstat tab and the hosts' recording. A firewall plugin written before still loa
   plugin ""): the firewall serving it is the one LIMINAL_WWW_FIREWALL names, else the first that answers netstat_seen,
   chosen again after a refusal; with none, the tab draws the traffic captured alone and says why. It offers `places`.
   No lock is held while asking, and no service asks back.
+  A port of Busiest ports here picked is told the serving firewall's rules covering it (rules_covering, the ten
+  busiest ports, each asked again after 30 s, a refusal too), those naming the port first; one no rule covers says so.
 - **The Firewall base's services.** `netstat_seen`, `hosts_found`, `hosts_routes` and `rules_covering` (reads), and
   `hosts_keep_route`, `hosts_keep_places` and `hosts_clear_places` (changes only another plugin may ask:
   PLUGIN_ONLY_HOOKS). Each refuses on a machine the plugin is not for.

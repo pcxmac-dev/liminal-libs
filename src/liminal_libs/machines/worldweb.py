@@ -12,7 +12,8 @@ the files: the GeoIP files in the data folder, the infrastructure's folder and c
 What only a firewall knows, it asks through the platform and never imports (plugins never import each other): the
 socket table's reading (netstat_seen), the hosts recorded for the globe's hosts view (hosts_found), the routes kept and
 a route traced kept (hosts_routes, hosts_keep_route), the places it looked up kept and cleared (hosts_keep_places,
-hosts_clear_places), and on Linux what an XDP program drops before the capture sees it (capture_unseen). The firewall
+hosts_clear_places), the rules covering a port of this machine's busiest (rules_covering, told in its pick), and on
+Linux what an XDP program drops before the capture sees it (capture_unseen). The firewall
 serving it is the one LIMINAL_WWW_FIREWALL names, else the first attached that answers netstat_seen, chosen again after
 a refusal. With none, the tab draws the traffic it captures alone and says why. It offers one service back, `places`:
 the GeoIP places of addresses, which a firewall's Netstat tab asks for its place column.
@@ -48,6 +49,10 @@ from .world import (ASN_HOOK, GEOIP_GET_HOOK, GEOIP_HOOK, GEOIP_REMOVE_HOOK, GEO
 
 SERVES = "netstat_seen"  # the hook that tells a firewall that can serve the tab
 UNSEEN_HOOK = "capture_unseen"  # a Linux firewall's: what an XDP program drops before the capture sees it
+RULES_HOOK = "rules_covering"  # a firewall's rules covering a port, told in the port's pick
+RULES_PORTS = 10  # the busiest ports here whose rules are asked, at most
+RULES_S = 30.0  # a port's rules asked again after this long (a refusal too)
+RULES_SHOWN = 8  # rules told in a port's pick, at most (the count says how many cover it)
 PLACES_HOOK = "places"  # what it offers back
 PLACES_MOST = 2000  # addresses placed in one ask, at most
 FIREWALL_VAR = "LIMINAL_WWW_FIREWALL"
@@ -89,6 +94,7 @@ class WorldWideWeb(MachinePlugin):
             ("", "hosts_keep_route", "a route traced, kept in the hosts database"),
             ("", "hosts_keep_places", "the places its GeoIP files gave the hosts recorded, kept with them"),
             ("", "hosts_clear_places", "the places of a GeoIP file removed, cleared from the hosts recorded"),
+            ("", RULES_HOOK, "the rules covering a port of this machine's busiest, told in the port's pick"),
             ("", UNSEEN_HOOK, "what the firewall drops before the capture sees it"))
     ICON = "globe"
     SECTION = "os"
@@ -197,6 +203,61 @@ class WorldWideWeb(MachinePlugin):
         except Exception:  # noqa: BLE001 - a word not had never costs the tab its page
             return ""
         return str(said or "")
+
+    def _rules(self, port: int, proto: str) -> list | None:
+        """The serving firewall's rules covering port/proto (rules_covering), kept RULES_S seconds per firewall and
+        port; None when it does not offer them or refused (kept as long, so a refusal is not asked again every two
+        seconds). Asked with no lock of this plugin held."""
+        name = self.firewall()
+        if not name:
+            return None
+        kept = self.__dict__.setdefault("_rules_kept", {})
+        at = kept.get((name, port, proto))
+        now = time.monotonic()
+        if at is not None and now - at[0] < RULES_S:
+            return at[1]
+        try:
+            face = dict(self.app.plugins() or {}).get(name) or {}
+            said = asks.ask(self, name, RULES_HOOK, port, proto) if RULES_HOOK in (face.get("hooks") or ()) else None
+            got = [r for r in said if isinstance(r, Mapping)] if isinstance(said, list) else None
+        except Exception:  # noqa: BLE001 - rules not had never cost the tab its page
+            got = None
+        if len(kept) > 4 * RULES_PORTS:  # the ports change: the oldest let go
+            for k in sorted(kept, key=lambda k: kept[k][0])[:len(kept) - 2 * RULES_PORTS]:
+                kept.pop(k, None)
+        kept[(name, port, proto)] = (now, got)
+        return got
+
+    def _rules_onto(self, page) -> None:
+        """Into the pick of each of the RULES_PORTS busiest ports here (Busiest ports here's details, keyed
+        here:<port>/<proto>): a section of the serving firewall's rules covering it, the ones naming it first, as the
+        firewall gives them (rules_covering). Nothing with no firewall serving or none offering them."""
+        for table in (page or {}).get("tables") or ():
+            if not isinstance(table, dict) or table.get("title") != "Busiest ports here":
+                continue
+            asked = 0
+            for d in table.get("details") or ():
+                key = str(d.get("key") or "") if isinstance(d, dict) else ""
+                if not key.startswith("here:") or asked >= RULES_PORTS:
+                    continue
+                number, _, proto = key[5:].partition("/")
+                if not number.isdigit() or proto not in ("tcp", "udp"):
+                    continue
+                asked += 1
+                rules = self._rules(int(number), proto)
+                if rules is None:
+                    continue
+                facts = [[str(r.get("label") or r.get("name") or "a rule")[:120],
+                          " · ".join(x for x in (str(r.get("direction") or ""), str(r.get("action") or ""),
+                                                 "on" if r.get("enabled", True) else "off",
+                                                 "Liminal's" if r.get("owned") else "", str(r.get("why") or ""),
+                                                 str(r.get("program") or "")) if x)[:400]]
+                         for r in rules[:RULES_SHOWN]]
+                title = f"Firewall rules covering it ({len(rules):,}, {self.firewall()})"
+                if facts:
+                    d.setdefault("sections", []).append({"title": title, "facts": facts})
+                else:
+                    d["note"] = " ".join(x for x in (str(d.get("note") or ""), f"No rule of {self.firewall()} covers it.") if x)
 
     # -- what it offers back -----------------------------------------------------------------------------------------
     def places(self, addresses) -> dict:
@@ -771,6 +832,11 @@ class WorldWideWeb(MachinePlugin):
                 page.setdefault("forms", []).append(form)
         except Exception:  # noqa: BLE001 - the switch never costs the tab its page
             pass
+        if not alone:  # Monday list item 31: a port picked is told the rules that cover it
+            try:
+                self._rules_onto(page)
+            except Exception:  # noqa: BLE001 - the rules never cost the tab its page
+                pass
         words = [NO_FIREWALL] if alone else []
         unseen = "" if alone else self._unseen(view)
         if unseen:
