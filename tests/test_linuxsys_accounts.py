@@ -340,7 +340,8 @@ def test_adding_and_removing_a_member_and_what_is_asked_twice():
 
 
 def test_a_member_on_a_system_with_no_group_yet_is_told_to_make_them_first():
-    assert tool(machine(UBUNTU)).member("pat", "add").plan.refused == "the group liminal is not here: Make them... first"
+    refused = tool(machine(UBUNTU)).member("pat", "add").plan.refused
+    assert refused == "the group liminal is not here: Make them... first"
 
 
 def test_every_plan_s_script_is_under_the_limit_and_holds_its_guards():

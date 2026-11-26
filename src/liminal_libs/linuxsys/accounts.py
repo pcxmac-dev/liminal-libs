@@ -87,8 +87,10 @@ class AccountTool:
 
     kind = "none"
 
-    def __init__(self, facts):
+    def __init__(self, facts, who: str | None = None):
         self.facts = facts
+        # who asks for the change: the platform's user (the page), or the one who typed sudo (the root command)
+        self.who = who or facts.elevation.get("user", "")
         self.made = facts.made()
         acc = facts.accounts
         self.groups, self.users = acc.get("groups", {}), acc.get("users", {})
@@ -228,7 +230,7 @@ class AccountTool:
         if g.gid >= f.accounts.get("gid_min", 1000):
             return (f"a group named {NAME} is here and is not a system group (gid {g.gid}): Liminal's user and group "
                     "are not made; rename that group first"), ()
-        platform = f.elevation.get("user", "")
+        platform = self.who
         persons = []
         for name in sorted(self.members()):
             if name in (platform, NAME, member):
@@ -314,7 +316,7 @@ class AccountTool:
             who = self.users.get(user)
             if who is None:
                 return f"no user named {user} is here: nothing was changed"
-            platform = self.facts.elevation.get("user", "")
+            platform = self.who
             if who.uid == 0:
                 return f"root is never a member of {NAME}: nothing was changed"
             if user != platform and self.facts.system_account(who):
@@ -334,7 +336,7 @@ class AccountTool:
             return Change(Plan("member", refused=f"the group {NAME} is not here: Make them... first", lock=f.lock))
         if why := self._member_refusal(user, action):
             return Change(Plan("member", refused=why, lock=f.lock))
-        platform = f.elevation.get("user", "")
+        platform = self.who
         asks: tuple[tuple[str, str], ...] = ()
         steps: tuple[Step, ...] = ()
         if action == "add" and user not in self.members():
@@ -565,10 +567,11 @@ class NoAccounts(AccountTool):
         return self.why()
 
 
-def tool(facts) -> AccountTool:
-    """The AccountTool for this system, by the probe's record."""
+def tool(facts, who: str | None = None) -> AccountTool:
+    """The AccountTool for this system, by the probe's record; `who` asks for its changes (the platform's user by
+    default)."""
     return {"sysusers": Sysusers, "shadow": Shadow, "busybox": BusyBoxAccounts, "nix": NixAccounts}.get(
-        facts.accounts.get("tool"), NoAccounts)(facts)
+        facts.accounts.get("tool"), NoAccounts)(facts, who)
 
 
 def digest_of(text: str) -> str:
