@@ -19,7 +19,7 @@ from conftest import Reached
 from liminal_libs.machines import gpu
 from liminal_libs.machines.gpu import Gpu, Gpus
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 # this PC's answer to the query, as nvidia-smi wrote it (2026-11-16)
 RTX_5090 = "0, NVIDIA GeForce RTX 5090 Laptop GPU, 24463, 2298, 21840, 595.71\n"
@@ -105,7 +105,7 @@ def test_the_command_itself_runs_windowless_with_nothing_typed_into_it(monkeypat
         assert ran[-1][1].get("creationflags", 0) == flags
 
 
-def test_no_pair_of_liminals_reaches_the_command(monkeypatch):
+def test_no_pair_of_liminals_reaches_the_command(monkeypatch, stand_in_environment):
     ran: list[dict] = []
 
     def run(args, **kw):

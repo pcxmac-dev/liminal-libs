@@ -19,6 +19,8 @@ from liminal_libs.lifecycle import FakeClock, FakeTable, MemoryLedger, Proc, Row
 from liminal_libs.sources.conformance import node_problems, problems
 from liminal_libs.sources.plugin import FeedPlugin
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 ME = os.getpid()
 
 

@@ -14,6 +14,8 @@ from liminal_libs import claims as c
 from liminal_libs import proc
 from liminal_libs.claims import GRACE_S, STALE_S, Claims
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 @pytest.fixture(autouse=True)
 def nothing_left_held():

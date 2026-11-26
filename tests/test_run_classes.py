@@ -22,6 +22,8 @@ from liminal_libs.models import Instrument
 from liminal_libs.sources.base import DataSource
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=ET)  # a Wednesday, midday
 PLAN = Tier("free", requests_per_minute=5, history_years=2)
 QUIET = lambda *_: None  # noqa: E731

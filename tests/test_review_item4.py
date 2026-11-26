@@ -22,6 +22,8 @@ from liminal_libs.sessions import ET
 from liminal_libs.sources.http import HttpClient
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=ET)  # a Wednesday, midday
 PLAN = Tier("free", requests_per_minute=5, history_years=2)
 QUIET = lambda *_: None  # noqa: E731
@@ -212,11 +214,11 @@ def test_a_dataset_file_cut_off_by_a_crash_is_never_left_under_its_name(tmp_path
             return opener(file, mode, *a, **k)
         return stand_in
 
-    monkeypatch.setattr(builtins, "open", cutting(real_open))
-    monkeypatch.setattr(io, "open", cutting(real_io_open))
-    with pytest.raises(OSError):
-        datasets._keep(store, ds, "f.csv", blob, "ab" * 32)
-    monkeypatch.undo()
+    with monkeypatch.context() as cut:  # its own, undone alone: monkeypatch.undo() would end every stand-in here
+        cut.setattr(builtins, "open", cutting(real_open))
+        cut.setattr(io, "open", cutting(real_io_open))
+        with pytest.raises(OSError):
+            datasets._keep(store, ds, "f.csv", blob, "ab" * 32)
     dest = store.datasets_dir.parent / datasets.downloads("cftc") / f"f.{'ab' * 6}.csv"
     assert not dest.exists()  # no file under its finished name: never one cut off
     assert datasets._keep(store, ds, "f.csv", blob, "ab" * 32) == dest and dest.read_bytes() == blob

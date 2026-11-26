@@ -1000,7 +1000,8 @@ class Zstd:
         self.killed += 1
 
 
-def test_a_tar_zst_goes_through_the_systems_zstd_where_this_python_reads_none(tmp_path, monkeypatch):
+def test_a_tar_zst_goes_through_the_systems_zstd_where_this_python_reads_none(tmp_path, monkeypatch,
+                                                                               stand_in_environment):
     monkeypatch.setattr(download, "_reads_zst", lambda: False)  # as a Python before 3.14
     monkeypatch.setattr(download, "_os_release", lambda: {"ID": "ubuntu", "ID_LIKE": "debian"})  # not this one's
     monkeypatch.setenv("LIMINAL_AI_OLLAMA_DEFAULT_KEY", "sk-not-for-a-child")  # a pair, as the Login keeps it

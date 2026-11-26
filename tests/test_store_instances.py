@@ -19,7 +19,7 @@ from liminal_libs.storage import Store
 from liminal_libs.storage.databases import DatabasePlugin, Instance, variable_of
 from liminal_libs.storage.documents import GOV_ITEMS, NEWS, SqlDocuments
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 NOW = datetime(2026, 11, 25, 12, tzinfo=timezone.utc)
 

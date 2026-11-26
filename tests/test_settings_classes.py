@@ -27,6 +27,8 @@ from liminal_libs.sources.plugin import FeedPlugin
 from liminal_libs.sources.publisher import Feed, Policy, PublisherPlugin
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc)
 TODAY = date(2026, 10, 21)
 
@@ -85,9 +87,10 @@ def installed(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def nothing_of_yours(monkeypatch):
+def nothing_of_yours(monkeypatch, stand_in_environment):
     """Tests never read the user's keys or settings: no saved variables unless a test gives some, the
-    plugins' variables and the app's database out of the process's environment."""
+    plugins' variables and the app's database out of the process's environment (the stand-in for it, which
+    this asks for first: the plugins are looked for in it too)."""
     monkeypatch.setattr(config, "saved_user_keys", lambda: {})
     for name in (*registry.variables(), "LIMINAL_DB", "ACME_API_KEY", "ACME_PLAN"):
         monkeypatch.delenv(name, raising=False)
@@ -160,7 +163,7 @@ class FakeRegistry:
         del self.values[name]
 
 
-def test_the_user_environment_reads_and_saves_the_plugins_variables(installed):
+def test_the_user_environment_reads_and_saves_the_plugins_variables(installed, stand_in_environment):
     installed(AcmeFeed())
     reg = FakeRegistry({"ACME_API_KEY": "k1", "OTHER": "x", "ACME_PLAN": ""})
     env = UserEnvironment(registry=reg)
@@ -292,7 +295,8 @@ def test_the_recorder_for_settings_is_the_apps_make_recorder(tmp_path, monkeypat
 
 
 # -- the resident hosts ----------------------------------------------------------------------------
-def test_an_attachment_is_made_by_the_class_and_a_host_started_by_it(tmp_path, monkeypatch):
+def test_an_attachment_is_made_by_the_class_and_a_host_started_by_it(tmp_path, monkeypatch,
+                                                                     stand_in_environment):
     monkeypatch.setenv("LIMINAL_IPC_DIR", str(tmp_path / "ipc"))
     db = tmp_path / "m.db"
     calls: list[tuple] = []

@@ -7,8 +7,12 @@ from __future__ import annotations
 import random
 from datetime import date, datetime, timezone
 
+import pytest
+
 from liminal_libs.storage import Store
 from liminal_libs.storage.common import _distinct
+
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
 
 NOW = datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc)
 

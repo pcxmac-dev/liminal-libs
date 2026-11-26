@@ -13,6 +13,8 @@ from liminal_libs.machines.firewall import (APP_PORTS, Firewall, FirewallError, 
 from liminal_libs.machines.plugin import CommandError
 from liminal_libs.sources.conformance import problems
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 class FakeFirewall(Firewall):
     name = "fake-firewall"

@@ -261,7 +261,7 @@ def test_a_remotes_address_is_shown_without_what_opens_it():
     assert cb.plain_address(said) == "fatal: unable to access 'https://github.com/o/r.git/': timed out; see https://other.example/x"
 
 
-def test_the_real_runner_starts_git_without_a_window_a_lock_or_a_question(monkeypatch):
+def test_the_real_runner_starts_git_without_a_window_a_lock_or_a_question(monkeypatch, stand_in_environment):
     started: list[dict] = []
 
     class Done:

@@ -19,7 +19,7 @@ from liminal_libs.machines.wsl import Asked, UninstallRefused, Wsl
 import svcworld as W
 from test_wsl import FakeWsl, UbuntuLike
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 
 class Firewall(standins.StandInNetworkHost):

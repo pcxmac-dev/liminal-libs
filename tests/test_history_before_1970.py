@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 duckdb = pytest.importorskip("duckdb")
 
 from liminal_libs.storage import Store, history  # noqa: E402

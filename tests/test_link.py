@@ -13,8 +13,15 @@ from datetime import date, datetime
 import pytest
 
 from liminal_libs import mounts
+# proctree keeps the real subprocess.Popen as it finds it when it is imported, and the link imports it only once a
+# helper does not answer. The test of that stands in for subprocess.Popen first: run with nothing before it that
+# had imported proctree (this file alone), its stand-in was taken for the real class and asked to end by a `pid`
+# it does not have. So it is imported here, before any stand-in
+from liminal_libs import proctree  # noqa: F401
 from liminal_libs.storage import link as lk
 from liminal_libs.storage.link import Connection, Link, LinkError
+
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
 
 
 @pytest.fixture

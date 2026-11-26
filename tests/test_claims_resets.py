@@ -21,6 +21,8 @@ from liminal_libs.claims import STALE_S, Claims
 from liminal_libs.storage import Store
 from liminal_libs.storage import common
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 DEAD = 999_999_999  # no such process
 NOW = datetime(2026, 11, 15, 20, 0, tzinfo=timezone.utc)
 

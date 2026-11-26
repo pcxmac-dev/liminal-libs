@@ -23,6 +23,8 @@ from liminal_libs.sources.http import HttpClient
 from liminal_libs.sources.plugin import within
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
 
 

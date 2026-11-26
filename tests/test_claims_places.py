@@ -14,6 +14,8 @@ from liminal_libs import claims, derive, live, mongo, mounts, publications, stor
 from liminal_libs.claims import GRACE_S, STALE_S, Claims
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 DEAD = 999_999_999
 
 

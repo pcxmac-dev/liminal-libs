@@ -15,6 +15,8 @@ import pytest
 from liminal_libs import claims as c
 from liminal_libs.claims import BEAT_S, GRACE_S, STALE_S, Claims, Keeper
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 class Clock:
     def __init__(self, at: float = 1_000_000.0):

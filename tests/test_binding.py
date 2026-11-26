@@ -125,7 +125,7 @@ class DemoApp(App):
         return (TrayItem("things", "key", "Things", app="demo"),)
 
 
-def test_a_linked_apps_tray_is_read_and_an_absent_app_is_never_started(tmp_path, monkeypatch):
+def test_a_linked_apps_tray_is_read_and_an_absent_app_is_never_started(tmp_path, monkeypatch, stand_in_environment):
     DemoApp.STATIC = tmp_path
     app = DemoApp(log=lambda m: None)
     url = app.start(0).rstrip("/")
@@ -177,7 +177,7 @@ class Looks:
         self._go.release()
 
 
-def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path, monkeypatch):
+def test_an_app_served_until_quiet_ends_once_no_page_has_been_in_touch(tmp_path, monkeypatch, stand_in_environment):
     from liminal_libs.apps import app as app_mod
 
     clock = [0.0]

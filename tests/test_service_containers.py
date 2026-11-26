@@ -24,7 +24,7 @@ from liminal_libs.machines.containers import ServiceSpec
 
 import svcworld as W
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 
 @pytest.fixture

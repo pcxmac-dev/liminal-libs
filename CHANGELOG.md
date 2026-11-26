@@ -1,5 +1,124 @@
 # Changelog
 
+## 1.100.0 (2026-11-25)
+
+A piped child's reader, its own run's alone; and the tests of a child, by their order. CI failed on windows-latest
+with Python 3.15, that job's first run (earlier runs had cancelled it):
+`test_on_linux_sigterm_then_sigkill_follow_its_grace`'s second stop said "had ended already (exit code 0)". A stop
+returns once the child is seen ended, before its reader's thread has read its output to the end, and at its end that
+thread closed the input the child held then: once the child had been started again, the next run's. The test's
+stand-in ends at the end of its input, as an MCP server does, and it did so before the test had made it stubborn. A
+line too long that an earlier run's reader read so late ended the next run as well: its input was closed, and it was
+ended at once with what it started. Not 1.75.3's wait: a stop's grace is waited for by `_gone_within`, never by
+`Child.wait`, and the test's children are stand-ins, not real ones. The fix was built on 1.75.3 as 1.75.4
+(2026-11-23) and not landed then; it is brought onto 1.99.0 here, its tests made over since. Measured on 1.75.3
+that day, with the tests of that day: with 1.75.2's wait the same order forced failed alike, and the test unforced
+failed as often as with 1.75.3's when each pidfile written took 5 ms more (98 runs of 100 with each) or 30 threads
+hashed on this PC's 24 cores (54 and 55 of 100), as on a busy runner; on this PC unloaded, up to 3 runs of 300
+failed.
+
+- **Each run's reader acts on its own run** (machines/children.py `Piped._hear`, `_close_input`, `_cut`): at its end
+  it closes its own run's input, and lets the child's go only while that is still the same one, under the child's
+  lock (a start sets it under that lock); a line it cannot hand on ends its run only while that run is still the
+  child's. Its `ended` is told for its own run, as before: a line too long that it reads after the next start is
+  still said to `ended`, while nothing is ended for it and `why`, of the child's run now, stays "" (`Piped`'s words
+  say so).
+- **The order forced** (tests/test_children.py `Late`, `LateTalker`): the first run's reader held at the end of its
+  output until the child has been started again, then let go, every time; and a line too long read after the next
+  start. Each part of the fix undone fails one of them.
+- **No test of a child goes by this machine's time** (tests/test_children.py): two load tests of the fix
+  (2026-11-23; 280 runs of the file in fresh processes each, under six and seven kinds of load) failed 7 runs and
+  then 10, none at the race above and every one at a bound in seconds. A wait that a real child's end woke at once
+  took 5.25 s where its test gave it 5; on two starved cores a stand-in's reader read the end of a held output
+  later than the 0.03 s the test had made of LEFT_S; a thread given 10 s to end was not over; a stop given 2 s took
+  longer. And a run of the whole suite failed the file once where it passed alone. A longer bound only moves such a
+  failure, so the tests have none now: what each proves comes by the order it gives things.
+  - The module's own time is a stand-in the test moves (`Time`, for every test). A streamed command's timeout, its
+    cancel and what its output is given once it has ended pass on that clock, after the line that was to come
+    first, and a command that has ended is read to the end of its output while no time passes. Its stand-in is
+    ended only once its reader has read the end of its output (`Command`). One whose output something out of reach
+    holds keeps it a minute on that clock (`Escaped`), and the test says the output was still open when it was
+    given up.
+  - A real child's wait is asked of its watcher's event through a stand-in that says what each wait was to last and
+    whether the child's end woke it (`Gone`), on a clock of the test's own (`Clock`, `Ticks`): a wait nothing ends
+    is over at once, and the child ends during the wait that is to see it. A stop behind a send that is not read
+    asks for the send's lock through `Sending`: for SEND_WAIT_S, said and not waited out.
+  - What a thread does is waited for by what it sets, and a stand-in's output wakes its reader (no look every 5 ms).
+    One bound in seconds is left, a net under every wait (`LONG_S`, 60 s): reached, it fails the test, noted and
+    said at the test's end, where a wait without one would hang it. A child's thread left after a test fails it
+    too. The held-output test gives `stream` a minute on its clock, not `stream`'s own half hour.
+  - Each of these undone in children.py, once, fails its test, and none hangs: a wait deaf to its watcher, one that
+    polls, one that looks every 8 s (both wait tests); 1.75.3's loop (the ticks test); a failed watcher that does
+    not wake the wait; a `stream` that waits for a held output (both held-output tests, in 3 s), and one that waits
+    for it after the kill; the three parts of the reader's fix (the forced-order tests); a stop that waits its grace
+    for the send, and one that waits for it without end (at the net, after 62 s); `since` not set; a cancel not
+    looked at. The file runs in 1.5 s here (about 5 s before).
+- **A test in the stand-in writes none of this user's environment** (tests/conftest.py `stand_in_environment`,
+  `Environment`): when the held-output test failed, pytest wrote the arguments of the frame its error was raised in,
+  as it does by default and with -vv (with -l its locals too), and `stream` given no environment holds this
+  process's whole in its `env`: this user's API keys among it, which a public repository's CI log would make public.
+  An assertion that looked at os.environ, or at a child's environment made of it, wrote it as well. A test that asks
+  for the stand-in runs with a small mapping of its own for os.environ: its names told apart as this system tells
+  them, nothing set in it reaching the real one or the system's, and `~` a folder of the test's own.
+  - Who asks for it. Every test of 43 files. Eight whose code reads the environment as its work: test_children,
+    test_launch, test_terminal, test_gpu, test_autostart, test_no_outside, test_plugin_classes and
+    test_settings_classes. Fourteen more: test_fetch_cache, test_auditors, test_claims, test_claims_places,
+    test_claims_process, test_claims_resets, test_symbol_claims, test_link, test_link_process, test_owners_layout,
+    test_run_classes, test_planning_classes, test_firewall and test_scope (1.75.4's review forced a failure at each
+    place where the library takes the whole environment, and tests of all of these but test_claims wrote it). And
+    21 of the 23 test files added from 1.75.3 to 1.98.0, those with a test that reads the environment (1.99.0's
+    test_who_asks_ai was run under the spy below: none of its 4 tests reads it, so it does not ask)
+    (test_cache_live_publications,
+    test_clean_shutdowns, test_contained_service, test_contracts_index, test_history_before_1970, test_lifecycle,
+    test_login_plugins, test_network_196, test_platform_base, test_review_item26_p2, test_review_item26_p3,
+    test_review_item4, test_service_197, test_service_containers, test_service_gaps, test_service_network,
+    test_settings_through_login, test_shutdown, test_stop_event_scope, test_store_instances,
+    test_symbol_list_reads). By name: one test each of test_codebase, test_download and test_host, two of
+    test_binding. A fixture that reads or changes the environment for every test of its file asks for it first
+    (test_settings_classes, test_fetch_cache, test_auditors, test_cache_live_publications).
+  - What was checked. Each of these 47 files run alone under a spy over os.environ (names noted, never values): of
+    their 920 tests one reads the real environment in its setup, its body or its teardown, the guard's own, which
+    asks it whether a name set in the stand-in reached it. Before, 415 of the 683 tests of 40 of these files read
+    it in their body. The four tests the review saw fail of their own accord and write it (no wsl.exe, a wrong
+    flag, the guard's refusal, a file named wrong) wrote no canary set in this process's environment, with -q,
+    -q -l, -vv or --tb=long -l. The stand-in broken four ways (its writes passed on to the real one, or to putenv;
+    os.environ not replaced; made of the real one) fails the guard's own test each time, and that failure writes
+    no canary either: the test asks what it asks outside its assertions, and the stand-in is no argument of it.
+    test_imports reads the one value it asks of the real environment outside its assertion.
+    And the whole suite once with every test made to fail after its body (a plugin of the check's own, three
+    canaries set in the run's environment, --tb=long, with -l and without): of 2611 failures none wrote a canary.
+    What that check saw: each test's captured output, and, of a test in the stand-in, whether its os.environ held
+    a canary at its body's end. It did not see what the tests were given: the failure was raised in the check's
+    own frame, and of a value there pytest's -l writes at most 240 characters.
+  - Three tests left the stand-in midway (test_fetch_cache, test_review_item4, test_platform_base): each called
+    `monkeypatch.undo()` to take back a stand-in of its own, which takes back every one, the environment's and the
+    guards' among them, so what followed ran in this process's own. That check found them: asked what os.environ
+    held after its body, each test in the stand-in but these three held no canary. The first two undo their own
+    alone now (`monkeypatch.context()`), and the third leaves it to its end.
+  - pytest's name for the test is in it from its start (`CURRENT`). pytest sets PYTEST_CURRENT_TEST in this
+    process's own environment before a test's fixtures, and again for its call and for its teardown in whatever
+    os.environ is then; and an app's stop event is named for the test only while it is set
+    (`lifecycle.stop_event_name`, 1.88.2, after a suite run stopped the four running apps). The stand-in was made
+    without it at first, so until the call it held none: a fixture set up after it would have named, and could
+    have set, a running app's own stop event. The review of this entry found that before it landed. The stand-in
+    is given the name when it is made, and none is made without one (tests/test_stop_event_scope.py: the name is
+    the test's own in a fixture's setup, in the body and in the fixture's teardown; the first fails without it).
+  - This user's saved variables are not read in it either (`no_saved_variables`). On Windows the library reads
+    them from the registry, not through os.environ (`config.UserEnvironment.saved`, which `saved_user_keys` and the
+    mail settings ask, and `apps.authorization.saved_variables`). For a test in the stand-in the user's Environment
+    key is not there (winreg.OpenKey and OpenKeyEx, asked for it by that name under HKEY_CURRENT_USER): none saved
+    is read, and none can be saved. The review of this entry found the gap. Its one check is its own test
+    (tests/test_no_outside.py: both readers hold nothing, which fails with the stand-in undone); the 47 files pass
+    with it (917 passed, 5 skipped). No canary was put among the saved variables and no spy over the registry, so
+    which tests read them before was not counted, and the checks above were of os.environ alone.
+  - What is not claimed. The other files of the suite were not looked at again. The review forced a failure at each
+    of the 24 places where the library took the whole environment then, and the files it found are above; a place
+    added since, or a single variable read, in a test that does not ask for the stand-in still writes what its
+    failure holds. What a module reads when it is imported is read once, of whatever os.environ is then; a name
+    bound at import, and what C code reads, are out of the stand-in's reach. A test that does not ask for the
+    stand-in still reads this user's saved variables where its code does, and the registry opened another way (a
+    handle, another root) is not stood in for.
+
 ## 1.99.0 (2026-11-25)
 
 The AI bases' changes are asked only from the page (the sweep after the review's finding PLT-H1; the user, 2026-11-25:

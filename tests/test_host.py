@@ -70,7 +70,7 @@ def test_nothing_is_cleared_where_no_socket_file_is(ipc):
     assert hosting._clear_stale(str(ipc / "ipc" / "none.sock")) is False
 
 
-def test_a_host_is_started_in_a_session_of_its_own_off_windows(monkeypatch, tmp_path):
+def test_a_host_is_started_in_a_session_of_its_own_off_windows(monkeypatch, tmp_path, stand_in_environment):
     seen: dict = {}
     monkeypatch.setattr(hosting.subprocess, "Popen", lambda argv, **kw: seen.update(argv=list(argv), **kw))
     hosting.Host.start("fetcher", tmp_path / "liminal.db")

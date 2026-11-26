@@ -22,6 +22,8 @@ from liminal_libs.storage import Store, common
 from liminal_libs.storage import link as lk
 from liminal_libs.storage.common import Behind
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 BAR = {"t": 60_000, "o": 1.0, "h": 2.0, "l": 0.5, "c": 1.5, "v": 10}
 
 

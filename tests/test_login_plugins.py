@@ -12,6 +12,8 @@ from liminal_libs.sources import conformance, registry
 from liminal_libs.sources.apis import Api, Link
 from liminal_libs.sources.plugin import Keystore, LoginPlugin, LoginRefusal, LoginTab, UsersPlace, Viewer
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 CARD = (Api(name="SQLite", maker="The SQLite project", about="The login's users file and keystores.", kind="sdk",
             links=(Link("SQLite", "https://www.sqlite.org/docs.html", "docs"),), verified="2026-11-25"),)
 

@@ -22,7 +22,7 @@ from liminal_libs.machines.servicestandins import JobLog, ServiceWorld
 
 import svcworld as W
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 
 class Clock:

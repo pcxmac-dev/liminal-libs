@@ -26,7 +26,7 @@ from liminal_libs.machines.plans import Accept
 
 import svcworld as W
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 DIG2 = "sha256:" + "c" * 64
 AGENT_SECRET = "agent-Qz71-never-shown"
 

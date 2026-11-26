@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from liminal_libs.storage import Store
+
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
 
 
 def test_a_products_contracts_are_read_by_the_index_in_first_trade_order(tmp_path):

@@ -23,7 +23,7 @@ from liminal_libs.machines.servicestandins import ServiceWorld
 
 import svcworld as W
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 WHEEL = b"a pinned wheel's bytes " * 64
 SHA = hashlib.sha256(WHEEL).hexdigest()

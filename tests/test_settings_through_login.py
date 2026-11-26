@@ -16,6 +16,8 @@ from liminal_libs.apps import (LICENCE, PREFERENCE, App, EnvironmentLogin, Login
                                accept_licence, as_user, asking_login, keeps, licence, recall)
 from liminal_libs.apps.authorization import WORDS_KEPT
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 class StoreLogin(Login):
     """A stand-in for the login app's session: one user's pairs in a dict, of the kinds the vault keeps."""

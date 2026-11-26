@@ -33,13 +33,43 @@ LIMINAL_HOSTS_RECORDING set to "shown" in its process (which wins over a saved o
 `Reached` again, noted and failed at its end: sockets.read, looked up when the code reads), and the hosts database
 and the infrastructure layers' folder moved into the test's own folder (its tmp_path where it has one, else one made
 the first time either is asked); each book made there is let go after it. A test that reads a socket table gives
-the code a reader of its own, or calls the real one taken before any test (`READ = sockets.read`)."""
+the code a reader of its own, or calls the real one taken before any test (`READ = sockets.read`).
+
+`stand_in_environment` (1.100.0): a test that asks for it runs in a stand-in for this process's environment, which
+holds this user's own variables, API keys among them. pytest writes the arguments of the frame an error is raised in
+and the values an assertion looked at, and a load test found a failing test's output holding this user's whole
+environment (children.stream, given none, holds this process's whole in its `env`): in a public repository's CI log
+it would be public. os.environ is then a small mapping of the test's own (`Environment`: names told apart as this
+system tells them, and nothing set in it reaches the system's own), so what the code reads through os.environ as
+this process's environment, what it hands a stand-in of it and what a test asserts of it are the test's own, whether
+it fails or passes, with -l or -vv. It holds STAND_IN, a home of the test's own (HOMES: `~` is a folder in its
+tmp_path, never this user's), the variable `no_real_hosts` sets, and pytest's name for the test and its phase
+(CURRENT, PYTEST_CURRENT_TEST) from its start: pytest sets that in this process's own environment before a test's
+fixtures, and again for its call and for its teardown in whatever os.environ is then, so the stand-in is given it
+when it is made and pytest keeps it there. While it is set an app's stop event is named for the test
+(lifecycle.stop_event_name, 1.88.2: a suite run once stopped the four running apps); a stand-in made without it let
+a fixture set up after it name, and set, a running app's own (1.100.0's review). A file whose code reads this
+process's environment asks for it for every test of its own, as for `no_outside`; a test elsewhere asks for it by
+name; and a fixture that reads or changes the environment for every test of its file asks for it too, so that the
+stand-in is there first.
+
+On Windows the library also reads this user's saved variables from the registry, not through os.environ
+(config.UserEnvironment.saved, apps.authorization.saved_variables). In the stand-in that key is not there
+(`no_saved_variables`: winreg.OpenKey and OpenKeyEx asked for HKEY_CURRENT_USER's Environment by that name), so none
+saved is read and none can be saved. That was not checked with a canary or a spy: it has its own test, no more.
+
+It covers the tests that ask for it, and no other: a test that does not, and whose code reads this process's
+environment, still writes of it what its failure holds. And it reaches what is read through os.environ when the
+code runs: what a module reads when it is imported is read once, of whatever os.environ is then (capture.py reads
+SystemRoot so), and what C code reads of the system's own environment is not Python's to stand in for. Which files
+ask for it, and how that was checked, is in CHANGELOG.md (1.100.0)."""
 from __future__ import annotations
 
 import os
 import socket
 import subprocess
 import threading
+from collections.abc import MutableMapping
 
 import pytest
 
@@ -151,3 +181,87 @@ def no_real_hosts(monkeypatch, request, tmp_path_factory):
         except Exception:  # noqa: BLE001 - a test's own book that it broke on purpose
             pass
     assert not refused, f"the test read this machine's socket table for real: {refused}"
+
+
+class Environment(MutableMapping):
+    """os.environ as a test's stand-in (`stand_in_environment`): pairs of its own, none of this process's. On Windows
+    a name is told apart without regard to case and kept upper-cased, as os.environ keeps it there; what is set in it
+    never reaches the system's own environment."""
+
+    def __init__(self, pairs=()):
+        self._pairs: dict[str, str] = {}
+        self.update(pairs)
+
+    @staticmethod
+    def _name(name) -> str:
+        if not isinstance(name, str):
+            raise TypeError(f"str expected, not {type(name).__name__}")
+        return name.upper() if os.name == "nt" else name
+
+    def __getitem__(self, name):
+        return self._pairs[self._name(name)]
+
+    def __setitem__(self, name, value):
+        if not isinstance(value, str):
+            raise TypeError(f"str expected, not {type(value).__name__}")
+        self._pairs[self._name(name)] = value
+
+    def __delitem__(self, name):
+        del self._pairs[self._name(name)]
+
+    def __iter__(self):
+        return iter(list(self._pairs))
+
+    def __len__(self):
+        return len(self._pairs)
+
+    def copy(self) -> dict[str, str]:
+        return dict(self._pairs)
+
+    def __repr__(self):
+        return f"Environment({self._pairs!r})"
+
+
+# What a test's stand-in environment holds at its start (USERNAME: getpass.getuser reads it, a login's user)
+STAND_IN = {"PATH": "/usr/bin", "LANG": "C.UTF-8", "USERNAME": "someone"}
+HOMES = ("HOME", "USERPROFILE")  # where `~` is read from (elsewhere, on Windows): in a stand-in, the test's own folder
+CURRENT = "PYTEST_CURRENT_TEST"  # pytest's name for the test and its phase: by it an app's stop event is the test's
+SAVED = "Environment"  # under HKEY_CURRENT_USER: where Windows keeps this user's saved variables
+
+
+def no_saved_variables(monkeypatch) -> None:
+    """On Windows the library reads this user's saved variables too, from the registry and not through os.environ
+    (config.UserEnvironment, apps.authorization.saved_variables: winreg.OpenKey, looked up when they read). For a
+    test in the stand-in that key is not there, as winreg says it (FileNotFoundError): none saved is read, and none
+    can be saved. Elsewhere there is no registry (the saved ones are asked over the link, by the stand-in's
+    LIMINAL_DB)."""
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    def without(opener):
+        def opened(key, sub_key, *args, **kwargs):
+            if key == winreg.HKEY_CURRENT_USER and str(sub_key).strip("\\").lower() == SAVED.lower():
+                raise FileNotFoundError(2, "a test's stand-in environment has no saved variables of this user's")
+            return opener(key, sub_key, *args, **kwargs)
+        return opened
+
+    for name in ("OpenKey", "OpenKeyEx"):
+        monkeypatch.setattr(winreg, name, without(getattr(winreg, name)))
+
+
+@pytest.fixture
+def stand_in_environment(monkeypatch, no_real_hosts, tmp_path):
+    """This process's environment for one test: a stand-in holding STAND_IN, a home of the test's own (HOMES: the
+    folder `home` in its tmp_path, which nothing makes), what the guards set and pytest's name for the test (the
+    module's docstring); what the test sets in it is its own."""
+    from liminal_libs import hostbook
+
+    stand_in = Environment(STAND_IN)
+    stand_in.update(dict.fromkeys(HOMES, str(tmp_path / "home")))
+    stand_in[hostbook.VARIABLE] = os.environ[hostbook.VARIABLE]  # (no_real_hosts set it in the real one before)
+    stand_in[CURRENT] = os.environ[CURRENT]  # (pytest set it there before any fixture: without it, no stand-in)
+    monkeypatch.setattr(os, "environ", stand_in)
+    no_saved_variables(monkeypatch)
+    return stand_in

@@ -1137,6 +1137,11 @@ class Piped(Child):
     prints and hands each line to `line(text)`, without its line end; a blank line is left out. A line longer than
     LINE_MAX bytes ends it, and so does a `line` that fails: what it prints after that is read and dropped. Once its
     output has ended, `ended(why)` is told once: "" when it just ended, else why it was ended (`why` says it too).
+    That thread is its run's alone (1.100.0): a stop returns once the child is seen ended, so the thread may come to
+    the end of its output only after the next start, and it then closes its own run's input, not the next one's;
+    a line it reads then ends nothing. A line too long that it reads so late (or one `line` cannot take) is still
+    said to `ended`, in the words a run it ended would be told; but nothing is ended for it (its run had ended
+    already, and the next one is not its to end), and `why`, which tells of the child's run now, stays "".
 
     `stop(grace)` follows MCP's stdio transport (2026-07-28): its input is closed, and it gets `grace` seconds to end
     by itself. Then it is ended with what it started: its job on Windows; SIGTERM, then SIGKILL after TERM_S, to its
@@ -1208,7 +1213,7 @@ class Piped(Child):
             self._note(process.pid)
             self._reader = threading.Thread(target=_copied, args=(process.stderr, out, self._log_lock), daemon=True,
                                             name=f"child-{self.name}")
-            self._hearer = threading.Thread(target=self._hear, args=(process.stdout,), daemon=True,
+            self._hearer = threading.Thread(target=self._hear, args=(process,), daemon=True,
                                             name=f"child-out-{self.name}")
             self._gone = threading.Event()
             self._watcher = threading.Thread(target=self._watch, args=(process, _Both(self._reader, self._hearer),
@@ -1269,24 +1274,32 @@ class Piped(Child):
             except (OSError, ValueError) as e:
                 raise ChildError(f"{self.name} did not take the line: its input is closed ({e})") from None
 
-    def _close_input(self, wait: float) -> bool:
+    def _close_input(self, wait: float, own=None) -> bool:
         """Its standard input closed, so that it reads its end: whether it is closed now (or was already). A send under
         way is waited for `wait` seconds at most. Past that it is left open: closing a pipe that a write still waits
         on would wait as long as the write (Windows), and a child that does not read its input will not end at its
-        end anyway."""
+        end anyway. `own`: the input of the run whose reader's thread asks at its end. That one alone is closed, and
+        the child's input is let go only while it is that one: the child may have been started again meanwhile, and
+        the next run's input stays open."""
         if not self._sending.acquire(timeout=max(0.0, wait)):
             return False
         try:
-            pipe, self._input = self._input, None
+            with self._lock:  # (a start sets its input under it: looked at and let go as one)
+                pipe = self._input if own is None else own
+                if self._input is pipe:
+                    self._input = None
         finally:
             self._sending.release()
         _close(pipe)
         return True
 
-    def _hear(self, pipe) -> None:
-        """The reader's thread: what it prints cut into lines and handed to `line`, until its output ends. A line
-        longer than LINE_MAX, or one `line` cannot take, ends the child; what it prints after that is read and
-        dropped. At the end: the pipe closed, its input closed (unless a send is under way), and `ended` told."""
+    def _hear(self, process) -> None:
+        """The reader's thread of one run (`process`): what it prints cut into lines and handed to `line`, until its
+        output ends. A line longer than LINE_MAX, or one `line` cannot take, ends that run; what it prints after that
+        is read and dropped. At the end: the pipe closed, that run's input closed (unless a send is under way), and
+        `ended` told. What it does is its run's alone: a stop returns once the child is seen ended, so this thread may
+        come to its end only once the child has been started again, and the next run is not its to close or end."""
+        pipe = process.stdout
         held = bytearray()
         why = ""
         try:
@@ -1306,14 +1319,14 @@ class Piped(Child):
                         why = _too_long()
                 if why:
                     held.clear()
-                    self._cut(why)
+                    self._cut(why, process)
             if held and not why:  # its last line, not ended by a line feed
                 why = self._give(bytes(held))
                 if why:
-                    self._cut(why)
+                    self._cut(why, process)
         finally:
             _close(pipe)
-            self._close_input(0.0)
+            self._close_input(0.0, process.stdin)
             told = self._on_end
             if told is not None:
                 try:
@@ -1337,16 +1350,21 @@ class Piped(Child):
             return f"its line could not be taken ({_word(f'{type(e).__name__}: {e}')})"
         return ""
 
-    def _cut(self, why: str) -> None:
-        """Ended now, for `why`: said in its log, its input closed (unless a send is under way), and it is ended with
-        what it started at once (its job, or SIGKILL to its group). Its watcher cleans up after it."""
-        self.why = why
-        self._say(f"{self.name} was ended: {why}")
-        self._close_input(0.0)
-        try:
-            self._end()
-        except Exception:  # noqa: BLE001 - one that cannot be ended now is ended by its stop
-            pass
+    def _cut(self, why: str, process) -> None:
+        """The run `process` ended now, for `why`: said in its log, its input closed (unless a send is under way), and
+        it is ended with what it started at once (its job, or SIGKILL to its group). Its watcher cleans up after it.
+        Nothing is done once the child holds a later run (that one had ended, and the child was started again before
+        its reader read the line): what an earlier run printed ends no later one."""
+        with self._lock:  # (a start sets the child's run under it: the run looked at is the run ended)
+            if self._process is not process:
+                return
+            self.why = why
+            self._say(f"{self.name} was ended: {why}")
+            self._close_input(0.0)
+            try:
+                self._end()
+            except Exception:  # noqa: BLE001 - one that cannot be ended now is ended by its stop
+                pass
 
     def _say(self, words: str) -> None:
         """A line of this module's own in its log, while it is open."""

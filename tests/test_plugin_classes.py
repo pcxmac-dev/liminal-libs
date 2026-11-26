@@ -23,6 +23,8 @@ from liminal_libs.sources.registry import (PLUGIN_API, RECORD_API, FeedPlugin, P
                                           plugin_databases, plugin_keys, publisher_menu, variables)
 from liminal_libs.sources.stream import Live
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 @pytest.fixture
 def installed(monkeypatch):
@@ -323,7 +325,7 @@ def test_a_public_feed_and_a_crypto_venue_as_classes(installed, settings_for):
         PublicFeedPlugin(name="bare").build(settings, 1)
 
 
-def test_a_process_loads_every_plugin_found_the_ones_named_or_none(installed, monkeypatch):
+def test_a_process_loads_every_plugin_found_the_ones_named_or_none(installed, monkeypatch, stand_in_environment):
     """The user, 2026-11-03: "the default case is to load all plugins, however the integrator can be
     loaded with select plugins or none". LIMINAL_PLUGINS_LOADED (registry.select) names the plugins
     kept, each with its parts (a part's name keeps its whole plugin); `none` keeps none; the plugins

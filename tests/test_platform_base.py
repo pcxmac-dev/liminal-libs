@@ -29,7 +29,7 @@ from liminal_libs.storage.databases import DatabasePlugin
 
 from test_databases import Flat, Served
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 
 class Part(Platform):
@@ -176,7 +176,6 @@ def test_the_librarys_section_gives_what_the_integrators_module_gives(found, mon
         test = {"plugin": "sqlite", "action": "test", "name": "data"}
         assert theirs.ask(app, test) == section.ask(app, test)
     finally:
-        monkeypatch.undo()
         for name in set(sys.modules) - before:
             if name.split(".")[0] in ("liminal_integrator", "liminal_charts"):
                 sys.modules.pop(name, None)

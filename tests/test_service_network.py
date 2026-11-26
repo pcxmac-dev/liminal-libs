@@ -15,7 +15,7 @@ from liminal_libs.machines import segments as S
 
 import svcworld as W
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 WANT = {"stack": "wsl", "target": "wsl-ubuntu", "network": "liminal-jenkins-ci", "parts": ["controller"],
         "ports": [{"name": "web", "host": 8080, "protocol": "tcp"}], "lan": False}

@@ -22,6 +22,8 @@ from liminal_libs.ratelimit import RateLimiter
 from liminal_libs.sources.http import HttpClient
 from liminal_libs.sources.plugin import FeedPlugin
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 # -- 1. hosts -----------------------------------------------------------------------------------------------------------
 class Conn:

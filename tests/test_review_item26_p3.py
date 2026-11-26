@@ -27,6 +27,8 @@ from liminal_libs.storage import Store, history
 from test_wsl import UbuntuLike
 from test_wsl_installs import Machine, machine  # noqa: F401 - the fixture, used by name
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
 
 

@@ -23,6 +23,8 @@ from liminal_libs.sources.plugin import FeedPlugin, Scanned
 from liminal_libs.sourcing import Scans, Scheme
 from liminal_libs.storage import Store
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=ET)  # a Wednesday, midday
 PLAN = Tier("free", requests_per_minute=5, history_years=2)
 # two copies of the same market; `fake` ranks first (SOURCE_PRIORITY), so massive stands back for it

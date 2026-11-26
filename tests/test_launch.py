@@ -26,7 +26,7 @@ from liminal_libs.machines.modelserver import Instance, Kept, ModelServer
 from liminal_libs.resources import Conn
 from liminal_libs.sources.apis import Api, Link
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")  # serve reads and sets its environment
 
 HTTPS = "https:" + "//"
 CARD = Api("Stand-in server", "Its maker", "What the stand-in server offers the platform", kind="rest",

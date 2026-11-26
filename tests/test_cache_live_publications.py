@@ -14,7 +14,7 @@ from liminal_libs import auditing, gov, live, provenance, publications, spool
 from liminal_libs.sources.publisher import Feed, Policy, Publisher
 from liminal_libs.storage import Store, pulls
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 MINUTE = 29_000_000  # a minute's number (ms // 60,000): 2025-02-20 ...
 T0 = MINUTE * 60_000  # its first ms
@@ -22,7 +22,7 @@ QUIET = lambda *_: None  # noqa: E731
 
 
 @pytest.fixture(autouse=True)
-def the_defaults(monkeypatch):
+def the_defaults(monkeypatch, stand_in_environment):  # (the test's environment first)
     monkeypatch.delenv(pulls.SWITCH, raising=False)
     monkeypatch.setattr(pulls, "_pause", lambda *_: None)
     monkeypatch.setattr(provenance, "code_version", lambda: "test")  # (git is not asked)

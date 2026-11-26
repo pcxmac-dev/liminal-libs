@@ -14,6 +14,8 @@ from liminal_libs.storage import common
 from liminal_libs.storage import link as lk
 from liminal_libs.storage.link import Link
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 @pytest.fixture
 def linked(tmp_path, monkeypatch):

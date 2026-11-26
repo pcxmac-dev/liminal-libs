@@ -11,12 +11,23 @@ would not hand a word over as it is (a model of how it passes words, measured on
 A piped child (1.66.0, an MCP server over stdio): its three pipes and how it is started on each system, its job
 object, its lines handed on as they come, its errors in its log, a line sent, a line too long or one its plugin cannot
 take ending it, a stop that closes its input first (and one a send that is not read cannot hold up), the SIGTERM and
-SIGKILL that follow on Linux, an earlier run's child ended before the next one starts, and every one stopped at exit.
+SIGKILL that follow on Linux, a run's reader that comes to its end only after the next start (it closes its own run's
+input alone, and a line it reads then ends nothing), an earlier run's child ended before the next one starts, and
+every one stopped at exit.
 
 Everything outside is a stand-in: subprocess.Popen, the console's Ctrl+C, Windows' kernel32, the job object, the
-signals, this machine's process table and the clock. The shared guard (`no_outside`) fails a test that starts a
-process or opens a connection; this file's own fails one that tells a process of this machine anything by its
-number, or reaches its job objects or its console."""
+signals, this machine's process table, the clock and this process's environment (the shared `stand_in_environment`:
+a child's environment, and so what a failure writes of it, holds nothing of this user's). The shared guard
+(`no_outside`) fails a test that starts a process or opens a connection; this file's own fails one that tells a
+process of this machine anything by its number, or reaches its job objects or its console.
+
+Nothing a test proves here goes by this machine's time (1.100.0: under load a thread ran seconds late, and a bound
+in seconds failed a test whose code was right). A grace, a timeout and what an output is given once its command has
+ended pass on a clock the test moves (`Clock`, `Ticks`, and `Time` for the module's own time); a wait whose length
+the code asks of an event or of a lock is asked of a stand-in that says what it was asked (`Gone`, `Sending`); and
+what a thread does is waited for by what it sets, in the order the test gives things. The one bound in seconds left
+is a net, LONG_S: what a test or a stand-in waits for comes by that order, so a wait that runs into the net fails
+its test, and never hangs it."""
 from __future__ import annotations
 
 import dataclasses
@@ -44,14 +55,21 @@ from liminal_libs.machines.children import (GRACE_S, LINE_CHARS, LOG_MAX, PLACEH
 from liminal_libs.machines.plugin import CommandError
 from liminal_libs.machines.terminal import Cancelled, Output
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 NAME = "ollama default"
 ROTATE = keep_mod.rotate  # the real one: a test's stand-in looks, then lets it move the file
 REAL_RUN = children._run  # the real one: a test puts it back over its refusal to see how it runs the helper
 MADE: list = []  # every stand-in process of the test that runs: ended after it, so no reader's thread is left
 REACHED: list = []  # what a test reached through one of this file's refusals: it fails at its end, even if caught
+OVERDUE: list = []  # what a wait of the test that runs waited LONG_S for in vain: it fails at its end, even if caught
 QUOTES = "'\u2018\u2019\u201a\u201b"  # what PowerShell ends a single-quoted string at: ' ‘ ’ ‚ ‛
+# The net under every wait of this file, and the one bound in seconds left in it. What a test or a stand-in waits for
+# (a thread's end, a process's, the next piece of an output) comes by the order the test gives things, never by the
+# time: code that is right never reaches the net, however late a loaded machine runs a thread (1.100.0: under load a
+# wait a child's end woke at once took 5.25 s, and joins given 10 s ran out). Reached, it fails the test, where a
+# wait without one would hang it.
+LONG_S = 60.0
 
 
 def refusing(what):
@@ -59,6 +77,21 @@ def refusing(what):
         REACHED.append(what)
         raise Reached(f"a test reached for the real {what}")
     return refused
+
+
+def waited(event, what):
+    """`event` waited for, with this file's one net: whether it came. One that did not is noted (`what` it was), and
+    the test fails at its end, even if the code went on."""
+    if event.wait(LONG_S):
+        return True
+    OVERDUE.append(what)
+    return False
+
+
+def joined(thread, what="a child's thread"):
+    """A thread waited for to its end, with the same net."""
+    thread.join(LONG_S)
+    assert not thread.is_alive(), f"{what} did not come to its end"
 
 
 class Kernel32:
@@ -80,12 +113,60 @@ def k32(monkeypatch):
     return stand_in
 
 
+class Time:
+    """This module's own time (`children.time`) as a stand-in: what a streamed command goes by, and when a child was
+    started. `monotonic` says `now`, which stands still until the test moves it, or is `step` seconds later at every
+    look once the test sets one (the time that passes while nothing comes); a sleep is over at once, the time that
+    much later; `after` has something done once the time is that much later (a program that ends by itself). `time`
+    is one moment, SINCE. The net is under it too, and is all this file asks of this machine's time: code still
+    looking at it LONG_S after the test began goes round a time that will not move for it, and fails there."""
+
+    SINCE = 1_795_000_000.0
+
+    def __init__(self):
+        self.now, self.step = 0.0, 0.0
+        self._due: list = []
+        self._net = time.monotonic() + LONG_S
+
+    def monotonic(self):
+        if time.monotonic() > self._net:
+            OVERDUE.append("the code, to come to an end on the test's clock")
+            raise AssertionError(f"the test's clock was still looked at {LONG_S:g} s after the test began")
+        self._pass(self.step)
+        return self.now
+
+    def sleep(self, seconds):
+        self._pass(max(0.0, seconds))
+
+    def time(self):
+        return self.SINCE
+
+    def after(self, seconds, what):
+        self._due.append((self.now + seconds, what))
+
+    def _pass(self, seconds):
+        self.now += seconds
+        for due in [due for due in self._due if due[0] <= self.now]:
+            self._due.remove(due)
+            due[1]()
+
+
+@pytest.fixture(autouse=True)
+def hours(monkeypatch):
+    """This machine's time is never asked either: the module's own `time` is a stand-in, which the test moves."""
+    stand_in = Time()
+    monkeypatch.setattr(children, "time", stand_in)
+    return stand_in
+
+
 @pytest.fixture(autouse=True)
 def nothing_real(monkeypatch):
     """Nothing real is reached that the shared guard does not cover: no signal or end sent to a number, no job object,
     no helper run; this machine's process table knows no number; atexit is a list (what a test registered there);
-    this process's Ctrl+C is as at its start."""
+    this process's Ctrl+C is as at its start. After the test every stand-in process is ended and every reader held
+    is let go, so no thread of a child's is left: one that is, or a wait that ran into its net, fails the test."""
     REACHED.clear()
+    OVERDUE.clear()
     for name in ("kill", "killpg", "waitid", "getsid", "getpgid"):
         monkeypatch.setattr(os, name, refusing(f"os.{name}"), raising=False)
     monkeypatch.setattr(proc_mod, "terminate", refusing("proc.terminate"))
@@ -102,33 +183,86 @@ def nothing_real(monkeypatch):
     yield hooked
     for process in MADE:  # (before the stand-ins above are taken away again)
         process.end(0)
+        getattr(process.stdout, "go", threading.Event()).set()  # (a reader the test held at its end)
     MADE.clear()
+    left = []
     for thread in threading.enumerate():
         if thread.name.startswith("child-"):
-            thread.join(10)
+            thread.join(LONG_S)
+            left += [thread.name] if thread.is_alive() else []
+    assert not left, f"a child's threads were left running: {left}"
     assert not REACHED, f"a test reached for the real thing: {REACHED}"
+    assert not OVERDUE, f"waited {LONG_S:g} s in vain, where the order of things was to bring it: {OVERDUE}"
 
 
 # -- stand-ins ---------------------------------------------------------------------------------------------------------
+class Pieces(list):
+    """What a process has printed that nothing has read yet: a piece put there wakes the read that waits for one."""
+
+    def __init__(self, came):
+        super().__init__()
+        self.came = came
+
+    def append(self, piece):
+        super().append(piece)
+        self.came.set()
+
+    def extend(self, pieces):
+        super().extend(pieces)
+        self.came.set()
+
+    def __iadd__(self, pieces):
+        self.extend(pieces)
+        return self
+
+
+class End(threading.Event):
+    """The end of a process's output, set when the test says: it wakes the read that waits for it."""
+
+    def __init__(self, came):
+        super().__init__()
+        self.came = came
+
+    def set(self):
+        super().set()
+        self.came.set()
+
+
 class Pipe(io.RawIOBase):
-    """A process's output: pieces as they come, then the end (as tests/test_terminal.py's)."""
+    """A process's output: pieces as they come, then the end (as tests/test_terminal.py's). A read waits for the next
+    piece or for the end and is woken by it: nothing looks again every few milliseconds. `reader`: the thread that
+    reads it, once one has; `read_out`: set once its end has been read."""
 
     def __init__(self):
-        self.chunks: list[bytes] = []
-        self.done = threading.Event()
+        self.came = threading.Event()  # a piece, or the end: what a read waits for
+        self.chunks: list[bytes] = Pieces(self.came)
+        self.done = End(self.came)
+        self.reader: threading.Thread | None = None
+        self.read_out = threading.Event()
 
     def readable(self):
         return True
 
     def read(self, n=-1):
-        while not self.chunks and not self.done.is_set():
-            time.sleep(0.005)
-        return self.chunks.pop(0) if self.chunks else b""
+        self.reader = threading.current_thread()
+        while True:
+            self.came.clear()  # (before the look: what comes after it sets it again)
+            if self.chunks:
+                return self.chunks.pop(0)
+            if self.done.is_set() or not waited(self.came, "the next piece of a process's output, or its end"):
+                self.read_out.set()
+                return b""
+
+    def over(self):
+        """Waited for: the thread that reads it has read its end, and is over."""
+        if waited(self.read_out, "the end of a command's output, to be read"):
+            joined(self.reader, "the thread reading a command's output")
 
 
 class Process:
     """A started process as a stand-in: what it was started with, what it was told, its end when the test says. A
-    wait without a timeout lasts until its end, as a real one's does (10 s at most: the test then ends it)."""
+    wait without a timeout lasts until its end, as a real one's does (the test ends it, at its own end at the
+    latest)."""
 
     def __init__(self, argv, pid=4321, **kw):
         self.argv, self.kw, self.pid = list(argv), kw, pid
@@ -146,7 +280,7 @@ class Process:
         if self.returncode is None:
             if timeout is not None:
                 raise subprocess.TimeoutExpired(self.argv, timeout)
-            self.ended.wait(10)
+            waited(self.ended, "a process's end")
         return self.returncode
 
     def leave(self, code=0):
@@ -206,7 +340,7 @@ class Real(children._Popen):
             if self.code is None:
                 raise subprocess.TimeoutExpired(self.argv, timeout)
         elif self.code is None:
-            self.ended.wait(10)
+            waited(self.ended, "a process's end")
         return self.poll()
 
     def kill(self):
@@ -238,18 +372,55 @@ class Clock:
 
 
 class Ticks:
-    """A clock that moves in ticks of `tick` seconds, counted from its `start`, as time.monotonic on Windows before
-    Python 3.13 moves by 15.6 ms (GetTickCount64): what it says lags the time by up to a tick."""
+    """A clock that moves in ticks of `tick` seconds, as time.monotonic on Windows before Python 3.13 moves by 15.6 ms
+    (GetTickCount64): what it says lags the time by up to a tick. The time is the test's own: it is later by what the
+    test says has `passed` (a wait that ran out), and by a fiftieth of a second at every look, so that nothing goes
+    round and round a clock that stands still."""
 
     def __init__(self, tick):
-        self.tick = tick
-        self.start()
+        self.tick, self.now = tick, 0.0
 
-    def start(self):
-        self.began = time.monotonic()
+    def passed(self, seconds):
+        self.now += seconds
 
     def __call__(self):
-        return (time.monotonic() - self.began) // self.tick * self.tick
+        self.now += 0.02
+        return self.now // self.tick * self.tick
+
+
+class Gone:
+    """What a real child's `wait` waits on (the event its watcher sets at its end), watched: what each wait of it was
+    to last at most (`asked`) and whether the child's end woke it (`woke`). No wait of it goes by the time. One that
+    nothing ends is over at once, and that much has `passed` on the test's clock. One the test ends the child during
+    (`during`: done once the wait is asked) is the watcher's to wake, as it comes."""
+
+    def __init__(self, event, passed=None):
+        self.event, self.passed = event, passed
+        self.asked: list = []
+        self.woke: list[bool] = []
+        self.during = None
+
+    def is_set(self):
+        return self.event.is_set()
+
+    def wait(self, timeout=None):
+        self.asked.append(timeout)
+        during, self.during = self.during, None
+        if during is not None:
+            during()
+            self.woke.append(waited(self.event, "a child's end, to wake the wait for it"))
+        else:
+            self.woke.append(self.event.is_set())
+            if not self.woke[-1] and self.passed is not None:
+                self.passed(timeout)
+        return self.woke[-1]
+
+
+def watched(child, passed=None):
+    """A started child's wait for its end, watched from here on (`Gone`)."""
+    with child._lock:
+        child._gone = Gone(child._gone, passed)
+        return child._gone
 
 
 def make(folder, system, launch=None, starter=None, **outside):
@@ -266,8 +437,7 @@ def settle(child):
     """The reader's thread has read the child's output to its end, and the watcher's has seen its end and cleaned up
     after it."""
     for thread in (child._reader, child._watcher):
-        thread.join(10)
-        assert not thread.is_alive()
+        joined(thread)
 
 
 def a_job(monkeypatch, starter, ends=True):
@@ -304,7 +474,7 @@ def real_linux(monkeypatch, kind=None):
     def peek(pid, block):
         process = of(pid)
         if block:
-            process.ended.wait(10)
+            waited(process.ended, "a process's end")
         return "gone" if process.returncode is not None else "ended" if process.code is not None else ""
 
     def group(pid, sig):
@@ -603,15 +773,14 @@ def test_a_short_secret_and_one_quoting_would_change_are_hidden_as_whole_words(t
 
 
 # -- starting ----------------------------------------------------------------------------------------------------------
-def test_on_windows_a_child_is_started_without_a_window_and_held_in_a_job(tmp_path, monkeypatch, nothing_real):
+def test_on_windows_a_child_is_started_without_a_window_and_held_in_a_job(tmp_path, monkeypatch, nothing_real, hours):
     launch = Launch(("ollama", "serve"), {"OLLAMA_HOST": "127.0.0.1:11434"}, cwd=str(tmp_path), drop=("OLLAMA_*",))
     monkeypatch.setenv("OLLAMA_ORIGINS", "*")
     child, starter = make(tmp_path, "windows", launch)
     done = a_job(monkeypatch, starter)
     assert (child.pid, child.alive, child.code, child.since, child.tail()) == (None, False, None, None, [])
-    before = time.time()
     assert child.start() == 4321 and child.pid == 4321 and child.alive and child.code is None
-    assert before <= child.since <= time.time()
+    assert child.since == hours.time()  # the moment it was started
     process = starter.made[0]
     kw = process.kw
     assert process.argv == ["ollama", "serve"] and kw["cwd"] == str(tmp_path) and kw["bufsize"] == 0
@@ -1026,60 +1195,69 @@ def test_waiting_for_a_child_gives_its_exit_code_or_none_while_it_runs(tmp_path)
 
 def test_a_real_childs_wait_is_its_watchers_and_looks_at_nothing_meanwhile(tmp_path, monkeypatch):
     # (a boot server's `launch serve` waits so for days, half a second at a time: no timer wakes it every STEP_S)
+    # (what it waits on is watched, `Gone`: a wait nothing ends is over at once, and its child's end comes during
+    # the wait that is to see it, so nothing here goes by how soon a thread runs)
     starter = Starter(kind=Real)
-    child, _ = make(tmp_path / "windows", "windows", starter=starter, clock=time.monotonic,
+    child, _ = make(tmp_path / "windows", "windows", starter=starter,
                     sleep=refusing("sleep: a real child's end is its watcher's to see"))
     child.start()
-    began = time.monotonic()
-    assert child.wait(0.3) is None and time.monotonic() - began >= 0.3 and child.alive
-    threading.Timer(0.1, starter.made[0].end, args=(3,)).start()
-    assert child.wait(10) == 3 and time.monotonic() - began < 5  # its end seen as it comes
-    assert starter.made[0].waits == []  # its handle never asked with a timeout: its watcher's wait alone
+    gone = watched(child)
+    assert child.wait(0.3) is None and gone.asked == [0.3] and child.alive  # its watcher's wait, all of its time
+    gone.during = lambda: starter.made[0].end(3)
+    assert child.wait(LONG_S) == 3 and gone.woke == [False, True]  # its end seen as it comes: it woke the wait
+    assert gone.asked == [0.3, LONG_S] and starter.made[0].waits == []  # (its handle never asked with a timeout)
     popen, made, events = real_linux(monkeypatch)  # Linux: its watcher waits by waitid, without collecting it
-    child, _ = make(tmp_path / "linux", "linux", starter=popen, clock=time.monotonic,
+    child, _ = make(tmp_path / "linux", "linux", starter=popen,
                     sleep=refusing("sleep: a real child's end is its watcher's to see"))
     child.start()
-    assert child.wait(0.3) is None and child.alive
-    threading.Timer(0.1, made[0].end, args=(1,)).start()
+    gone = watched(child)
+    assert child.wait(0.3) is None and gone.asked == [0.3] and child.alive
+    gone.during = lambda: made[0].end(1)
     assert child.wait(10) == 1 and events == [("group", 4321, children.KILL), "collected"]
+    assert gone.asked == [0.3, 10] and gone.woke == [False, True]
 
     class Unwaited(Real):  # its watcher's wait fails: its end is looked for every STEP_S, as any other child's
         def wait(self, timeout=None):
             if timeout is None:
                 raise OSError("its handle cannot be waited on")
+            if len(self.waits) == 2:
+                self.end(2)  # (it ends while it is looked for: its third look finds it ended)
             return super().wait(timeout)
     starter = Starter(kind=Unwaited)
-    child, _ = make(tmp_path / "unwaited", "windows", starter=starter, clock=time.monotonic)
+    child, _ = make(tmp_path / "unwaited", "windows", starter=starter)
     child.start()
-    child._watcher.join(10)
-    began = time.monotonic()
-    threading.Timer(0.1, starter.made[0].end, args=(2,)).start()
-    assert child.wait(10) == 2 and time.monotonic() - began < 5 and starter.made[0].waits
+    joined(child._watcher)  # (its wait has failed: it is over, and has said so)
+    gone = watched(child)
+    assert child.wait(LONG_S) == 2 and starter.made[0].waits == [children.STEP_S] * 3
+    assert gone.asked == [LONG_S] and gone.woke == [True]  # woken at once: the looks are `wait`'s own from there
 
 
 def test_a_real_childs_wait_is_its_watchers_even_on_a_clock_that_moves_in_ticks(tmp_path, monkeypatch):
     # (1.75.3: time.monotonic on Windows before Python 3.13 moves by 15.6 ms, and a watcher's wait of 0.3 s was over
     # before it said so; what it said was left was looked for every STEP_S, on CI its handle asked with a timeout
-    # 12,344 times. Here a tick is half a second, so that every Python and system sees it)
+    # 12,344 times. Here a tick is half a second, on a clock of the test's own: each wait that runs out has passed
+    # on it, and the first is over before it moves)
     ticks = Ticks(0.5)
     starter = Starter(kind=Real)
     child, _ = make(tmp_path / "windows", "windows", starter=starter, clock=ticks,
                     sleep=refusing("sleep: a real child's end is its watcher's to see"))
     child.start()
-    ticks.start()  # (the watcher's 0.3 s are over before it moves)
-    assert child.wait(0.3) is None and ticks() >= 0.3 and child.alive  # as long as its own clock says
-    began = time.monotonic()
-    threading.Timer(0.1, starter.made[0].end, args=(3,)).start()
-    assert child.wait(10) == 3 and time.monotonic() - began < 5  # its end seen as it comes
+    gone = watched(child, ticks.passed)
+    # as long as its own clock says: the rest is its watcher's wait too
+    assert child.wait(0.3) is None and gone.asked == [0.3, 0.3] and ticks() >= 0.3 and child.alive
+    gone.during = lambda: starter.made[0].end(3)
+    assert child.wait(LONG_S) == 3 and gone.woke == [False, False, True]  # its end seen as it comes
     assert starter.made[0].waits == []  # its handle never asked with a timeout: its watcher's wait alone
     popen, made, events = real_linux(monkeypatch)  # Linux: nothing napped meanwhile either
+    ticks = Ticks(0.5)
     child, _ = make(tmp_path / "linux", "linux", starter=popen, clock=ticks,
                     sleep=refusing("sleep: a real child's end is its watcher's to see"))
     child.start()
-    ticks.start()
-    assert child.wait(0.3) is None and ticks() >= 0.3 and child.alive
-    threading.Timer(0.1, made[0].end, args=(1,)).start()
+    gone = watched(child, ticks.passed)
+    assert child.wait(0.3) is None and gone.asked == [0.3, 0.3] and ticks() >= 0.3 and child.alive
+    gone.during = lambda: made[0].end(1)
     assert child.wait(10) == 1 and events == [("group", 4321, children.KILL), "collected"]
+    assert gone.woke == [False, False, True]
 
 
 # -- its end, seen apart from its output -------------------------------------------------------------------------------
@@ -1091,7 +1269,7 @@ def test_a_child_that_ends_while_what_it_started_holds_its_output_is_cleaned_up_
     process = starter.made[0]
     process.stdout.chunks.append(b"router: a model server started\n")
     process.leave(3)  # the router ends; the model server it started still holds its output open
-    child._watcher.join(10)
+    joined(child._watcher)
     # seen ended with nobody asking: its job closed (which ends the model server), its pidfile gone, not counted
     assert done == [("hold", 77, 4321), ("close", 77)] and not child.pidfile.exists() and children._all == []
     assert child._reader.is_alive()  # (what still holds its output ends with the job: here, by the test's hand)
@@ -1308,7 +1486,7 @@ def test_the_helper_is_run_without_a_window_and_without_a_thread(monkeypatch):
 
 # -- every child at once -----------------------------------------------------------------------------------------------
 def test_every_child_is_stopped_side_by_side(tmp_path, nothing_real):
-    together = threading.Barrier(2, timeout=10)
+    together = threading.Barrier(2, timeout=LONG_S)  # (the net: both come to it, by their order)
     starters: list = []
 
     def ctrl_c(pid):
@@ -1359,16 +1537,37 @@ def test_while_this_process_is_ending_children_are_stopped_one_after_another(tmp
 
 
 # -- a command's lines -------------------------------------------------------------------------------------------------
-def command(chunks=(), code=0, ends=True, kind=Process):
+class Command(Process):
+    """A streamed command as a stand-in. What it started is ended with it (as its group or its job would), and its
+    end returns only once the thread reading its output has read that output's end and is over. So what a test
+    proves of a command that was ended waits on no thread that a loaded machine runs late (1.100.0: on two starved
+    cores a reader read that end more than LEFT_S after the kill, and the output was given up as held)."""
+
+    def end(self, code=0):
+        super().end(code)
+        self.stdout.over()
+
+
+class RealCommand(Real):
+    """The same as the real subprocess.Popen makes one, as far as isinstance can tell: ended by its group."""
+
+    def end(self, code=0):
+        super().end(code)
+        self.stdout.over()
+
+
+def command(chunks=(), code=0, ends=True):
     """subprocess.Popen as a stand-in for a streamed command: what it prints, then its end (`ends` False: it runs on
-    until it is ended). (The stand-in, the processes it made.)"""
-    starter = Starter(kind=kind)
+    until it is ended). (The stand-in, the processes it made.) No time passes for it unless the test says so
+    (`hours`): one that has ended is read to the end of its output, however late its reader runs."""
+    starter = Starter(kind=Command)
 
     def popen(argv, **kw):
         process = starter(argv, **kw)
         process.stdout.chunks += list(chunks)
-        if ends:
-            process.end(code)
+        if ends:  # (it has ended, and its output with it, before anything reads it)
+            process.leave(code)
+            process.stdout.done.set()
         return process
     return popen, starter.made
 
@@ -1407,38 +1606,55 @@ def test_a_streamed_command_given_no_environment_gets_none_of_liminals_variables
         assert env == environment(Launch(("hf",), drop=("LIMINAL_*",)), system=system)  # this process's, but those
 
 
-def test_a_streamed_command_that_runs_too_long_is_ended(monkeypatch):
+def test_a_streamed_command_that_runs_too_long_is_ended(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
     popen, made = command([b"Downloading torch\n"], ends=False)
     lines: list = []
+
+    def line(text):
+        lines.append(text)
+        hours.step = 1.0  # its line is out and nothing more comes: the time passes, a second a look
     # on Windows without a job object, the command alone is ended, and that is said
     with pytest.raises(ChildError, match=r"^uv pip install torch took more than 0\.05 s: ended; what it started is "
                                          r"not held with it and may still run$") as e:
-        stream(["C:/uv.exe", "pip", "install", "torch", "--quiet"], lines.append, timeout=0.05, popen=popen,
+        stream(["C:/uv.exe", "pip", "install", "torch", "--quiet"], line, timeout=0.05, popen=popen,
                system="windows")
     assert isinstance(e.value, CommandError) and made[0].told == ["kill"] and lines == ["Downloading torch"]
 
 
-def test_a_cancelled_job_ends_its_command(monkeypatch):
+def test_a_cancelled_job_ends_its_command(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
     popen, made = command([b"Downloading model\n"], ends=False)
     out = Output()
-    threading.Timer(0.05, out.cancel).start()
+    looks: list = []
+
+    def line(text):
+        out(text)
+        hours.step = 1.0  # its line is out and nothing more comes: the time passes, a second a look
+
+    def cancelled():  # asked at every look: its user cancels once its line is out, between two looks nothing wakes
+        looks.append(out.text)
+        if looks[-2:] == ["Downloading model\n"] * 2:
+            out.cancel()
+        return out.cancelled
+    # (its time would be up a minute later on that clock: a cancel that is not looked at fails here, and hangs nothing)
     with pytest.raises(Cancelled, match=r"^hf download org/model was cancelled: ended; what it started is not held"):
-        stream(["hf", "download", "org/model"], out, cancel=lambda: out.cancelled, popen=popen, system="windows")
+        stream(["hf", "download", "org/model"], line, timeout=60.0, cancel=cancelled, popen=popen, system="windows")
     assert made[0].told == ["kill"] and out.text == "Downloading model\n"
     assert not issubclass(Cancelled, CommandError)  # a stop its user asked for, not a failure
 
     def broken():
         raise RuntimeError("the job is gone")
+    hours.step = 0.0
     popen, made = command([b"done\n"])
     assert stream(["hf", "download", "org/model"], out, cancel=broken, popen=popen, system="linux") == 0
 
 
-def test_on_windows_a_streamed_command_is_ended_through_its_job(monkeypatch):
+def test_on_windows_a_streamed_command_is_ended_through_its_job(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
     popen, made = command(ends=False)
     done = a_job(monkeypatch, types.SimpleNamespace(made=made))
+    hours.step = 1.0  # it prints nothing, and the time passes: a second a look
     with pytest.raises(ChildError, match="^npm install took more than 0.03 s: ended with what it started$"):
         stream(["npm", "install"], lambda line: None, timeout=0.03, popen=popen, system="windows")
     # ended with what it started when its time was up; at its end the job is ended again (what it left running) and
@@ -1446,63 +1662,71 @@ def test_on_windows_a_streamed_command_is_ended_through_its_job(monkeypatch):
     assert done == [("hold", 77, 4321), ("end", 77), ("end", 77), ("close", 77)] and made[0].told == []
 
 
-def test_a_command_that_ended_while_something_it_started_holds_its_output_is_not_waited_for(monkeypatch):
+def test_a_command_that_ended_while_something_it_started_holds_its_output_is_not_waited_for(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
-    monkeypatch.setattr(children, "LEFT_S", 0.03)
     popen, made = command([b"added 12 packages\n"], ends=False)
     lines: list = []
 
     def line(text):
         lines.append(text)
         made[0].returncode = 0  # the command ends here; a program it started keeps its output open
-    assert stream(["npm", "install"], line, popen=popen, system="linux") == 0
+        hours.step = 1.0  # and the time goes on, a second a look: LEFT_S later what holds it is ended with it
+    # (its time would be up a minute later on that clock, not after `stream`'s own half hour: one that waits for the
+    # held output is ended there, which fails this test in about a second)
+    assert stream(["npm", "install"], line, timeout=60.0, popen=popen, system="linux") == 0
     assert made[0].told == ["kill"] and lines == ["added 12 packages"]
 
 
 class Escaped(Process):
     """A command one of whose programs is out of what ends with it (a daemon that left its group, one outside its
-    job): ending the command ends it alone, and its output stays open until that program ends by itself, 3 s after
-    the start (or at the test's end)."""
+    job): ending the command ends it alone, and its output stays open until that program ends by itself, a minute
+    after the start on the test's clock (or at the test's end). That is long after a `stream` that gives the output
+    up has said so, and soon enough to fail one that waits for it, where it would hang."""
 
     def __init__(self, argv, pid=4321, **kw):
         super().__init__(argv, pid=pid, **kw)
         self.stdout.chunks.append(b"started\n")
-        later = threading.Timer(3.0, self.stdout.done.set)
-        later.daemon = True
-        later.start()
+        children.time.after(60.0, self.stdout.done.set)  # (the module's own time: the test's, `hours`)
+
+    @property
+    def held(self):
+        """Whether that program still holds its output open."""
+        return not self.stdout.done.is_set()
 
     def kill(self):
         self.told.append("kill")
         self.leave(-9)
 
 
-def test_its_timeout_and_its_cancel_hold_while_something_out_of_reach_holds_its_output(monkeypatch):
+def test_its_timeout_and_its_cancel_hold_while_something_out_of_reach_holds_its_output(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
-    monkeypatch.setattr(children, "LEFT_S", 0.05)
     starter = Starter(kind=Escaped)
     lines: list = []
+
+    def line(text):
+        lines.append(text)
+        hours.step = 1.0  # its line is out and nothing more comes: the time passes, a second a look
     gone = "ended; something it started still holds its output and may still run"
     # its time is up: it is ended, its output given LEFT_S more, then given up, and that is said
-    began = time.monotonic()
     with pytest.raises(ChildError, match=rf"^npm install took more than 0\.1 s: {gone}$"):
-        stream(["npm", "install"], lines.append, timeout=0.1, popen=starter, system="linux")
-    assert time.monotonic() - began < 1.5 and starter.made[-1].told == ["kill"] and lines == ["started"]
+        stream(["npm", "install"], line, timeout=0.1, popen=starter, system="linux")
+    assert starter.made[-1].told == ["kill"] and lines == ["started"]
+    assert starter.made[-1].held  # given up, not waited for: its output was still open when that was said
     # cancelled: the same, as a cancel (Windows without a job: the command alone is ended, as there)
-    cancelled = threading.Event()
-    threading.Timer(0.1, cancelled.set).start()
-    began = time.monotonic()
+    hours.step = 0.0
     with pytest.raises(Cancelled, match=rf"^npm install was cancelled: {gone}$"):
-        stream(["npm", "install"], lines.append, cancel=cancelled.is_set, popen=starter, system="windows")
-    assert time.monotonic() - began < 1.5 and starter.made[-1].told == ["kill"]
+        stream(["npm", "install"], line, cancel=lambda: len(lines) == 2, popen=starter, system="windows")
+    assert starter.made[-1].told == ["kill"] and starter.made[-1].held
 
     # it ends by itself, and what holds its output is not ended with it: given up, and said, not waited for
     def ended(text):
         starter.made[-1].leave(0)
-    began = time.monotonic()
+        hours.step = 1.0
+    hours.step = 0.0
     with pytest.raises(ChildError, match=r"^npm install ended \(exit code 0\), but something it started still holds "
                                          r"its output and may still run$"):
         stream(["npm", "install"], ended, popen=starter, system="linux")
-    assert time.monotonic() - began < 1.5 and starter.made[-1].told == ["kill"]
+    assert starter.made[-1].told == ["kill"] and starter.made[-1].held
 
 
 def test_a_reader_that_fails_ends_the_command_and_its_error_passes_on():
@@ -1530,18 +1754,21 @@ def test_a_command_that_cannot_run_says_so():
     assert len(children.said(["uv", "y" * 500])) == len("uv ") + children.SAID_CHARS
 
 
-def test_a_real_streamed_command_on_linux_is_ended_by_its_group_before_it_is_collected(monkeypatch):
+def test_a_real_streamed_command_on_linux_is_ended_by_its_group_before_it_is_collected(monkeypatch, hours):
     monkeypatch.setattr(children, "WATCH_S", 0.01)
-    popen, made, events = real_linux(monkeypatch)
+    popen, made, events = real_linux(monkeypatch, kind=RealCommand)
+    hours.step = 1.0  # it prints nothing, and the time passes: a second a look
     with pytest.raises(ChildError, match="^uv sync took more than 0.03 s: ended with what it started$"):
         stream(["uv", "sync"], lambda line: None, timeout=0.03, popen=popen, system="linux")
     assert events == [("group", 4321, children.KILL), ("group", 4321, children.KILL), "collected"]
     del events[:]
+    hours.step = 0.0
 
     def ended(argv, **kw):
         process = popen(argv, pid=4400, **kw)
         process.stdout.chunks.append(b"Installed 3 packages\n")
-        process.end(0)
+        process.leave(0)  # (it has ended, and its output with it, before anything reads it)
+        process.stdout.done.set()
         return process
     lines: list = []
     assert stream(["uv", "sync"], lines.append, popen=ended, system="linux") == 0 and lines == ["Installed 3 packages"]
@@ -1567,7 +1794,7 @@ class Input:
             raise ValueError("write to closed file")
         self.writing.set()
         if self.held is not None:
-            self.held.wait(10)
+            waited(self.held, "a write its child does not read, to be let go by the child's end")
         if self.broken:
             raise BrokenPipeError(32, "Broken pipe")
         self.written += bytes(data)
@@ -1621,6 +1848,30 @@ class RealTalker(Real):
         self.stdin.broken = True
 
 
+class Late(Pipe):
+    """An output whose reader is held at its end (`reached`) until the test lets it go (`go`): a reader's thread that
+    its system runs late, as a busy runner's."""
+
+    def __init__(self):
+        super().__init__()
+        self.reached, self.go = threading.Event(), threading.Event()
+
+    def read(self, n=-1):
+        data = super().read(n)
+        if not data:
+            self.reached.set()
+            waited(self.go, "a reader held at the end of its output, to be let go")
+        return data
+
+
+class LateTalker(Talker):
+    """A piped child as a stand-in whose reader comes to the end of its output only when the test says (`Late`)."""
+
+    def __init__(self, argv, pid=4321, **kw):
+        super().__init__(argv, pid=pid, **kw)
+        self.stdout = Late()
+
+
 def piped(folder, system, launch=None, starter=None, line=None, **outside):
     """A piped child over stand-ins, in a folder of its own: (the child, what stands in for Popen, the lines handed
     on, what it was told at its end)."""
@@ -1637,16 +1888,32 @@ def piped(folder, system, launch=None, starter=None, line=None, **outside):
 def heard(child):
     """Its errors copied, its lines read, its end seen and cleaned up after."""
     for thread in (child._reader, child._hearer, child._watcher):
-        thread.join(10)
-        assert not thread.is_alive()
+        joined(thread)
 
 
-def until(test, seconds=5.0):
-    """Waited for: what a thread of the child does comes as it comes."""
-    end = time.monotonic() + seconds
-    while not test():
-        assert time.monotonic() < end, "it did not come in time"
-        time.sleep(0.005)
+class Sending:
+    """A piped child's lock on its input (one line is written at a time), watched: what each wait for it was to last
+    at most (`asked`). No such wait goes by the time: it has the lock at once or not at all, as a wait of any length
+    has while the send that holds the lock is itself held (its child reads nothing until it has ended)."""
+
+    def __init__(self, lock):
+        self.lock = lock
+        self.asked: list[float] = []
+
+    def acquire(self, blocking=True, timeout=-1):
+        if blocking and timeout is not None and timeout >= 0:
+            self.asked.append(timeout)
+            return self.lock.acquire(False)
+        return self.lock.acquire(blocking, timeout)
+
+    def release(self):
+        self.lock.release()
+
+    def __enter__(self):
+        return self.lock.__enter__()
+
+    def __exit__(self, *error):
+        return self.lock.__exit__(*error)
 
 
 PIPES = (subprocess.PIPE,) * 3
@@ -1688,11 +1955,17 @@ def test_on_linux_a_piped_child_leads_a_session_of_its_own(tmp_path, monkeypatch
 
 
 def test_each_line_it_prints_is_handed_on_as_it_comes(tmp_path):
-    child, starter, lines, ends = piped(tmp_path, "linux")
+    lines, came = [], threading.Event()
+
+    def line(text):
+        lines.append(text)
+        came.set()
+    child, starter, _, ends = piped(tmp_path, "linux", line=line)
     child.start()
     out = starter.made[0].stdout
     out.chunks += [b'{"jsonrpc":"2.0","id":1,', b'"result":{}}\r\n']  # one line in two pieces, ended as on Windows
-    until(lambda: lines == ['{"jsonrpc":"2.0","id":1,"result":{}}'])  # handed on before it ends
+    # handed on before it ends: waited for by what the handing on sets
+    assert waited(came, "its first line, handed on") and lines == ['{"jsonrpc":"2.0","id":1,"result":{}}']
     word = "é".encode()
     out.chunks += [b"\n  \n" + b'{"id":2}\n{"id"', b":3}\n" + word[:1], word[1:] + b" its last line, not ended"]
     starter.made[0].end(0)
@@ -1847,6 +2120,55 @@ def test_on_linux_sigterm_then_sigkill_follow_its_grace(tmp_path):
     assert starter.made[1].told == ["input closed", "terminate", "kill"] and clock.now - began >= 4
 
 
+def test_a_run_s_reader_that_ends_after_the_next_start_closes_its_own_input_alone(tmp_path):
+    # (1.100.0: on CI, windows-latest with Python 3.15, the test above said "had ended already (exit code 0)" at its
+    # second stop. A stop returns once the child is seen ended, and the first run's reader came to the end of its
+    # output only once the child had been started again: it closed the input it found, the second run's, before the
+    # test had made that run stubborn. Here that reader is held at its end until the next start, every time)
+    starter = Starter(kind=LateTalker)
+    child, _, lines, ends = piped(tmp_path, "linux", starter=starter)
+    child.start()
+    first, reader = starter.made[0], child._hearer
+    first.stubborn = True
+    assert child.stop() == ("did not end within 8 s after its input was closed: ended by SIGTERM, with what it "
+                            "started")
+    assert waited(first.stdout.reached, "the first run's reader, at the end of its output")
+    assert reader.is_alive() and ends == []  # at the end of its output, held
+    child.start()
+    second = starter.made[1]
+    second.stdout.go.set()  # (its own reader is not held)
+    first.stdout.go.set()  # the first run's reader comes to its end now, the second run started
+    joined(reader)
+    assert ends == [""] and first.stdin.closed  # the first run's end, told
+    assert not second.stdin.closed and second.told == [] and child.alive  # the second run's input left open: it runs
+    child.send('{"id":1}')  # and it is still the child's input
+    assert bytes(second.stdin.written) == b'{"id":1}\n'
+    second.stubborn = second.deaf = True
+    assert child.stop(2) == ("did not end within 2 s after its input was closed, nor within 2 s after SIGTERM: "
+                             "ended with what it started")
+    assert second.told == ["input closed", "terminate", "kill"]
+
+
+def test_a_line_too_long_an_earlier_run_s_reader_reads_after_the_next_start_ends_nothing(tmp_path, monkeypatch):
+    # (1.100.0: what a run's reader reads late is that run's own: such a line ended the next run, its input closed
+    # and SIGKILL sent to it, at once)
+    monkeypatch.setattr(children, "LINE_MAX", 64)
+    child, starter, lines, ends = piped(tmp_path, "linux")
+    child.start()
+    first, reader = starter.made[0], child._hearer
+    first.leave(0)  # it ends by itself; a program it started still holds its output open
+    assert not child.alive
+    child.start()
+    second = starter.made[1]
+    first.stdout.chunks.append(b"x" * 70 + b"\n")  # the first run's last line, read after the next start
+    first.end(0)
+    joined(reader)
+    words = "it printed a line longer than 64 bytes"
+    assert ends == [words] and lines == []  # the first run's end, told as its reader found it
+    assert second.told == [] and child.alive and child.why == ""  # the second run as it was: it runs
+    assert "was ended" not in child.log.read_text("utf-8")
+
+
 def test_a_real_piped_child_on_linux_is_ended_by_its_group_before_it_is_collected(tmp_path, monkeypatch):
     popen, made, events = real_linux(monkeypatch, kind=RealTalker)
     child, _, lines, ends = piped(tmp_path, "linux", starter=popen)
@@ -1862,10 +2184,10 @@ def test_a_real_piped_child_on_linux_is_ended_by_its_group_before_it_is_collecte
     assert events[2:] == [("group", 4322, children.TERM), ("group", 4322, children.KILL), "collected"]
 
 
-def test_a_send_its_child_does_not_read_does_not_hold_up_its_stop(tmp_path, monkeypatch):
-    monkeypatch.setattr(children, "SEND_WAIT_S", 0.05)
+def test_a_send_its_child_does_not_read_does_not_hold_up_its_stop(tmp_path):
     child, starter, lines, ends = piped(tmp_path, "linux")
     child.start()
+    sending = child._sending = Sending(child._sending)  # (what its stop asks of the lock a send holds: watched)
     stdin = starter.made[0].stdin
     stdin.held = threading.Event()  # it reads nothing: the write waits
     failed: list = []
@@ -1877,15 +2199,15 @@ def test_a_send_its_child_does_not_read_does_not_hold_up_its_stop(tmp_path, monk
             failed.append(str(e))
     sender = threading.Thread(target=send, name="sender")
     sender.start()
-    assert stdin.writing.wait(5)
-    # its input cannot be closed under the write (Windows would wait as long as the write): no grace, it is ended,
-    # SEND_WAIT_S after the stop was asked (the write would hold it 10 s)
-    began = time.monotonic()
+    assert waited(stdin.writing, "the send, to begin its write")
+    # its input cannot be closed under the write (Windows would wait as long as the write): the send is waited for
+    # SEND_WAIT_S and no longer, and then it is ended, without the grace. Its end alone lets the write go: a stop
+    # that waited for the send would wait on it until the net, and say other words
     assert child.stop() == ("its input could not be closed (a line it does not read was being sent): ended by "
                             "SIGTERM, with what it started")
-    assert time.monotonic() - began < 2.0
+    assert sending.asked[0] == children.SEND_WAIT_S
     assert starter.made[0].told[:1] == ["terminate"]  # its input was not closed first (its reader may, at its end)
-    sender.join(10)
+    joined(sender, "the send")
     assert failed and failed[0].startswith("git did not take the line: its input is closed")
 
 

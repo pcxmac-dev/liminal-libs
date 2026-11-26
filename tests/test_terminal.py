@@ -6,7 +6,11 @@ import io
 import threading
 import time
 
+import pytest
+
 from liminal_libs.machines.terminal import Output, Terminal
+
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
 
 
 def test_output_is_read_from_an_offset_and_keeps_the_latest():
@@ -161,7 +165,8 @@ def test_a_wait_may_have_no_end_or_one_longer_than_threading_takes():
     assert out.wait(0, None) is True and out.wait(0, float("inf")) is True
 
 
-def test_a_child_inherits_the_environment_given_else_this_ones_without_liminals_own(monkeypatch):
+def test_a_child_inherits_the_environment_given_else_this_ones_without_liminals_own(monkeypatch,
+                                                                                   stand_in_environment):
     from liminal_libs.machines import terminal
 
     monkeypatch.setenv("LIMINAL_AI_OLLAMA_DEFAULT_KEY", "s3cret")

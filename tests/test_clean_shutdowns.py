@@ -25,6 +25,8 @@ from liminal_libs.apps.app import App
 from liminal_libs.apps.authorization import EnvironmentLogin
 from liminal_libs.lifecycle import FakeClock, FakeTable, MemoryLedger, Proc, Row, Signal
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 ME = os.getpid()
 VENV = "C:/liminal/.venv/Scripts"
 SRC = Path(__file__).resolve().parents[1] / "src" / "liminal_libs"

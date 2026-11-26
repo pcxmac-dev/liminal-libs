@@ -26,7 +26,7 @@ from liminal_libs.sources.base import DataSource
 from liminal_libs.storage import Store, pulls, set_read_only
 from liminal_libs.storage.requests import AUDIT, EVERYTHING, KINDS
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 DAY = 86_400_000
 WEEK = [date(2026, 10, d) for d in (12, 13, 14, 15, 16)]  # Monday to Friday, every one a session
@@ -53,7 +53,7 @@ def store(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def the_defaults(monkeypatch):
+def the_defaults(monkeypatch, stand_in_environment):  # (the test's environment first)
     monkeypatch.delenv(pulls.SWITCH, raising=False)
     auditing.set_policy(None)
     yield

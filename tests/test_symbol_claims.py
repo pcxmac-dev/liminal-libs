@@ -20,6 +20,8 @@ from liminal_libs.storage import Store, common
 
 from test_run_classes import NOW, PLAN, FakeSource, _bar
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 DAY = ms(datetime(2026, 10, 20, tzinfo=ET))  # Tuesday's session, over by NOW
 MINUTE = ms(datetime(2026, 10, 20, 10, 0, tzinfo=ET))
 BARS = {"day": [_bar(DAY)], "minute": [_bar(MINUTE)]}

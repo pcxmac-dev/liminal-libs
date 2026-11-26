@@ -10,6 +10,8 @@ from liminal_libs import layout
 from liminal_libs.apps import Scope
 from liminal_libs.apps import scope as scope_mod
 
+pytestmark = pytest.mark.usefixtures("stand_in_environment")  # its code reads this process's environment
+
 
 def test_a_local_login_is_a_project_folder_as_a_file_url(tmp_path):
     s = Scope.local(tmp_path / "project", title="My project", port=8801)

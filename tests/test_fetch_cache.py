@@ -28,7 +28,7 @@ from liminal_libs.sources.base import DataSource
 from liminal_libs.sources.http import HttpClient, SameHostSession
 from liminal_libs.storage import Store, feeds, pulls, set_read_only
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 OPEN = ms(datetime(2026, 10, 20, 9, 30, tzinfo=ET))  # a Tuesday's session
 CLOSE = ms(datetime(2026, 10, 20, 16, 0, tzinfo=ET))
@@ -60,8 +60,9 @@ def no_waiting(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def the_defaults(monkeypatch):
-    """Every test starts on the default policy, with the cache on, writing."""
+def the_defaults(monkeypatch, stand_in_environment):
+    """Every test starts on the default policy, with the cache on, writing (its switch out of the test's
+    environment, the stand-in, which this asks for first)."""
     monkeypatch.delenv(pulls.SWITCH, raising=False)
     auditing.set_policy(None)
     yield
@@ -1045,13 +1046,13 @@ def test_a_file_that_cannot_be_removed_is_not_said_to_be_and_is_tried_again(stor
 
 def test_a_folder_that_cannot_be_taken_away_keeps_its_row_until_it_can(store, monkeypatch):
     client, _ = _client([(200, b'{"results": []}')])
-    monkeypatch.setattr(pulls, "_emptied", lambda folder: False)  # a file of it held open
-    with pulls.pulling(store, "fake", "bars", ticker="AAA", timespan="minute") as p:
-        client.get("/a")  # an answer, and no rows of it: nothing to check, its files go at once
-    row = store.pull(p.id)
-    assert (row["state"], row["audit"], row["note"]) == ("complete", "ok", "files of it could not be removed yet")
-    assert len(_cache_files(store)) == 1  # on disk, and the ledger knows where
-    monkeypatch.undo()
+    with monkeypatch.context() as held:  # its own, undone alone: monkeypatch.undo() would end every stand-in here
+        held.setattr(pulls, "_emptied", lambda folder: False)  # a file of it held open
+        with pulls.pulling(store, "fake", "bars", ticker="AAA", timespan="minute") as p:
+            client.get("/a")  # an answer, and no rows of it: nothing to check, its files go at once
+        row = store.pull(p.id)
+        assert (row["state"], row["audit"], row["note"]) == ("complete", "ok", "files of it could not be removed yet")
+        assert len(_cache_files(store)) == 1  # on disk, and the ledger knows where
     assert auditing.tidy(store)["forgotten"] == 1 and store.pull(p.id) is None and _cache_files(store) == []
 
 

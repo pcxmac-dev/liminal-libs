@@ -28,7 +28,7 @@ from liminal_libs.machines.windows import ERROR_MARK, PowerShell, decoded
 
 from test_systemd import read_exec
 
-pytestmark = pytest.mark.usefixtures("no_outside")
+pytestmark = pytest.mark.usefixtures("no_outside", "stand_in_environment")
 
 PYTHONW = r"C:\Program Files\Liminal\.venv\Scripts\pythonw.exe"
 SERVE = [PYTHONW, "-m", "liminal_libs.machines.launch", "serve", "ollama", "default",
@@ -591,7 +591,7 @@ class Ran:
         return subprocess.CompletedProcess(args, 0, b"", b"")
 
 
-def test_no_pair_of_liminals_reaches_a_command_it_runs(tmp_path, monkeypatch):
+def test_no_pair_of_liminals_reaches_a_command_it_runs(tmp_path, monkeypatch, stand_in_environment):
     ran = Ran()
     monkeypatch.setattr(autostart.subprocess, "run", ran)
     monkeypatch.setenv("LIMINAL_AI_OLLAMA_DEFAULT_KEY", "sk-not-for-a-child")  # a pair, as the Login keeps one
