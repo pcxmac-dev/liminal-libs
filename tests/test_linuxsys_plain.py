@@ -71,7 +71,8 @@ def test_no_module_imports_what_only_linux_has_at_its_top():
 
 
 def test_loading_the_package_brings_in_no_frame_no_plugin_contract_and_no_ledger():
-    kept = {name: mod for name, mod in sys.modules.items() if name == "liminal_libs" or name.startswith("liminal_libs.")}
+    kept = {name: mod for name, mod in sys.modules.items()
+            if name == "liminal_libs" or name.startswith("liminal_libs.")}
     for name in kept:
         del sys.modules[name]
     try:
