@@ -11,6 +11,8 @@
 //                            //   note, from: the element picked}
 //   panel.unpick(); panel.picked  // {scope, key} or null
 //   panel.refresh(find)      // the middle drawn again: find(key) gives the pick told anew, or null (kept, marked gone)
+//   panel.state; panel.problems()  // the app's groups as the standard holds them now (the scope's tool and tab, the
+//                            //   pick), and what in them the rules refuse, in words ([] when none)
 //   LiminalSide.rows(root, {selector, panel, describe})  // rows picked by a click, Enter, Space or a tap
 //   LiminalSide.fromRow(tr); LiminalSide.html(spec)
 //
@@ -180,6 +182,29 @@
     const o = opts || {};
     let scope = null, picked = null, gone = null, toolHtml = null, pickHtml = null;
     const roots = new Set();
+    // the standard applied (docs/PAGES.md, standard.json): each scope's tool (its first word, after the app's own
+    // name) and tab (after its slash) and each pick are a step of `after`, so a new tool or tab lets the pick go by the
+    // rules' `of`, and a pick the rules refuse is not made. An app the rules do not name: no state, nothing refused
+    let state = {}, refused = '';
+    const named = () => { try { return o.app ? groupsOf(o.app) : null; } catch (e) { return null; } };
+    function step(group, value) {
+      const gs = named();
+      if (!gs || !gs.some((g) => g.id === group)) return true;
+      try { state = after(o.app, state, group, value); refused = ''; return true; }
+      catch (e) { refused = e.message; return false; }
+    }
+    function scoped(s) {
+      const gs = named();
+      if (!gs || !gs.length) return;
+      let t = String(s ?? '');
+      if (t.startsWith(`${o.app}:`)) t = t.slice(o.app.length + 1);
+      const slash = t.indexOf('/'), head = slash < 0 ? t : t.slice(0, slash), tab = slash < 0 ? '' : t.slice(slash + 1);
+      const first = gs[0], word = head.split(':')[0];
+      if (s == null) { step(first.id, null); return; }
+      step(first.id, word);
+      const tabs = gs.find((g) => g.id === 'tab' && g.of === first.id);
+      if (tabs && !refused) step('tab', tab || (tabs.default ?? null));
+    }
     const el = { tool: null, pick: null };
 
     function ensure() {  // a page that set the aside's markup whole took the slots with it: made again, empty
@@ -243,6 +268,7 @@
       if (!spec || spec.key == null) return;
       ensure();
       const key = String(spec.key), again = picked && picked.key === key;
+      if (!again && !step('pick', key)) return;  // the rules refuse it (refused says why): nothing picked
       picked = { scope, key, spec, from: spec.from || null };
       gone = null;
       draw(spec);
@@ -257,6 +283,7 @@
       if (!picked) return;
       const key = picked.key, from = picked.from;
       picked = null; gone = null;
+      if (state.pick && state.pick.length) step('pick', null);
       if (el.pick) { el.pick.hidden = true; el.pick.innerHTML = ''; pickHtml = null; }
       mark();
       if (focusRow) {
@@ -277,11 +304,21 @@
     const api = {
       get picked() { return picked ? { scope: picked.scope, key: picked.key } : null; },
       get scope() { return scope; },
+      get state() { return JSON.parse(JSON.stringify(state)); },
+      problems() {
+        const gs = named();
+        if (!gs) return [];
+        return [...(refused ? [refused] : []), ...problems(o.app, state)];
+      },
       get slots() { ensure(); return { tool: el.tool, pick: el.pick }; },
       tool(newScope, markup) {
         ensure();
         const s = newScope == null ? null : String(newScope);
-        if (s !== scope) { if (picked) unpick(false); scope = s; }
+        if (s !== scope) {
+          if (picked) unpick(false);
+          scope = s;
+          scoped(s);  // the standard's tool and tab: the pick's `of` reset with them
+        }
         const m = markup == null ? '' : String(markup);
         if (m !== toolHtml) { el.tool.innerHTML = m; toolHtml = m; }  // the page's own markup (it escapes a plugin's words)
         return el.tool;

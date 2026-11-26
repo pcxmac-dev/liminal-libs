@@ -120,6 +120,16 @@ apps, and you can go directly in to those apps presentations from the right most
 - `LiminalSide.html(spec)`: a pick's markup, for a page drawing its side itself.
 - `LiminalSide.standard`: the rules read, with `after` and `problems` as liminal_libs.ui.standard has them.
 
+The panel applies the rules to every app alike: the scope's first word (after the app's own name) is the app's first
+group (its tool, or its view), the words after its slash its tab, and each pick a step of the pick group, each through
+`after`. So a new tool or tab lets the pick go by the rules' `of`, and a pick the rules refuse is not made.
+`panel.state` is where the page stands and `panel.problems()` what in it the rules refuse, in words. A tool group
+held by the page itself (the charts' drawing tool, the overhead toggles) is the page's to apply.
+
+`tests/pages/side-check.html` runs side.js on stand-ins and its twin of the rules on tests/data/ui_standard_cases.json.
+It is run by hand in headless Edge (`python tests/pages/run_edge.py tests/pages/side-check.html`), never by pytest,
+since the library's tests start no process.
+
 A pick is told by a spec: `{key, title, sub, icon, facts: [[label, value]], sections: [{title, facts}], note}`. A
 plugin's tab page may give one for each row of a table (`tables[i].details`, apps/tabs.py's `detail()`); a row with
 none is told by its cells.

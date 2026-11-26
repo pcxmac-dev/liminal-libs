@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__err=''; window.onerror=function(m,s,l,c){window.__err+=m+' @'+l+':'+c+' | ';};
+window.__narrow=false; var realMM=window.matchMedia.bind(window);
+window.matchMedia=function(q){ if (q.indexOf('max-width: 700px')>=0) return {matches:window.__narrow, addEventListener:function(){}}; return realMM(q); };
+</script>
+<script src="../../src/liminal_libs/ui/static/icons.js"></script>
+<script src="../../src/liminal_libs/ui/static/side.js"></script>
+</head><body>
+<div id="mid"><h4>Busiest ports here</h4><table id="t"><thead><tr><th>Port</th><th>In</th><th>Out</th></tr></thead><tbody></tbody></table></div>
+<aside id="side"></aside><aside id="side2"></aside><aside id="side3"></aside>
+<pre id="out">pending</pre>
+<script>
+var ROOT='../../';
+function readJson(rel){ var x=new XMLHttpRequest(); x.open('GET', ROOT+rel, false); x.send(); return JSON.parse(x.responseText); }
+var res=[], fails=0;
+function ok(name, cond, extra){ res.push((cond?'ok ':'FAIL ')+name+(cond?'':' '+(extra||''))); if(!cond) fails++; }
+var tbody=document.querySelector('#t tbody'), side=document.getElementById('side');
+function fill(n, skip){ var h=''; for (var i=0;i<n;i++){ if (i===skip) continue; h+='<tr data-pick="r'+i+'"><td>tcp '+(1000+i)+'</td><td>'+(i*10)+' B</td><td>'+(i?'<button type="button" class="b">Act</button>':'')+'</td></tr>'; } tbody.innerHTML=h; }
+function row(k){ return tbody.querySelector('tr[data-pick="'+k+'"]'); }
+function key(el,k){ el.focus(); el.dispatchEvent(new KeyboardEvent('keydown',{key:k,bubbles:true,cancelable:true})); }
+var picks=0;
+try {
+  fill(30);
+  var S=window.LiminalSide;
+  ok('the global', !!S && typeof S.panel==='function' && typeof S.rows==='function');
+  var panel=S.panel(side,{app:'platform', onPick:function(){picks++;}});
+  ok('one panel per element', S.panel(side)===panel);
+  panel.tool('plugin:fw/world','<h3>Windows Firewall</h3><p>its status</p>');
+  var slots=panel.slots;
+  ok('two slots, the tool first', side.firstElementChild===slots.tool && slots.tool.nextElementSibling===slots.pick && slots.pick.hidden);
+  var describe=function(tr,k){ if (k==='r9') return {title:'<img src=x onerror="window.__xss=1">', facts:[['<b>k</b>','<i>v</i>']], note:'<script>x<\/script>'}; return null; };
+  S.rows(document.getElementById('t'),{selector:'tr[data-pick]', panel:panel, describe:describe});
+  ok('rows focusable, none picked', row('r3').tabIndex===0 && row('r3').getAttribute('aria-selected')==='false');
+  row('r3').click();
+  ok('a click picks', panel.picked && panel.picked.key==='r3' && !slots.pick.hidden && row('r3').classList.contains('picked') && row('r3').getAttribute('aria-selected')==='true');
+  var title=slots.pick.querySelector('.side-pick-title').textContent;
+  ok('told generically by its cells', title==='tcp 1003' && slots.pick.textContent.indexOf('In')>=0 && slots.pick.textContent.indexOf('30 B')>=0 && slots.pick.textContent.indexOf('Busiest ports here')>=0, title);
+  key(row('r5'),'Enter'); ok('Enter picks', panel.picked.key==='r5' && !row('r3').classList.contains('picked'));
+  key(row('r7'),' '); ok('Space picks', panel.picked.key==='r7');
+  key(row('r7'),'Escape'); ok('Escape on the row lets go, the focus stays on it', panel.picked===null && slots.pick.hidden && document.activeElement===row('r7'));
+  row('r2').click(); row('r2').click(); ok('a second click lets go', panel.picked===null);
+  row('r4').querySelector('button').click(); ok('a button inside a row never picks', panel.picked===null);
+  row('r4').click();
+  var pickEl=slots.pick;
+  for (var n=0;n<5;n++){ fill(30); panel.refresh(function(k){ return {title:'port '+k, facts:[['n', String(n)]]}; }); }
+  ok('drawn again five times, kept by its key', panel.picked.key==='r4' && row('r4').classList.contains('picked') && slots.pick===pickEl && slots.pick.textContent.indexOf('port r4')>=0 && !slots.pick.querySelector('.side-gone'));
+  panel.tool('plugin:fw/world','<h3>Windows Firewall</h3><p>its status, newer</p>');
+  ok('the tool drawn again alone keeps the pick', panel.picked && panel.picked.key==='r4' && !slots.pick.hidden && slots.tool.textContent.indexOf('newer')>=0);
+  fill(30, 4); panel.refresh(function(){ return null; });
+  var g=slots.pick.querySelector('.side-gone');
+  ok('its row gone: kept, marked', panel.picked && panel.picked.key==='r4' && g && /No longer shown as of \d\d:\d\d:\d\d\./.test(g.textContent), g && g.textContent);
+  fill(30); panel.refresh(function(k){ return {title:'port '+k}; });
+  ok('its row back: told again', !slots.pick.querySelector('.side-gone') && row('r4').classList.contains('picked'));
+  var x=slots.pick.querySelector('.side-unpick'); slots.pick.querySelector('.side-unpick').focus();
+  slots.pick.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  ok('Escape in the pick lets go, the focus back on the row', panel.picked===null && document.activeElement===row('r4'));
+  row('r6').click(); slots.pick.querySelector('.side-unpick').click();
+  ok('Unpick lets go', panel.picked===null && document.activeElement===row('r6'));
+  row('r9').click();
+  ok('a plugin\'s words are text, never markup', !side.querySelector('img') && !side.querySelector('b') && !side.querySelector('i') && !side.querySelector('script') && !window.__xss && slots.pick.querySelector('.side-pick-title').textContent.indexOf('<img')===0);
+  panel.tool('plugin:fw/netstat','<h3>Netstat</h3>');
+  ok('another scope lets the pick go', panel.picked===null && slots.pick.hidden && !row('r9').classList.contains('picked'));
+  side.innerHTML='<p>a page that set the whole aside</p>';
+  panel.tool('plugin:fw/netstat','<h3>Netstat again</h3>');
+  ok('the slots made again after a whole redraw', side.querySelector('.side-tool') && side.querySelector('.side-pick') && side.querySelector('.side-tool').textContent==='Netstat again');
+  window.__narrow=true; row('r12').click();
+  var b=side.querySelector('.side-back');
+  ok('a phone: Back to the row', !!b);
+  if (b) { b.click(); ok('back on the row', document.activeElement===row('r12')); }
+  window.__narrow=false;
+  ok('onPick told of each change', picks>=10, String(picks));
+  // the standard applied by the panel: the scope's tool and tab and each pick are steps of `after`
+  var sp=S.panel(document.getElementById('side2'),{app:'platform'});
+  sp.tool('plugin:fw/world','<h3>fw</h3>');
+  ok('the scope is the standard\'s tool and tab', JSON.stringify(sp.state)==='{"tool":["plugin"],"tab":["world"],"pick":[]}' && sp.problems().length===0, JSON.stringify(sp.state));
+  sp.pick({key:'r1',title:'one'});
+  ok('a pick is the standard\'s pick', JSON.stringify(sp.state.pick)==='["r1"]' && sp.problems().length===0, JSON.stringify(sp.state));
+  sp.tool('plugin:fw/netstat','<h3>fw</h3>');
+  ok('another tab: the rules\' of lets the pick go', sp.picked===null && JSON.stringify(sp.state)==='{"tool":["plugin"],"tab":["netstat"],"pick":[]}', JSON.stringify(sp.state));
+  sp.pick({key:'r2'}); sp.unpick();
+  ok('let go: none picked in the standard too', JSON.stringify(sp.state.pick)==='[]');
+  sp.tool('connections','<h3>c</h3>');
+  ok('a tool without a tab: the tab its default', JSON.stringify(sp.state)==='{"tool":["connections"],"tab":["main"],"pick":[]}', JSON.stringify(sp.state));
+  sp.tool('nothing-known:x','<h3>?</h3>');
+  ok('a tool the rules do not name: said in problems', sp.problems().length===1 && /has no nothing-known/.test(sp.problems()[0]), JSON.stringify(sp.problems()));
+  var un=S.panel(document.getElementById('side3'),{app:'no-such-app'}); un.tool('x','<p>x</p>'); un.pick({key:'k'});
+  ok('an app the rules do not name: picks as before, no state', un.picked && un.picked.key==='k' && un.problems().length===0 && JSON.stringify(un.state)==='{}');
+  // the shared cases, against the rules standard.json holds (read here: a file page has no fetch)
+  var rules=readJson('src/liminal_libs/ui/static/standard.json'), cases=readJson('tests/data/ui_standard_cases.json');
+  var cf=0;
+  cases.picks.forEach(function(c){
+    try { var got=S.standard.after(c.app,c.state,c.group,c.value,rules);
+      var good=!c.refused && JSON.stringify(got,Object.keys(got).sort())===JSON.stringify(c.after,Object.keys(c.after).sort()) && S.standard.problems(c.app,got,rules).length===0;
+      if(!good){cf++; res.push('FAIL case '+c.why+' got '+JSON.stringify(got));} }
+    catch(e){ if(!c.refused){cf++; res.push('FAIL case '+c.why+' threw '+e.message);} }
+  });
+  cases.states.forEach(function(c){ var p=S.standard.problems(c.app,c.state,rules); if (p.length!==c.problems){cf++; res.push('FAIL state '+c.why+' '+JSON.stringify(p));} });
+  ok('the shared cases ('+cases.picks.length+' picks, '+cases.states.length+' states)', cf===0);
+  fails+=cf;
+  S.standard.ready.then(function(r){
+    ok('no standard.json to fetch: the fallback, caught', r===S.standard.FALLBACK && S.standard.rules===S.standard.FALLBACK);
+    ok('the fallback is the platform\'s three groups', JSON.stringify(S.standard.FALLBACK.apps.platform)===JSON.stringify(rules.apps.platform));
+    document.getElementById('out').textContent=(fails?'FAILED '+fails:'ALL PASSED')+' ERR:'+window.__err+'\n'+res.join('\n');
+  });
+} catch(e) { document.getElementById('out').textContent='THROWN: '+e+' '+e.stack+'\n'+res.join('\n'); }
+</script></body></html>

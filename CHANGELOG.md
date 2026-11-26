@@ -19,6 +19,9 @@ renamed or removed, and a page that passes none of the new options sees nothing 
   again alone, and the row picked in the middle told in full under it. Rows picked by a click, Enter, Space or a tap;
   Escape, Unpick or a second click let go; a pick kept by its key through a redraw, marked "no longer shown as of" when
   its row goes; a phone scrolled to it. liminal.css styles it on the themes' variables.
+  The panel applies the rules: its scope's tool and tab and each pick are steps of `after`, so the pick goes by the
+  rules' `of` and a pick they refuse is not made (`panel.state`, `panel.problems()`). tests/pages/side-check.html, run
+  by hand in headless Edge (tests/pages/run_edge.py), runs it and the shared cases.
 - **`apps.tabs.detail()`, and a table's `details` and `pick`.** What each row of a tab page's table tells when picked,
   plain words cut at the caps. The World Wide Web tab gives them for its ports (here and elsewhere), its places, the
   hosts view's hosts and the hops' routers; the GeoIP sources' table is not picked.

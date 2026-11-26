@@ -45,7 +45,7 @@ def test_a_plugins_words_are_text_never_markup():
 
 def test_the_tool_slot_is_drawn_again_alone_and_a_new_scope_lets_the_pick_go():
     tool = SIDE.split("tool(newScope, markup) {", 1)[1].split("\n      },", 1)[0]
-    assert "if (s !== scope) { if (picked) unpick(false); scope = s; }" in tool
+    assert "if (s !== scope) {\n          if (picked) unpick(false);\n          scope = s;" in tool
     assert "el.tool.innerHTML = m" in tool and "el.pick" not in tool
     assert "if (m !== toolHtml)" in tool  # nothing redrawn when nothing changed (a status every few seconds)
 
@@ -91,3 +91,30 @@ def test_its_styles_are_on_the_themes_variables():
     assert "#" not in block.split("*/", 1)[1]  # no colour of its own: the themes' variables only
     coarse = css.split("@media (any-pointer: coarse) {", 1)[1].split("\n}", 1)[0]
     assert "tr[data-pick] td { height: 44px; }" in coarse  # a finger's target, in the one block of a touch screen's rules
+
+
+def test_the_panel_applies_the_standard_to_its_scope_and_its_picks():
+    """The scope's tool (its first word, after the app's name) and tab (after its slash) and each pick are steps of the
+    rules' `after`: a new tool or tab lets the pick go by the rules' `of`, and a pick the rules refuse is not made;
+    panel.state and panel.problems() say where the page stands. An app the rules do not name: as before."""
+    panel = body("panel")
+    assert "try { state = after(o.app, state, group, value); refused = ''; return true; }" in panel
+    assert "scoped(s);  // the standard's tool and tab" in panel
+    assert "if (!again && !step('pick', key)) return;" in panel
+    assert "if (state.pick && state.pick.length) step('pick', null);" in panel
+    assert "get state()" in panel and "problems() {" in panel
+    assert "return [...(refused ? [refused] : []), ...problems(o.app, state)];" in panel
+
+
+def test_the_side_check_page_is_kept_beside_the_tests_and_runs_the_shared_cases():
+    """tests/pages/side-check.html runs side.js on stand-ins and its twin of ui.standard on the shared cases; it is
+    run by hand in headless Edge (tests/pages/run_edge.py), never by pytest."""
+    from pathlib import Path
+
+    pages = Path(__file__).parent / "pages"
+    page = (pages / "side-check.html").read_text(encoding="utf-8")
+    assert '<script src="../../src/liminal_libs/ui/static/side.js"></script>' in page and "file:///" not in page
+    assert "readJson('tests/data/ui_standard_cases.json')" in page and "S.standard.after(c.app,c.state,c.group,c.value,rules)" in page
+    assert "sp.problems()" in page and r"the rules\' of lets the pick go" in page
+    runner = (pages / "run_edge.py").read_text(encoding="utf-8")
+    assert "Never run by pytest" in runner and "--disable-background-networking" in runner
