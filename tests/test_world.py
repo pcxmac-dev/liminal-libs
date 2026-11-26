@@ -1619,3 +1619,248 @@ def test_a_keyed_downloads_failure_is_said_in_fixed_words():
                               "maker.example alone")):
         said = world._fixed(e, keyed, own)
         assert canary not in said and "token" not in said and "?" not in said, said
+
+
+# -- 1.102.0 (Monday list item 20): the view over GeoIP sources -----------------------------------------------------------
+from liminal_libs.machines import geosources  # noqa: E402
+
+SA = "https://creativecommons.org/licenses/by-sa/4.0/"
+BY = "https://creativecommons.org/licenses/by/4.0/"
+TOKEN = "Canary_Token-0123456789abcdef"
+LITE = "https://maker.example/data/lite.mmdb"
+SUMS = "https://maker.example/data/lite.mmdb/checksums"
+SIGNED = "https://storage.example/signed/lite.mmdb?X-Sig=abc"
+NETWORKS = [("81.2.69.0/24", {"asn": "AS20712", "as_name": "Andrews & Arnold Ltd"}),
+            ("1.1.1.0/24", {"asn": "AS13335", "as_name": "Cloudflare, Inc."})]
+
+
+def _licence(url, pair):
+    return {"words": f"A summary. {geosources.pointer(url)}", "name": "CC", "pair": pair, "version": "CC 4.0",
+            "url": url}
+
+
+def source_dicts(offered=True, max_age=0):
+    dbip = {"id": "dbip", "title": "DB-IP", "maker": "DB-IP", "hosts": ["geoip.example"], "files": [
+        {"role": "places", "title": "City Lite", "url": URL, "packing": "mmdb.gz", "size": "about 60 MB",
+         "licence": _licence(BY, "dbip-lite"), "credit": MARK},
+        {"role": "networks", "title": "ASN Lite", "url": "https://geoip.example/dbip-asn-lite-{year}-{month}.mmdb.gz",
+         "packing": "mmdb.gz", "size": "about 5 MB", "licence": _licence(BY, "dbip-asn-lite"), "credit": MARK}]}
+    ipinfo = {"id": "ipinfo", "title": "IPinfo Lite", "maker": "IPinfo", "hosts": ["maker.example"],
+              "keys": {"IPINFO_TOKEN": "token"}, "sends": "query", "query": "token", "offered": offered, "files": [
+                  {"role": "networks", "title": "IPinfo Lite", "url": LITE, "packing": "mmdb", "shape": "ipinfo-lite",
+                   "stem": "ipinfo-lite", "size": "about 24 MB", "sent_on": ["storage.example"],
+                   "checksum": "ipinfo-checksums", "checksum_url": SUMS, "every_days": 7, "max_age_days": max_age,
+                   "licence": _licence(SA, "ipinfo-lite"),
+                   "credit": {"text": "IP address data powered by IPinfo", "url": "https://maker.example"}}]}
+    return [dbip, ipinfo]
+
+
+def sourced_view(folder, web=None, choice=None, wall=None, offered=True, max_age=0, fetch=None):
+    read, refused = geosources.read(source_dicts(offered, max_age), ["IPINFO_TOKEN"])
+    picked = choice if choice is not None else {}
+    if fetch is None and web is not None:
+        def fetch(url, timeout, hosts=()):
+            return FETCH_URL(url, timeout, handlers=(web,), hosts=hosts)
+    return WorldView("w", capture_factory=Feed, geo_folder=folder, clock=Clock(), wall=wall or Clock(NOW),
+                     fetch=fetch or (lambda url, timeout: (_ for _ in ()).throw(AssertionError(url))),
+                     sources=(read, refused, lambda: picked))
+
+
+def dbip_installed(folder):
+    geo.install_mmdb(mmdb(PLACES, built=NOVEMBER), folder, "dbip-city-lite-2026-11")
+    geo.install_mmdb(mmdb(NETWORKS, built=NOVEMBER, kind="DBIP-ASN-Lite"), geo.asn_folder(folder),
+                     "dbip-asn-lite-2026-11")
+
+
+def sums(data):
+    import hashlib
+    return json.dumps({"checksums": {"md5": "x", "sha1": "y", "sha256": hashlib.sha256(data).hexdigest()}}).encode()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_source_not_offered_has_its_row_and_no_button(tmp_path):
+    folder = tmp_path / "geoip"
+    dbip_installed(folder)
+    view = sourced_view(folder, offered=False)
+    page = view.page(attribution=MARK, keys=set())
+    table = page["tables"][-1]
+    assert table["title"] == world.SOURCES_TITLE
+    rows = {r[0]["text"]: r for r in table["rows"]}
+    assert rows["IPinfo Lite"][3:] == ["not asked", "not offered: waiting for your word", "", "", ""]
+    assert rows["City Lite"][4]["text"] == "built 2026-11-01; used for places"
+    assert rows["City Lite"][5] == "" and rows["City Lite"][7]["title"] == "Remove…"
+    ids = {f["id"] for f in page.get("forms", [])}
+    assert not any("ipinfo" in i for i in ids) and "actions" not in page  # no Install the GeoIP file… either
+    assert ids == {world.REMOVE_FORM + "dbip-places", world.REMOVE_FORM + "dbip-networks"}
+    assert page["globe"]["origins"] == [] and view.stamp(view.geoip()) == "2026-11-01"  # the default pair's stamp
+    view.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_fixed_address_file_comes_by_its_checksum_and_is_named_from_its_build(tmp_path):
+    folder = tmp_path / "geoip"
+    dbip_installed(folder)
+    data = mmdb(NETWORKS, built=NOVEMBER, kind="ipinfo lite")
+    keyed, keyed_sums = f"{LITE}?token={TOKEN}", f"{SUMS}?token={TOKEN}"
+    web = Web({keyed_sums: (200, {}, sums(data)), keyed: (302, {"Location": SIGNED}, b"moved"),
+               SIGNED: (200, {"Content-Length": str(len(data))}, data)})
+    view = sourced_view(folder, web, choice={"networks": "ipinfo"})
+    rows = {r[0]["text"]: r for r in view.sources_table(keys={"IPINFO_TOKEN"})[0]["rows"]}
+    assert rows["IPinfo Lite"][3] == "set in your login store" and rows["IPinfo Lite"][6]["title"] == "Download…"
+    unset = {r[0]["text"]: r for r in view.sources_table(keys=set())[0]["rows"]}["IPinfo Lite"]
+    assert unset[3]["text"] == "not set in your login store" and unset[6] == ""
+    lines = []
+    out = view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN}, log=lines.append)
+    assert web.asked == [keyed_sums, keyed, SIGNED]
+    path = folder / "ipinfo" / "asn" / "ipinfo-lite-2026-11-01.mmdb"
+    assert out["ok"] and out["said"] == f"installed {path.name}" and path.exists()
+    notes = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    assert set(notes) == {"source", "role", "sha256", "installed"} and TOKEN not in json.dumps(notes)
+    assert TOKEN not in json.dumps([out, lines]) and any("storage.example" in line for line in lines)
+    g = view.geoip()  # the chosen networks file, read beside DB-IP's places
+    assert g.lookup("81.2.69.142").asn == 20712 and view.stamp(g) == "#dbip:2026-11-01+ipinfo:2026-11-01"
+    assert view.credits()["networks"]["text"] == "IP address data powered by IPinfo"
+    again = view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN})
+    assert "installed already" in again["said"] and web.asked[-1] == keyed_sums and len(web.asked) == 4
+    view.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_checksum_that_is_not_the_makers_downloads_nothing(tmp_path):
+    folder = tmp_path / "geoip"
+    for answer in (b"{\"checksums\": {\"sha256\": NaN}}", b"not json", b"{\"checksums\": {}}", b"x" * 5000):
+        web = Web({f"{SUMS}?token={TOKEN}": (200, {}, answer)})
+        view = sourced_view(folder, web)
+        with pytest.raises(geo.GeoError, match="nothing was downloaded|not installed"):
+            view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN})
+        assert web.asked == [f"{SUMS}?token={TOKEN}"] and not (folder / "ipinfo").exists()
+        view.close()
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_a_key_never_reaches_an_error_its_cause_or_its_lines(tmp_path):
+    folder = tmp_path / "geoip"
+    from urllib.parse import quote, quote_plus
+
+    def refusing(url, timeout, hosts=()):
+        raise http.client.InvalidURL(f"URL can't contain control characters. {url.partition('?')[2] + chr(9)!r} {url}")
+
+    def denied(url, timeout, hosts=()):
+        raise urllib.error.HTTPError(url, 401, f"no: {url}", {}, io.BytesIO(b""))
+    for fetch, words in ((refusing, "failed (InvalidURL)"), (denied, "the key was refused")):
+        lines = []
+        view = sourced_view(folder, fetch=fetch)
+        with pytest.raises(geo.GeoError) as e:
+            view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN}, log=lines.append)
+        said = " ".join([f"{type(e.value).__name__}: {e.value}", repr(e.value), *lines])
+        for form in (TOKEN, quote(TOKEN, safe=""), quote_plus(TOKEN)):
+            assert form not in said
+        assert words in str(e.value)
+        assert e.value.__cause__ is None and e.value.__context__ is None
+        view.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_cancel_installs_nothing_and_one_download_runs_at_a_time(tmp_path):
+    folder = tmp_path / "geoip"
+    data = mmdb(NETWORKS, built=NOVEMBER)
+    web = Web({f"{SUMS}?token={TOKEN}": (200, {}, sums(data)), f"{LITE}?token={TOKEN}": (200, {}, data)})
+    view = sourced_view(folder, web)
+    with pytest.raises(geo.GeoError, match="cancelled"):
+        view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN}, cancel=lambda: True)
+    assert not list((folder / "ipinfo" / "asn").glob("*.mmdb")) if (folder / "ipinfo" / "asn").exists() else True
+    assert view._installing.acquire(blocking=False)
+    try:
+        with pytest.raises(ValueError, match="being downloaded already"):
+            view.get("ipinfo", "networks", {"IPINFO_TOKEN": TOKEN})
+        with pytest.raises(ValueError, match="being downloaded"):
+            view.remove("ipinfo", "networks")
+    finally:
+        view._installing.release()
+    view.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_choice_falls_back_to_the_default_and_says_why(tmp_path):
+    folder = tmp_path / "geoip"
+    dbip_installed(folder)
+    view = sourced_view(folder, choice={"networks": "ipinfo", "places": "nobody"})
+    chosen = view.chosen()
+    assert chosen["networks"]["source"] == "dbip" and "IPinfo Lite is not installed" in chosen["networks"]["words"]
+    assert chosen["places"]["source"] == "dbip" and "nobody gives no places file" in chosen["places"]["words"]
+    assert view.stamp(view.geoip()) == "2026-11-01"
+    table = view.sources_table(keys=set())[0]
+    assert "IPinfo Lite is not installed, so ASN Lite is used for networks" in table["note"]
+    off = sourced_view(tmp_path / "other", choice={"networks": "ipinfo"}, offered=False)
+    geo.install_mmdb(mmdb(NETWORKS), off.file_folder("ipinfo", "networks"), "ipinfo-lite-2026-11-01")
+    assert off.chosen()["networks"]["source"] is None  # a source not offered: its file stays, unread
+    view.close()
+    off.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_file_past_its_days_is_let_go_at_the_next_ask_without_reading_it(tmp_path, monkeypatch):
+    folder = tmp_path / "geoip"
+    dbip_installed(folder)
+    wall = Clock(NOVEMBER + 86400)
+    view = sourced_view(folder, choice={"networks": "ipinfo"}, wall=wall, max_age=30)
+    geo.install_mmdb(mmdb(NETWORKS, built=NOVEMBER, kind="ipinfo lite"), view.file_folder("ipinfo", "networks"),
+                     "ipinfo-lite-2026-11-01")
+    g = view.geoip()
+    assert g.asn.describe()["file"] == "ipinfo-lite-2026-11-01.mmdb" and view.stamp(g).endswith("+ipinfo:2026-11-01")
+    opened = []
+    real = geo._opened
+    monkeypatch.setattr(geo, "_opened", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
+    assert view.geoip() is g and opened == []  # asked again: no file read for the check
+    wall.t = NOVEMBER + 30 * 86400
+    view._geo_looked = None
+    again = view.geoip()
+    assert again is not g and g.describe()["open"] is False  # let go at once
+    assert again.asn.describe()["file"] == "dbip-asn-lite-2026-11.mmdb"  # the default's, by the fallback
+    rows = {r[0]["text"]: r for r in view.sources_table(keys={"IPINFO_TOKEN"})[0]["rows"]}
+    assert "too old" in rows["IPinfo Lite"][4]["sub"] and rows["IPinfo Lite"][5] == ""  # no Use… for it
+    view.close()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_removal_takes_the_file_and_its_notes_or_says_it_could_not(tmp_path, monkeypatch):
+    folder = tmp_path / "geoip"
+    dbip_installed(folder)
+    view = sourced_view(folder, choice={"networks": "ipinfo"})
+    path = geo.install_mmdb(mmdb(NETWORKS), view.file_folder("ipinfo", "networks"), "ipinfo-lite-2026-11-01")
+    path.with_suffix(".json").write_text("{}", encoding="utf-8")
+    assert view.geoip().asn.path == path
+    monkeypatch.setattr(geo, "_remove", lambda p: False)
+    out = view.remove("ipinfo", "networks")
+    assert out["ok"] is False and "could not be removed" in out["said"] and path.exists()
+    assert view.geoip().asn.path.name == "dbip-asn-lite-2026-11.mmdb"  # unread meanwhile
+    monkeypatch.undo()
+    out = view.remove("ipinfo", "networks")
+    assert out["ok"] is True and not path.exists() and not path.with_suffix(".json").exists()
+    assert view.remove("ipinfo", "networks")["said"] == "IPinfo Lite is not installed here"
+    view.close()
+
+
+def test_the_sources_forms_say_what_goes_where():
+    read, _ = geosources.read(source_dicts(), ["IPINFO_TOKEN"])
+    ipinfo = read[1]
+    f = ipinfo.file("networks")
+    get = world.get_form(ipinfo, f, "C:/data/geoip/ipinfo/asn")
+    assert get["hook"] == world.GEOIP_GET_HOOK and get["job"] is True
+    assert [x["name"] for x in get["fields"]] == ["source", "role", ACCEPT_LICENCE]
+    words = get["confirm"]["words"]
+    assert "maker.example" in words and "storage.example" in words and "IPINFO_TOKEN goes to maker.example alone" in words
+    assert f.licence.words in words and TOKEN not in json.dumps(get)
+    remove = world.remove_form(ipinfo, f, "C:/data/geoip/ipinfo/asn")
+    assert remove["fields"][-1]["name"] == world.ACCEPT_REMOVAL == geosources.RemovalRefused.accept
+    use = world.use_form(ipinfo, f)
+    assert use["hook"] == world.GEOIP_USE_HOOK and use["id"] == world.USE_FORM + "ipinfo-networks"
+    for made in (get, remove, use):
+        assert json.loads(json.dumps(made, allow_nan=False)) == made

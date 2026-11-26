@@ -24,11 +24,19 @@ minutes; and tables of the busiest ports and places.
 - The GeoIP file is downloaded only on the user's word (install): this month's file at the plugin's address, or last
   month's when this month's is not out yet, streamed into geo.install_mmdb with its bounds, under one deadline for all
   of it (geo.INSTALL_S), over https on every hop and from the plugin's own host alone. The address is the plugin's: no
-  outside host is named in the library."""
+  outside host is named in the library.
+- 1.102.0 (Monday list item 20): a plugin may name GeoIP sources (machines/geosources.py), for places and for networks
+  apart, the first the default (today's files and folders). The view then opens the chosen files (`choose`, kept by the
+  plugin), checks at every ask that neither is too old to be read, and answers the "GeoIP sources" table, whose
+  Download… (`get`), Use… and Remove… (`remove`) take the place of the two install buttons. A source's key is read only
+  in its download's job, sent only to its own host in the first address, and never said: its words go through
+  geosources.redact, and a keyed download's failures are said in fixed words."""
 from __future__ import annotations
 
 import functools
+import inspect
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -45,6 +53,7 @@ from urllib.parse import urlsplit
 
 from .. import capture, dns, geo, netpath, traffic
 from ..sources.keys import KeyVar
+from . import geosources
 
 TITLE = "World Wide Web"
 TAB = "world"  # the tab's id: its charts' keys begin with it
@@ -89,6 +98,15 @@ UNITS = ("B", "KB", "MB", "GB", "TB", "PB")
 USER_AGENT = "liminal-libs (GeoIP download)"
 LICENCE_FIRST = "The GeoIP file is downloaded only once you accept its licence."
 DETACHED = "the plugin was detached, so the download was stopped: nothing was installed"
+CANCELLED = "the download was cancelled: nothing was installed"
+# 1.102.0: the GeoIP sources' hooks (each asked from its form alone, by a person signed in at the page) and forms
+GEOIP_GET_HOOK = "world_geoip_get"  # a source's file downloaded, as a job (Cancel stops it)
+GEOIP_USE_HOOK = "world_geoip_use"  # a source's file used for its role
+GEOIP_REMOVE_HOOK = "world_geoip_remove"  # a source's file removed, asked twice
+GET_FORM, USE_FORM, REMOVE_FORM = "world-geoip-get-", "world-geoip-use-", "world-geoip-remove-"  # + <source>-<role>
+ACCEPT_REMOVAL = "accept_removal"
+SOURCES_TITLE = "GeoIP sources"
+CHECKSUM_MOST = 4096  # bytes of a maker's checksum answer read at most
 SHOWN = 40  # characters of a setting that is no place shown back in the words
 # what capture.py adds to the words of every libpcap open that failed off Windows, whatever the cause: never taken for
 # libpcap's own word that the right to capture is missing
@@ -842,6 +860,120 @@ def asn_form(licence: str = "", source: str = "", folder=None, update: bool = Fa
                               f"{words} You are asked to accept it next.")}}
 
 
+# -- 1.102.0: the GeoIP sources' forms and helpers ---------------------------------------------------------------------
+def _fixed_fields(source, file) -> list:
+    return [{"name": "source", "type": "fixed", "value": source.id}, {"name": "role", "type": "fixed", "value": file.role}]
+
+
+def get_form(source, file, folder, update: bool = False) -> dict:
+    """A source's file's download form (a job): its first confirmation says what is downloaded, from which host and
+    which it is sent on to, its size, where it is kept, how a key travels and to whom, and the licence's words; the hook
+    refuses until the licence is accepted (LicenceRefused), and the page asks that as a second confirmation."""
+    verb = "Update" if update else "Download"
+    sent = f", which sends it on from {' or '.join(file.sent_on)}" if file.sent_on else ""
+    key = ""
+    if source.keys:
+        names = " and ".join(source.keys)
+        key = (f" Your {names} goes to {file.host} alone, in the first address, read from your login store for this "
+               "download; it is never shown, logged or kept anywhere else.")
+    check = (f" Its checksum is asked of {file.host} first, which counts against no limit: when the newest is "
+             "installed already, nothing is downloaded." if file.checksum != "none" else "")
+    return {
+        "id": GET_FORM + file.key, "hook": GEOIP_GET_HOOK, "title": f"{verb} {file.title}", "job": True,
+        "note": f"Its {file.role} are looked up in this file, on this machine: no address is sent anywhere.",
+        "fields": [*_fixed_fields(source, file),
+                   {"name": ACCEPT_LICENCE, "type": "accept", "title": f"Accept its licence ({file.licence.name})?",
+                    "words": file.licence.words, "yes": "Accept it and download"}],
+        "confirm": {"title": f"{verb} {file.title}?", "yes": "Go on",
+                    "words": (f"{file.title} is downloaded from {file.host}{sent}, and kept in {folder}, in place of "
+                              f"any older copy: {file.size}.{key}{check} Its progress shows in the panel below; it "
+                              f"stops by itself after {_seconds(geo.INSTALL_S / 60)} minutes. Nothing about your "
+                              f"traffic is sent. Its licence, first: {file.licence.words} You are asked to accept it "
+                              "next.")}}
+
+
+def use_form(source, file) -> dict:
+    """A source's file used for its role: one confirmation."""
+    return {"id": USE_FORM + file.key, "hook": GEOIP_USE_HOOK, "title": f"Use {file.title}",
+            "fields": _fixed_fields(source, file),
+            "confirm": {"title": f"Use {file.title} for {file.role}?", "yes": "Use it",
+                        "words": (f"{file.title} is used for {file.role} from now on, on this machine, for everyone "
+                                  "who opens this tab: the hosts are placed again from it at the next ask. Its credit "
+                                  f"is shown wherever its {file.role} are: {file.credit.get('text', '')}.")}}
+
+
+def remove_form(source, file, folder) -> dict:
+    """A source's file removed: asked twice (its hook refuses, naming accept_removal, until the second)."""
+    words = (f"{file.title} is removed from {folder}, with its notes, and is no longer read; the {file.role} it gave "
+             "are placed again from the files in use, or cleared. It can be downloaded again.")
+    return {"id": REMOVE_FORM + file.key, "hook": GEOIP_REMOVE_HOOK, "title": f"Remove {file.title}",
+            "fields": [*_fixed_fields(source, file),
+                       {"name": ACCEPT_REMOVAL, "type": "accept", "title": f"Remove {file.title} for good?",
+                        "words": words, "yes": "Remove it"}],
+            "confirm": {"title": f"Remove {file.title}?", "yes": "Go on", "words": words}}
+
+
+def _checksum(stream) -> str:
+    """A maker's checksum answer ({"checksums": {"sha256": ...}}), read bounded (CHECKSUM_MOST) as strict JSON: its
+    SHA-256, 64 hex digits. GeoError in fixed words otherwise."""
+    raw = b""
+    while len(raw) <= CHECKSUM_MOST:
+        got = stream.read(CHECKSUM_MOST + 1 - len(raw))
+        if not got:
+            break
+        raw += bytes(got)
+    if len(raw) > CHECKSUM_MOST:
+        raise geo.GeoError(f"the checksum's answer runs past {CHECKSUM_MOST:,} bytes: nothing was downloaded")
+
+    def strict(value):
+        raise ValueError("not strict JSON")
+    try:
+        doc = json.loads(raw.decode("utf-8"), parse_constant=strict)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        doc = None
+    sha = doc.get("checksums", {}).get("sha256") if isinstance(doc, dict) and isinstance(doc.get("checksums"),
+                                                                                           dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        raise geo.GeoError("the checksum's answer is not the maker's: no SHA-256 in it, so nothing was downloaded")
+    return sha.lower()
+
+
+def _notes(path: Path) -> dict:
+    """A file's notes (<stem>.json beside it), {} when there are none or they do not read."""
+    try:
+        doc = json.loads(Path(path).with_suffix(geo.NOTES).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _write_notes(path: Path, notes: dict) -> None:
+    """A file's notes written beside it: what its maker said at install (the SHA-256 checked, when): never a key, a
+    token or an address."""
+    part = Path(path).with_suffix(geo.NOTES + ".part")
+    try:
+        part.write_text(json.dumps(notes, sort_keys=True), encoding="utf-8")
+        os.replace(part, Path(path).with_suffix(geo.NOTES))
+    except OSError:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+
+
+def _day(built) -> str:
+    try:
+        return datetime.fromtimestamp(int(built), timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "undated"
+
+
+def _geo_words(e: BaseException) -> str:
+    """An install's refusal, its reason alone (what geo said after "was not installed: "), for a keyed download."""
+    text = str(e)
+    return text.split("was not installed: ", 1)[-1] if "was not installed: " in text else type(e).__name__
+
+
 # -- the page's words and numbers ------------------------------------------------------------------------------------------
 def size_words(n) -> str:
     """Bytes in words, as the page's charts say them (1024 to a KB): 512 B, 1.2 MB, 135 GB."""
@@ -989,8 +1121,18 @@ class WorldView:
     downloads the GeoIP file on the user's word. Thread-safe: the platform asks from a thread per request."""
 
     def __init__(self, name: str, *, capture_factory=None, geo_folder=None, timeout: float = TIMEOUT_S,
-                 clock=time.monotonic, resolve=None, fetch=None, wall=time.time, book: traffic.TrafficBook | None = None):
+                 clock=time.monotonic, resolve=None, fetch=None, wall=time.time, book: traffic.TrafficBook | None = None,
+                 sources=None):
         self.name = str(name or "")
+        # 1.102.0: (the GeoIP sources read, what was wrong with the others, the choice's reader: {role: source id})
+        named, refused, choice_of = sources if sources is not None else ((), (), None)
+        self.sources: list = list(named or ())
+        self.refused: list[str] = [str(r) for r in refused or ()]
+        self._choice_of = choice_of if callable(choice_of) else (lambda: {})
+        self._facts: dict = {}  # a folder's newest file, as it was described: {folder: ((path, mtime), facts)}
+        self._held: set[str] = set()  # files a removal could not take (Windows held them): never read from here
+        self._open_ids: dict[str, str | None] = {"places": None, "networks": None}  # the sources of the files open
+        self._said_choice: dict = {}  # why a role falls back, in words, as chosen() last said it
         self.capture_factory = capture_factory or default_capture
         self._folder = Path(geo_folder) if geo_folder is not None else None
         self.timeout = float(timeout)
@@ -1086,14 +1228,382 @@ class WorldView:
         if self.elsewhere():
             return None
         with self._lock:
+            if self.sources and self._geoip is not None and not self._still_usable(self._geoip):
+                self._let_go_now()  # 1.102.0: a file too old to be read let go at once, at whichever ask finds it
             if self._geoip is not None or self.closed:
                 return self._geoip
             now = self.clock()
             if self._geo_looked is not None and now - self._geo_looked < GEO_LOOK_S:
                 return None
             self._geo_looked = now
-            self._geoip = geo.GeoIP.find(self.folder)
+            self._geoip = self._open_chosen() if self.sources else geo.GeoIP.find(self.folder)
             return self._geoip
+
+    # -- 1.102.0: the GeoIP sources ---------------------------------------------------------------------------------
+    @property
+    def default(self) -> str:
+        """The default source's id: the plugin's first ("" when it names none)."""
+        return self.sources[0].id if self.sources else ""
+
+    def source(self, ident) -> geosources.GeoSource | None:
+        return next((s for s in self.sources if s.id == ident), None)
+
+    def file_of(self, ident, role) -> geosources.GeoFile | None:
+        source = self.source(ident)
+        return source.file(role) if source is not None and role in geosources.ROLES else None
+
+    def file_folder(self, ident: str, role: str) -> Path:
+        return geosources.folder(self.folder, ident, role, self.default)
+
+    def _now(self) -> float:
+        return self.wall()
+
+    def _usable(self, file: geosources.GeoFile):
+        """A file's usable test: not one a removal could not take, and not past its max_age_days (asked now)."""
+        age = geosources.usable(file, self._now)
+
+        def test(path, built) -> bool:
+            return str(path) not in self._held and age(path, built)
+        return test
+
+    def _still_usable(self, geoip) -> bool:
+        asn = getattr(geoip, "asn", None)
+        return geoip.usable_now() and (asn is None or asn.usable_now())
+
+    def _let_go_now(self) -> None:
+        """With the lock held: the file open let go (it is opened anew, by the choice, at the next ask)."""
+        geoip, self._geoip, self._geo_looked = self._geoip, None, None
+        if geoip is not None:
+            geoip.close()
+            self._geo_said = geoip.describe()
+        self._open_ids = {"places": None, "networks": None}
+
+    def replaced(self) -> None:
+        """The files in use changed (a use, an install, a removal): the one open let go, the folders looked at anew."""
+        with self._lock:
+            self._facts.clear()
+            self._let_go_now()
+
+    def installed(self, ident: str, role: str) -> dict | None:
+        """A source's file of `role` installed here, as it was described when last opened (its file, path, date and
+        built, and `epoch`), cached by its name and time; None when there is none (or none that opens)."""
+        folder = self.file_folder(ident, role)
+        if geo.foreign(folder, "Reading the GeoIP files"):
+            return None
+        for path in geo._copies(folder):
+            if str(path) in self._held:
+                continue
+            try:
+                key = (str(path), path.stat().st_mtime)
+            except OSError:
+                continue
+            kept = self._facts.get(str(folder))
+            if kept is not None and kept[0] == key:
+                return kept[1]
+            try:
+                with geo.GeoIP(path) as opened:
+                    facts = {**opened.describe(), "epoch": opened.built}
+            except geo.GeoError:
+                continue
+            facts.pop("asn", None)
+            self._facts[str(folder)] = (key, facts)
+            return facts
+        return None
+
+    def chosen(self) -> dict:
+        """The files used for each role: {role: {"source", "file", "facts", "words"}}: the source chosen (the plugin's
+        choice_of), else the default's; a choice whose file is missing, too old, of a source not named or not offered
+        falls back to the default source's file where it is installed, else to none, and `words` says why."""
+        try:
+            wanted = dict(self._choice_of() or {})
+        except Exception:  # noqa: BLE001 - a choice that cannot be read: the default's
+            wanted = {}
+        out = {}
+        for role in geosources.ROLES:
+            want = str(wanted.get(role) or self.default)
+            pick, why = None, ""
+            for ident in dict.fromkeys((want, self.default)):
+                source, file = self.source(ident), self.file_of(ident, role)
+                if file is None or not source.offered:
+                    if ident == want and ident != self.default:
+                        why = f"{ident} gives no {role} file here (not named, or not offered)"
+                    continue
+                facts = self.installed(ident, role)
+                if facts is None:
+                    if ident == want and ident != self.default:
+                        why = f"{file.title} is not installed"
+                    continue
+                if geosources.due(file, facts.get("epoch"), self._now()) == "expired":
+                    why = f"{file.title} is too old to be read (its licence's {file.max_age_days} days)"
+                    continue
+                pick = {"source": ident, "file": file, "facts": facts}
+                break
+            if pick is None:
+                pick = {"source": None, "file": None, "facts": None}
+            if why and pick["source"] is not None:
+                why += f", so {pick['file'].title} is used for {role}"
+            elif why:
+                why += f", and no other {role} file is installed"
+            out[role] = {**pick, "words": why}
+        self._said_choice = {r: c["words"] for r, c in out.items()}
+        return out
+
+    def _open_chosen(self) -> geo.GeoIP | None:
+        """With the lock held: the chosen places file opened, the chosen networks file read beside it."""
+        chosen = self.chosen()
+        places, networks = chosen["places"], chosen["networks"]
+        if places["file"] is None:
+            return None
+        beside = None
+        if networks["file"] is not None:
+            beside = geo.newest(self.file_folder(networks["source"], "networks"), usable=self._usable(networks["file"]),
+                                what="Reading the ASN file")
+        found = geo.GeoIP.find(self.file_folder(places["source"], "places"), asn=beside,
+                               usable=self._usable(places["file"]))
+        if found is None:
+            if beside is not None:
+                beside.close()
+            return None
+        self._open_ids = {"places": places["source"], "networks": networks["source"] if beside is not None else None}
+        return found
+
+    def stamp(self, geoip=None) -> str:
+        """What a host placed from the files open is stamped with (geosources.stamp): the places file's date alone with
+        the default source's files, as before 1.102.0."""
+        geoip = geoip if geoip is not None else self._geoip
+        if geoip is None:
+            return ""
+        try:
+            d = geoip.describe() or {}
+        except Exception:  # noqa: BLE001 - a file that cannot say: placed as of none
+            return ""
+        date = str(d.get("date") or "")
+        if not self.sources:
+            return date
+        ids = dict(self._open_ids)
+        places = (ids["places"] or self.default, date)
+        asn = d.get("asn") or {}
+        networks = (ids["networks"] or self.default, str(asn.get("date") or "")) if asn else None
+        return geosources.stamp(places, networks, self.default)
+
+    def credits(self) -> dict:
+        """The credits of the files in use, by role ({text, url}), for the globe and the tables."""
+        with self._lock:
+            ids = dict(self._open_ids)
+        out = {}
+        for role in geosources.ROLES:
+            file = self.file_of(ids.get(role), role) if ids.get(role) else None
+            out[role] = dict(file.credit) if file is not None else None
+        return out
+
+    def _fetch_to(self, url: str, timeout: float, hosts=()):
+        """The view's fetch, given the hosts a download may be sent on to when it takes them (fetch_url does)."""
+        try:
+            params = inspect.signature(self._fetch).parameters
+            takes = "hosts" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            takes = False
+        return self._fetch(url, timeout, hosts=tuple(hosts)) if takes else self._fetch(url, timeout)
+
+    def get(self, ident: str, role: str, secrets=None, log=None, cancel=None) -> dict:
+        """A source's file of `role` downloaded on the user's word (the plugin's world_geoip_get, its licence accepted
+        and its keys read in the job): a month's file as install() fetches DB-IP's, into the source's own folder; a
+        fixed address's (IPinfo Lite) with its checksum first (the newest installed already: nothing downloaded), then
+        the file, its SHA-256 compared before it is put in place, named from its build date, its notes beside it (the
+        SHA-256 and when: never a key, a token or an address). One download at a time; `cancel()` stops it. Every word
+        it says goes through geosources.redact; a keyed download's failure is said in fixed words (status and host)."""
+        source, file = self.source(ident), self.file_of(ident, role)
+        if file is None:
+            raise ValueError(f"the plugin names no {role} file of a source {ident}")
+        secrets = dict(secrets or {})
+        folder = self.file_folder(ident, role)
+        if file.monthly:
+            out = self.install(file.url, log=log, kind="asn" if role == "networks" else "city", folder=folder,
+                               packing=file.packing, cancel=cancel)
+        else:
+            out = self._get_fixed(source, file, folder, secrets, log, cancel)
+        self.replaced()
+        return out
+
+    def _get_fixed(self, source, file, folder: Path, secrets: dict, log, cancel) -> dict:
+        say = _sayer(log)
+
+        def said(line: str) -> None:
+            say(geosources.redact(line, secrets))
+        elsewhere = geo.foreign(folder, f"Installing {file.title}")
+        if elsewhere:
+            raise ValueError(elsewhere)
+        if not self._installing.acquire(blocking=False):
+            raise ValueError(f"{'an' if (self._what or 'a').startswith('ASN') else 'a'} {self._what or 'GeoIP file'} "
+                             "is being downloaded already: wait for it to finish")
+        failure = ""
+        try:
+            ok, why = geo.available()
+            if not ok:
+                raise ValueError(f"places cannot be read here, so nothing is downloaded: {why}")
+            cutoff = _Cutoff()
+            with self._lock:
+                if self.closed:
+                    raise ValueError("the plugin was detached: nothing is downloaded")
+                self._cutoff, self._progress, self._what = cutoff, "", file.title
+            budget = float(geo.INSTALL_S)
+            deadline = geo._clock() + budget
+            took = (f"the download took more than {_seconds(budget)} s, the most an install may take, so it was "
+                    "stopped: nothing was installed")
+            try:
+                out = run_download(lambda: self._fixed_download(source, file, folder, secrets, cutoff, deadline, took,
+                                                                said), cutoff, deadline, took,
+                                   name=f"{self.name or 'world'}-{file.key}-download",
+                                   stopping=lambda: self._stopping(cancel), what=file.title)
+            except geo.GeoError as e:
+                failure = geosources.redact(str(e), secrets)
+            finally:
+                with self._lock:
+                    self._cutoff, self._progress, self._what = None, "", ""
+        finally:
+            self._installing.release()
+        if failure:
+            raise geo.GeoError(failure)  # outside every except block: no cause, no context
+        return out
+
+    def _fixed_download(self, source, file, folder: Path, secrets: dict, cutoff: _Cutoff, deadline: float, took: str,
+                        said) -> dict:
+        """On the download's thread: the checksum, then the file. Every failure in fixed words (_fixed), raised after
+        the except block, so neither its cause nor its context holds what an exception printed."""
+        failure, asked = "", file.url
+        try:
+            current = self.installed(source.id, file.role)
+            want = None
+            if file.checksum == "ipinfo-checksums":
+                asked = geosources.address(file, source, secrets, checksum=True)
+                said(f"asking {file.host} for the newest file's checksum (it counts against no limit)")
+                stream = self._fetch_to(asked, min(READ_S, max(1.0, deadline - geo._clock())))
+                try:
+                    want = _checksum(stream)
+                finally:
+                    _close(stream)
+                if current is not None and _notes(Path(current["path"])).get("sha256") == want:
+                    return {"said": f"{current['file']} is installed already: it is the newest, by its checksum",
+                            "ok": True, "lines": [f"kept in {folder}, the only copy", "nothing was downloaded"],
+                            "file": current}
+            if cutoff.why:
+                raise geo.GeoError(cutoff.why)
+            asked = geosources.address(file, source, secrets)
+            said(f"asking {file.host} for {file.title}")
+            stream = self._fetch_to(asked, min(READ_S, max(1.0, deadline - geo._clock())), file.sent_on)
+            try:
+                came = _came_from(stream, asked, file.sent_on)
+                body = _Body(stream, cutoff, deadline, took, said, self._told)
+                said(f"downloading {file.title} from {_host(came)}" + (f": {size_words(body.size)}" if body.size else ""))
+                path = geo.install_mmdb(body, folder, file.stem, timeout=None, packing=file.packing,
+                                        name_of=lambda built: f"{file.stem}-{_day(built)}", sha256=want)
+            finally:
+                _close(stream)
+            _write_notes(path, {"source": source.id, "role": file.role, "sha256": want or "",
+                                "installed": _iso(self.wall())})
+        except Exception as e:  # noqa: BLE001 - every failure said in fixed words below
+            if cutoff.why:
+                failure = cutoff.why
+            elif isinstance(e, geo.GeoError):  # the library's own words (an install's, the checksum's, the answer's host)
+                failure = f"{file.title} was not installed: {_geo_words(e)}"
+            else:
+                failure = _fixed(e, asked, source.hosts)
+        if failure:
+            raise geo.GeoError(geosources.redact(failure, secrets))
+        self._facts.pop(str(folder), None)
+        return {"said": f"installed {path.name}", "ok": True, "file": {"file": path.name, "path": str(path)},
+                "lines": [f"downloaded from {_host(came)}", f"kept in {folder}, in place of any older copy",
+                          f"its {file.role} are looked up in it on this machine: no address is sent anywhere"]}
+
+    def remove(self, ident: str, role: str) -> dict:
+        """A source's file of `role` removed, with its notes, every reader of it closed first. One Windows still holds
+        is said so, left unread from here, and tried again at the next ask."""
+        file = self.file_of(ident, role)
+        if file is None:
+            raise ValueError(f"the plugin names no {role} file of a source {ident}")
+        folder = self.file_folder(ident, role)
+        elsewhere = geo.foreign(folder, f"Removing {file.title}")
+        if elsewhere:
+            raise ValueError(elsewhere)
+        if self._installing.locked():
+            raise ValueError("a GeoIP file is being downloaded: wait for it to finish")
+        with self._lock:
+            self._let_go_now()
+        copies = geo._copies(folder)
+        left = []
+        for path in copies:
+            if geo.remove(path):
+                self._held.discard(str(path))
+            else:
+                self._held.add(str(path))
+                left.append(path.name)
+        self.replaced()
+        if not copies:
+            return {"said": f"{file.title} is not installed here", "ok": True, "lines": []}
+        if left:
+            return {"said": f"{', '.join(left)} could not be removed: another program still holds it", "ok": False,
+                    "lines": ["it is not read from here meanwhile", "Remove… tries again"]}
+        return {"said": f"removed {file.title}", "ok": True, "lines": [f"from {folder}, with its notes"]}
+
+    def sources_table(self, keys=None, can: bool = True) -> tuple[dict, list]:
+        """The "GeoIP sources" table and its forms: a row a source's file (Source | Gives | Licence | Key | Here) and
+        three columns of buttons, Use…, Download… (Update… once one is due) and Remove…. `keys`: the key names set in
+        the asking person's login store (names only), None when not known. A source not offered says so, with no
+        button and no form; Download… shows only while its keys are set."""
+        chosen = self.chosen()
+        elsewhere = self.elsewhere()
+        offer = bool(can) and not elsewhere and not self._installing.locked() and geo.available()[0]
+        rows, forms = [], []
+        for source in self.sources:
+            for file in source.files:
+                facts = self.installed(source.id, file.role)
+                state = geosources.due(file, facts.get("epoch"), self._now()) if facts else ""
+                used = chosen[file.role]["source"] == source.id
+                if not source.offered:
+                    key, here = "not asked", "not offered: waiting for your word"
+                else:
+                    missing = [n for n in source.keys if keys is None or n not in keys]
+                    key = ("none needed" if not source.keys else "set in your login store" if not missing else
+                           {"text": "not set in your login store", "sub": f"add it {geosources.WHERE_KEYS}"})
+                    if self._what == file.title:
+                        here = "being downloaded"
+                    elif elsewhere:
+                        here = "not from here"
+                    elif facts:
+                        sub = ("too old to be read: Update… or Remove…" if state == "expired" else
+                               "an update is out" if state == "update" else "")
+                        here = {"text": f"built {facts.get('date') or 'on an unknown day'}"
+                                        + (f"; used for {file.role}" if used else ""), "sub": sub}
+                    else:
+                        here = "not downloaded"
+                buttons = ["", "", ""]
+                if offer and source.offered:
+                    if facts and not used and state != "expired":
+                        buttons[0] = {"form": USE_FORM + file.key, "title": "Use…"}
+                        forms.append(use_form(source, file))
+                    if not missing and (not facts or state in ("update", "expired")):
+                        buttons[1] = {"form": GET_FORM + file.key, "title": "Update…" if facts else "Download…"}
+                        forms.append(get_form(source, file, self.file_folder(source.id, file.role),
+                                              update=bool(facts)))
+                if offer and facts:
+                    buttons[2] = {"form": REMOVE_FORM + file.key, "title": "Remove…"}
+                    forms.append(remove_form(source, file, self.file_folder(source.id, file.role)))
+                rows.append([{"text": file.title, "sub": source.maker}, file.role, file.licence.name, key, here,
+                             *buttons])
+        note = ("Where places and networks come from: each file is downloaded only on your word, its size, hosts and "
+                "licence said first, and read on this machine alone. Places and networks are chosen apart.")
+        said = [w for w in self._said_choice.values() if w]
+        if said:
+            note += " " + "; ".join(said) + "."
+        if self.refused:
+            note += " Not read from the plugin: " + "; ".join(self.refused) + "."
+        if elsewhere:
+            note += f" {elsewhere}. Each system's platform downloads its own."
+        table = {"title": SOURCES_TITLE, "note": note,
+                 "columns": [{"title": "Source"}, {"title": "Gives"}, {"title": "Licence"}, {"title": "Key"},
+                             {"title": "Here"}, {"title": ""}, {"title": ""}, {"title": ""}],
+                 "rows": rows, "empty": "This plugin names no GeoIP source."}
+        return table, forms
 
     def _let_go(self) -> None:
         """The GeoIP file let go, its map closed (nobody watches): opened again at the next ask that needs it. What it
@@ -1114,7 +1624,8 @@ class WorldView:
         if not self.watcher.running:
             self._let_go()
 
-    def install(self, template: str, log=None, kind: str = "city") -> dict:
+    def install(self, template: str, log=None, kind: str = "city", *, folder=None, packing: str = "auto",
+                cancel=None) -> dict:
         """The GeoIP file downloaded and put in place, on the user's word (the plugin's world_geoip, its licence accepted).
         `template` is the plugin's https address with {year} and {month} in it: this month's file, else last month's when
         this month's is not out yet (a 404). A month's file installed already is not downloaded again.
@@ -1136,7 +1647,10 @@ class WorldView:
         it was).
 
         1.75.0: `kind` "asn" installs the ASN file instead, into the GeoIP folder's asn/ (geo.asn_folder), its own
-        folder, so neither install removes the other's file; the GeoIP file is then opened again with it."""
+        folder, so neither install removes the other's file; the GeoIP file is then opened again with it.
+
+        1.102.0: `folder` puts it in a source's own folder (geosources.folder), `packing` insists on how it comes, and
+        `cancel()` true stops it as a detach does (the platform's Cancel)."""
         say = _sayer(log)
         template = str(template or "").strip()
         what = "ASN file" if kind == "asn" else "GeoIP file"
@@ -1146,7 +1660,7 @@ class WorldView:
         if any(urlsplit(month_url(template, y, m)).scheme.lower() != "https" or not _host(month_url(template, y, m))
                for y, m in wanted):
             raise ValueError(f"a {what} is downloaded over https only")
-        elsewhere = geo.foreign(self.folder, f"Installing a {what}")
+        elsewhere = geo.foreign(Path(folder) if folder is not None else self.folder, f"Installing a {what}")
         if elsewhere:
             raise ValueError(elsewhere)
         if not self._installing.acquire(blocking=False):
@@ -1163,14 +1677,16 @@ class WorldView:
                     raise ValueError("the plugin was detached: nothing is downloaded")
                 self._cutoff, self._progress, self._what = cutoff, "", what
             try:
-                return self._install(template, wanted, cutoff, say, kind)
+                return self._install(template, wanted, cutoff, say, kind, folder=folder, packing=packing,
+                                     cancel=cancel)
             finally:
                 with self._lock:
                     self._cutoff, self._progress, self._what = None, "", ""
         finally:
             self._installing.release()
 
-    def _install(self, template: str, wanted: list, cutoff: _Cutoff, say, kind: str = "city") -> dict:
+    def _install(self, template: str, wanted: list, cutoff: _Cutoff, say, kind: str = "city", *, folder=None,
+                 packing: str = "auto", cancel=None) -> dict:
         budget = float(geo.INSTALL_S)
         deadline = geo._clock() + budget
         took = (f"the download took more than {_seconds(budget)} s, the most an install may take, so it was stopped: "
@@ -1179,17 +1695,18 @@ class WorldView:
                 "still put in place if it passes, and the tab then shows its places")
         # the download on a thread of its own, this one waiting what is left of the time (run_download: its sockets shut
         # once the time is up or the plugin was detached)
-        folder = geo.asn_folder(self.folder) if kind == "asn" else self.folder  # 1.75.0: the ASN file's own
+        if folder is None:
+            folder = geo.asn_folder(self.folder) if kind == "asn" else self.folder  # 1.75.0: the ASN file's own
         path, url, fell_back, again = run_download(
-            lambda: self._download(template, wanted, cutoff, deadline, took, say, folder), cutoff, deadline, took,
-            name=f"{self.name or 'world'}-{'asn' if kind == 'asn' else 'geoip'}-download",
-            stopping=lambda: DETACHED if self.closed else "", late=late)
+            lambda: self._download(template, wanted, cutoff, deadline, took, say, folder, packing), cutoff, deadline,
+            took, name=f"{self.name or 'world'}-{'asn' if kind == 'asn' else 'geoip'}-download",
+            stopping=lambda: self._stopping(cancel), late=late)
         if kind == "asn":
             return self._installed_asn(path, url, fell_back, again)
         return self._installed(path, url, fell_back, again)
 
     def _download(self, template: str, wanted: list, cutoff: _Cutoff, deadline: float, took: str, say,
-                  folder=None) -> tuple:
+                  folder=None, packing: str = "auto") -> tuple:
         """On the download's thread: this month's file, else last month's, fetched and installed into `folder` (the
         GeoIP folder, or 1.75.0's asn/ in it); (its path, the address it came from, whether it was last month's,
         whether it was there already)."""
@@ -1220,7 +1737,7 @@ class WorldView:
                 came = _came_from(stream, url)
                 body = _Body(stream, cutoff, deadline, took, say, self._told)
                 say(f"downloading {name} from {_host(came)}" + (f": {size_words(body.size)}" if body.size else ""))
-                path = geo.install_mmdb(body, folder, stem, timeout=None)  # its time is the install's one deadline
+                path = geo.install_mmdb(body, folder, stem, timeout=None, packing=packing)  # the one deadline
             finally:
                 _close(stream)
             return path, came, bool(tried), False
@@ -1229,6 +1746,15 @@ class WorldView:
     def _told(self, words: str) -> None:
         with self._lock:
             self._progress = words
+
+    def _stopping(self, cancel=None) -> str:
+        """Why a download under way must end now, in words ("" to go on): the plugin detached, or the user cancelled."""
+        if self.closed:
+            return DETACHED
+        try:
+            return CANCELLED if cancel is not None and cancel() else ""
+        except Exception:  # noqa: BLE001 - a cancel that cannot say: not cancelled
+            return ""
 
     def _installed(self, path: Path, url: str, fell_back: bool, again: bool = False) -> dict:
         """The file just put in place opened for lookups (the one open before let go), and what it is, in words."""
@@ -1433,7 +1959,7 @@ class WorldView:
 
     # -- the page -------------------------------------------------------------------------------------------------------
     def page(self, *, home=None, public=None, attribution=None, can_install: bool = True, licence: str = "",
-             source: str = "", asn_source: str = "", asn_licence: str = "") -> dict:
+             source: str = "", asn_source: str = "", asn_licence: str = "", keys=None) -> dict:
         """The tab's page (apps/tabs.py's shape): its title and note; the globe (home, each place with its kind, count,
         bytes and ports, the local network's peers summed apart, the attribution of the places, when it was counted); the
         busiest ports here charted; the busiest ports here and elsewhere and the places, tabled; and the GeoIP file's
@@ -1456,13 +1982,13 @@ class WorldView:
         geoip = self.geoip() if readable else None
         try:
             return self._page(status, snap, now, charts, readable, unreadable, geoip, home, public, attribution,
-                              can_install, licence, source, asn_source=asn_source, asn_licence=asn_licence)
+                              can_install, licence, source, asn_source=asn_source, asn_licence=asn_licence, keys=keys)
         finally:
             if not self.watcher.running:  # nobody watches: nothing stays mapped until the next ask
                 self._let_go()
 
     def _page(self, status, snap, now, charts, readable, unreadable, geoip, home, public, attribution, can_install,
-              licence, source, asn_source: str = "", asn_licence: str = "") -> dict:
+              licence, source, asn_source: str = "", asn_licence: str = "", keys=None) -> dict:
         home_spec, home_note = self._home(home, public, geoip)
         here_ports = {r["port"] for r in snap["ports"]}
         there_ports = {r["port"] for r in snap["remote_ports"]}
@@ -1502,7 +2028,9 @@ class WorldView:
                                         "install." if can_install else ". This plugin offers no GeoIP file to download."))
         elif geoip is None:
             globe_notes.append("No GeoIP file is installed, so no place is known and the globe draws none yet."
-                               + (" Install the GeoIP file… downloads one once you accept its licence." if can_install
+                               + (" Download… in the GeoIP sources table downloads one once you accept its licence."
+                                  if self.sources else
+                                  " Install the GeoIP file… downloads one once you accept its licence." if can_install
                                   else " This plugin offers no GeoIP file to download."))
         if more["places"]:
             globe_notes.append(f"{_plural(more['places'], 'more place')} not drawn ({_plural(more['count'], 'connection')}, "
@@ -1518,6 +2046,12 @@ class WorldView:
                             "since": _iso(snap["since"]) if snap.get("since") else None}}
         if charts is not None:
             out["charts"] = [charts]
+        if self.sources:  # 1.102.0: the sources' table and its forms, in place of the two install buttons
+            table, forms = self.sources_table(keys)
+            out["tables"].append(table)
+            if forms:
+                out["forms"] = forms
+            return out
         offer = self._offer(geoip, readable, can_install, now)
         if offer is not None:
             out["forms"] = [geoip_form(licence, source, self.folder, update=offer == "update")]
