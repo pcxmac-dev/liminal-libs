@@ -105,6 +105,8 @@ ZOO = {"id": "topology-zoo", "title": "Backbone networks, about 2010-2011", "for
        "size": 348_613, "about": "each network's newest map: its points of presence and links"}
 EVERY = (CENTRES, CABLES, LAND, WIKIDATA, ROUTES, ZOO)
 AT = {d["id"]: DataSet.of(d).address() for d in EVERY}  # the one address each is asked at
+# the formats as a refusal says them (1.104.0: overpass, sparql, geojson, gml, ourairports, geonames, then the globe's)
+FORMAT_WORDS = f"{', '.join(infrastructure.FORMATS[:-1])} or {infrastructure.FORMATS[-1]}"
 
 # -- small recorded answers, in their makers' shapes -------------------------------------------------------------------
 OSM3S = {"timestamp_osm_base": "2026-11-16T21:58:00Z",
@@ -624,10 +626,8 @@ def test_what_is_wrong_with_a_plugins_data_set_is_said_in_words():
             ({"credit": "© OpenStreetMap contributors"}, "names no credit"),
             ({"credit": {"text": "OSM", "url": "http://www.openstreetmap.example/copyright"}},
              "credit links an https address, not http://www.openstreetmap.example"),
-            ({"format": "kml"},
-             "format is overpass, sparql, geojson, gml, ourairports, geonames or shapefile, not 'kml'"),
-            ({"format": None},
-             "format is overpass, sparql, geojson, gml, ourairports, geonames or shapefile, not None"),
+            ({"format": "kml"}, f"format is {FORMAT_WORDS}, not 'kml'"),
+            ({"format": None}, f"format is {FORMAT_WORDS}, not None"),
             ({"size": 0}, "says no size: its bytes are said before it is downloaded"),
             ({"size": "2 MB"}, "says no size"), ({"size": True}, "says no size"),
             ({"query": ""}, "the data set osm-datacentres names no query"),

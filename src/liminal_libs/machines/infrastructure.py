@@ -99,13 +99,20 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
 LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
-FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile")  # what an answer is read as
-AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile")  # whose query, where they have one, is sent as
-# written
+FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt")  # what an answer is
+# read as
+AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile", "mvt")  # whose query, where they have one, is
+# sent as written
 AS_BYTES = ("gml", "ourairports", "geonames", "shapefile")  # the formats read from the answer's bytes, not as JSON
 STEPS = (0.001, 1.0)  # the degrees a data set's `step` may be, from and to (1.104.0)
 HOST_FORM = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 CHOICES = 32  # fields a data set's keep or drop names, and values a field, at most
+TILES_MOST = 128  # map tiles a data set of them asks for, at most, one after another (AfTerFibre's Africa, zoom 5: 56)
+TILE_MOST = 2 << 20  # bytes of one tile, at most
+TILE_ZOOMS = (0, 14)  # the zooms a data set's tiles may be asked at
+# a tile's fields kept (AfTerFibre's): who runs the fibre, whose it is, whether it is lit, its country. Its
+# contributors' names and addresses (contributor, contrib_email) are people's: never decoded, never kept
+TILE_FIELDS = ("operator_name", "operator", "owner_name", "owner", "live", "country")
 SCALE = 100_000  # a coordinate is kept in 1e-5 degrees, about a metre
 BUSY = (429, 502, 503, 504)  # HTTP codes of a server too busy to answer now: asked once more
 MAX_QUERY = 4000  # characters of a data set's query: it travels in the address
@@ -146,7 +153,7 @@ OPERATORS = ("operator", "owner")  # else its operator's
 DEGREES = ("4326", "crs84")  # how a GeoJSON answer's `crs` ends when its coordinates are longitude and latitude
 ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for",
          "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file",
-         "shapefile": "the file asked for"}
+         "shapefile": "the file asked for", "mvt": "the map tiles asked for"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -244,6 +251,7 @@ class DataSet:
     stand_in: bool = False
     step: float = STEP
     hosts: tuple = ()
+    tiles: tuple = ()  # an mvt set's tiles, (z, x, y) each, asked one after another
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -321,10 +329,22 @@ class DataSet:
         """The host it is asked of."""
         return world._host(self.url).lower()
 
+    def addresses(self) -> list[str]:
+        """Every address asked, in order: the one address(), or (1.104.0) each of a set of map tiles'."""
+        if self.format != "mvt":
+            return [self.address()]
+        return [self._tile(z, x, y) for z, x, y in self.tiles]
+
+    def _tile(self, z: int, x: int, y: int) -> str:
+        url = self.url.replace("{z}", str(z)).replace("{x}", str(x)).replace("{y}", str(y))
+        return f"{url}?{self.query}" if self.query else url
+
     def address(self) -> str:
         """The one address asked: an Overpass server's with the query as its `data`, a SPARQL service's with the query
         and the JSON format, a GeoJSON source's or a file of maps' with its query as it is written (or alone, a
-        file's)."""
+        file's); a set of map tiles' first tile."""
+        if self.format == "mvt":
+            return self._tile(*self.tiles[0])
         if self.format == "overpass":
             return f"{self.url}?data={quote(self.query, safe='')}"
         if self.format == "sparql":
@@ -381,7 +401,35 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident}'s hosts are the names a redirect may go to (4 at most), not "
                          f"{world._shown(hosts)}")
     out["hosts"] = tuple(h.lower() for h in hosts)
+    if form == "mvt":
+        out["tiles"] = _tiles(ident, said)
+        if not out.get("layer"):
+            raise ValueError(f"the data set {ident} is a set of map tiles and names no layer its lines go to")
     return out
+
+
+def _tiles(ident: str, said: Mapping) -> tuple:
+    """An mvt set's tiles: its `tiles` {"zoom", "bounds": [west, south, east, north]} as the (z, x, y) that cover the
+    box, TILES_MOST at most; its address a template holding {z}, {x} and {y}. ValueError, in words, for anything
+    else."""
+    from .. import mvt
+    url = said.get("url") if isinstance(said.get("url"), str) else ""
+    if not all(k in url for k in ("{z}", "{x}", "{y}")):
+        raise ValueError(f"the data set {ident} is a set of map tiles: its address holds {{z}}, {{x}} and {{y}}")
+    tiles = said.get("tiles")
+    zoom = tiles.get("zoom") if isinstance(tiles, Mapping) else None
+    box = tiles.get("bounds") if isinstance(tiles, Mapping) else None
+    if (isinstance(zoom, bool) or not isinstance(zoom, int) or not TILE_ZOOMS[0] <= zoom <= TILE_ZOOMS[1]
+            or not isinstance(box, (list, tuple)) or len(box) != 4
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in box)
+            or not (-180 <= box[0] < box[2] <= 180 and -90 <= box[1] < box[3] <= 90)):
+        raise ValueError(f"the data set {ident}'s tiles are {{zoom: {TILE_ZOOMS[0]} to {TILE_ZOOMS[1]}, bounds: [west, "
+                         "south, east, north]}")
+    found = tuple(mvt.covering(zoom, box))
+    if len(found) > TILES_MOST:
+        raise ValueError(f"the data set {ident}'s tiles are {len(found):,}, more than the {TILES_MOST} a data set may "
+                         "ask for")
+    return found
 
 
 def folder() -> Path:
@@ -1009,8 +1057,43 @@ def _shapefile(doc, kept: _Kept, host: str, free: bool) -> None:
                 kept.line(dataset.layer, part, name)
 
 
+def _mvt(doc, kept: _Kept, host: str, free: bool) -> None:
+    """A set of map tiles (1.104.0: AfTerFibre's fibre): each tile's layer its data set's member names (all when it
+    names none), its lines into the data set's layer in longitude and latitude, named by who runs them (TILE_FIELDS),
+    "planned" said of one not yet lit. A line cut at a tile's edge is two lines meeting there (the network joins them).
+    Only TILE_FIELDS are decoded: a contributor's name or address is never read into anything."""
+    from .. import mvt
+    dataset = kept.dataset
+    if not isinstance(doc, list):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no set of map tiles)")
+    layers = (dataset.member,) if dataset.member else None
+    read = 0
+    for i, (z, x, y, raw) in enumerate(doc):
+        if free:
+            doc[i] = (z, x, y, b"")
+        if not raw:
+            continue  # a tile with nothing in it (404): the sea, a desert
+        try:
+            found = mvt.decode(raw, keys=TILE_FIELDS, layers=layers)
+        except mvt.MvtError as e:
+            raise InfrastructureError(f"{host}'s tile {z}/{x}/{y} is not the data asked for ({e})") from None
+        read += 1
+        for layer in found:
+            for feature in layer.features:
+                if feature.type not in (mvt.LINE, mvt.POLYGON):
+                    kept.drop(OTHER)
+                    continue
+                tags = feature.tags
+                name = next((t for t in (_name(tags.get(k)) for k in TILE_FIELDS[:4]) if t), "")
+                if tags.get("live") in (False, 0, "false", "no", "planned"):
+                    name = f"{name} (planned)" if name else "planned"
+                for part in feature.parts:
+                    kept.line(dataset.layer, [mvt.lonlat(z, x, y, layer.extent, gx, gy) for gx, gy in part], name)
+    kept.remarks.append(f"{world._plural(len(doc), 'tile')} asked: {world._plural(read, 'tile')} with features")
+
+
 _READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
-            "geonames": _geonames, "shapefile": _shapefile}
+            "geonames": _geonames, "shapefile": _shapefile, "mvt": _mvt}
 
 
 def _features(dataset: DataSet, doc, free: bool) -> dict:
@@ -1188,15 +1271,19 @@ def _pause(until: float, deadline: float, clock, cutoff, halt: threading.Event) 
             return
 
 
-def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, say, wait: float) -> bytearray:
+def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, say, wait: float, final: bool = True,
+          most: int | None = None) -> bytearray:
     """The answer's bytes, read on the download's thread a piece at a time (one of the stream's own reads at most:
     read1, so a server sending a byte now and then holds no read for longer than its socket's timeout, `wait`), the
     stop and the deadline looked at between the pieces, MAX_ANSWER bytes at most; its end noted on the cut-off (what
-    is left is this machine's own)."""
+    is left is this machine's own). 1.104.0: `final` false for a tile with more to come (its end is not the
+    download's), `most` the bytes it may be (MAX_ANSWER, as it is now, when not given)."""
     host = dataset.host
-    large = f"the answer is larger than {size_words(MAX_ANSWER)}, the most a data set may be"
+    large = (f"the answer is larger than {size_words(MAX_ANSWER)}, the most a data set may be" if most is None
+             else f"a tile is larger than {size_words(most)}, the most one may be")
+    most = MAX_ANSWER if most is None else most
     size = world._length(stream)
-    if size is not None and size > MAX_ANSWER:
+    if size is not None and size > most:
         raise InfrastructureError(large)
     say(f"downloading from {host}" + (f": {size_words(size)}" if size else ""))
     one = getattr(stream, "read1", None)
@@ -1218,7 +1305,7 @@ def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, s
         with cutoff.lock:
             if cutoff.why:  # stopped while it read: what came is not kept
                 raise InfrastructureError(cutoff.why)
-            if not got:
+            if not got and final:
                 cutoff.ended = True
         if not got:
             return data
@@ -1226,7 +1313,7 @@ def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, s
             raise InfrastructureError(f"{host}'s answer is not the data asked for (its stream gave "
                                       f"{type(got).__name__}, not bytes)")
         data += got
-        if len(data) > MAX_ANSWER:
+        if len(data) > most:
             raise InfrastructureError(large)
         if now - said >= world.PROGRESS_S:
             said = now
@@ -1235,11 +1322,37 @@ def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, s
 
 
 def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event, deadline: float, took: str, clock,
-              say) -> bytearray:
-    """On the download's thread: the answer's bytes. One GET of the data set's address, each socket operation waiting
-    its `wait` at most (less once less is left of the install's time); a busy server is asked once more RETRY_S later,
-    that wait and the second try inside the same deadline."""
-    host, address = dataset.host, dataset.address()
+              say):
+    """On the download's thread: the answer's bytes (_one), or (1.104.0) for a set of map tiles each tile's in turn,
+    [(z, x, y, bytes)], a tile not there (HTTP 404) as no bytes, any other failure the whole install's."""
+    if dataset.format != "mvt":
+        return _one(dataset, dataset.address(), fetch, agent, cutoff, halt, deadline, took, clock, say)
+    out, last = [], len(dataset.tiles) - 1
+    for i, (z, x, y) in enumerate(dataset.tiles):
+        if i:
+            say(f"tile {i + 1} of {len(dataset.tiles)}")
+        try:
+            raw = _one(dataset, dataset._tile(z, x, y), fetch, agent, cutoff, halt, deadline, took, clock,
+                       say if not i else (lambda _line: None), final=i == last, most=TILE_MOST, missing_ok=True)
+        except _Missing:
+            raw = bytearray()
+        out.append((z, x, y, bytes(raw)))
+    with cutoff.lock:
+        if not cutoff.why:
+            cutoff.ended = True
+    return out
+
+
+class _Missing(Exception):
+    """A tile that is not there (HTTP 404): none of its data set's features are in it."""
+
+
+def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: threading.Event, deadline: float, took: str,
+         clock, say, final: bool = True, most: int | None = None, missing_ok: bool = False) -> bytearray:
+    """On the download's thread: one answer's bytes. One GET of `address`, each socket operation waiting its `wait`
+    at most (less once less is left of the install's time); a busy server is asked once more RETRY_S later, that wait
+    and the second try inside the same deadline."""
+    host = dataset.host
     for again in (False, True):
         left = deadline - clock()
         if cutoff.why or halt.is_set() or left <= 0:  # stopped (while it waited to ask again), or out of time
@@ -1254,6 +1367,8 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
             if cutoff.why:
                 raise InfrastructureError(cutoff.why) from None
             code = getattr(e, "code", None)
+            if code == 404 and missing_ok:
+                raise _Missing() from None
             if code in BUSY and not again:
                 until = clock() + RETRY_S
                 say(f"{host} is busy (HTTP {code}): it is asked once more in {world._seconds(RETRY_S)} s")
@@ -1263,7 +1378,7 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
         try:
             if cutoff.why:  # it came after the stop: let go unread
                 raise InfrastructureError(cutoff.why)
-            return _read(stream, dataset, cutoff, deadline, took, clock, say, wait)
+            return _read(stream, dataset, cutoff, deadline, took, clock, say, wait, final, most)
         finally:
             world._close(stream)
     raise InfrastructureError(cutoff.why or took)  # not reached: the second try answers or raises
@@ -1414,7 +1529,7 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
         raise
     finally:
         halt.set()
-    size = len(data)
+    size = sum(len(t[3]) for t in data) if isinstance(data, list) else len(data)
     say(f"{size_words(size)} downloaded: reading it")
     doc = _decoded(dataset, data)
     del data  # the answer's bytes are not held beside what is read of them
@@ -1489,13 +1604,19 @@ def form(dataset, folder, update: bool = False) -> dict:
                    {"name": ACCEPT, "type": "accept", "title": f"Accept its licence ({dataset.licence_name})?",
                     "words": dataset.licence, "yes": "Accept it and download"}],
         "confirm": {"title": f"{verb} {dataset.title}?", "yes": "Go on",
-                    "words": (f"{dataset.title} is asked of {dataset.host} in one request, made now on your word (once "
-                              f"more {_apart()} later if the server is busy), and kept in {_resolved(folder)} in place "
-                              f"of any older copy: {size_words(dataset.size)} (an estimate where its maker gives "
-                              "none). Its progress shows in the panel below; it stops by itself after "
-                              f"{world._seconds(INSTALL_S / 60)} minutes. The request holds only "
+                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset)}, made now on "
+                              f"your word (once more {_apart()} later if the server is busy), and kept in "
+                              f"{_resolved(folder)} in place of any older copy: {size_words(dataset.size)} (an "
+                              "estimate where its maker gives none). Its progress shows in the panel below; it "
+                              f"stops by itself after {world._seconds(INSTALL_S / 60)} minutes. The request holds only "
                               f"{ASKED[dataset.format]}: nothing about this machine or its traffic. Its licence, "
                               f"first: {dataset.licence} You are asked to accept it next.")}}
+
+
+def _requests(dataset: DataSet) -> str:
+    """How many requests a download makes, in words: one, or a set of map tiles' one after another."""
+    n = len(dataset.addresses())
+    return "one request" if n == 1 else f"{n} requests, one after another"
 
 
 def remove_form(dataset, folder) -> dict:

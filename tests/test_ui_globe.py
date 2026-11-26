@@ -661,7 +661,7 @@ def test_nothing_is_fetched_but_the_map(js):
 
 
 def test_the_layers_are_bounded(js):
-    """At most MAX_LAYERS 16 layers listed (1.104.0: 13 layers and more to come) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
+    """At most MAX_LAYERS 16 layers listed (1.104.0: 13 and more to come) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
     machines/infrastructure.py keeps at most), 16 parts an answer, 12 names on the map at once; no DOM node a feature
     (they are thousands: the plugin's own tables count them)."""
     for line in ("const MAX_LAYERS = 16;", "const MAX_LAYER_POINTS = 20000;", "const MAX_LAYER_VERTICES = 400000;",
