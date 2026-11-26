@@ -148,6 +148,21 @@ def test_platform_kinds_is_the_name_the_old_ones_kept_for_one_release(found):
         type("Odd", (Platform,), {"PLATFORM_KINDS": ("feed",)})()
 
 
+def test_the_old_name_read_gives_the_kinds_declared_by_either_name(found):
+    """PLATFORM_NEEDS read on a class that sets only PLATFORM_KINDS (liminal-platform 0.40.0) is its kinds, never ();
+    one that sets the old name (the charts, the integrator) reads as it set it; the nearest class of its line wins."""
+    new = type("New", (Platform,), {"NAME": "new", "PLATFORM_KINDS": ("database", "machine")})
+    assert new.PLATFORM_NEEDS == ("database", "machine") and made(new, found).PLATFORM_NEEDS == ("database", "machine")
+    below = type("Below", (new,), {"NAME": "below"})
+    assert below.PLATFORM_NEEDS == ("database", "machine")
+    assert Part.PLATFORM_NEEDS == ("database",) and made(Part, found).kinds == ("database",)
+    nearer = type("Nearer", (Part,), {"NAME": "nearer", "PLATFORM_KINDS": ("machine",)})
+    assert nearer.PLATFORM_NEEDS == ("machine",) and made(nearer, found).kinds == ("machine",)
+    back = type("Back", (nearer,), {"NAME": "back", "PLATFORM_NEEDS": ("assistant",)})
+    assert back.PLATFORM_NEEDS == ("assistant",) and made(back, found).kinds == ("assistant",)
+    assert Platform.PLATFORM_NEEDS == () and Platform.PLATFORM_KINDS == ()
+
+
 def test_a_plugin_whose_needs_are_unmet_here_is_not_attached(found, monkeypatch):
     """Item 38: a plugin whose required needs this machine does not meet is never started, so never attached."""
     app = made(type("Judging", (Platform,), {"NAME": "judging", "PLATFORM_KINDS": ("database",)}), found)

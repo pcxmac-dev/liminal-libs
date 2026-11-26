@@ -66,9 +66,18 @@ def _declared_kinds(cls) -> tuple[str, ...]:
     line sets (so a subclass of one that set the old name, setting the new, is read by the new)."""
     for k in cls.__mro__:
         for name in ("PLATFORM_KINDS", "PLATFORM_NEEDS"):
-            if name in vars(k):
+            if name in vars(k) and not isinstance(vars(k)[name], _OldKinds):
                 return tuple(vars(k)[name])
     return ()
+
+
+class _OldKinds:
+    """PLATFORM_NEEDS read on a class that does not set it itself: the kinds it declares (1.103.0, for one release), so
+    the old name read on a class that sets only PLATFORM_KINDS gives those kinds and never (); a subclass setting
+    PLATFORM_NEEDS (the charts, the integrator) still sets it as before."""
+
+    def __get__(self, obj, owner=None) -> tuple[str, ...]:
+        return _declared_kinds(owner if owner is not None else type(obj))
 
 
 def _finders() -> dict[str, Callable[[], dict]]:
@@ -82,10 +91,15 @@ class Platform(App):
     PLATFORM_WRITER. ChartsApp and IntegratorApp inherit it from their next releases (steps 4 and 5)."""
 
     PLATFORM_KINDS: tuple[str, ...] = ()  # the plugin kinds it attaches (KINDS): ("database",) for the charts, the integrator
-    PLATFORM_NEEDS: tuple[str, ...] = ()  # the old name of PLATFORM_KINDS (1.90.0-1.102.0), read for one release where a
-    # subclass still sets it
+    PLATFORM_NEEDS = _OldKinds()  # the old name of PLATFORM_KINDS (1.90.0-1.102.0), for one release: set by a subclass
+    # that still sets it, and read as the declared kinds (_OldKinds) on one that sets only PLATFORM_KINDS
     PLATFORM_WRITER = False  # the running platform: the one writer of instance settings (liminal-platform's app sets it)
     PLATFORM_SCOPE: Path | None = None  # where its nodes are reached (None: nodes.default_scope, the data folder)
+
+    def __init_subclass__(cls, **kw):
+        super().__init_subclass__(**kw)
+        if "PLATFORM_KINDS" in vars(cls) and "PLATFORM_NEEDS" not in vars(cls):
+            cls.PLATFORM_NEEDS = _OldKinds()  # read as the new name here, past a base that set the old one
 
     def __init__(self, log=print, login=None, *, writer: bool | None = None, node_factory=None):
         super().__init__(log=log, login=login)

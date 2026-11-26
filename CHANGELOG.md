@@ -67,6 +67,10 @@ but for one rename (below); the plugin API stays 2.4, and an older library reads
   reads again (`?fresh=1`) within seconds pushed a confirmed no out of the window and brought an offline plugin back
   as unknown; `facts.keep_readings` keeps the current run's first reading (and the one before it) in place of the
   oldest, so a no stays no until a reading that is not no arrives.
+- **After the review: the old name read gives the kinds.** `PLATFORM_NEEDS` read on a class that sets only
+  `PLATFORM_KINDS` (liminal-platform 0.40.0) gave the base's `()`; it is now read as the kinds declared by either
+  name, the nearest class of its line winning, and a subclass that sets it (the charts, the integrator) sets it as
+  before.
 - **Tests**: every test's facts are a recorded machine's (conftest's autouse `stand_in_facts`: this-pc). New:
   test_needs.py (with the rows of codex-cli, lmdeploy, mcp and pi, which declared NEEDS before this module, held as
   written), test_facts.py, test_needs_machines.py, test_ui_needs.py, test_needs_contract.py, test_needs_frame.py.
