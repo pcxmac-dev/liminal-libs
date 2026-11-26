@@ -494,3 +494,37 @@ def test_ripe_atlas_asks_every_connected_probe_of_its_family_and_its_confirmatio
     asked = Downloads({v6: json.dumps(result6).encode()})
     assert install(six, folder, accept_licence=True, fetch=asked, clock=Clock())["ok"] is True
     assert [u for u, _, _ in asked.asked] == [v6]
+
+
+# -- each data set's words say what is done (the user, 2026-11-26) ----------------------------------------------------
+def test_the_confirmations_say_the_redirect_the_refusals_and_the_refreshing_as_they_are(tmp_path):
+    from liminal_libs.machines import satellites
+    roads = infrastructure.form(ROADS, tmp_path)["confirm"]["words"]
+    assert roads.startswith("Major roads (a stand-in for fibre) is asked of www.naturalearth.example (whose link sends "
+                            "it on to cdn.ne.example, the only host it may go to) in one request")
+    assert "(once more a minute later if the server is busy)" in roads and "again by itself" not in roads
+    oneweb = infrastructure.form(ONEWEB, tmp_path)
+    assert "(not asked again if it refuses: its maker asks so)" in oneweb["confirm"]["words"]
+    assert "once more" not in oneweb["confirm"]["words"] and "again by itself" not in oneweb["note"]
+    refreshed = infrastructure.form({**ONEWEB, "refresh": True, "pause": 900}, tmp_path)
+    words = refreshed["confirm"]["words"]
+    assert "(not asked again if it refuses: its maker asks so; after a 500 or 503 nothing is asked of it for 15 " \
+           "minutes)" in words
+    assert words.endswith("Once you accept it and it is downloaded, it is downloaded again by itself every 2 hours at "
+                          "the soonest, and only while the World Wide Web tab is open (never while it is closed); an "
+                          "answer that is not OK stops that until you update it yourself.")
+    assert refreshed["note"].endswith("Only this data set is downloaded again by itself, while this tab is open.")
+    # a download made before 1.104.0: its file kept, said, and deleted with its removal, as the words say
+    folder = tmp_path / "layers"
+    folder.mkdir()
+    assert "older file" not in infrastructure.remove_form(ROADS, folder)["confirm"]["words"]
+    (folder / "ne-roads.json").write_text("{}", encoding="ascii")
+    assert infrastructure.remove_form(ROADS, folder)["confirm"]["words"].endswith(
+        "Its older file from before, ne-roads.json, kept until now, is deleted with it.")
+    note = Index(folder, [ROADS, {**ONEWEB, "refresh": True}], clock=Clock()).table()["note"]
+    assert "their files are kept where they are (ne-roads.json); Remove… deletes a data set's with it." in note
+    assert "downloaded again by themselves, as their makers allow, while this tab is open and never while" in note
+    # the sgp4 package's removal says what happens while it is loaded
+    from test_satellites import pin
+    gone = satellites.package_remove_form(satellites.Package.of(pin(b"x")), tmp_path)["confirm"]["words"]
+    assert "it is marked removed at once, never loaded again, and deleted when the platform next starts." in gone

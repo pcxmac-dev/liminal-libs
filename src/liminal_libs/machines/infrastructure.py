@@ -2128,19 +2128,50 @@ def form(dataset, folder, update: bool = False) -> dict:
     return {
         "id": FORM + dataset.id, "hook": GET_HOOK, "title": f"{verb} {dataset.title}", "job": True,
         "note": ("Drawn on the globe from a file on this machine: once it is downloaded, the globe asks nothing of "
-                 "anyone."),
+                 "anyone." + (" Only this data set is downloaded again by itself, while this tab is open."
+                              if dataset.refresh else "")),
         "fields": [{"name": "dataset", "type": "fixed", "value": dataset.id},
                    {"name": ACCEPT, "type": "accept", "title": f"Accept its licence ({dataset.licence_name})?",
                     "words": dataset.licence, "yes": "Accept it and download"}],
         "confirm": {"title": f"{verb} {dataset.title}?", "yes": "Go on",
-                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset, folder)}, made "
-                              f"now on your word (once more {_apart()} later if the server is busy), and kept in "
+                    "words": (f"{dataset.title} is asked of {_host_words(dataset)} in {_requests(dataset, folder)}, "
+                              f"made now on your word ({_again_words(dataset)}), and kept in "
                               f"{_resolved(folder)} in place of any older copy: {size_words(dataset.size)} (an "
                               f"estimate where its maker gives none).{_limit_words(dataset)} Its progress shows in the "
                               "panel below; it "
                               f"stops by itself after {world._seconds(INSTALL_S / 60)} minutes. The request holds only "
                               f"{ASKED[dataset.format]}: nothing about this machine or its traffic. Its licence, "
-                              f"first: {dataset.licence} You are asked to accept it next.")}}
+                              f"first: {dataset.licence} You are asked to accept it next."
+                              f"{_refresh_words(dataset)}")}}
+
+
+def _host_words(dataset: DataSet) -> str:
+    """The host a data set is asked of, in words, and (1.104.0) the hosts its answer may be sent on to: Natural Earth's
+    published link, sent on once to naciscdn.org."""
+    if not dataset.hosts:
+        return dataset.host
+    return (f"{dataset.host} (whose link sends it on to {' or '.join(dataset.hosts)}, the only "
+            f"host{'s' if len(dataset.hosts) > 1 else ''} it may go to)")
+
+
+def _again_words(dataset: DataSet) -> str:
+    """Whether a refused request is asked again, in words: once more a while later for a busy server, or (1.104.0:
+    CelesTrak, `retry` false) never, as its maker asks."""
+    if dataset.retry:
+        return f"once more {_apart()} later if the server is busy"
+    later = (f"; after a 500 or 503 nothing is asked of it for {world._seconds(dataset.pause / 60)} minutes"
+             if dataset.pause else "")
+    return f"not asked again if it refuses: its maker asks so{later}"
+
+
+def _refresh_words(dataset: DataSet) -> str:
+    """For a data set refreshed by itself (1.104.0), with a space before, what follows its first download; "" for any
+    other."""
+    if not dataset.refresh:
+        return ""
+    return (f" Once you accept it and it is downloaded, it is downloaded again by itself every "
+            f"{world._seconds(dataset.every / 3600)} hours at the soonest, and only while the World Wide Web tab is "
+            "open (never while it is closed); an answer that is not OK stops that until you update it yourself.")
 
 
 def _limit_words(dataset: DataSet) -> str:
@@ -2176,7 +2207,18 @@ def remove_form(dataset, folder) -> dict:
             "fields": [{"name": "dataset", "type": "fixed", "value": dataset.id}],
             "confirm": {"title": f"Remove {dataset.title}?", "yes": "Remove it",
                         "words": (f"It is removed from {_resolved(folder)} and the globe no longer draws it. It "
-                                  "can be downloaded again.")}}
+                                  "can be downloaded again." + _older_words(dataset, folder))}}
+
+
+def _older_words(dataset: DataSet, folder) -> str:
+    """1.104.0: where a download made before 1.104.0 left its <id>.json (read into the database once and kept), that
+    it is deleted with the removal, with a space before; "" where there is none."""
+    older = _resolved(folder) / f"{dataset.id}.json"
+    try:
+        there = older.is_file()
+    except OSError:
+        there = False
+    return f" Its older file from before, {older.name}, kept until now, is deleted with it." if there else ""
 
 
 # -- what is installed ------------------------------------------------------------------------------------------------
@@ -2601,6 +2643,14 @@ class Index:
                 "telecom lines on land, as far as free-licensed data gives them. A data set is downloaded only on your "
                 f"word, its size and its licence said first, and kept in {self.folder}: the globe is then drawn from "
                 "that file, and asks nothing of anyone.")
+        if any(d.refresh for d in self.datasets):  # 1.104.0
+            note += (" Those whose Here says so are downloaded again by themselves, as their makers allow, while this "
+                     "tab is open and never while it is closed.")
+        older = [] if elsewhere else [f"{d.id}.json" for d in self.datasets
+                                      if (self.folder / f"{d.id}.json").is_file()]
+        if older:  # 1.104.0: a download made before, read into the database once
+            note += (f" Downloads made before this database were read into it once, and their files are kept where "
+                     f"they are ({', '.join(older)}); Remove… deletes a data set's with it.")
         if elsewhere:
             note += f" {elsewhere}. Each system's platform downloads its own."
         elif installing():

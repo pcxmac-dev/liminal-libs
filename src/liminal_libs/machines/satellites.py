@@ -399,7 +399,9 @@ def package_remove_form(package: Package, data_dir=None) -> dict:
     return {"id": PACKAGE_REMOVE_FORM, "hook": SKY_REMOVE_HOOK, "title": "Remove the sgp4 package",
             "fields": [], "confirm": {"title": "Remove the sgp4 package?", "yes": "Remove it",
                                       "words": f"{where} is removed: the satellites are no longer placed until it is "
-                                               "downloaded again."}}
+                                               "downloaded again. If the platform has it loaded now (on Windows its "
+                                               "compiled part is then locked), it is marked removed at once, never "
+                                               "loaded again, and deleted when the platform next starts."}}
 
 
 def install_package(package: Package, data_dir=None, *, accept_licence=False, log=None, cancel=None,
