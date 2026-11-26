@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from liminal_libs.linuxsys.shared import SCRUBBED
 from liminal_libs.machines import linux
 from liminal_libs.machines.linux import (
     LIBEXEC, SUDO_LIST, SUDOERS_D, TAKE_BACK, CommandError, PasswordRefused, Shell, grant, granted, needs_password,
@@ -127,7 +128,10 @@ def test_without_a_password_the_reading_is_sudo_n_as_before(monkeypatch):
 def test_a_refused_password_is_its_own_error_and_says_so(monkeypatch):
     not_root(monkeypatch)
     for words in (b"Sorry, try again.\nsudo: 1 incorrect password attempt",
-                  b"sudo: no password was provided", b"sudo: 3 incorrect password attempts"):
+                  b"sudo: no password was provided", b"sudo: 3 incorrect password attempts",
+                  # sudo-rs's (Ubuntu 25.10 and later run it as sudo): a wrong one, none to read, three wrong
+                  b"sudo: Authentication failed, try again.", b"sudo: Authentication required but not attempted",
+                  b"sudo: maximum 3 incorrect authentication attempts"):
         rec = Recorder([(["id"], (1, b"", words))])
         with pytest.raises(PasswordRefused) as e:
             Shell("local", runner=rec).run("id", password=PW)
@@ -140,7 +144,25 @@ def test_the_password_is_scrubbed_from_an_error_s_words(monkeypatch):
     rec = Recorder([(["sh"], (2, b"", f"boom {PW} boom".encode()))])
     with pytest.raises(CommandError) as e:
         Shell("local", runner=rec).run("sh", "-c", "false", password=PW)
-    assert PW not in str(e.value) and "***" in str(e.value) and not isinstance(e.value, PasswordRefused)
+    # the whole text goes (1.101.0): stars in the password's place would tell where it stood and how long it is
+    assert str(e.value) == SCRUBBED and PW not in str(e.value) and "boom" not in str(e.value)
+    assert not isinstance(e.value, PasswordRefused)
+    # a text the password is not in is said as it is
+    rec = Recorder([(["sh"], (2, b"", b"boom"))])
+    with pytest.raises(CommandError) as e:
+        Shell("local", runner=rec).run("sh", "-c", "false", password=PW)
+    assert str(e.value) == "boom"
+
+
+def test_sudo_rs_s_refusal_without_a_password_is_a_denial(monkeypatch):
+    """sudo-rs says "interactive authentication is required" where classic sudo says "a password is required":
+    both mean the command needed root and sudo would have asked."""
+    not_root(monkeypatch)
+    for words in (b"sudo: a password is required", b"sudo: interactive authentication is required"):
+        rec = Recorder([(["nft"], (1, b"", words))])
+        with pytest.raises(CommandError) as e:
+            Shell("local", runner=rec).run("nft", "list", "ruleset")
+        assert e.value.denied and "needs root on this machine" in str(e.value)
 
 
 def test_an_old_two_argument_runner_still_works_and_never_sees_the_stdin(monkeypatch):
