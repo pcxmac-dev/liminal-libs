@@ -280,6 +280,7 @@ class DataSet:
     gzip: bool = False
     constellation: str = ""
     queries: tuple = ()
+    beams: tuple = ()  # ((a geostationary satellite's number, (the ids of the countries its beams reach, ...)), ...)
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -469,6 +470,14 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident}'s queries are {QUERIES} at most, each sent as it is written")
     if queries:
         out["queries"] = tuple(queries)
+    beams = said.get("beams")
+    if beams is not None:
+        if (not isinstance(beams, Mapping) or len(beams) > 16
+                or any(not str(k).isdigit() or not isinstance(v, (list, tuple)) or len(v) > 64
+                       or any(not isinstance(x, str) or not x.isalnum() or len(x) > 8 for x in v)
+                       for k, v in beams.items())):
+            raise ValueError(f"the data set {ident}'s beams are {{a satellite's number: [the countries' ids]}}")
+        out["beams"] = tuple((int(k), tuple(v)) for k, v in beams.items())
     if form == "mvt":
         out["tiles"] = _tiles(ident, said)
         if not out.get("layer"):

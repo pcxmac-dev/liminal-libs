@@ -451,7 +451,8 @@ class SkyView:
         for i, d in enumerate(sets):
             mine = [o for o in kept if o["constellation"] == d.constellation]
             out.append({"id": d.constellation, "title": d.title, "slot": SLOTS[i % len(SLOTS)], "count": len(mine),
-                        "epoch": world_iso(max((o["epoch"] for o in mine), default=0)) if mine else ""})
+                        "epoch": world_iso(max((o["epoch"] for o in mine), default=0)) if mine else "",
+                        "beams": {str(norad): list(ids) for norad, ids in d.beams}})
         return {"hook": SKY_HOOK, "every": SKY_ASK_S, "needs": "" if ok else why, "constellations": out}
 
     def read(self, t=None, elevation: float = ELEVATION) -> dict:
@@ -478,7 +479,8 @@ class SkyView:
                         "now": _packed([round(v * 1e4) for s in sats for v in (s["lat"], s["lon"])], "i"),
                         "next": _packed([round(v * 1e4) for s in sats for v in (s["lat2"], s["lon2"])], "i"),
                         "radius": _packed([min(32767, round(s["footprint"] * 100)) for s in sats], "h"),
-                        "geo": [i for i, s in enumerate(sats) if s["geo"]], "left": got["left"]})
+                        "geo": [i for i, s in enumerate(sats) if s["geo"]],
+                        "geo_norad": [s["norad"] for s in sats if s["geo"]], "left": got["left"]})
         return {"at": when, "elevation": elevation, "constellations": out}
 
     def forms(self) -> list[dict]:

@@ -1360,7 +1360,7 @@ def test_a_piece_out_of_sight_has_no_point_on_the_canvas(js):
     strokes = _body(js, "function strokePieces(c, P, g, fr, sight) {")
     assert "if (inSight(P.caps, j * 4, fr.C, sight)) strokeUnits(" in strokes
     prepare = _body(js, "function prepare(t) {")
-    assert "return { land, coasts: piecesOf(coasts), borders: piecesOf(borders) };" in prepare
+    assert "return { land, coasts: piecesOf(coasts), borders: piecesOf(borders), byId };" in prepare  # 1.104.0
     assert "const [coasts, borders] = sections;" in _body(js, "function prepareTile(buf, t, index) {")
     topo = json.loads((WORLD / "countries-110m.json").read_text(encoding="utf-8"))
     lines = [[c for lon, lat in line for c in _unit(lon, lat)] for line in _decode(topo)]
@@ -1679,3 +1679,23 @@ def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
     box = _body(js, "function areaOf(g) {")
     assert "if (s <= -90 || n >= 90 || across >= 180) return [-180, s, 180, n];" in box
     assert "return [w < -180 ? w + 360 : w, s, e > 180 ? e - 360 : e, n];" in box
+
+
+def test_the_sky_is_drawn_as_one_merged_area_a_constellation_with_its_faint_band_outside(js):
+    """1.104.0 (Monday list item 32): each constellation's footprints are one path filled once in its colour (never a
+    stack), the band stroked in a very faint pink and then the area taken out of it (destination-out), a geostationary
+    satellite's beams the countries it names cut to its cap; the places asked of the page's own loader alone, once a
+    minute at most, moved between their two moments once a second (every ten under reduced motion)."""
+    assert "  const SKY_PINK = 'rgba(255,105,180,0.10)';  // " in js and "  const SKY_RING = 48;  // " in js
+    assert "  const SKY_TICK_MS = 1000;  // " in js and "  const SKY_TICK_REDUCED_MS = 10_000;  // " in js
+    paint = _body(js, "function paintSky(c, g, fr, t, W, H, ratio) {")
+    assert paint.count("o.fill(area);") == 2  # the destination-out, then the colour: once each
+    stroke, out = paint.index("o.stroke(area);"), paint.index("o.globalCompositeOperation = 'destination-out';")
+    fill = paint.index("o.fill(area);  // once: the union")
+    assert stroke < out < fill and "o.globalCompositeOperation = 'source-over';" in paint[out:fill]
+    assert "m.clip(cap);" in paint and "m.fill(lands);" in paint  # the beams: the countries within the cap
+    ask = _body(js, "function askSky() {")
+    assert "if (!data.sky || data.sky.needs || !skyLoad || Date.now() - skyAsked < data.sky.every * 1000) return;" in ask
+    assert "fetch(" not in _body(js, "function skyLayer(g, fr, ratio, W, H) {") and "fetch(" not in ask
+    assert "skyTimer = setTimeout(() => { changed(); tickSky(); }, reduced ? SKY_TICK_REDUCED_MS : SKY_TICK_MS);" in js
+    assert "clearTimeout(skyTimer);  // 1.104.0: the sky's tick goes with the globe" in _body(js, "function destroy() {")

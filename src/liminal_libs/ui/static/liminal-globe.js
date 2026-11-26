@@ -32,6 +32,10 @@
 //     argument answers the whole layer, drawn as it was.
 //   key: a name the layers' switches are remembered under in this browser (localStorage); without it they last as
 //     long as the globe does.
+//   sky: (seconds since 1970) => a Promise of the satellites' places, as machines/satellites.py's SkyView.read answers
+//     them (1.104.0): {at, constellations: [{id, n, now, next, radius, geo, geo_norad}]}, `now` and `next` the base64
+//     of little-endian int32 pairs (lat, lon in 1e-4 degrees) at `at` and a minute later, `radius` of int16 footprint
+//     radii in 1e-2 degrees. The page gives it, asking the spec's sky.hook; asked once a minute at most.
 //
 // - The map is world-atlas 2.0.2 (Natural Earth, public domain) beside this file: vendor/world/countries-110m.json,
 //   countries-50m.json only once a globe is zoomed past 2.5x and countries-10m.json past 12x; one copy serves every
@@ -114,6 +118,15 @@
   const LABELS = 5;  // the busiest places named on the map (the table and the tooltips carry every one)
   const LIGHTS = 64;  // the busiest routes a light travels (the rest stand still: a frame stays cheap)
   const AREA_ZOOM = 6;  // past this zoom a layer is asked by area (machines/infrastructure.py's COARSE_ZOOM)
+  // 1.104.0 (Monday list item 32): the satellites' footprints, each constellation's merged into one area
+  const SKY_RING = 48;  // points round a footprint's circle
+  const SKY_BAND_PX = 6;  // the faint band's width at the footprints' outer edge
+  const SKY_PINK = 'rgba(255,105,180,0.10)';  // the band: a very faint pink, the same for every constellation
+  const SKY_FILL = 0.16;  // a constellation's area's alpha: filled once, never stacked
+  const SKY_TICK_MS = 1000;  // the places move between their two moments, redrawn this often
+  const SKY_TICK_REDUCED_MS = 10_000;  // and this often under prefers-reduced-motion
+  const SKY_MAX = 20000;  // satellites a constellation draws at most
+  const SKY_COLOURS = ['#4aa3ff', '#f2a541', '#7bd88f'];  // --sky-1 to --sky-3 where the theme names none
   const AREA_TILE = 10;  // degrees: the area asked is the view's, rounded out to these
   const MAX_LAYERS = 16;  // the infrastructure layers of a spec that are listed (how many more there were is said)
   const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
@@ -439,6 +452,13 @@
       const r = landRing(ring, arcs);
       if (r) land.push(r);
     }));
+    const byId = new Map();  // 1.104.0: each country's rings by its id (a geostationary satellite's beams)
+    for (const c of (objects.countries && objects.countries.geometries) || []) {
+      const polys = c.type === 'Polygon' ? [c.arcs] : c.type === 'MultiPolygon' ? c.arcs : [];
+      const rings = [];
+      for (const poly of polys) for (const ring of poly) { const r = landRing(ring, arcs); if (r) rings.push(r); }
+      if (rings.length && c.id != null) byId.set(String(c.id), rings);
+    }
     const coasts = [], borders = [];
     arcs.forEach((v, k) => {  // each arc cut where the data's cut lines are, a border where two countries take it
       const piece = (from, to) => {
@@ -448,7 +468,7 @@
       for (const i of cuts[k]) { piece(start, i); start = i; }
       piece(start, v.length / 3);
     });
-    return { land, coasts: piecesOf(coasts), borders: piecesOf(borders) };
+    return { land, coasts: piecesOf(coasts), borders: piecesOf(borders), byId };
   }
 
   const maps = { coarse: null, fine: null, finest: null };  // 1:110m, 1:50m and 1:10m
@@ -789,6 +809,7 @@
       land: rgbOf(v('--globe-land'), fb.land), network: rgbOf(v('--globe-network'), fb.network),
       // 1.70.0: the routes' hues' saturation and lightness, violet to red (heatColour): every hue shows on both globes
       heat: base === 'light' ? { s: 80, l: 40 } : { s: 90, l: 62 },
+      sky: SKY_COLOURS.map((f, i) => rgbOf(v(`--sky-${i + 1}`), f)),  // 1.104.0: each constellation's
       font: cs.fontFamily || 'system-ui, sans-serif', detached: !node.isConnected,
     };
   }
@@ -888,7 +909,70 @@
       // 1.69.0: the routes' heat (machines/network.py); null on an older server's page, whose routes are drawn as before
       heat: Array.isArray(s.heat) ? heatOf(s.heat) : null, heatBy: s.heat_by === 'bytes' ? 'bytes' : 'connections',
       hops: hopsOf(listed),
+      sky: skyOf(s.sky),  // 1.104.0: the satellites, where the plugin names any
     };
+  }
+  // The sky a spec says (machines/satellites.py's SkyView.spec), made safe: each constellation's id, title, colour slot
+  // and the countries each geostationary satellite's beams reach ({norad: [country ids]}); null for none.
+  function skyOf(s) {
+    if (!s || typeof s !== 'object' || !Array.isArray(s.constellations)) return null;
+    const list = [];
+    for (const c of s.constellations.slice(0, 8)) {
+      const id = c && typeof c === 'object' ? text(c.id, 40) : '';
+      if (!id || list.some((x) => x.id === id)) continue;
+      const slot = num(c.slot), beams = new Map();
+      if (c.beams && typeof c.beams === 'object') {
+        for (const [k, ids] of Object.entries(c.beams).slice(0, 16)) {
+          if (Array.isArray(ids)) beams.set(text(k, 12), ids.slice(0, 64).map((x) => text(String(x), 8)));
+        }
+      }
+      list.push({ id, title: text(c.title, 80) || id, slot: slot >= 1 && slot <= 3 ? slot : (list.length % 3) + 1,
+        count: Math.max(0, num(c.count) ?? 0), beams });
+    }
+    const every = num(s.every);
+    return list.length ? { hook: text(s.hook, 40), needs: text(s.needs, 200), constellations: list,
+      every: every != null && every >= 10 ? every : 60 } : null;
+  }
+  // The satellites' places as the page answered them, made ready to draw: each constellation's unit vectors now and a
+  // minute later, its footprints' radii (radians), which are geostationary and their numbers; null for no answer.
+  function skyPlaces(answer) {
+    if (!answer || typeof answer !== 'object' || !Array.isArray(answer.constellations)) return null;
+    const at = num(answer.at), out = new Map();
+    for (const c of answer.constellations.slice(0, 8)) {
+      const id = c && typeof c === 'object' ? text(c.id, 40) : '';
+      const a = bytesOf(c && c.now), b = bytesOf(c && c.next), r = bytesOf(c && c.radius);
+      if (!id || !a || !b || !r) continue;
+      const n = Math.min(SKY_MAX, Math.floor(a.length / 8), Math.floor(b.length / 8), Math.floor(r.length / 2));
+      const A = new DataView(a.buffer), B = new DataView(b.buffer), R = new DataView(r.buffer);
+      const now = [], next = [], radius = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        now.push(unit(A.getInt32(i * 8 + 4, true) / 1e4, A.getInt32(i * 8, true) / 1e4));
+        next.push(unit(B.getInt32(i * 8 + 4, true) / 1e4, B.getInt32(i * 8, true) / 1e4));
+        radius[i] = (R.getInt16(i * 2, true) / 100) * rad;
+      }
+      const geo = new Map();
+      (Array.isArray(c.geo) ? c.geo : []).forEach((i, k) => {
+        if (!Number.isInteger(i) || i < 0 || i >= n) return;
+        geo.set(i, Array.isArray(c.geo_norad) ? text(String(c.geo_norad[k]), 12) : '');
+      });
+      out.set(id, { n, now, next, radius, geo });
+    }
+    return { at: at != null ? at : Date.now() / 1000, byId: out };
+  }
+  // A footprint's ring: the small circle of angular radius r round the unit vector p, SKY_RING points, as the land's
+  // rings are (ringPath cuts it at the horizon and closes it along the rim).
+  function footRing(p, r) {
+    const a = Math.abs(p[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    let u = [p[1] * a[2] - p[2] * a[1], p[2] * a[0] - p[0] * a[2], p[0] * a[1] - p[1] * a[0]];
+    const m = Math.hypot(u[0], u[1], u[2]);
+    u = [u[0] / m, u[1] / m, u[2] / m];
+    const w = [p[1] * u[2] - p[2] * u[1], p[2] * u[0] - p[0] * u[2], p[0] * u[1] - p[1] * u[0]];
+    const v = new Float32Array(SKY_RING * 3), cr = Math.cos(r), sr = Math.sin(r);
+    for (let k = 0; k < SKY_RING; k++) {
+      const t = (k / SKY_RING) * TAU, c = Math.cos(t), s = Math.sin(t);
+      for (let j = 0; j < 3; j++) v[k * 3 + j] = cr * p[j] + sr * (c * u[j] + s * w[j]);
+    }
+    return { v, turn: turnOf(v), cap: capOf(v) };
   }
   // A route's hop as the page gives it (machines/routes.py's `via`): its place, and the words it has, made safe.
   function hopOf(p) {
@@ -1036,6 +1120,8 @@
     let anchor = '';  // where an anchored tooltip was put last
     let routes = [];
     let load = typeof opts.load === 'function' ? opts.load : null;  // the page's way to a layer's geometry, or none
+    let skyLoad = typeof opts.sky === 'function' ? opts.sky : null;  // 1.104.0: the page's way to the satellites
+    let sky = null, skyAsked = 0, skyTimer = 0;  // their places as last answered, when they were asked, the tick
     let storeName = typeof opts.key === 'string' ? text(opts.key, 200) : '';  // what the switches are remembered under
     let chosen = recall(storeName);  // a layer's id -> switched on or off here; a layer not in it is as its spec says
     let layersShown = null, layersKey = '';  // the layers drawn now and what tells them apart: made again when null
@@ -1050,7 +1136,8 @@
     // offscreen layers, drawn again only when what they show changes: the sphere, the land and its lines; a plugin's
     // infrastructure (its marks and lines); the dots and the names
     const layers = { base: { canvas: null, key: '' }, infra: { canvas: null, key: '' },
-      places: { canvas: null, key: '' }, heat: { canvas: null, key: '' } };
+      places: { canvas: null, key: '' }, heat: { canvas: null, key: '' }, sky: { canvas: null, key: '' } };
+    const skyScratch = { a: null, b: null };  // 1.104.0: a constellation's own canvas, and a beam's mask
     const motion = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : null;
     const scheme = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
     let reduced = !!(motion && motion.matches);
@@ -1477,6 +1564,114 @@
     // and every great circle where they leave it, on the globe's surface, from grey to white and from 1 to 3 px by the
     // traffic over it on a log scale (t = log(1 + w) / log(1 + the most)), HEAT_STEPS steps of it, each one path; the
     // brightest with a faint wider stroke under them. Drawn again only when the view or the spec changes.
+    // 1.104.0: the satellites' places asked of the page once a minute at most (the spec's every), only while the
+    // globe is drawn and nothing says the package is missing; the tick redraws them as they move, once a second (every
+    // ten under prefers-reduced-motion), and stops with the globe.
+    function askSky() {
+      if (!data.sky || data.sky.needs || !skyLoad || Date.now() - skyAsked < data.sky.every * 1000) return;
+      skyAsked = Date.now();
+      let asked = null;
+      try { asked = Promise.resolve(skyLoad(Date.now() / 1000)); } catch (e) { asked = Promise.reject(e); }
+      asked.then((answer) => { if (!destroyed) { sky = skyPlaces(answer); tickSky(); changed(); } }, () => {});
+    }
+    function tickSky() {
+      clearTimeout(skyTimer);
+      if (destroyed || !sky) return;
+      skyTimer = setTimeout(() => { changed(); tickSky(); }, reduced ? SKY_TICK_REDUCED_MS : SKY_TICK_MS);
+    }
+    // Each constellation's footprints as one merged area (the user, 2026-11-26): every circle in one path, filled once
+    // in its colour, so the area is brighter inside and never stacked where circles overlap; the band: the same path
+    // stroked SKY_BAND_PX wide in a very faint pink, then the area taken out of it (destination-out), so what is left
+    // lies outside the outer edge alone. A geostationary satellite's footprint is its beams' reach: the countries it
+    // names, cut to its cap (a mask: the countries, then the cap kept of them); one that names none, its whole cap.
+    function skyLayer(g, fr, ratio, W, H) {
+      const slot = layers.sky;
+      if (!data.sky || !sky || !sky.byId.size) {
+        if (slot.canvas) { slot.canvas.width = 0; slot.canvas.height = 0; slot.canvas = null; slot.key = ''; }
+        return null;
+      }
+      const t = Math.min(1, Math.max(0, (Date.now() / 1000 - sky.at) / 60));
+      const tick = Math.floor(t * 60 / (reduced ? 10 : 1));
+      return layer(slot, `${viewKey(g, W, H, ratio)}|${sky.at}|${tick}`, W, H, ratio, (c) => paintSky(c, g, fr, t, W, H,
+        ratio));
+    }
+    function scratch(name, W, H, ratio) {
+      const c = skyScratch[name] || (skyScratch[name] = document.createElement('canvas'));
+      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+      const b = c.getContext('2d');
+      b.setTransform(1, 0, 0, 1, 0, 0);
+      b.globalCompositeOperation = 'source-over';
+      b.clearRect(0, 0, W, H);
+      b.setTransform(ratio, 0, 0, ratio, 0, 0);
+      return [c, b];
+    }
+    function paintSky(c, g, fr, t, W, H, ratio) {
+      const sight = sightOf(g), map = maps.coarse;
+      for (const k of data.sky.constellations) {
+        const s = sky.byId.get(k.id);
+        if (!s || !s.n) continue;
+        const area = new Path2D(), [own, o] = scratch('a', W, H, ratio);
+        let beams = null;
+        for (let i = 0; i < s.n; i++) {
+          const a = s.now[i], b = s.next[i];
+          const w = 2 * Math.asin(Math.min(1, Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / 2));
+          const p = w > 1e-9 ? slerp(a, b, w, t) : a, r = s.radius[i];
+          const C = fr.C;
+          if (Math.acos(clamp(p[0] * C[0] + p[1] * C[1] + p[2] * C[2], -1, 1)) > sight + r) continue;  // out of sight
+          const ring = footRing(p, r), ids = s.geo.has(i) ? k.beams.get(s.geo.get(i)) : null;
+          if (!ids || !ids.length || !map || !map.byId) { ringPath(area, ring, g, fr); continue; }
+          if (!beams) beams = scratch('b', W, H, ratio);  // the beams' reach: the countries, then their cap kept
+          const [, m] = beams, lands = new Path2D(), cap = new Path2D();
+          for (const id of ids) for (const land of map.byId.get(id) || []) ringPath(lands, land, g, fr);
+          ringPath(cap, ring, g, fr);
+          m.save();
+          m.clip(cap);
+          m.fillStyle = '#fff';
+          m.fill(lands);
+          m.restore();
+          o.save();  // its band: the beams' outline within the cap, and the cap's within the beams
+          o.strokeStyle = SKY_PINK;
+          o.lineWidth = SKY_BAND_PX;
+          o.clip(cap);
+          o.stroke(lands);
+          o.restore();
+          o.save();
+          o.clip(lands);
+          o.strokeStyle = SKY_PINK;
+          o.lineWidth = SKY_BAND_PX;
+          o.stroke(cap);
+          o.restore();
+        }
+        o.strokeStyle = SKY_PINK;
+        o.lineWidth = SKY_BAND_PX;
+        o.lineJoin = 'round';
+        o.stroke(area);
+        o.globalCompositeOperation = 'destination-out';  // the band's inner half and every edge inside the area go
+        o.fill(area);
+        if (beams) {
+          o.setTransform(1, 0, 0, 1, 0, 0);
+          o.drawImage(beams[0], 0, 0);
+          o.setTransform(ratio, 0, 0, ratio, 0, 0);
+        }
+        o.globalCompositeOperation = 'source-over';
+        const colour = colours.sky[k.slot - 1] || colours.sky[0];
+        o.fillStyle = css(colour, SKY_FILL);
+        o.fill(area);  // once: the union, brighter inside, never a stack
+        if (beams) {
+          const [mask, m] = beams;
+          m.setTransform(1, 0, 0, 1, 0, 0);
+          m.globalCompositeOperation = 'source-in';
+          m.fillStyle = css(colour, SKY_FILL);
+          m.fillRect(0, 0, W, H);
+          o.setTransform(1, 0, 0, 1, 0, 0);
+          o.drawImage(mask, 0, 0);
+          o.setTransform(ratio, 0, 0, ratio, 0, 0);
+        }
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.drawImage(own, 0, 0);
+        c.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+    }
     function heatLayer(g, fr, ratio, W, H) {
       const slot = layers.heat, h = data.heat;
       if (!h || !h.runs.length) {
@@ -1938,6 +2133,9 @@
       ctx.drawImage(baseLayer(g, fr, ratio, W, H, tiles), 0, 0);
       const infra = infraLayer(g, fr, ratio, W, H);  // the layers: over the map, under the routes
       if (infra) ctx.drawImage(infra, 0, 0);
+      askSky();
+      const skies = skyLayer(g, fr, ratio, W, H);  // 1.104.0: the satellites' footprints, over the layers
+      if (skies) ctx.drawImage(skies, 0, 0);
       const heat = heatLayer(g, fr, ratio, W, H);  // 1.69.0: the routes' heat, over the layers they run along
       if (heat) ctx.drawImage(heat, 0, 0);
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -2626,6 +2824,7 @@
       if (destroyed) return;
       if (more && more.theme !== undefined && more.theme !== theme) { theme = more.theme; recolour(); }
       if (more && typeof more.load === 'function') load = more.load;
+      if (more && typeof more.sky === 'function') skyLoad = more.sky;  // 1.104.0
       if (more && typeof more.key === 'string' && text(more.key, 200) !== storeName) {  // the switches kept elsewhere
         storeName = text(more.key, 200);
         chosen = recall(storeName);
@@ -2664,6 +2863,8 @@
     function destroy() {
       if (destroyed) return;
       destroyed = true;
+      clearTimeout(skyTimer);  // 1.104.0: the sky's tick goes with the globe
+      for (const c of Object.values(skyScratch)) if (c) { c.width = 0; c.height = 0; }
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       if (seenBy) seenBy.disconnect();
