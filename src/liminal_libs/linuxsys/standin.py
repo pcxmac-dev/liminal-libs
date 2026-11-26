@@ -218,7 +218,8 @@ class Machine:
         return code, "".join(out), "".join(err)
 
     def spawn(self, argv, env=None, **_kw) -> "Process":
-        """sudo's conversation (`... sudo -S -k -u root -p <prompt> -- /bin/sh -c <script> liminal <nonce>`) as a
+        """sudo's conversation (`... sudo -S -k -u root -p <prompt> -- /bin/sh -c <script> liminal <nonce>`), or a
+        root shell's script on a machine whose user is root (`/bin/sh -c <script> liminal <nonce>`), as a
         process with byte pipes, as lifecycle.spawn would start it. Its pipes' reads block, as a real pipe's do, so
         a caller reads them from threads."""
         argv = list(argv)
@@ -640,6 +641,10 @@ class Process:
         self._killed_at = ""
         sudo = machine.sudo
         self.kind = sudo.get("kind", "sudo")
+        if machine.euid == 0 and len(argv) == 5 and argv[:2] == ["/bin/sh", "-c"] and argv[3] == "liminal":
+            self.prompt, self.script, self.nonce = "", argv[2], argv[4]  # a root shell's script: nothing is asked
+            self._begin()
+            return
         try:
             dash = argv.index("--")
             prompt = argv[argv.index("-p") + 1]
