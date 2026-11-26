@@ -374,16 +374,30 @@ def _where(url: str) -> str:
     return f"{parts.scheme.lower()}://{host}" if parts.scheme and host else (str(url or "")[:80] or "nowhere")
 
 
-def _over_https(url: str, host: str, what: str = "a GeoIP file") -> None:
-    """RedirectRefused unless `url` is https on `host`. `what`: what is downloaded, for the words (a GeoIP file; a data
-    set of machines/infrastructure.py)."""
+def _over_https(url: str, host: str, what: str = "a GeoIP file", hosts=()) -> None:
+    """RedirectRefused unless `url` is https on `host`, or (1.102.0) on one of `hosts`, those its plugin names for the
+    download to be sent on to (a maker's storage). `what`: what is downloaded, for the words (a GeoIP file; a data set
+    of machines/infrastructure.py). The words name a host alone, never an address's path or query."""
     try:
         parts = urlsplit(str(url or ""))
         there = (parts.hostname or "").lower()
     except ValueError:
         parts, there = None, ""
-    if parts is None or parts.scheme.lower() != "https" or there != host:
-        raise RedirectRefused(f"it was sent on to {_where(url)}, and {what} comes over https from {host} alone")
+    allowed = {host, *(str(h).lower() for h in hosts or ())}
+    if parts is None or parts.scheme.lower() != "https" or there not in allowed:
+        alone = f"{host} alone" if len(allowed) == 1 else f"{host} and the hosts its plugin names for it alone"
+        raise RedirectRefused(f"it was sent on to {_site(url)}, and {what} comes over https from {alone}")
+
+
+def _site(url: str) -> str:
+    """1.102.0: an address in words as _where says it, its scheme and host, yet never any of the address itself when
+    no host parses (a keyed address's query may hold a key)."""
+    try:
+        parts = urlsplit(str(url or ""))
+        host = parts.hostname or ""
+    except ValueError:
+        return "an address that is none"
+    return f"{parts.scheme.lower()}://{host}" if parts.scheme and host else "an address that is none"
 
 
 def _shut(sock) -> None:
@@ -531,12 +545,13 @@ def _transport() -> tuple[type, type, type]:
 
         max_redirections = MAX_REDIRECTS
 
-        def __init__(self, host: str, what: str = "a GeoIP file"):
+        def __init__(self, host: str, what: str = "a GeoIP file", hosts=()):
             self.host, self.what = host, what  # `what` is downloaded: for a refusal's words
+            self.hosts = tuple(hosts or ())  # 1.102.0: the other hosts its plugin names for it to be sent on to
 
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             try:
-                _over_https(newurl, self.host, self.what)
+                _over_https(newurl, self.host, self.what, self.hosts)
                 new = super().redirect_request(req, fp, code, msg, headers, newurl)
             except BaseException:
                 _close(fp)  # refused: its connection let go now, nothing read of it
@@ -548,7 +563,8 @@ def _transport() -> tuple[type, type, type]:
     return Connection, Https, SameHost
 
 
-def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = USER_AGENT, what: str = "a GeoIP file"):
+def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = USER_AGENT, what: str = "a GeoIP file",
+              hosts=()):
     """The download's stream: an HTTP GET of `url`, https on every hop: a redirect is followed only to the same host over
     https (MAX_REDIRECTS at most, its body never read), and one anywhere else (http, ftp, another host) is refused before
     anything is asked of it (RedirectRefused); the address the answer came from is checked again. Each socket operation
@@ -558,7 +574,9 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = US
 
     `agent`: the request's User-Agent, a product's name and its version and nothing of the user's or the machine's: the
     library's own for a GeoIP file, a plugin's name and version for a data set it downloads
-    (machines/infrastructure.py). `what`: what is downloaded, for the words of a refusal (a GeoIP file; a data set)."""
+    (machines/infrastructure.py). `what`: what is downloaded, for the words of a refusal (a GeoIP file; a data set).
+    `hosts` (1.102.0): the other hosts a redirect may go to, and the answer come from (a GeoIP source's storage, as its
+    plugin names them); none: the same host alone, as before."""
     import urllib.request
 
     try:
@@ -569,11 +587,11 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = US
     if parts is None or parts.scheme.lower() != "https" or not host:
         raise ValueError(f"{what} is downloaded over https only")
     _, https, same_host = _transport()
-    opener = urllib.request.build_opener(same_host(host, what), *(handlers or (https(),)))
+    opener = urllib.request.build_opener(same_host(host, what, hosts), *(handlers or (https(),)))
     request = urllib.request.Request(url, headers={"User-Agent": str(agent or USER_AGENT)})
     response = opener.open(request, timeout=timeout)  # noqa: S310 - the plugin's own https address, on the user's word
     try:
-        _over_https(_answered_from(response, url), host, what)
+        _over_https(_answered_from(response, url), host, what, hosts)
     except RedirectRefused:
         _close(response)
         raise
@@ -669,17 +687,41 @@ def _length(stream) -> int | None:
     return n if n is not None and n > 0 else None
 
 
-def _came_from(stream, url: str) -> str:
-    """The address the download's answer came from (its own, after any redirect: https on the plugin's host, or
-    GeoError); `url` when the stream does not say."""
+def _came_from(stream, url: str, hosts=()) -> str:
+    """The address the download's answer came from (its own, after any redirect: https on the plugin's host, or one of
+    `hosts` (1.102.0), or GeoError); `url` when the stream does not say."""
     where = _answered_from(stream, url)
     host = _host(url).lower()
     try:
-        _over_https(where, host)
+        _over_https(where, host, hosts=hosts)
     except RedirectRefused:
-        raise geo.GeoError(f"the GeoIP file came from {_where(where)}, not over https from {host}: nothing was "
-                           "installed") from None
+        raise geo.GeoError(f"the GeoIP file came from {_site(where)}, not over https from {host}"
+                           f"{' or the hosts its plugin names' if hosts else ''}: nothing was installed") from None
     return where
+
+
+def _fixed(e: BaseException, url: str, own=()) -> str:
+    """1.102.0: a keyed download's failure in fixed words: what failed, the HTTP status and the host alone, never the
+    exception's own words (they may print the address, its query and the key in it) nor the address. `own`: the maker's
+    own hosts, whose 401 or 403 is the key's; any other host's is its storage's, refusing a signed address."""
+    code = getattr(e, "code", None)
+    code = code if isinstance(code, int) and not isinstance(code, bool) else None
+    where = getattr(e, "url", None) or getattr(e, "filename", None)
+    host = (_host(where) if isinstance(where, str) and where else "") or _host(url) or "its host"
+    mine = host.lower() in {str(h).lower() for h in own or ()}
+    if code in (401, 403):
+        return (f"HTTP {code} from {host}: the key was refused (set it again on the login's page): nothing was "
+                "installed" if mine else f"HTTP {code} from {host}: the storage host refused the signed address it was "
+                "sent on to (it may have expired): nothing was installed")
+    if code == 429:
+        return f"HTTP 429 from {host}: the maker's limit was reached; try again later: nothing was installed"
+    if code is not None:
+        return f"HTTP {code} from {host}: nothing was installed"
+    if isinstance(e, RedirectRefused):
+        return f"{getattr(e, 'reason', '') or 'it was sent on elsewhere'}: nothing was installed"  # a host alone
+    if isinstance(e, geo.GeoError):
+        return f"the file from {host} did not install: {type(e).__name__}"
+    return f"the download from {host} failed ({type(e).__name__}): nothing was installed"
 
 
 def _sayer(log):

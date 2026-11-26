@@ -1554,3 +1554,68 @@ def test_an_asn_file_from_before_this_month_is_offered_its_update(tmp_path):
     with pytest.raises(ValueError, match="offers no ASN file"):
         Walled(capture_factory=Feed, geo_folder=folder, clock=Clock(), wall=Clock(NOW)).world_asn(True)
     fw.detach()
+
+
+# -- 1.102.0 (Monday list item 20): the hosts a source names, and failures in fixed words ----------------------------------
+KEYED = "https://maker.example/data/lite.mmdb"
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_a_redirect_goes_to_a_host_the_plugin_names_and_nowhere_else():
+    signed = "https://storage.example/signed/lite.mmdb?X-Sig=abc"
+    web = Web({KEYED: (302, {"Location": signed}, b"moved"), signed: (200, {}, b"the file")})
+    got = FETCH_URL(KEYED, 5, handlers=(web,), hosts=("storage.example",))
+    assert got.read() == b"the file" and web.asked == [KEYED, signed] and web.bodies[0].reads == 0
+    elsewhere = "https://other.example/signed/lite.mmdb?X-Sig=abc"
+    web = Web({KEYED: (302, {"Location": elsewhere}, b"moved"), elsewhere: (200, {}, b"the file")})
+    with pytest.raises(RedirectRefused) as refused:
+        FETCH_URL(KEYED, 5, handlers=(web,), hosts=("storage.example",))
+    said = str(refused.value)
+    assert "https://other.example" in said and "X-Sig" not in said and "/signed/" not in said
+    assert web.asked == [KEYED]  # never asked
+    # with no hosts named (the infrastructure's data sets), the same host alone, as before
+    web = Web({KEYED: (302, {"Location": signed}, b"moved"), signed: (200, {}, b"the file")})
+    with pytest.raises(RedirectRefused, match="maker.example alone"):
+        FETCH_URL(KEYED, 5, handlers=(web,))
+    assert web.asked == [KEYED]
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_the_answers_host_is_checked_against_the_same_hosts():
+    class Moved(io.BytesIO):
+        def __init__(self, data, where):
+            super().__init__(data)
+            self.where = where
+
+        def geturl(self):
+            return self.where
+    assert world._came_from(Moved(b"", "https://storage.example/x?t=1"), KEYED, ("storage.example",)).startswith(
+        "https://storage.example/")
+    with pytest.raises(geo.GeoError) as refused:
+        world._came_from(Moved(b"", "https://other.example/x?token=Secret_123456"), KEYED, ("storage.example",))
+    assert "Secret_123456" not in str(refused.value) and "other.example" in str(refused.value)
+    with pytest.raises(geo.GeoError, match="an address that is none"):
+        world._came_from(Moved(b"", "not an address ?token=Secret_123456"), KEYED, ("storage.example",))
+    assert world._site("no host ?token=Secret_123456") == "an address that is none"
+
+
+@pytest.mark.usefixtures("no_outside")
+def test_a_keyed_downloads_failure_is_said_in_fixed_words():
+    def answered(code, url):
+        return urllib.error.HTTPError(url, code, "words of the server's own", {}, io.BytesIO(b""))
+    canary = "Canary_Token-0123456789"
+    keyed = f"{KEYED}?token={canary}"
+    own = ("maker.example",)
+    assert "the key was refused" in world._fixed(answered(401, keyed), keyed, own)
+    assert "the key was refused" in world._fixed(answered(403, keyed), keyed, own)
+    storage = world._fixed(answered(403, f"https://storage.example/x?sig={canary}"), keyed, own)
+    assert "storage host refused the signed address" in storage and "key" not in storage
+    assert "storage.example" in storage
+    assert "limit was reached" in world._fixed(answered(429, keyed), keyed, own)
+    assert world._fixed(answered(500, keyed), keyed, own) == "HTTP 500 from maker.example: nothing was installed"
+    tab = http.client.InvalidURL(f"URL can't contain control characters. '/data/lite.mmdb?token={canary}\\t'")
+    for e in (tab, OSError(keyed), ValueError(repr(keyed)), geo.GeoError(keyed),
+              RedirectRefused("it was sent on to https://other.example, and a GeoIP file comes over https from "
+                              "maker.example alone")):
+        said = world._fixed(e, keyed, own)
+        assert canary not in said and "token" not in said and "?" not in said, said
