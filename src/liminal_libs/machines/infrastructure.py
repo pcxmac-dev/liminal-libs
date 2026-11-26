@@ -1155,7 +1155,9 @@ def _mvt(doc, kept: _Kept, host: str, free: bool) -> None:
         if not raw:
             continue  # a tile with nothing in it (404): the sea, a desert
         try:
-            found = mvt.decode(raw, keys=TILE_FIELDS, layers=layers)
+            # the review: tiles kept gzipped (tippecanoe's, on S3 and CloudFront) come so whatever is asked, and
+            # urllib unpacks nothing; a tile that is not gzipped is read as it is
+            found = mvt.decode(bytes(_unpacked(raw, host)), keys=TILE_FIELDS, layers=layers)
         except mvt.MvtError as e:
             raise InfrastructureError(f"{host}'s tile {z}/{x}/{y} is not the data asked for ({e})") from None
         read += 1

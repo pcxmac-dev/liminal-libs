@@ -134,8 +134,9 @@ def test_map_tiles_are_named_and_asked_one_by_one_and_their_people_never_kept(tm
     assert "in 56 requests, one after another" in form["confirm"]["words"]
     assert "in one request" in infrastructure.form(ROADS, tmp_path)["confirm"]["words"]
     first, second = fibre.addresses()[0], fibre.addresses()[1]
-    asked = Downloads({first: fibre_tile([(0, 0), (2048, 2048)]), second: fibre_tile([(0, 2048), (100, 2048)],
-                                                                                    live=False)})
+    import gzip  # the review: the second tile comes gzipped, as tiles kept so on S3 and CloudFront do
+    asked = Downloads({first: fibre_tile([(0, 0), (2048, 2048)]),
+                       second: gzip.compress(fibre_tile([(0, 2048), (100, 2048)], live=False))})
     out = install(AFTERFIBRE, tmp_path / "f", accept_licence=True, fetch=asked, clock=Clock())
     assert out["ok"] is True and out["file"]["layers"] == {"fibre": 2}  # 54 tiles not there: nothing in them
     assert [a[0] for a in asked.asked] == fibre.addresses()
