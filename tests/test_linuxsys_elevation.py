@@ -295,6 +295,31 @@ def test_sudo_ending_before_the_begin_line_is_said_scrubbed_whole():
         elevation.converse(["sudo"], "secret", "feed", spawn=lambda argv: proc)
 
 
+class _Refuses(_Silent):
+    """A sudo that asks once at its marker and, given a password, ends with its refusal (PAM's one try)."""
+
+    def __init__(self, nonce: str, refusal: bytes):
+        super().__init__(f"<<liminal-sudo:{nonce}:pat>>".encode())
+        proc = self
+
+        class _Typed(_In):
+            def write(self, data):
+                super().write(data)
+                proc.stderr._put(refusal)
+                proc.returncode = 1
+                proc.stdout._end()
+                proc.stderr._end()
+        self.stdin = _Typed()
+
+
+def test_a_password_that_is_a_word_of_sudo_s_refusal_is_still_a_wrong_password():
+    # told apart before the scrub: "pass" is in sudo's words, which are then scrubbed whole
+    for pw in ("pass", "incorrect", "attempt"):
+        proc = _Refuses("feed", b"\nsudo: 1 incorrect password attempt\n")
+        with pytest.raises(plan.WrongPassword):
+            elevation.converse(["sudo"], pw, "feed", spawn=lambda argv: proc)
+
+
 def test_a_root_shell_runs_the_script_on_a_root_machine():
     m = standin.Machine(UBUNTU)
     m.data["id"] = "0 root"

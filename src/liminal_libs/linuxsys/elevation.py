@@ -222,7 +222,7 @@ def converse(argv, password: str | None, nonce: str, *, spawn, whose: str = "", 
             code = _ended(proc)
             if code is not None and err.ended:
                 words = said()
-                low = words.lower()
+                low = bytes(err.data).decode("utf-8", "replace").lower()  # told apart before the scrub
                 if written and any(w in low for w in PASSWORD_REFUSED):
                     raise plans.WrongPassword(WRONG.format(line=line))
                 raise Refused(ENDED.format(code=code, words=" ".join(words.split())[:400] or "nothing said"))

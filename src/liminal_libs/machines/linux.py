@@ -276,13 +276,14 @@ class Shell:
             feed = stdin
         code, out, err = self._exec(args, timeout, feed, command)
         if code != 0 and check:
-            words = _scrub(err.strip() or out.strip() or f"{command[0]} failed ({code}) on {self.where}",
-                           password if use_password else None)
-            last = words.splitlines()[-1].strip()
-            low = words.lower()
+            raw = err.strip() or out.strip() or f"{command[0]} failed ({code}) on {self.where}"
+            # what sudo said is told apart before it is scrubbed: a password that is a word of sudo's refusal
+            # ("sorry", "try", "again") would scrub it whole, and the refusal would go unknown
+            low = raw.lower()
             if use_password and any(m in low for m in PASSWORD_REFUSED):
                 raise PasswordRefused()
             denied = any(d in low for d in DENIED)
+            last = _scrub(raw.splitlines()[-1].strip(), password if use_password else None)
             if denied and self.target == "local" and not self.root():
                 raise CommandError(f"{command[0]} needs root on {self.where}: run the platform as root, or let sudo "
                                    f"run it without a password ({last})", denied=True)

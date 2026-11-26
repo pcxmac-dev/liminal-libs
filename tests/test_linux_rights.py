@@ -138,6 +138,18 @@ def test_a_refused_password_is_its_own_error_and_says_so(monkeypatch):
         assert str(e.value) == "sudo did not accept the password" and not e.value.denied
 
 
+def test_a_password_that_is_a_word_of_sudo_s_refusal_is_still_refused(monkeypatch):
+    # sudo's words are told apart before the scrub: a password such as "pass", "try" or "sorry" is in them, so the
+    # whole text is scrubbed, and the refusal must still be known as one (the form offered again)
+    not_root(monkeypatch)
+    refusal = b"Sorry, try again.\nsudo: no password was provided\nsudo: 1 incorrect password attempt"
+    for pw in ("pass", "try", "sorry", "again"):
+        rec = Recorder([(["id"], (1, b"", refusal))])
+        with pytest.raises(PasswordRefused) as e:
+            Shell("local", runner=rec).run("id", password=pw)
+        assert str(e.value) == "sudo did not accept the password"
+
+
 def test_the_password_is_scrubbed_from_an_error_s_words(monkeypatch):
     not_root(monkeypatch)
     # a command that fails and (however unlikely) echoes the password: it must not reach the raised words
