@@ -13,7 +13,10 @@ status and the setup.
 name GeoIP sources (GEOIP_SOURCES, machines/geosources.py), places and networks chosen apart, the first the default.
 Three hooks only a person signed in at the platform's page may ask (PAGE_ONLY_HOOKS, and each refuses any other ask
 itself): world_geoip_get (a job: the keys read through the asking person's login, the licence's acceptance kept in
-their own login store or the download refused), world_geoip_use and world_geoip_remove (asked twice)."""
+their own login store or the download refused), world_geoip_use and world_geoip_remove (asked twice). The older
+installs world_geoip and world_asn and a data set's download world_layer_get are named page-only by the base too, so
+every firewall plugin has them so; a data set's licence accepted by a person signed in at the page is kept in their own
+login store as licence-<its id>, as DB-IP's are (any other ask records nothing)."""
 from __future__ import annotations
 
 import json
@@ -28,7 +31,8 @@ from datetime import datetime, timezone
 
 from .. import sockets
 from ..apps import asking
-from ..apps.authorization import PREFERENCE, Unauthorized, accept_licence as keep_licence, asking_login, keep, keeps, recall
+from ..apps.authorization import (PREFERENCE, Unauthorized, accept_licence as keep_licence, asking_login, keep, keeps,
+                                   licence_pair, recall)
 from ..apps.tabs import Tab
 from ..hostbook import HOSTS_KEY
 from ..sources.keys import KeyVar
@@ -245,8 +249,9 @@ class Firewall(MachinePlugin):
                  GEOIP_GET_HOOK)  # 1.102.0: a GeoIP source's file, a job its Cancel stops
     CANCEL_HOOKS = (netstat.GET_HOOK, GEOIP_GET_HOOK)
     # 1.102.0: what only a person at the platform's page may ask: the GeoIP sources' download, use and removal (each
-    # refuses any other ask itself too: geosources.NotAsked)
-    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK)
+    # refuses any other ask itself too: geosources.NotAsked); and the older installs, the GeoIP file's and the ASN
+    # file's, and a data set's download (the user's 11b: named by the base, so every firewall plugin has them so)
+    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK)
     # 1.102.0: the GeoIP sources a subclass names (geosources.of's plain dicts, every host and licence its own): places
     # and networks chosen apart, the first the default; () keeps the GEOIP_URL and GEOIP_ASN_URL installs as before
     GEOIP_SOURCES: tuple = ()
@@ -317,7 +322,8 @@ class Firewall(MachinePlugin):
     def KEEPS(self) -> tuple:
         """What it keeps through its login beside its keys (Plugin.KEEPS, for its Internal API tab): the user's labels
         and the moves of its rules, under the variable its `groups` are kept in; 1.102.0: the GeoIP sources chosen, and
-        each offered file's licence acceptance (in the asking person's own store). Said by name: no login is asked."""
+        each offered file's licence acceptance (in the asking person's own store), and each data set's of
+        INFRASTRUCTURE (licence-<its id>, the same). Said by name: no login is asked."""
         kept = [(self.groups.variable, "the labels and the moves of its rules")]
         if self.GEOIP_SOURCES:
             kept.append((geosources.VAR, "the GeoIP sources chosen for places and for networks"))
@@ -326,6 +332,14 @@ class Firewall(MachinePlugin):
                 if source.offered:
                     kept += [(f"licence-{f.licence.pair}", f"your acceptance of {f.title}'s licence, in your own "
                               "login store") for f in source.files]
+        for said in self.INFRASTRUCTURE or ():
+            try:
+                found = DataSet.of(said)
+            except (TypeError, ValueError):  # one that does not read is left out of its table too
+                continue
+            pair = licence_pair(found.id)
+            if pair not in dict(kept):  # one named twice is said once (its index refuses the second)
+                kept.append((pair, f"your acceptance of {found.title}'s licence, in your own login store"))
         return tuple(kept)
 
     def _declared_keys(self) -> list[str]:
@@ -1012,9 +1026,29 @@ class Firewall(MachinePlugin):
         Refused (world.LicenceRefused, naming accept_licence, asked by the page as a second confirmation with the
         licence's words) until its licence is accepted; then one https request to the data set's own host, read under
         one deadline and kept on this machine's disk in place of any older copy (infrastructure.install). ValueError for
-        a data set this plugin does not name, and on a machine it is not for."""
+        a data set this plugin does not name, and on a machine it is not for.
+
+        1.102.0 (the user's 13a): asked by a person signed in at the platform's page, the acceptance is kept in their
+        own login store as licence-<the data set's id>, as DB-IP's are, once the download's own refusals passed and
+        before anything is fetched (a store that refuses ends it, nothing fetched); any other ask downloads as before
+        and records nothing."""
         self._only_here()
-        return self.netstat_view().get(dataset, accept_licence, log)
+        view = self.netstat_view()
+        if accept_licence is not True or not self._at_the_page():
+            return view.get(dataset, accept_licence, log)
+        found, login = view.index.dataset(dataset), asking_login()
+
+        def accepted() -> None:
+            try:
+                keep_licence(login, found.id, title=found.title, version=found.licence_name,
+                             url=str(dict(found.credit).get("url") or ""), words=found.licence, file=False)
+            except Unauthorized as e:
+                raise ValueError(f"your acceptance of {found.title}'s licence could not be kept in your login store "
+                                 f"({e.reason}): nothing was downloaded") from None
+        out = view.get(dataset, accept_licence, log, accepted=accepted)
+        if out.get("ok"):
+            out.setdefault("lines", []).append("your acceptance of its licence is kept in your own login store")
+        return out
 
     def world_layer_remove(self, dataset) -> dict:
         """A data set's file removed from this machine, confirmed on the page: the globe no longer draws its layers.

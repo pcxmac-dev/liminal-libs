@@ -1215,7 +1215,7 @@ def _left_out(dropped: Mapping) -> str:
 
 
 def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None, cancel=None, agent="",
-            clock=time.monotonic, wall=time.time) -> dict:
+            clock=time.monotonic, wall=time.time, accepted=None) -> dict:
     """A data set downloaded and put in place, on the user's word (the plugin's world_layer_get, run as a job): what
     was installed, in words, for the page.
 
@@ -1234,7 +1234,9 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     place in one step; `wall` says when (seconds since 1970).
 
     InfrastructureError, in words, when nothing was installed: the older file stays as it was. `log`: each step said to
-    it (the platform's job panel)."""
+    it (the platform's job panel). `accepted` (1.102.0): asked with nothing, once the refusals passed and the download
+    is this one's, before anything is fetched or said (the plugin keeps the licence's acceptance there): what it raises
+    ends the install, nothing fetched."""
     dataset = DataSet.of(dataset)
     target = _resolved(folder)
     elsewhere = foreign(target)
@@ -1246,6 +1248,8 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     if not _INSTALLING.acquire(blocking=False):
         raise ValueError(ALREADY)
     try:
+        if accepted is not None:
+            accepted()
         with _STATE:
             _NOW["id"] = dataset.id
         return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall)

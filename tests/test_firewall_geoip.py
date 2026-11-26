@@ -16,12 +16,14 @@ from liminal_libs.apps.asking import PAGE, asking
 from liminal_libs.apps.authorization import LICENCE
 from liminal_libs.machines import geosources, world
 from liminal_libs.machines.firewall import Firewall
+from liminal_libs.machines.infrastructure import Index
 from liminal_libs.machines.netstat import NetstatView
 from liminal_libs.machines.world import LicenceRefused, WorldView
 from liminal_libs.sources.keys import KeyVar
 
 from test_firewall import FakeFirewall
 from test_geo import NOVEMBER, mmdb, needs_reader
+from test_infrastructure import AT, CENTRES as DATACENTRES, CENTRES_ANSWER as DATACENTRES_ANSWER, Downloads
 from test_world import NOW, PLACES, Clock, Feed, socket_table, source_dicts
 
 pytestmark = pytest.mark.usefixtures("no_outside")
@@ -285,4 +287,78 @@ def test_the_hosts_recorded_view_keeps_the_sources_table_and_its_buttons(tmp_pat
     assert {b["title"] for b in buttons} >= {"Download…", "Remove…"}  # the ASN file to download, the city file's remove
     forms = {f["id"] for f in page.get("forms", ())}
     assert {b["form"] for b in buttons} <= forms
+    fw.detach()
+
+
+# -- the user's 11b and 13a: the older installs and a data set's download are the page's alone, by the base; a data
+# set's licence accepted at the page is kept as DB-IP's are ---------------------------------------------------------------
+def test_the_older_installs_and_a_data_sets_download_are_the_pages_alone_in_the_base():
+    plain = FakeFirewall()  # names none of its own: the base's alone
+    assert {"world_geoip", "world_asn", "world_layer_get"} <= set(Firewall.PAGE_ONLY_HOOKS)
+    assert {"world_geoip", "world_asn", "world_layer_get", "world_geoip_get", "world_geoip_use",
+            "world_geoip_remove"} <= set(internal.page_only(plain))
+    assert internal.problems(plain) == [] and internal.problems(Sourced(None, None)) == []
+
+
+class Layered(Sourced):
+    """A firewall naming one data set, downloaded from a stand-in into tmp_path."""
+
+    INFRASTRUCTURE = (DATACENTRES,)
+
+    def __init__(self, folder, fetch, downloads, layers):
+        super().__init__(folder, fetch)
+        self.downloads, self.layers = downloads, layers
+
+    def make_netstat_view(self):
+        return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.login,
+                           index=Index(self.layers, self.INFRASTRUCTURE), fetch=self.downloads,
+                           clock=Clock(), wall=Clock(NOW))
+
+
+def layered(tmp_path):
+    downloads = Downloads({AT["osm-datacentres"]: DATACENTRES_ANSWER})
+    return Layered(tmp_path / "geoip", Fetches({}), downloads, tmp_path / "layers"), downloads
+
+
+def test_a_data_sets_licence_accepted_at_the_page_is_kept_as_its_pair_and_nowhere_else(tmp_path, licences):
+    fw, downloads = layered(tmp_path)
+    assert dict(fw.KEEPS)["licence-osm-datacentres"].startswith("your acceptance of Data centres's licence")
+    alice = Store()
+    with asking(PAGE), as_user(alice):
+        with pytest.raises(LicenceRefused):
+            fw.world_layer_get("osm-datacentres", False)
+        assert downloads.asked == [] and alice.pairs == {}
+        out = fw.world_layer_get("osm-datacentres", True)
+    assert out["ok"] and len(downloads.asked) == 1 and "kept in your own login store" in out["lines"][-1]
+    kind, raw = alice.pairs["licence-osm-datacentres"]
+    record = json.loads(raw)
+    assert kind == LICENCE and record["title"] == "Data centres" and record["version"] == "ODbL 1.0"
+    assert record["acceptedBy"] == "alice" and record["words"].startswith("OpenStreetMap's data is free")
+    assert not licences.exists()
+    fw.detach()
+
+
+@pytest.mark.parametrize("who", ["nobody", "a plugin", "the platform's login"])
+def test_a_data_sets_download_asked_otherwise_records_nothing(tmp_path, licences, who):
+    fw, downloads = layered(tmp_path)
+    bob = Store("bob")
+    if who == "nobody":
+        out = fw.world_layer_get("osm-datacentres", True)  # a program, a script: downloads as before
+    elif who == "a plugin":
+        with asking("another-plugin"), as_user(bob):
+            out = fw.world_layer_get("osm-datacentres", True)
+    else:
+        with asking(PAGE), as_user(EnvironmentLogin(env={})):
+            out = fw.world_layer_get("osm-datacentres", True)
+    assert out["ok"] and len(downloads.asked) == 1 and bob.pairs == {} and not licences.exists()
+    assert "kept in your own login store" not in " ".join(out["lines"])
+    fw.detach()
+
+
+def test_a_store_that_refuses_a_data_sets_licence_ends_it_with_nothing_fetched(tmp_path, licences):
+    fw, downloads = layered(tmp_path)
+    with asking(PAGE), as_user(Store(refuse=True)):
+        with pytest.raises(ValueError, match="Data centres's licence could not be kept in your login store"):
+            fw.world_layer_get("osm-datacentres", True)
+    assert downloads.asked == [] and not licences.exists() and not (tmp_path / "layers").exists()
     fw.detach()

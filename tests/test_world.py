@@ -234,7 +234,8 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert hooks["world_asn"].startswith("(accept_licence=False, log=None) ")  # 1.75.0: the ASN file's, a job too
     assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
     assert Firewall.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and Firewall.INFRASTRUCTURE == ()
-    assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove")  # 1.102.0
+    assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.102.0
+                                        "world_geoip", "world_asn", "world_layer_get")  # the user's 11b
     assert Firewall.GEOIP_SOURCES == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
     assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())

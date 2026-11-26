@@ -1206,10 +1206,11 @@ class NetstatView:
         LookupError when no such layer is installed here."""
         return self.index.layer(layer_id)
 
-    def get(self, dataset, accept_licence=False, log=None) -> dict:
+    def get(self, dataset, accept_licence=False, log=None, accepted=None) -> dict:
         """A data set downloaded on the user's word (infrastructure.install, run by the platform as a job: `log` is its
         panel, and its `cancelled` stops it, as the plugin's detach does). ValueError for a data set that is none of
-        the plugin's; world.LicenceRefused until its licence is accepted."""
+        the plugin's; world.LicenceRefused until its licence is accepted. `accepted` (1.102.0): asked once the
+        download's refusals passed, before anything is fetched (infrastructure.install's)."""
         found = self.index.dataset(dataset)
 
         def cancelled() -> bool:
@@ -1218,7 +1219,7 @@ class NetstatView:
             except Exception:  # noqa: BLE001 - a log that cannot say: not cancelled
                 return self.closed
         return infrastructure.install(found, self.index.folder, accept_licence=accept_licence, fetch=self._fetch,
-                                      log=log, cancel=cancelled, agent=self.agent)
+                                      log=log, cancel=cancelled, agent=self.agent, accepted=accepted)
 
     def drop(self, dataset) -> dict:
         """A data set's file removed (infrastructure.remove): the globe no longer draws it."""

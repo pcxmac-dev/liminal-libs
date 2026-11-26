@@ -51,6 +51,12 @@ Nothing changes for DB-IP until another source is chosen, but that each acceptan
   acceptance only for such an ask, and for any other download as before and record nothing. The choice is kept per
   machine through the plugin's login (LIMINAL_GEOIP_SOURCES while it keeps no settings); on a Linux platform, whose
   login keeps a value only until it stops, another source is not used. The globe's credit is the places file's in use.
+- **The user's 11b and 13a** (their answer of 2026-11-25: "the other decisions as recommended"). The base's
+  `PAGE_ONLY_HOOKS` name `world_geoip`, `world_asn` and `world_layer_get` too, so every firewall plugin has them
+  page-only (both plugins said so already). A data set's licence accepted through `world_layer_get` by a person
+  signed in at the page is kept in their own store as `licence-<its id>`, as DB-IP's are, once the download's own
+  refusals passed and before anything is fetched (`infrastructure.install(accepted=)`, `NetstatView.get(accepted=)`;
+  a store that refuses ends it, nothing fetched); any other ask records nothing. `KEEPS` names each data set's pair.
 - **`sources/keys.py`.** `KeyVar.personal`: a key kept in each person's own login store, typed on the login's page and
   read through the asking person's login, never through the app's (the platform's Settings leave it out: its own
   release). None is declared yet.
