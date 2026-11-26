@@ -585,7 +585,7 @@ def test_the_layers_are_asked_of_the_page_and_their_switches_kept_in_this_browse
     assert "chosen = recall(storeName);" in update  # drawn again under another key: the switches kept there
     assert "const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);" in js
     render = _body(js, "function render(now) {")
-    assert "askLayer(l, load, data.layerArea ? { zoom: 1 } : undefined);" in render
+    assert "askLayer(l, load, byArea ? { zoom: 1 } : undefined);" in render
     ask = _body(js, "function askLayer(l, load, more) {")
     assert ("try { asked = Promise.resolve(more ? load(l.id, more) : load(l.id)); } catch (e) { asked = "
             "Promise.reject(e); }") in ask
@@ -1670,7 +1670,11 @@ def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
     assert "  const AREA_ZOOM = 6;  // " in js and "  const AREA_TILE = 10;  // " in js
     assert infrastructure.COARSE_ZOOM == 6.0
     render = _body(js, "function render(now) {")
-    assert "if (data.layerArea && !glide) {" in render
+    # the review: by area only with a loader that takes the area (its second argument); today's platform loader takes
+    # the id alone and answers the whole layer, which would be fetched again for every new area
+    assert "const byArea = data.layerArea && typeof load === 'function' && load.length >= 2;" in render
+    assert "if (!byArea && areaKey) { areaKey = ''; area = null; layersShown = null; pruneLayers(); }" in render
+    assert "if (byArea && !glide) {" in render and "data.layerArea && !glide" not in render
     assert "if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }" in render
     assert "if (areaKey) askLayer(areaLayer(l), load, { area, zoom });" in render
     shown = _body(js, "function shownLayers() {")

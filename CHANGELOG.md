@@ -31,7 +31,9 @@ stays 2.4.
   `<id>.json` of a download made before is read in once and then left where it is (Remove... takes it too).
   `Index.layer(layer, area, zoom)` reads by area at every vertex from 6x, the coarse whole below it, everything when
   neither is given; the `world_layer` hook takes them, the tab's globe says `layer_area`, and the globe asks the view's
-  area in 10-degree steps, once a view and never while it glides. The globe lists 16 layers, not 10.
+  area in 10-degree steps, once a view and never while it glides, and only of a loader that takes the area as its
+  second argument (one that takes the layer's id alone is asked each layer once, whole, as before). The globe lists 16
+  layers, not 10.
 - **Items 28 and 29.** Format `topohub`: TopoHub's node-link model, its cities to the points of presence and its edges
   to a new models layer (a model's links, never cables), and into the composite database each city a place and each
   edge a link. Format `atlas-probes`: RIPE Atlas's bzip2 probes file to a probes layer and table, its owners' words
@@ -54,7 +56,7 @@ stays 2.4.
   pink with the area taken out of it (destination-out) so it lies outside the outer edge alone; a geostationary
   satellite's footprint its beams' countries cut to its cap; asked of the page's `sky` loader once a minute at most,
   moved once a second (every ten under reduced motion). The platform's page loaders for areas and for the sky are
-  asked of its own session (the library's globe works without them, as before).
+  asked of its own session: until then the layers are asked whole, once each, as before, and the sky is not drawn.
 
 ## 1.103.0 (2026-11-26)
 

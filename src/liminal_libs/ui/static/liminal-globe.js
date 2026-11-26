@@ -29,7 +29,7 @@
 //     the spec says layer_area (its hook reads a layer by area), load(layerId, {zoom}) asks the whole layer, coarse,
 //     and past AREA_ZOOM load(layerId, {area: [west, south, east, north], zoom}) the view's area at every vertex, in
 //     AREA_TILE degrees rounded out, once a view and never while the globe glides; a loader that takes no second
-//     argument answers the whole layer, drawn as it was.
+//     argument (its length under 2) is asked each layer once, whole, as before, and never by area.
 //   key: a name the layers' switches are remembered under in this browser (localStorage); without it they last as
 //     long as the globe does.
 //   sky: (seconds since 1970) => a Promise of the satellites' places, as machines/satellites.py's SkyView.read answers
@@ -2124,13 +2124,17 @@
       if (credited !== coastCredited) { coastCredited = credited; renderAttribution(); }  // GSHHG's, while drawn
       // a layer switched on: asked of the page, once; 1.104.0: past AREA_ZOOM by the view's area too, once a view and
       // none while it glides (the area kept meanwhile)
-      if (data.layerArea && !glide) {
+      // (the review: only with a loader that takes the area, its second argument; one that takes the id alone answers
+      // the whole layer, so it is asked once, as before, and never again for each new area)
+      const byArea = data.layerArea && typeof load === 'function' && load.length >= 2;
+      if (!byArea && areaKey) { areaKey = ''; area = null; layersShown = null; pruneLayers(); }
+      if (byArea && !glide) {
         const want = zoom >= AREA_ZOOM ? areaOf(g) : null, key = want ? want.join(',') : '';
         if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }
       }
       for (const l of data.layers) {
         if (!isOn(l)) continue;
-        askLayer(l, load, data.layerArea ? { zoom: 1 } : undefined);
+        askLayer(l, load, byArea ? { zoom: 1 } : undefined);
         if (areaKey) askLayer(areaLayer(l), load, { area, zoom });
       }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
