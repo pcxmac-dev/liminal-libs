@@ -109,7 +109,7 @@
   const GLIDE_MS = 700;
   const LABELS = 5;  // the busiest places named on the map (the table and the tooltips carry every one)
   const LIGHTS = 64;  // the busiest routes a light travels (the rest stand still: a frame stays cheap)
-  const MAX_LAYERS = 10;  // the infrastructure layers of a spec that are listed (how many more there were is said)
+  const MAX_LAYERS = 16;  // the infrastructure layers of a spec that are listed (how many more there were is said)
   const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
   const MAX_LAYER_VERTICES = 400000;  // a layer's line vertices kept, the ones filled in among them
   const MAX_PARTS = 16;  // the parts (one a data set) of a layer's answer that are read

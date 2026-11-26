@@ -90,11 +90,22 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
     # 1.73.0: what routers' names are read with (machines/names.py), drawn too: the airports by their codes, the
     # cities of the world by their names (the most people first, MAX_POINTS of them)
     ("airports", "Airports, by their codes", "points", "diamond", 5, False, 7.0),
-    ("cities", "Cities", "points", "circle", 4, False, 4.0))
+    ("cities", "Cities", "points", "circle", 4, False, 4.0),
+    # 1.104.0 (Monday list item 24): fibre on land as its operators' maps give it (AfTerFibre's Africa), and where none
+    # is mapped the roads and railways long-haul fibre most often runs beside, drawn dashed as the stand-ins they are
+    ("fibre", "Fibre on land", "lines", "line", 7, True, 4.0),
+    ("roads", "Major roads (a stand-in for fibre)", "lines", "dash", 5, False, 7.0),
+    ("railways", "Railways (a stand-in for fibre)", "lines", "dash", 4, False, 7.0))
+LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
+POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
-FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames")  # what an answer is read as
-AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames")  # whose query, where they have one, is sent as written
-AS_BYTES = ("gml", "ourairports", "geonames")  # the formats read from the answer's bytes, not as JSON
+FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile")  # what an answer is read as
+AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile")  # whose query, where they have one, is sent as
+# written
+AS_BYTES = ("gml", "ourairports", "geonames", "shapefile")  # the formats read from the answer's bytes, not as JSON
+STEPS = (0.001, 1.0)  # the degrees a data set's `step` may be, from and to (1.104.0)
+HOST_FORM = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+CHOICES = 32  # fields a data set's keep or drop names, and values a field, at most
 SCALE = 100_000  # a coordinate is kept in 1e-5 degrees, about a metre
 BUSY = (429, 502, 503, 504)  # HTTP codes of a server too busy to answer now: asked once more
 MAX_QUERY = 4000  # characters of a data set's query: it travels in the address
@@ -134,7 +145,8 @@ NAMES = ("name", "name_", "pipe_name", "cable_name")  # a GeoJSON feature's name
 OPERATORS = ("operator", "owner")  # else its operator's
 DEGREES = ("4326", "crs84")  # how a GeoJSON answer's `crs` ends when its coordinates are longitude and latitude
 ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked for", "geojson": "the layers asked for",
-         "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file"}
+         "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file",
+         "shapefile": "the file asked for"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -222,6 +234,16 @@ class DataSet:
     source: str
     about: str = ""
     wait: float = READ_S
+    # 1.104.0 (Monday list item 24), each optional, so the older sets read as before: the layer a format's lines or
+    # points go to; the shapefile's stem in its zip; the records kept and left out; whether its lines stand in for
+    # fibre where none is mapped; the degrees between a line's kept vertices; the hosts a redirect may go to
+    layer: str = ""
+    member: str = ""
+    keep: tuple = ()  # ((field, (value, ...)), ...): a record is kept only when each field named holds one of them
+    drop: tuple = ()  # likewise: a record is left out when a field named holds one of its values
+    stand_in: bool = False
+    step: float = STEP
+    hosts: tuple = ()
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -292,7 +314,7 @@ class DataSet:
                              f"own time limit and a margin), not {world._shown(wait)}")
         return cls(id=ident, title=title, format=form, url=url, query=query, size=size, licence=licence,
                    licence_name=licence_name, credit={"text": text, "url": link}, source=source,
-                   about=_text(said.get("about"))[:2 * NAME], wait=float(wait))
+                   about=_text(said.get("about"))[:2 * NAME], wait=float(wait), **_more(ident, form, said))
 
     @property
     def host(self) -> str:
@@ -308,6 +330,58 @@ class DataSet:
         if self.format == "sparql":
             return f"{self.url}?format=json&query={quote(self.query, safe='')}"
         return f"{self.url}?{self.query}" if self.query else self.url
+
+
+def _choices(ident: str, key: str, value) -> tuple:
+    """A data set's keep or drop: {field: [values]} as ((field, (value, ...)), ...); ValueError for anything else."""
+    if value is None:
+        return ()
+    if (not isinstance(value, Mapping) or len(value) > CHOICES
+            or any(not isinstance(k, str) or not k or not isinstance(v, (list, tuple)) or not v or len(v) > CHOICES
+                   or any(isinstance(x, bool) or not isinstance(x, (str, int, float)) for x in v)
+                   for k, v in value.items())):
+        raise ValueError(f"the data set {ident}'s {key} is {{field: [values]}}, {CHOICES} of each at most")
+    return tuple((k, tuple(v)) for k, v in value.items())
+
+
+def _more(ident: str, form: str, said: Mapping) -> dict:
+    """1.104.0: a data set's optional keys (layer, member, keep, drop, stand_in, step, hosts), checked; ValueError,
+    in words, for one that is wrong."""
+    out: dict = {}
+    layer = said.get("layer", "")
+    if layer != "":
+        if layer not in {name for name, *_ in LAYERS}:
+            names = ", ".join(n for n, *_ in LAYERS)
+            raise ValueError(f"the data set {ident}'s layer is one of the globe's ({names}), not {world._shown(layer)}")
+        out["layer"] = layer
+    if form == "shapefile" and not out.get("layer"):
+        raise ValueError(f"the data set {ident} is a shapefile and names no layer its shapes go to")
+    member = said.get("member", "")
+    if not isinstance(member, str) or (member and not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", member)):
+        raise ValueError(f"the data set {ident}'s member is a shapefile's stem (letters, digits and ._-), not "
+                         f"{world._shown(member)}")
+    if member:
+        out["member"] = member
+    for key in ("keep", "drop"):
+        found = _choices(ident, key, said.get(key))
+        if found:
+            out[key] = found
+    stand_in = said.get("stand_in", False)
+    if not isinstance(stand_in, bool):
+        raise ValueError(f"the data set {ident}'s stand_in is true or false, not {world._shown(stand_in)}")
+    out["stand_in"] = stand_in
+    step = said.get("step", STEP)
+    if isinstance(step, bool) or not isinstance(step, (int, float)) or not STEPS[0] <= step <= STEPS[1]:
+        raise ValueError(f"the data set {ident}'s step is a number of degrees from {STEPS[0]:g} to {STEPS[1]:g}, not "
+                         f"{world._shown(step)}")
+    out["step"] = float(step)
+    hosts = said.get("hosts", ())
+    if (not isinstance(hosts, (list, tuple)) or len(hosts) > 4
+            or any(not isinstance(h, str) or not HOST_FORM.fullmatch(h.lower()) for h in hosts)):
+        raise ValueError(f"the data set {ident}'s hosts are the names a redirect may go to (4 at most), not "
+                         f"{world._shown(hosts)}")
+    out["hosts"] = tuple(h.lower() for h in hosts)
+    return out
 
 
 def folder() -> Path:
@@ -386,11 +460,11 @@ def _lonlat(v) -> tuple:
     return None, None
 
 
-def _thinned(vertices) -> list[tuple[int, int]] | None:
-    """A line's vertices as they are kept, each in 1e-5 degrees: one nearer than STEP to the last kept is left out, its
-    first and its last always kept (a cable ends where it lands). None when one of them is no point of the globe: the
-    line is not to be trusted."""
-    step = round(STEP * SCALE)
+def _thinned(vertices, step_deg: float = STEP) -> list[tuple[int, int]] | None:
+    """A line's vertices as they are kept, each in 1e-5 degrees: one nearer than `step_deg` (STEP unless its data set
+    says) to the last kept is left out, its first and its last always kept (a cable ends where it lands). None when one
+    of them is no point of the globe: the line is not to be trusted."""
+    step = round(step_deg * SCALE)
     out: list[tuple[int, int]] = []
     last = None
     for v in vertices:
@@ -408,7 +482,9 @@ class _Kept:
     """What a parse keeps, by layer, within its bounds: MAX_POINTS points and MAX_VERTICES vertices a layer, nothing
     twice, nothing off the globe, no line under two points. What is left out is counted by why (`dropped`)."""
 
-    def __init__(self):
+    def __init__(self, dataset: "DataSet | None" = None):
+        self.dataset = dataset  # 1.104.0: whose answer it is (its layer, its records kept, its step)
+        self.step = dataset.step if dataset is not None else STEP
         self.layers: dict[str, dict] = {}
         self.dropped: dict[str, int] = {}
         self.remarks: list[str] = []  # what the server remarked that is no error, said on
@@ -433,7 +509,7 @@ class _Kept:
         points.append((spot[0] / SCALE, spot[1] / SCALE, name, "" if sub == name else sub))
 
     def line(self, layer: str, vertices, name="") -> None:
-        spots = _thinned(vertices)
+        spots = _thinned(vertices, self.step)
         if spots is None:
             return self.drop(OFF)
         if len(spots) < 2:
@@ -885,12 +961,60 @@ def _geonames(doc, kept: _Kept, host: str, free: bool) -> None:
         kept.point("cities", lon, lat, name, f"{where} · {people:,}")
 
 
+def _chosen(dataset: DataSet, record: Mapping) -> bool:
+    """Whether a record is kept by its data set's keep and drop (1.104.0): each field keep names holds one of its
+    values, and no field drop names holds one of its; values compared as text, in any case."""
+    low = {str(k).lower(): v for k, v in record.items()}
+
+    def holds(name: str, values: tuple) -> bool:
+        have = low.get(name.lower())
+        return have is not None and str(have).strip().casefold() in {str(v).strip().casefold() for v in values}
+    return all(holds(k, v) for k, v in dataset.keep) and not any(holds(k, v) for k, v in dataset.drop)
+
+
+SHAPE_NAMES = ("name", "label", "name_en")  # a shape's name: the first of its record's fields that holds words
+
+
+def _shapefile(doc, kept: _Kept, host: str, free: bool) -> None:
+    """A zipped ESRI shapefile (1.104.0: Natural Earth's roads and railways): its lines (each part of a polyline, and
+    of a polygon its rings) into its data set's layer, its points into it alike when that layer is one of points,
+    named by their record (SHAPE_NAMES, else its `type`), its keep and drop applied. Its coordinates must be WGS 84's
+    longitude and latitude (liminal_libs.shapefile refuses any other)."""
+    from .. import shapefile
+    dataset = kept.dataset
+    if not isinstance(doc, (bytes, bytearray)):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no zipped shapefile)")
+    try:
+        shapes = shapefile.read(doc, dataset.member or None, most_bytes=shapefile.SHP_MOST)
+    except shapefile.ShapefileError as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for ({e})") from None
+    points = dataset.layer in POINT_LAYERS
+    for shape in shapes:
+        if not _chosen(dataset, shape.record):
+            kept.drop(OTHER)
+            continue
+        low = {str(k).lower(): v for k, v in shape.record.items()}
+        name = next((t for t in (_name(low.get(k)) for k in SHAPE_NAMES) if t), "") or _name(low.get("type"))
+        if shape.kind in ("point", "multipoint"):
+            if not points:
+                kept.drop(OTHER)
+                continue
+            for part in shape.parts:
+                for lon, lat in part:
+                    kept.point(dataset.layer, lon, lat, name)
+        elif points:
+            kept.drop(OTHER)
+        else:
+            for part in shape.parts:
+                kept.line(dataset.layer, part, name)
+
+
 _READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
-            "geonames": _geonames}
+            "geonames": _geonames, "shapefile": _shapefile}
 
 
 def _features(dataset: DataSet, doc, free: bool) -> dict:
-    kept = _Kept()
+    kept = _Kept(dataset)
     _READERS[dataset.format](doc, kept, dataset.host, free)
     return kept.features()
 
@@ -975,7 +1099,7 @@ def pack(dataset, features, fetched) -> dict:
     total = sum(int(n) for n in dropped.values()) if isinstance(dropped, Mapping) else int(dropped or 0)
     return {"v": VERSION, "set": dataset.id, "title": dataset.title, "source": dataset.source,
             "licence_name": dataset.licence_name, "credit": dict(dataset.credit), "fetched": _when(fetched),
-            "features": count, "dropped": total, "layers": layers}
+            "features": count, "dropped": total, "layers": layers, **({"stand_in": True} if dataset.stand_in else {})}
 
 
 # -- the download -----------------------------------------------------------------------------------------------------
@@ -1123,7 +1247,8 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
         say(f"asking {host} again" if again else f"asking {host} for {dataset.title}")
         wait = min(dataset.wait, left)
         try:
-            stream = fetch(address, wait, agent=agent, what="a data set")
+            stream = fetch(address, wait, agent=agent, what="a data set",
+                           **({"hosts": dataset.hosts} if dataset.hosts else {}))
         except Exception as e:  # noqa: BLE001 - urllib's HTTPError and URLError, a refused redirect, a stand-in's own
             world._close(e)  # an HTTP error carries its answer: let go unread
             if cutoff.why:
@@ -1435,7 +1560,7 @@ def _facts(path: Path, ident: str) -> dict:
             "licence_name": _text(doc.get("licence_name")),
             "credit": {"text": _text(credit.get("text")), "url": _text(credit.get("url"))},
             "fetched": _text(doc.get("fetched")), "features": number("features"), "dropped": number("dropped"),
-            "counts": counts, "problem": ""}
+            "counts": counts, "problem": "", "stand_in": doc.get("stand_in") is True}
 
 
 def _version(drawn: list) -> str:
@@ -1551,7 +1676,8 @@ class Index:
 
     def layers(self) -> list[dict]:
         """The layers the globe may draw, in LAYERS' order: each one with features installed, as {"id", "title",
-        "kind", "mark", "slot", "on", "names_from", "count", "version", "credits": [{"text", "url"}], "note"}. Small
+        "kind", "mark", "slot", "on", "names_from", "count", "version", "credits": [{"text", "url"}], "note"}, and
+        "stand_in": true for a layer fed by stand-ins for fibre alone (1.104.0: the roads, the railways). Small
         enough to travel with every answer of the tab: the geometry is asked for by layer, once a version (layer())."""
         files = self._look()
         out = []
@@ -1566,9 +1692,12 @@ class Index:
             note = "; ".join(f"from {fact['source']}, fetched {fact['fetched'][:10]}" for _, fact, _ in drawn)
             if left:
                 note += "; left out, the layer being full: " + ", ".join(d.title for d, _, _ in left)
-            out.append({"id": layer, "title": title, "kind": kind, "mark": mark, "slot": slot, "on": on,
-                        "names_from": names_from, "count": sum(c["points"] + c["lines"] for _, _, c in drawn),
-                        "version": _version(drawn), "credits": credits, "note": note})
+            entry = {"id": layer, "title": title, "kind": kind, "mark": mark, "slot": slot, "on": on,
+                     "names_from": names_from, "count": sum(c["points"] + c["lines"] for _, _, c in drawn),
+                     "version": _version(drawn), "credits": credits, "note": note}
+            if all(fact.get("stand_in") or d.stand_in for d, fact, _ in drawn):
+                entry["stand_in"] = True
+            out.append(entry)
         return out
 
     def layer(self, layer_id) -> dict:

@@ -624,9 +624,10 @@ def test_what_is_wrong_with_a_plugins_data_set_is_said_in_words():
             ({"credit": "© OpenStreetMap contributors"}, "names no credit"),
             ({"credit": {"text": "OSM", "url": "http://www.openstreetmap.example/copyright"}},
              "credit links an https address, not http://www.openstreetmap.example"),
-            ({"format": "shapefile"},
-             "format is overpass, sparql, geojson, gml, ourairports or geonames, not 'shapefile'"),
-            ({"format": None}, "format is overpass, sparql, geojson, gml, ourairports or geonames, not None"),
+            ({"format": "kml"},
+             "format is overpass, sparql, geojson, gml, ourairports, geonames or shapefile, not 'kml'"),
+            ({"format": None},
+             "format is overpass, sparql, geojson, gml, ourairports, geonames or shapefile, not None"),
             ({"size": 0}, "says no size: its bytes are said before it is downloaded"),
             ({"size": "2 MB"}, "says no size"), ({"size": True}, "says no size"),
             ({"query": ""}, "the data set osm-datacentres names no query"),
@@ -1597,12 +1598,12 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
     assert (by["lines"]["on"], by["lines"]["mark"], by["datacentres"]["mark"], by["exchanges"]["mark"]) == (
         False, "dash", "square", "diamond")
     assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "pops", "cables",
-                                      "backbones", "lines", "airports", "cities"]
+                                      "backbones", "lines", "airports", "cities", "fibre", "roads", "railways"]
     # every layer the library has is one the shared globe lists (its MAX_LAYERS), each on a slot it draws (4 to 7)
     script = Path(infrastructure.__file__).parents[1] / "ui" / "static" / "liminal-globe.js"
-    # 1.73.0: ten, the airports and the cities with them
+    # 1.73.0: ten, the airports and the cities with them; 1.104.0: sixteen, the fibre, the roads and the railways too
     most = int(re.search(r"const MAX_LAYERS = (\d+);", script.read_text(encoding="utf-8")).group(1))
-    assert len(LAYERS) <= most == 10
+    assert len(LAYERS) <= most == 16
     assert {x[4] for x in LAYERS} <= {4, 5, 6, 7} and all(x[3] in ("circle", "square", "diamond", "line", "dash")
                                                           for x in LAYERS)
     assert json.loads(json.dumps(layers, allow_nan=False)) == layers and len(json.dumps(layers)) < 2000  # small
@@ -1753,8 +1754,8 @@ def test_the_table_offers_each_data_set_and_a_file_that_does_not_read_is_said(tm
     for wrong, why in ((b"no JSON at all", "it is no JSON"),
                        ((folder / "osm-datacentres.json").read_bytes(), "it is no file of this data set's (version 1)"),
                        (b'{"v": 1, "set": "wikidata"}', "it holds no layers"),
-                       (b'{"v": 1, "set": "wikidata", "layers": {"roads": {}}}',
-                        "it holds a layer that is none ('roads')"),
+                       (b'{"v": 1, "set": "wikidata", "layers": {"motorways": {}}}',
+                        "it holds a layer that is none ('motorways')"),
                        (b'{"v": 1, "set": "wikidata", "layers": {"stations": {"points": {"n": 2, "xy": "", '
                         b'"names": [], "subs": []}}}}', "its stations points do not read")):
         (folder / "wikidata.json").write_bytes(wrong)
