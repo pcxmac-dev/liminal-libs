@@ -265,6 +265,25 @@ def test_busybox_keeps_a_user_made_in_a_group_it_found_and_says_why():
     assert m.files.get(journal.PATH) is not None  # the journal keeps what it could not take back
 
 
+def test_busybox_undo_keeps_the_user_while_its_group_holds_a_member_liminal_did_not_add():
+    # BusyBox's deluser removes the group of the user's name whatever its members: so no deluser while pat, added
+    # with no journal line (by hand, or by the firewall's switch), is in Liminal's group
+    m = machine("alpine-3.24")
+    c = make(m)
+    m.play(plan.Plan(c.plan.what, tuple(s for s in c.plan.steps if s.action.kind != "member"), guards=c.plan.guards,
+                     lock=c.plan.lock))
+    gid = m.groups()["liminal"].gid
+    m.files["/etc/group"] = m.files["/etc/group"].replace(f"liminal:x:{gid}:", f"liminal:x:{gid}:pat")
+    assert "pat" in m.groups()["liminal"].members
+    undo = tool(m).undo()
+    kinds = [s.action.kind for s in undo.plan.steps]
+    assert "unuser" not in kinds and "ungroup" not in kinds and "unjournal" not in kinds
+    assert any("BusyBox's deluser would also remove the group liminal, which pat is in" in n
+               for n in undo.plan.notes)
+    m.play(undo.plan)
+    assert "liminal" in m.users() and "pat" in m.groups()["liminal"].members
+
+
 def test_undo_keeps_a_group_holding_members_liminal_did_not_add():
     m = machine(UBUNTU)
     m.play(make(m).plan)

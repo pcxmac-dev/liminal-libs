@@ -385,6 +385,11 @@ class AccountTool:
         added = [m for m in made.members if g is not None and m in g.members]
         steps += [self.unmember_step(m) for m in added]
         others = sorted(set(g.members) - set(added) - {NAME}) if g is not None else []
+        primary: list[str] = []
+        if has_journal and self.group_ours():
+            primary = [x.name for x in self.users.values() if x.gid == g.gid and x.name != NAME]
+            if self.user is not None and not self.user_ours() and self.user.gid == g.gid:
+                primary.append(NAME)
         # 3. the user
         group_found = g is not None and not self.group_ours()
         if not has_journal:
@@ -394,7 +399,7 @@ class AccountTool:
             if g is not None:
                 notes.append(f"no journal of Liminal's is here, so the group {NAME} and its members are kept")
         elif self.user_ours():
-            kept |= not self._remove_user(steps, notes, group_found=group_found)
+            kept |= not self._remove_user(steps, notes, group_found=group_found, held=others + primary)
         elif u is not None and self.adopted():
             notes.append(f"the user {NAME} was adopted as Liminal's own: it is never removed")
             kept = True
@@ -402,9 +407,6 @@ class AccountTool:
             notes.append(f"the user {NAME} was here before Liminal: it is kept")
         # 4. the group, after root's group is given back to Liminal's folders
         if has_journal and self.group_ours():
-            primary = [x.name for x in self.users.values() if x.gid == g.gid and x.name != NAME]
-            if self.user is not None and not self.user_ours() and self.user.gid == g.gid:
-                primary.append(NAME)
             if others or primary:
                 notes.append(f"the group {NAME} is kept: {', '.join(others + primary)} "
                              f"{'is' if len(others + primary) == 1 else 'are'} in it and Liminal did not add them")
@@ -430,8 +432,9 @@ class AccountTool:
         return Change(a_plan, (("accept_removal", "it removes what Liminal made here: " +
                                 "; ".join(s.words for s in steps)),))
 
-    def _remove_user(self, steps: list, notes: list, *, group_found: bool) -> bool:
-        """The steps that remove Liminal's user; False when it is kept (and said)."""
+    def _remove_user(self, steps: list, notes: list, *, group_found: bool, held: list[str] = ()) -> bool:
+        """The steps that remove Liminal's user; False when it is kept (and said). `held`: who else is in the group
+        Liminal made, as a member Liminal did not add or by its primary group, so the group stays."""
         u, g = self.user, self.group
         if group_found and g is not None and u.gid == g.gid:
             nobody = self.users.get("nobody")
@@ -536,10 +539,14 @@ class BusyBoxAccounts(AccountTool):
         return Step(f"remove the group {NAME}", Action.of("ungroup", name=NAME, tool="busybox"),
                     f"[ -z \"$(lm_gid {NAME})\" ]", f"delgroup {NAME}")
 
-    def _remove_user(self, steps: list, notes: list, *, group_found: bool) -> bool:
+    def _remove_user(self, steps: list, notes: list, *, group_found: bool, held: list[str] = ()) -> bool:
         if group_found and self.group is not None:
             notes.append(f"BusyBox's deluser would also remove the group {NAME}, which was here before Liminal: the "
                          f"user {NAME} stays; remove it by hand with the group if you wish")
+            return False
+        if held and self.group is not None:
+            notes.append(f"BusyBox's deluser would also remove the group {NAME}, which {', '.join(held)} "
+                         f"{'is' if len(held) == 1 else 'are'} in and Liminal did not add: the user {NAME} stays")
             return False
         steps.append(self.unuser_step())
         return True
