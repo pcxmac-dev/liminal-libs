@@ -1209,7 +1209,7 @@ class NetstatView:
                          f"{m['connections']:,}", _lasted(m["seconds"]), _when(m["first"], wall) or "–",
                          _when(m["last"], wall) or "–"])
             # 1.105.0 (Monday list item 31): the host picked, told in full in the right-hand menu
-            details.append(detail(m["host"], [
+            details.append(detail(m["host"], key=f"host:{m['host']}|{m['program']}", facts=[
                 ("Name", m.get("name") or ""), ("Program", m.get("program") or ""), ("Its path", m.get("path") or ""),
                 ("Place", place), ("Network", m.get("network") or ""),
                 ("ASN", f"AS{m['asn']}" if m.get("asn") else ""), ("Operator", m.get("org") or ""),

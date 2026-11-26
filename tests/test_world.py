@@ -296,6 +296,7 @@ def test_the_page_places_each_network_by_its_kind_and_sums_the_local_network_apa
     for table in (here, places, there):
         assert len(table["details"]) == len(table["rows"])
     port = here["details"][0]
+    assert port["key"] == "here:8765/tcp" and places["details"][2]["key"] == "place:81.2.69.0/24"
     assert port["title"] == "8765/tcp" and ["Port", "8765"] in port["facts"] and ["Protocol", "TCP"] in port["facts"]
     counted = dict(port["sections"][0]["facts"])
     assert counted["In"].startswith("640 B (") and counted["Out"].startswith("1.5 KB (") and counted["New connections"].startswith("1 (")

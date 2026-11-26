@@ -1030,7 +1030,7 @@ def _port_detail(r: dict, side: str, totals: dict, origins) -> dict:
               for o in with_it[:PICK_PLACES]]
     where = ("this machine's port, reached by others" if side == "here"
              else "the far end's port of the connections this machine started")
-    return detail(f"{port}/{proto}", [("Protocol", str(proto).upper()), ("Port", str(port)),
+    return detail(f"{port}/{proto}", key=f"{side}:{port}/{proto}", facts=[("Protocol", str(proto).upper()), ("Port", str(port)),
                                       ("Service", service_name(port, proto))],
                   sub=where, sections=[("Counted while the tab was shown", counted),
                                        (f"Places it talked with ({len(with_it):,})", places)],
@@ -1063,7 +1063,7 @@ def _place_detail(o: dict, mark: dict | None) -> dict:
         sections.append(("Its programs", [("Program", str(p.get("program", "")) if isinstance(p, dict) else p)
                                           for p in programs]))
     credit = ", ".join(x for x in ((mark or {}).get("text"), (mark or {}).get("url")) if x)
-    return detail(where, facts, sub=str(o.get("label", "") or ""), sections=sections,
+    return detail(where, facts, key=f"place:{o.get('id', '')}", sub=str(o.get("label", "") or ""), sections=sections,
                   note=f"Places: {credit}." if credit else "")
 
 

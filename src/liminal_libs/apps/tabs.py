@@ -39,8 +39,9 @@ The page a tab's hook answers is a dict, every key optional:
   tab's (the page keys them by the tab's id);
 - `tables`, `forms` and `actions`: in the shapes a status has, drawn as the Main tab draws them. A table may also carry
   (1.105.0, Monday list item 31: a row picked in the middle is told in full in the right-hand menu, docs/PAGES.md)
-  `details`, a list beside its `rows` and as long, each what that row picked tells (`detail()` makes one: {title, sub,
-  facts: [[label, value]], sections: [{title, facts}], note}) or None for a row told by its cells; and `pick`: False
+  `details`, a list beside its `rows` and as long, each what that row picked tells (`detail()` makes one: {key, title,
+  sub, facts: [[label, value]], sections: [{title, facts}], note}; its key what the row is whatever its counts, so a
+  pick stays on it as the rows move) or None for a row told by its cells; and `pick`: False
   to keep its rows from being picked (a table of buttons). A page drawn by an older platform ignores both."""
 from __future__ import annotations
 
@@ -94,9 +95,10 @@ def _cut(value, most: int) -> str:
     return text if len(text) <= most else text[: most - 1] + "…"
 
 
-def detail(title, facts=(), *, sub: str = "", note: str = "", sections=()) -> dict:
-    """What a row picked tells in the right-hand menu (a table's `details`), as plain JSON: its title, a line under it,
-    its facts ((label, value) pairs; a value None or "" left out), its sections ((title, facts)), and a note. Each is cut
+def detail(title, facts=(), *, key: str = "", sub: str = "", note: str = "", sections=()) -> dict:
+    """What a row picked tells in the right-hand menu (a table's `details`), as plain JSON: its key (what the row is,
+    whatever its counts: the page keeps a pick on it as the rows move; its title when none is given), its title, a line
+    under it, its facts ((label, value) pairs; a value None or "" left out), its sections ((title, facts)), and a note. Each is cut
     at the caps (DETAIL_TITLE, DETAIL_VALUE; DETAIL_FACTS facts in all, DETAIL_SECTIONS sections); a value that is not
     text or a number is refused (ValueError), so nothing but words travels."""
     budget = [DETAIL_FACTS]
@@ -115,7 +117,7 @@ def detail(title, facts=(), *, sub: str = "", note: str = "", sections=()) -> di
             out.append([_cut(label, DETAIL_TITLE), _cut(value, DETAIL_VALUE)])
         return out
 
-    spec = {"title": _cut(title, DETAIL_TITLE), "facts": pairs(facts)}
+    spec = {"key": _cut(key or title, DETAIL_VALUE), "title": _cut(title, DETAIL_TITLE), "facts": pairs(facts)}
     if sub:
         spec["sub"] = _cut(sub, DETAIL_VALUE)
     secs = []

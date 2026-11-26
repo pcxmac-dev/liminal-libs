@@ -446,7 +446,7 @@ class Routes:
                 if not hop.address:
                     out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", "", "",
                                 ""])
-                    details.append(detail(f"Hop {hop.n} to {address}", [("Answered", "no")],
+                    details.append(detail(f"Hop {hop.n} to {address}", [("Answered", "no")], key=f"hop:{address}|{hop.n}|*",
                                           note="This hop did not answer, so nothing more is known of it."))
                     continue
                 known = self.lookups.known(hop.address)
@@ -501,7 +501,7 @@ class Routes:
                 if best:
                     placed_at += [("Its label", str(best.get("label") or "")), ("Confidence", f"{best['confidence']:.2f}"),
                                   ("Sources agreeing", str(best.get("sources") or "")), ("Led by", str(best.get("by") or ""))]
-                details.append(detail(hop.address, [
+                details.append(detail(hop.address, key=f"hop:{address}|{hop.n}|{hop.address}", facts=[
                     ("On the route to", address), ("Hop", str(hop.n)),
                     ("Time", f"{hop.ms:.1f} ms" if hop.ms is not None else ""), ("Name", known.get("name", "")),
                     ("ASN", asn), ("Operator", org), ("Holder (RDAP)", holder), ("What it is", _said(kind)),

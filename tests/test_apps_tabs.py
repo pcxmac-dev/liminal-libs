@@ -79,9 +79,10 @@ def test_a_rows_detail_is_plain_words_cut_at_its_caps():
 
     d = tabs.detail("443/tcp", [("Port", 443), ("Service", "https"), ("Empty", ""), ("None", None), ("Share", 0.5)],
                     sub="this machine's port", note="a note", sections=[("Counted", [("In", "1 KB")]), ("Nothing", [])])
-    assert d == {"title": "443/tcp", "facts": [["Port", "443"], ["Service", "https"], ["Share", "0.5"]],
+    assert d == {"key": "443/tcp", "title": "443/tcp", "facts": [["Port", "443"], ["Service", "https"], ["Share", "0.5"]],
                  "sub": "this machine's port", "sections": [{"title": "Counted", "facts": [["In", "1 KB"]]}],
                  "note": "a note"}
+    assert tabs.detail("t", key="here:443/tcp")["key"] == "here:443/tcp"
     long = tabs.detail("x" * 500, [("v", "y" * 1000)] * 100, sections=[("s", [("a", "b")])] * 20)
     assert len(long["title"]) == tabs.DETAIL_TITLE and long["title"].endswith("…")
     assert len(long["facts"]) == tabs.DETAIL_FACTS and len(long["facts"][0][1]) == tabs.DETAIL_VALUE
