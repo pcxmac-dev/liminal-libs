@@ -34,19 +34,22 @@ stays 2.4.
   area in 10-degree steps, once a view and never while it glides, and only of a loader that takes the area as its
   second argument (one that takes the layer's id alone is asked each layer once, whole, as before). The globe lists 16
   layers, not 10.
-- **Items 28 and 29.** Format `topohub`: TopoHub's node-link model, its cities to the points of presence and its edges
-  to a new models layer (a model's links, never cables), and into the composite database each city a place and each
-  edge a link. Format `atlas-probes`: RIPE Atlas's bzip2 probes file to a probes layer and table, its owners' words
-  never kept. Format `atlas-latest`: measurement 5151's newest results for the connected anchors, 300 ids a request,
-  read with the probes it `needs` (not offered before them); a router within 1 ms of its anchor is claimed at the
-  anchor's place, consecutive hops are links, private addresses never kept, and a refusal asking for credentials stops
-  it with nothing kept. `Composite.record` takes places and sourced links; SOURCES gains topohub (0.3) and atlas (0.7).
+- **Items 28 and 29.** Format `topohub`: TopoHub's node-link model, its cities to a layer of their own (modelcities,
+  its title saying no licence is stated for its data) and its edges to a new models layer (a model's links, never
+  cables), and into the composite database each city a place and each edge a link. Format `atlas-probes`: RIPE Atlas's
+  bzip2 probes file to a probes layer and table, its owners' words never kept. Format `atlas-latest`: a measurement's
+  newest results for the connected probes it `ask`s (its anchors, or every probe) of its IP `family` (4 or 6), 300 ids
+  a request, read with the probes it `needs` (not offered before them); a router within 1 ms of its probe is claimed
+  at the probe's place, consecutive hops are links, private addresses never kept, and a refusal asking for credentials
+  stops it with nothing kept. `Composite.record` takes places and sourced links; SOURCES gains topohub (0.3) and atlas
+  (0.7).
 - **Item 32, `machines/satellites.py`** (the user chose CelesTrak and the sgp4 package). Footprints at 25 degrees'
   elevation, the IAU 1982 sidereal time, TEME to WGS 84, CelesTrak's CSV; the orbit math is sgp4's, imported only from
   the folder its download unpacked to, and without it the layer says it needs the package and draws nothing. Format
   `omm-csv` with the keys CelesTrak's usage policy asks for: no retry (the words say why, and the 15 minutes after a
   500 or 503), an Update held back two hours, gzip asked (`world.fetch_url`'s `encodings`), a constellation, several
-  queries (HughesNet's satellites by number) and each geostationary satellite's beams (the countries it serves). The
+  queries (HughesNet's satellites by number) and a geostationary satellite's beams (the countries it serves, where a
+  plugin names them: none does, each drawn with its full cap). The
   plugin pins the package (`Firewall.SKY_PACKAGE`): its row in the data sets' table, a form naming the file, host, size
   and sha256, the licence accepted next; `world_sky_get` (a job) checks the size and sum, unpacks the wheel only once
   every file matches its RECORD, into the data folder's packages/sgp4-2.27/; `world_sky_remove` takes it away. The
@@ -57,6 +60,23 @@ stays 2.4.
   satellite's footprint its beams' countries cut to its cap; asked of the page's `sky` loader once a minute at most,
   moved once a second (every ten under reduced motion). The platform's page loaders for areas and for the sky are
   asked of its own session: until then the layers are asked whole, once each, as before, and the sky is not drawn.
+- **The user's answers of 2026-11-26.**
+  - A data set may raise its own size limit (`most`: more than MAX_ANSWER's 32 MB, 128 MB at most), every other set
+    keeping 32 MB; it bounds its answers in all (a set asked in several requests is now held to its limit in all), and
+    what it unpacks to and the records it holds in proportion. Its confirmation says the raised limit.
+  - RIPE Atlas: `ask` and `family` (above); ATLAS_RESULTS 20,000; the confirmation counts one request for each 300
+    probes it asks, from the probes kept (it said "0 requests" before).
+  - CelesTrak's "Refresh by itself": a set whose `refresh` is true is downloaded again by itself once its `every` has
+    passed, after the user's first yes, while the World Wide Web tab is open (the tab's hook, asked by a person at the
+    page, starts the one due download on a thread of its own: NetstatView.refresh) and never while it is closed. An
+    answer that is not OK is kept in infrastructure.db's `answers` and stops it until the user's own Update succeeds;
+    after a 500 or 503 nothing is asked of its host for its `pause` (15 minutes), the user's own Download or Update
+    included. The table says when the next refresh is due, or why it is not refreshed.
+  - The sgp4 package's licence is kept per version (licence-sgp4-2.27, `firewall.sky_licence`).
+  - The words: a link sent on to another host says so (Natural Earth's one redirect to naciscdn.org); a set never asked
+    twice no longer says it is asked once more; a refreshed set says when; a download made before infrastructure.db is
+    said kept, and deleted with its data set's removal; the sgp4 package's removal says a loaded one is marked removed
+    and deleted when the platform next starts.
 
 ## 1.103.0 (2026-11-26)
 
