@@ -447,3 +447,46 @@ def test_a_data_set_asked_in_several_requests_is_held_to_its_limit_in_all(tmp_pa
 def size_said(dataset) -> str:
     from liminal_libs.machines.world import size_words
     return size_words(DataSet.of(dataset).size)
+
+
+# -- RIPE Atlas: every probe's results, and IPv6 beside IPv4 (the user, 2026-11-26) -----------------------------------
+def test_ripe_atlas_asks_every_connected_probe_of_its_family_and_its_confirmation_counts_the_requests(tmp_path):
+    import json
+    folder = tmp_path / "layers"
+    every = {**LATEST, "ask": "probes", "title": "RIPE Atlas traceroutes from its probes (IPv4)"}
+    six = {**every, "id": "atlas-traceroutes6", "title": "RIPE Atlas traceroutes from its probes (IPv6)",
+           "family": 6, "url": "https://atlas.example/api/v2/measurements/6152/latest/"}
+    assert (DataSet.of(LATEST).ask, DataSet.of(LATEST).family) == ("anchors", 4)
+    for change, words in (({"ask": "all"}, "ask is anchors or probes"), ({"family": 5}, "family is 4 or 6"),
+                          ({"family": True}, "family is 4 or 6")):
+        with pytest.raises(ValueError, match=re.escape(words)):
+            DataSet.of({**every, **change})
+    install(PROBES, folder, accept_licence=True, fetch=Downloads({DataSet.of(PROBES).address(): probes_file()}),
+            clock=Clock())
+    # the confirmation counts its requests from the probes kept: never "0 requests"
+    words = infrastructure.form(every, folder)["confirm"]["words"]
+    assert ("in 1 request, one after another (one for each 300 of the connected probes with IPv4: 2 in the probes "
+            "kept here)") in words
+    assert "the connected probes with IPv6: 1 in the probes kept here" in infrastructure.form(six, folder)[
+        "confirm"]["words"]
+    assert "the connected anchors with IPv4: 1 in the probes kept here" in infrastructure.form(LATEST, folder)[
+        "confirm"]["words"]
+    # every connected probe of IPv4 asked (the disconnected anchor and the probe with no place are not); IPv6's alone
+    at = "https://atlas.example/api/v2/measurements/5151/latest/?format=json&probe_ids=7,6001"
+    result = [{"prb_id": 7, "result": [{"hop": 1, "result": [{"from": "195.0.0.9", "rtt": 0.4}]},
+                                       {"hop": 2, "result": [{"from": "195.0.1.9", "rtt": 3.0}]}]}]
+    out = install(every, folder, accept_licence=True, fetch=Downloads({at: json.dumps(result).encode()}),
+                  clock=Clock())
+    assert out["ok"] is True and "given to the composite database: 1 router placed, 1 link" in out["lines"]
+    from liminal_libs.machines import composite
+    import sqlite3
+    with sqlite3.connect(folder / composite.FILE) as con:
+        (claim,), = con.execute("SELECT e.claim FROM evidence e JOIN entities n ON n.id = e.entity "
+                                "WHERE n.key = '195.0.0.9'").fetchall()
+    assert json.loads(claim)["label"] == "near RIPE Atlas probe 7"
+    v6 = "https://atlas.example/api/v2/measurements/6152/latest/?format=json&probe_ids=6001"
+    result6 = [{"prb_id": 6001, "result": [{"hop": 1, "result": [{"from": "2001:7f8::1", "rtt": 0.3}]},
+                                           {"hop": 2, "result": [{"from": "2001:4860::8888", "rtt": 5.0}]}]}]
+    asked = Downloads({v6: json.dumps(result6).encode()})
+    assert install(six, folder, accept_licence=True, fetch=asked, clock=Clock())["ok"] is True
+    assert [u for u, _, _ in asked.asked] == [v6]

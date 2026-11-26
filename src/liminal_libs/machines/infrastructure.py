@@ -119,8 +119,11 @@ AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes", "omm-
 QUERIES = 8  # queries an omm-csv set may ask, one request each (HughesNet's three satellites by their numbers)
 EVERY_MOST = 7 * 86400.0  # the longest a data set may ask its Update to wait
 MANY = ("mvt", "atlas-latest")  # the formats asked in several requests, one after another, on the one click
-ATLAS_BATCH = 300  # anchors' ids asked in one request of RIPE Atlas's latest results
-ATLAS_RESULTS = 2000  # results read of its answers, at most
+ATLAS_BATCH = 300  # probes' ids asked in one request of RIPE Atlas's latest results
+ATLAS_RESULTS = 20_000  # results read of its answers, at most (1.104.0: every connected probe's, some 12,000)
+ATLAS_ASKS = ("anchors", "probes")  # whose results an atlas-latest set asks: the connected anchors', or every
+# connected probe's, anchors among them (the user, 2026-11-26: "ALL probes, not only connected anchors")
+ATLAS_FAMILIES = (4, 6)  # its measurement's IP version: a probe asked has a network of that version (5151, 6152)
 ATLAS_HOPS = 64  # hops read of a result, at most
 NEAR_MS = 1.0  # a router this near a probe (its least RTT) is claimed at the probe's place
 KM_PER_MS = 100.0  # how far light goes in fibre in a millisecond, there and back halved below
@@ -175,7 +178,7 @@ ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked f
          "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file",
          "shapefile": "the file asked for", "mvt": "the map tiles asked for", "topohub": "the file asked for",
          "atlas-probes": "the file asked for",
-         "atlas-latest": "the measurement's newest results for the anchors' ids (nothing about this machine)",
+         "atlas-latest": "the measurement's newest results for the probes' ids (nothing about this machine)",
          "omm-csv": "the satellites' group or numbers asked for"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
@@ -285,6 +288,8 @@ class DataSet:
     constellation: str = ""
     queries: tuple = ()
     beams: tuple = ()  # ((a geostationary satellite's number, (the ids of the countries its beams reach, ...)), ...)
+    ask: str = "anchors"  # an atlas-latest set's: whose results it asks (ATLAS_ASKS)
+    family: int = 4  # ... and its measurement's IP version (ATLAS_FAMILIES)
     most: int = 0  # the bytes its answers may be in all, where it raises its own limit (0: MAX_ANSWER, as every set's)
 
     @property
@@ -457,6 +462,13 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident} is read with RIPE Atlas's probes: it names the data set it needs")
     if needs:
         out["needs"] = needs
+    ask, family = said.get("ask", "anchors"), said.get("family", 4)
+    if ask not in ATLAS_ASKS:
+        raise ValueError(f"the data set {ident}'s ask is {' or '.join(ATLAS_ASKS)}, not {world._shown(ask)}")
+    if isinstance(family, bool) or family not in ATLAS_FAMILIES:
+        raise ValueError(f"the data set {ident}'s family is 4 or 6 (its measurement's IP version), not "
+                         f"{world._shown(family)}")
+    out["ask"], out["family"] = ask, family
     for key in ("retry", "gzip"):
         value = said.get(key, key == "retry")
         if not isinstance(value, bool):
@@ -1315,7 +1327,7 @@ def _global(address) -> str:
 
 
 def _atlas_latest(doc, kept: _Kept, host: str, free: bool) -> None:
-    """RIPE Atlas's newest traceroutes of its anchors (1.104.0, item 29), its answers one a batch of ids: of each
+    """RIPE Atlas's newest traceroutes of its probes (1.104.0, item 29), its answers one a batch of ids: of each
     result its probe (its place from the probes table, `kept.probes`), each hop's addresses and RTTs. Into the
     composite database: a router whose least RTT from its probe is NEAR_MS or under claimed at the probe's place,
     within RTT x KM_PER_MS / 2 km (source atlas); every two answering hops one after the other a link. Private and
@@ -1361,7 +1373,8 @@ def _atlas_latest(doc, kept: _Kept, host: str, free: bool) -> None:
                     if rtt <= NEAR_MS and (address not in claims or rtt < claims[address]["ms"]):
                         claims[address] = {"lat": probe["lat"], "lon": probe["lon"], "ms": round(rtt, 3),
                                            "within_km": round(rtt * KM_PER_MS / 2, 1),
-                                           "label": f"near RIPE Atlas anchor {probe['id']}"}
+                                           "label": f"near RIPE Atlas {'anchor' if probe.get('anchor') else 'probe'} "
+                                                    f"{probe['id']}"}
                 if before and before != first:
                     links[f"{before}>{first}"] = {"a": before, "b": first, "source": "atlas"}
                 before = first
@@ -1674,7 +1687,7 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
 
 def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, took: str, clock, say) -> list:
     """The answers of a data set asked in several requests, one after another: RIPE Atlas's latest results, a batch
-    of anchors' ids a request (dataset.asked, set by the install from the probes it needs), or an omm-csv set's queries
+    of probes' ids a request (dataset.asked, set by the install from the probes it needs), or an omm-csv set's queries
     (HughesNet's satellites by their numbers): [(the request's number, its bytes)]. A refusal of RIPE Atlas that asks
     for credentials stops it with nothing kept: no key is ever asked for or sent."""
     asked = list(dataset.addresses() if dataset.queries else getattr(dataset, "asked", ()) or ())
@@ -1885,7 +1898,7 @@ def held_back(dataset: DataSet, target, now: float, fetched: float | None = None
 
 def _with_needs(dataset: DataSet, target: Path) -> DataSet:
     """A data set that is read with another (its `needs`): ValueError, in words, before anything is asked, while that
-    one is not installed here; an atlas-latest set given its anchors' ids (`asked`) and the probes by id."""
+    one is not installed here; an atlas-latest set given its probes' ids (`asked`: _atlas_ids) and the probes by id."""
     if not dataset.needs:
         return dataset
     from .infrastore import Store
@@ -1895,13 +1908,26 @@ def _with_needs(dataset: DataSet, target: Path) -> DataSet:
     if dataset.format != "atlas-latest":
         return dataset
     probes = store.probes()
-    anchors = [p["id"] for p in probes if p["anchor"] and p["connected"]]
-    if not anchors:
-        raise ValueError(f"{dataset.title} asks for the anchors' results, and the data set {dataset.needs} holds no "
-                         "connected anchor")
-    object.__setattr__(dataset, "asked", tuple(dataset.addresses(anchors)))
+    ids = _atlas_ids(dataset, probes)
+    if not ids:
+        raise ValueError(f"{dataset.title} asks for {_atlas_whose(dataset)}' results, and the data set "
+                         f"{dataset.needs} holds none")
+    object.__setattr__(dataset, "asked", tuple(dataset.addresses(ids)))
     object.__setattr__(dataset, "probes_by_id", {p["id"]: p for p in probes})
     return dataset
+
+
+def _atlas_ids(dataset: DataSet, probes) -> list[int]:
+    """The probes an atlas-latest set asks the results of (1.104.0): the connected ones of the probes table, anchors
+    alone or (its `ask`, "probes") every one, each with a network of its measurement's IP version (its `family`)."""
+    net = "asn6" if dataset.family == 6 else "asn4"
+    return sorted(p["id"] for p in probes
+                  if p["connected"] and (p["anchor"] or dataset.ask == "probes") and p.get(net))
+
+
+def _atlas_whose(dataset: DataSet) -> str:
+    """Whose results an atlas-latest set asks, in words: "the connected anchors with IPv4"."""
+    return f"the connected {'probes' if dataset.ask == 'probes' else 'anchors'} with IPv{dataset.family}"
 
 
 def _composite(dataset: DataSet, target: Path, rows: Mapping) -> str:
@@ -2044,7 +2070,7 @@ def form(dataset, folder, update: bool = False) -> dict:
                    {"name": ACCEPT, "type": "accept", "title": f"Accept its licence ({dataset.licence_name})?",
                     "words": dataset.licence, "yes": "Accept it and download"}],
         "confirm": {"title": f"{verb} {dataset.title}?", "yes": "Go on",
-                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset)}, made now on "
+                    "words": (f"{dataset.title} is asked of {dataset.host} in {_requests(dataset, folder)}, made now on "
                               f"your word (once more {_apart()} later if the server is busy), and kept in "
                               f"{_resolved(folder)} in place of any older copy: {size_words(dataset.size)} (an "
                               f"estimate where its maker gives none).{_limit_words(dataset)} Its progress shows in the "
@@ -2063,8 +2089,19 @@ def _limit_words(dataset: DataSet) -> str:
             f"set may be {size_words(MAX_ANSWER)} at most).")
 
 
-def _requests(dataset: DataSet) -> str:
-    """How many requests a download makes, in words: one, or a set of map tiles' one after another."""
+def _requests(dataset: DataSet, folder=None) -> str:
+    """How many requests a download makes, in words: one, or a set of map tiles' one after another; (1.104.0) an
+    atlas-latest set's one for each ATLAS_BATCH probes it asks, counted from the probes kept in `folder`."""
+    if dataset.format == "atlas-latest":
+        from .infrastore import Store
+        try:
+            probes = Store(_resolved(folder)).probes()
+        except Exception:  # noqa: BLE001 - a database that cannot say: counted as none
+            probes = []
+        ids = _atlas_ids(dataset, probes)
+        n = -(-len(ids) // ATLAS_BATCH)
+        return (f"{world._plural(n, 'request')}, one after another (one for each {ATLAS_BATCH} of "
+                f"{_atlas_whose(dataset)}: {len(ids):,} in the probes kept here)")
     n = len(dataset.addresses())
     return "one request" if n == 1 else f"{n} requests, one after another"
 
