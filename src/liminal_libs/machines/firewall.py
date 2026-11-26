@@ -75,7 +75,14 @@ APP_PORTS = (  # the framework's own pages: (the app, the variable moving it, it
 # its app, at that app's port)
 _WORLD_LOCK = threading.Lock()  # a plugin's WorldView made once, however many asks come at once
 _NETSTAT_LOCK = threading.Lock()  # ... and its NetstatView
-SKY_LICENCE = "sgp4"  # 1.104.0: the sgp4 package's licence accepted at the page, kept as licence-sgp4 (the user's 13a)
+# 1.104.0: the sgp4 package's licence accepted at the page, kept in the person's own store (the user's 13a), one pair
+# a version (the user, 2026-11-26: asked again per version): licence-sgp4-2.27
+SKY_LICENCE = "sgp4-{version}"
+
+
+def sky_licence(version) -> str:
+    """The name the sgp4 package's licence acceptance is kept under for that version (its pair: licence-<this>)."""
+    return SKY_LICENCE.format(version=str(version))
 
 
 class FirewallError(CommandError):
@@ -347,9 +354,11 @@ class Firewall(MachinePlugin):
             pair = licence_pair(found.id)
             if pair not in dict(kept):  # one named twice is said once (its index refuses the second)
                 kept.append((pair, f"your acceptance of {found.title}'s licence, in your own login store"))
-        if self.SKY_PACKAGE:  # 1.104.0: the sgp4 package's, the same
-            kept.append((licence_pair(SKY_LICENCE), "your acceptance of the sgp4 package's licence, in your own "
-                                                     "login store"))
+        version = self.SKY_PACKAGE.get("version") if isinstance(self.SKY_PACKAGE, dict) else getattr(
+            self.SKY_PACKAGE, "version", None)
+        if version:  # 1.104.0: the sgp4 package's, the same, one a version
+            kept.append((licence_pair(sky_licence(version)), f"your acceptance of the sgp4 package {version}'s "
+                                                              "licence, in your own login store"))
         return tuple(kept)
 
     def _declared_keys(self) -> list[str]:
@@ -1112,7 +1121,7 @@ class Firewall(MachinePlugin):
         package = sky.package
         if accept_licence is True:  # the user's 13a: the acceptance kept in their own login store, as a data set's
             try:
-                keep_licence(asking_login(), SKY_LICENCE, title=f"The sgp4 package {package.version}",
+                keep_licence(asking_login(), sky_licence(package.version), title=f"The sgp4 package {package.version}",
                              version=package.licence_name, url=package.source.url, words=package.licence, file=False)
             except Unauthorized as e:
                 raise ValueError(f"your acceptance of the sgp4 package's licence could not be kept in your login "

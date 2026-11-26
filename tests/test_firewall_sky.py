@@ -94,7 +94,9 @@ def test_the_package_asked_at_the_page_is_downloaded_and_removed(tmp_path, insta
 
 def test_the_packages_licence_accepted_at_the_page_is_kept_as_its_pair_and_nowhere_else(tmp_path, installs, licences):
     fw = Skied(tmp_path)
-    assert dict(fw.KEEPS)["licence-sgp4"].startswith("your acceptance of the sgp4 package's licence")
+    keeps = dict(fw.KEEPS)  # one pair a version (the user, 2026-11-26): a new version's licence is asked again
+    assert keeps["licence-sgp4-2.27"].startswith("your acceptance of the sgp4 package 2.27's licence")
+    assert "licence-sgp4" not in keeps
     alice = Store()
     with asking(PAGE), as_user(alice):
         with pytest.raises(world.LicenceRefused):
@@ -102,11 +104,19 @@ def test_the_packages_licence_accepted_at_the_page_is_kept_as_its_pair_and_nowhe
         assert alice.pairs == {}
         out = fw.world_sky_get(True)
     assert out["ok"] and installs[-1] == ("2.27", True) and "kept in your own login store" in out["lines"][-1]
-    kind, raw = alice.pairs["licence-sgp4"]
+    assert set(alice.pairs) == {"licence-sgp4-2.27"}
+    kind, raw = alice.pairs["licence-sgp4-2.27"]
     record = json.loads(raw)
     assert kind == LICENCE and record["title"] == "The sgp4 package 2.27" and record["version"] == "MIT"
     assert record["acceptedBy"] == "alice" and record["words"].startswith("MIT License")
     assert not licences.exists()
+    fw.detach()
+
+
+def test_a_new_version_pinned_is_kept_under_its_own_pair(tmp_path, installs, licences):
+    fw = Skied(tmp_path)
+    fw.SKY_PACKAGE = {**fw.SKY_PACKAGE, "version": "2.28"}
+    assert "licence-sgp4-2.28" in dict(fw.KEEPS) and "licence-sgp4-2.27" not in dict(fw.KEEPS)
     fw.detach()
 
 
