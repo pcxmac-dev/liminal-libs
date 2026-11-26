@@ -19,7 +19,12 @@ login db"): the theme is the signed-in user's, a preference pair of their login'
 read and kept through the login given or, when none is, the login of the person whose request is being answered
 (apps.authorization.asking_login: every app's frame names it from the browser's session). A login that keeps none
 (an EnvironmentLogin, or nobody signed in) reads and writes ui.json as before; a user's store holding no theme yet
-is given the file's, once, and the file is left as it was."""
+is given the file's, once, and the file is left as it was.
+
+1.105.0 (Monday list item 31; the user, 2026-11-22: "a global interface standard"): the page standard, written down in
+docs/PAGES.md: the five spaces (the controller menu, the left-hand menu, the main screen, the tools overhead, the
+right-hand menu), each app's, and which of its tools can be picked at the same time. Those rules are data,
+`static/standard.json`, read by the pages and by `ui.standard` (after, problems, check), both run on one table of cases."""
 from __future__ import annotations
 
 import json

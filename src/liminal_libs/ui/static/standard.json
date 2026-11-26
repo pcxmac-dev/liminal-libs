@@ -1,0 +1,61 @@
+{
+ "v": 1,
+ "about": "The page standard's rules (docs/PAGES.md): each app's groups of tools, the space each sits in, how many of a group are picked at once, what a group depends on, and what the right-hand menu tells from the top. Read by side.js (LiminalSide.standard) and by liminal_libs.ui.standard.",
+ "spaces": ["controller", "left", "main", "overhead", "right"],
+ "at_once": ["one", "one-or-none", "any"],
+ "apps": {
+  "platform": {
+   "controller": ["platform", "login"],
+   "groups": [
+    {"id": "tool", "space": "left", "at_once": "one", "default": "machine",
+     "tools": ["machine", "plugin", "assistant", "database", "connections", "codebase", "own"]},
+    {"id": "tab", "space": "main", "at_once": "one", "of": "tool", "default": "main",
+     "open": "the tabs of the tool picked: Main, External API, Internal API, a plugin's own"},
+    {"id": "pick", "space": "main", "at_once": "one-or-none", "of": "tab",
+     "open": "a row of the tab's tables, a place, router or feature on its globe, a part of Connections"}
+   ],
+   "right": ["tool", "pick"]
+  },
+  "login": {
+   "controller": ["login"],
+   "groups": [
+    {"id": "tool", "space": "left", "at_once": "one", "default": "account",
+     "tools": ["account", "codebase", "plugin", "own"]},
+    {"id": "tab", "space": "main", "at_once": "one", "of": "tool", "default": "main",
+     "open": "the tabs of the tool picked: Main, External API, Internal API, a plugin's own"},
+    {"id": "pick", "space": "main", "at_once": "one-or-none", "of": "tab",
+     "open": "a pair, a variable asked for, a row of a plugin's tables, a repository"}
+   ],
+   "right": ["tool", "pick"]
+  },
+  "integrator": {
+   "controller": ["integrator", "login"],
+   "groups": [
+    {"id": "view", "space": "controller", "at_once": "one", "default": "fetcher",
+     "tools": ["desk", "markets", "news", "gov", "datasets", "fetcher", "live", "resources", "exchanges", "plugins",
+               "databases", "codebase"]},
+    {"id": "pick", "space": "main", "at_once": "one-or-none", "of": "view",
+     "open": "a row of the view's middle: a database's table, a plugin's plan, an exchange's product, a repository"}
+   ],
+   "right": ["view", "pick"]
+  },
+  "charts": {
+   "controller": ["charts", "platform", "integrator", "login"],
+   "groups": [
+    {"id": "view", "space": "controller", "at_once": "one", "default": "stock",
+     "tools": ["stock", "analysis", "trading", "desk", "watchlist", "prefs", "markets", "news", "gov", "datasets",
+               "fetcher", "live", "resources", "exchanges", "plugins", "databases", "codebase"],
+     "chart": ["stock", "analysis", "trading", "watchlist", "prefs"]},
+    {"id": "drawing", "space": "left", "at_once": "one", "default": "cursor", "with": {"view": "chart"},
+     "tools": ["cursor", "measure", "segment", "rayLine", "straightLine", "horizontalStraightLine", "horizontalRayLine",
+               "verticalStraightLine", "priceLine", "parallelStraightLine", "priceChannelLine", "fibonacciLine",
+               "simpleAnnotation"]},
+    {"id": "overhead", "space": "overhead", "at_once": "any", "with": {"view": "chart"},
+     "tools": ["replay", "unfiltered"], "only": {"replay": {"view": ["analysis"]}}},
+    {"id": "pick", "space": "main", "at_once": "one-or-none", "of": "view",
+     "open": "a row of a three-column view's middle, a bar of the chart"}
+   ],
+   "right": ["drawing", "pick"]
+  }
+ }
+}
