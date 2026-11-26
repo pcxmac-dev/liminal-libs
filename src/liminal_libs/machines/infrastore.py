@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS probes (
   id INTEGER PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
   lat REAL NOT NULL, lon REAL NOT NULL, country TEXT NOT NULL, asn4 INTEGER, asn6 INTEGER,
   anchor INTEGER NOT NULL, connected INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 """
 SET_COLUMNS = ("id", "title", "source", "url", "licence_name", "licence", "accepted", "credit_text", "credit_url",
                "fetched", "features", "dropped", "bytes", "stand_in", "version")
@@ -239,10 +240,11 @@ class Store:
 
     # -- writes ---------------------------------------------------------------------------------------------------
     def put(self, dataset, features: Mapping, fetched: float, accepted: float | None = None, size: int = 0,
-            orbits=(), probes=()) -> dict:
+            orbits=(), probes=(), imported: tuple[str, str] | None = None) -> dict:
         """One data set's features (infrastructure.parse's) written in one transaction, its older rows replaced (a
         write that fails leaves them): {"set", "features", "version", "counts"}. `orbits`: rows (norad, constellation,
-        name, epoch, omm dict); `probes`: rows (id, lat, lon, country, asn4, asn6, anchor, connected)."""
+        name, epoch, omm dict); `probes`: rows (id, lat, lon, country, asn4, asn6, anchor, connected); `imported`:
+        (an older file's name, its stamp), noted with it so that file is read in once alone."""
         dataset = infra.DataSet.of(dataset)
         layers = features.get("layers") if isinstance(features, Mapping) else None
         layers = layers if isinstance(layers, Mapping) else {}
@@ -292,6 +294,8 @@ class Store:
             con.executemany("INSERT OR REPLACE INTO probes (id, set_id, lat, lon, country, asn4, asn6, anchor, "
                             "connected) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             [(int(r[0]), dataset.id, *r[1:]) for r in probes])
+            if imported is not None:
+                con.execute("INSERT OR REPLACE INTO imported (file, stamp) VALUES (?, ?)", imported)
         self._write(work)
         return {"set": dataset.id, "features": count, "version": version, "counts": self.counts(dataset.id)}
 
@@ -308,6 +312,21 @@ class Store:
             return {row[0]: dict(zip(SET_COLUMNS, row))
                     for row in con.execute(f"SELECT {', '.join(SET_COLUMNS)} FROM sets")}
         return self._read(work) or {}
+
+    def imported(self) -> dict[str, str]:
+        """The older files read in already, and their stamps: each is read in once alone."""
+        return self._read(lambda con: dict(con.execute("SELECT file, stamp FROM imported"))) or {}
+
+    def stamp(self) -> tuple:
+        """The database's files' sizes and times: what changes with every write."""
+        out = []
+        for name in (FILE, FILE + "-wal"):
+            try:
+                found = (self.folder / name).stat()
+                out.append((found.st_size, found.st_mtime_ns))
+            except OSError:
+                out.append(None)
+        return tuple(out)
 
     def counts(self, set_id: str | None = None) -> dict:
         """Each set's layers' counts: {set: {layer: {"points", "lines", "vertices"}}}, or one set's alone."""

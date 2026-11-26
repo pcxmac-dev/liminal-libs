@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 
 from liminal_libs import capture, dns, geo, layout, mounts, netpath
-from liminal_libs.machines import infrastructure, world
+from liminal_libs.machines import infrastore, infrastructure, world
 from liminal_libs.machines.infrastructure import (INDEX_S, INSTALL_S, LAYERS, RETRY_S, DataSet, Index,
                                                   InfrastructureError, form, install, pack, parse, remove, remove_form)
 from liminal_libs.machines.world import LicenceRefused, RedirectRefused, WorldView
@@ -1085,19 +1085,22 @@ def test_a_data_set_is_downloaded_only_once_its_licence_is_accepted(tmp_path):
                   clock=Clock(), wall=Clock(NOW))
     # one request: the data set's address, its own wait as each socket operation's, the plugin's name and version
     assert fetch.asked == [(AT["osm-datacentres"], 190.0, {"agent": "walled-firewall/1.2.3", "what": "a data set"})]
-    size = (folder / "osm-datacentres.json").stat().st_size
+    size = len(CENTRES_ANSWER)  # 1.104.0: the download's bytes, kept in the database
+    db = folder / infrastore.FILE
     assert out["ok"] is True and out["said"] == f"installed Data centres: 5 features ({world.size_words(size)})"
-    assert out["lines"] == ["asked of overpass.example", f"kept in {folder}, in place of any older copy",
+    assert out["lines"] == ["asked of overpass.example", f"kept in {db}, in place of any older copy",
                             "credited on the globe as © OpenStreetMap contributors",
                             "4 features left out: 1 repeated, 2 off the globe, 1 of no kind asked for"]
-    assert out["file"] == {"set": "osm-datacentres", "path": str(folder / "osm-datacentres.json"), "bytes": size,
+    assert out["file"] == {"set": "osm-datacentres", "path": str(db), "bytes": size,
                            "downloaded": len(CENTRES_ANSWER), "features": 5, "dropped": 4,
                            "fetched": "2026-11-16T12:00:00+00:00", "layers": {"exchanges": 1, "datacentres": 4}}
     assert lines == ["asking overpass.example for Data centres", "downloading from overpass.example",
                      f"{world.size_words(len(CENTRES_ANSWER))} downloaded: reading it"]
-    assert [p.name for p in folder.iterdir()] == ["osm-datacentres.json"]  # the download itself is not kept
-    kept = json.loads((folder / "osm-datacentres.json").read_text(encoding="ascii"))
-    assert kept == pack(CENTRES, parse(CENTRES, CENTRES_ANSWER), NOW)
+    assert [p.name for p in folder.iterdir()] == [infrastore.FILE]  # the download itself is not kept
+    packed = pack(CENTRES, parse(CENTRES, CENTRES_ANSWER), NOW)  # read back as the file of 1.103.0 held it
+    parts = {layer: Index(folder, [CENTRES]).layer(layer)["parts"][0] for layer in packed["layers"]}
+    assert {layer: {k: v for k, v in part.items() if k in ("points", "lines")} for layer, part in parts.items()} == \
+        packed["layers"]
     assert json.loads(json.dumps(out, allow_nan=False)) == out
     # no agent given: the library's own, which names nothing of anyone's either
     fetch = Downloads({AT["wikidata"]: SPARQL_ANSWER})
@@ -1158,8 +1161,8 @@ def test_a_busy_server_is_asked_once_more_a_minute_later_inside_the_same_deadlin
     assert lines[:4] == ["asking overpass.example for Data centres",
                          "overpass.example is busy (HTTP 504): it is asked once more in 60 s",
                          "asking overpass.example again", "downloading from overpass.example"]
-    before = (folder / "osm-datacentres.json").read_bytes()
-    for code in infrastructure.BUSY:  # still busy the second time: said, and the older file stays
+    before = infrastore.Store(folder).sets()
+    for code in infrastructure.BUSY:  # still busy the second time: said, and the older copy stays
         assert code in (429, 502, 503, 504)
         at = AT["osm-datacentres"]
         fetch = Downloads({at: [busy(at, code), busy(at, code)]})
@@ -1168,7 +1171,7 @@ def test_a_busy_server_is_asked_once_more_a_minute_later_inside_the_same_deadlin
         assert str(said.value) == (f"overpass.example is busy (HTTP {code}): it was asked twice, a minute apart. "
                                    "Nothing was installed, and what was installed before stays. Try again later.")
         assert len(fetch.asked) == 2
-    assert (folder / "osm-datacentres.json").read_bytes() == before and RETRY_S == 60.0
+    assert infrastore.Store(folder).sets() == before and RETRY_S == 60.0
 
 
 def test_the_wait_before_the_second_try_ends_at_once_on_a_cancel_and_at_the_deadline(tmp_path):
@@ -1286,32 +1289,6 @@ def test_an_answer_is_read_up_to_its_limit_and_no_further(tmp_path, monkeypatch)
     stream, lines = Sized(CENTRES_ANSWER), []
     assert got(CENTRES, folder, stream, log=lines.append)["ok"] is True and stream.closed
     assert lines[1] == f"downloading from overpass.example: {world.size_words(len(CENTRES_ANSWER))}"
-
-
-def test_a_file_larger_than_a_data_sets_file_may_be_is_not_kept(tmp_path, monkeypatch):
-    """(Review, low) The file is ASCII, a name outside it written as a \\u escape of six bytes where the answer's UTF-8
-    took three, and a MultiLineString's name is kept for each of its parts: a file can be larger than the answer it was
-    made from, and Index reads none larger than MAX_ANSWER. Such a file is not kept, in words, and the older one
-    stays."""
-    folder = tmp_path / "layers"
-    assert got(CENTRES, folder, CENTRES_ANSWER)["ok"] is True
-    before = (folder / "osm-datacentres.json").read_bytes()
-    sites = [{"type": "node", "id": i, "lat": i / 10, "lon": 1.0,
-              "tags": {"telecom": "data_center", "name": "数据中心" * 20 + str(i), "operator": "运营商" * 26 + str(i)}}
-             for i in range(60)]
-    answer = json.dumps({"elements": sites}, ensure_ascii=False).encode("utf-8")
-    kept = len(json.dumps(pack(CENTRES, parse(CENTRES, answer), NOW), separators=(",", ":")))
-    monkeypatch.setattr(infrastructure, "MAX_ANSWER", (len(answer) + kept) // 2)
-    assert len(answer) < infrastructure.MAX_ANSWER < kept  # the answer is within the limit, its file is not
-    assert refused(CENTRES, folder, answer) == (
-        f"Data centres was not kept: its file would be {world.size_words(kept)}, larger than "
-        f"{world.size_words(infrastructure.MAX_ANSWER)}, more than a data set's file holds. Nothing was installed, and "
-        "what was installed before stays.")
-    assert [p.name for p in folder.iterdir()] == ["osm-datacentres.json"]  # no part file left
-    assert (folder / "osm-datacentres.json").read_bytes() == before
-    monkeypatch.setattr(infrastructure, "MAX_ANSWER", kept)  # a file of the most a data set's file holds is kept,
-    assert got(CENTRES, folder, answer)["ok"] is True  # and read
-    assert Index(folder, [CENTRES], clock=Clock()).sets()[0]["installed"] is True
 
 
 def test_a_read_that_times_out_says_how_long_it_waited(tmp_path):
@@ -1569,12 +1546,14 @@ def test_the_geoip_file_asked_for_outside_the_page_is_let_go_again_unless_the_vi
 
 # -- what is installed -------------------------------------------------------------------------------------------------
 def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path, monkeypatch):
-    """(Review M8) The layers travel with every answer of the tab, asked every two seconds: a file is read again only
-    when its size or its time changed, only its counts, its credit and its date are kept, and layer() reads the
-    geometry when the globe asks for it and keeps none."""
+    """(Review M8) The layers travel with every answer of the tab, asked every two seconds: the database's counts are
+    read again only when it changed (1.104.0: its files' sizes and times), only its counts, its credits and its dates
+    are kept, and layer() reads the geometry when the globe asks for it and keeps none."""
     folder, clock, read = tmp_path / "layers", Clock(), []
-    facts = infrastructure._facts
-    monkeypatch.setattr(infrastructure, "_facts", lambda path, ident: read.append(ident) or facts(path, ident))
+    counts = infrastore.Store.counts
+    monkeypatch.setattr(infrastore.Store, "counts",
+                        lambda self, set_id=None: (read.append("look") if set_id is None else None) or
+                        counts(self, set_id))
     index = Index(folder, [CENTRES, CABLES, WIKIDATA], clock=clock)
     assert index.folder == folder and index.layers() == [] and read == []  # nothing installed: nothing read
     assert [(s["id"], s["installed"], s["features"], s["bytes"]) for s in index.sets()] == [
@@ -1584,7 +1563,7 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
     got(CENTRES, folder, CENTRES_ANSWER)
     got(CABLES, folder, CABLES_ANSWER)
     layers = index.layers()  # looked at again at once after an install here, the ten seconds over or not
-    assert sorted(read) == ["osm-cables", "osm-datacentres"]
+    assert read == ["look"]
     assert [(x["id"], x["count"]) for x in layers] == [("exchanges", 1), ("datacentres", 4), ("landings", 2),
                                                         ("cables", 4), ("lines", 1)]
     by = {x["id"]: x for x in layers}
@@ -1594,7 +1573,7 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
                             "note": "from OpenStreetMap, through the Overpass API, fetched 2026-11-16"}
     assert re.fullmatch(r"[0-9a-f]{12}", by["cables"]["version"])
     assert by["cables"]["version"] == by["landings"]["version"]
-    assert by["cables"]["version"] != by["datacentres"]["version"]  # another file's
+    assert by["cables"]["version"] != by["datacentres"]["version"]  # another data set's
     assert (by["lines"]["on"], by["lines"]["mark"], by["datacentres"]["mark"], by["exchanges"]["mark"]) == (
         False, "dash", "square", "diamond")
     assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "pops", "cables",
@@ -1608,7 +1587,7 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
                                                           for x in LAYERS)
     assert json.loads(json.dumps(layers, allow_nan=False)) == layers and len(json.dumps(layers)) < 2000  # small
     sets = index.sets()
-    size = (folder / "osm-cables.json").stat().st_size
+    size = len(CABLES_ANSWER)  # 1.104.0: the download's
     assert sets[1] == {"id": "osm-cables", "title": "Submarine cables and landing stations", "format": "overpass",
                        "about": "about 1,100 cable ways, 60 stations",
                        "source": "OpenStreetMap, through the Overpass API",
@@ -1618,15 +1597,14 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
                        "downloading": False}
     assert (sets[2]["installed"], sets[2]["fetched"], sets[2]["layers"]) == (False, None, [])
     index.table(), index.forms()
-    assert len(read) == 2  # asked again and again within the ten seconds: nothing read
+    assert len(read) == 1  # asked again and again within the ten seconds: nothing read
     clock.t += INDEX_S
-    assert index.layers() == layers and len(read) == 2  # looked at again: the files as they were, nothing read
-    stamp = (folder / "osm-cables.json").stat().st_mtime_ns + 5_000_000_000
-    os.utime(folder / "osm-cables.json", ns=(stamp, stamp))  # its time changed (another process's update)
-    assert index.layers() == layers and len(read) == 2  # not looked at so soon
+    assert index.layers() == layers and len(read) == 1  # looked at again: the database as it was, nothing read
+    infrastore.Store(folder).put(CABLES, parse(CABLES, CABLES_ANSWER), NOW)  # another process's update
+    assert index.layers() == layers and len(read) == 1  # not looked at so soon
     clock.t += INDEX_S
     changed = {x["id"]: x for x in index.layers()}
-    assert read[2:] == ["osm-cables"]  # that file alone, once
+    assert read[1:] == ["look"]  # read again, once
     assert changed["cables"]["version"] != by["cables"]["version"]  # so the globe asks for its geometry anew
     assert changed["datacentres"]["version"] == by["datacentres"]["version"]
     assert "xy" not in json.dumps(index._files) and "names" not in json.dumps(index._files)  # no geometry is kept
@@ -1640,7 +1618,7 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
     [points] = index.layer("landings")["parts"]
     assert set(points) == {"set", "credit", "points"} and places(points["points"]) == [(-4.55, 50.83), (5.37, 43.3)]
     assert json.loads(json.dumps(cables, allow_nan=False)) == cables
-    assert "xy" not in json.dumps(index._files) and len(read) == 3  # read for the asker, and let go again
+    assert "xy" not in json.dumps(index._files) and len(read) == 2  # read for the asker, and let go again
     for missing in ("stations", "nothing", "", None, 7, "x" * 500):  # no file feeds it; no such layer
         with pytest.raises(LookupError, match="^no layer .{1,60} is installed here$"):
             index.layer(missing)
@@ -1687,9 +1665,10 @@ def test_a_file_of_maps_is_downloaded_at_its_address_alone_and_drawn_as_backbone
     out = install(ZOO, folder, accept_licence=True, fetch=fetch, log=lines.append, agent="firewall-linux/0.9.0",
                   clock=Clock(), wall=Clock(NOW))
     assert fetch.asked == [(ZOO["url"], 60.0, {"agent": "firewall-linux/0.9.0", "what": "a data set"})]
-    size = (folder / "topology-zoo.json").stat().st_size
+    size = len(ZOO_ANSWER)
     assert out["said"] == f"installed Backbone networks, about 2010-2011: 15 features ({world.size_words(size)})"
-    assert out["lines"] == ["asked of raw.zoo.example", f"kept in {folder}, in place of any older copy",
+    assert out["lines"] == ["asked of raw.zoo.example",
+                            f"kept in {folder / infrastore.FILE}, in place of any older copy",
                             "credited on the globe as Internet Topology Zoo, CC BY 4.0",
                             "10 features left out: 1 outside its network, 1 with no place, 1 off the globe, 1 of no "
                             "kind asked for, 1 under two points, 1 repeated, 4 between points not drawn"]
@@ -1697,7 +1676,7 @@ def test_a_file_of_maps_is_downloaded_at_its_address_alone_and_drawn_as_backbone
     assert lines == ["asking raw.zoo.example for Backbone networks, about 2010-2011",
                      "downloading from raw.zoo.example", f"{world.size_words(len(ZOO_ANSWER))} downloaded: reading it",
                      parse(ZOO, ZOO_ANSWER)["remarks"][0]]  # what was read of the maps, said to the job's log
-    assert [p.name for p in folder.iterdir()] == ["topology-zoo.json"]  # the archive itself is not kept, nor unpacked
+    assert [p.name for p in folder.iterdir()] == [infrastore.FILE]  # the archive itself is not kept, nor unpacked
     index = Index(folder, [ZOO], clock=Clock())
     by = {x["id"]: x for x in index.layers()}
     assert list(by) == ["pops", "backbones"]
@@ -1739,7 +1718,7 @@ def test_the_table_offers_each_data_set_and_a_file_that_does_not_read_is_said(tm
     assert [f["id"] for f in index.forms()] == ["world-layer-osm-datacentres", "world-layer-wikidata"]
     assert index.forms()[0] == form(CENTRES, folder) and json.loads(json.dumps(table, allow_nan=False)) == table
     got(CENTRES, folder, CENTRES_ANSWER)
-    size = world.size_words((folder / "osm-datacentres.json").stat().st_size)
+    size = world.size_words(len(CENTRES_ANSWER))
     row = index.table()["rows"][0]
     assert row[3:] == [{"text": "5 features, fetched 2026-11-16", "sub": f"{size}; 4 left out"},
                        {"form": "world-layer-osm-datacentres", "title": "Update…"},
@@ -1750,9 +1729,10 @@ def test_the_table_offers_each_data_set_and_a_file_that_does_not_read_is_said(tm
     bare = index.table(can=False)  # the page may not ask: nothing is offered
     assert all(r[4] == r[5] == "" for r in bare["rows"]) and index.forms(can=False) == []
     assert Index(folder).table()["rows"] == [] and Index(folder).forms() == [] and Index(folder).layers() == []
-    # a file that does not read: said, never drawn, and offered again (or removed)
+    # an older file (1.103.0's) that does not read: said, never drawn, and offered again (or removed)
     for wrong, why in ((b"no JSON at all", "it is no JSON"),
-                       ((folder / "osm-datacentres.json").read_bytes(), "it is no file of this data set's (version 1)"),
+                       (json.dumps(pack(CENTRES, parse(CENTRES, CENTRES_ANSWER), NOW)).encode(),
+                        "it is no file of this data set's (version 1)"),
                        (b'{"v": 1, "set": "wikidata"}', "it holds no layers"),
                        (b'{"v": 1, "set": "wikidata", "layers": {"motorways": {}}}',
                         "it holds a layer that is none ('motorways')"),
@@ -1780,14 +1760,14 @@ def test_a_data_set_is_removed_on_the_users_word_and_can_be_downloaded_again(tmp
     got(CENTRES, folder, CENTRES_ANSWER)
     assert [x["id"] for x in index.layers()] == ["exchanges", "datacentres"]
     assert remove(CENTRES, folder) == {"said": "removed Data centres", "ok": True, "lines": [
-        f"its file is removed from {folder}: the globe no longer draws it", "it can be downloaded again"]}
-    assert index.layers() == [] and list(folder.iterdir()) == []  # seen at once, the ten seconds over or not
+        f"it is removed from {folder / infrastore.FILE}: the globe no longer draws it", "it can be downloaded again"]}
+    assert index.layers() == [] and infrastore.Store(folder).sets() == {}  # seen at once, the ten seconds over or not
     assert remove(CENTRES, folder) == {"said": "Data centres is not installed here", "ok": True,
                                        "lines": [f"nothing of it is kept in {folder}"]}
     assert got(CENTRES, folder, CENTRES_ANSWER)["ok"] is True and len(index.layers()) == 2
     # with no folder given: the data folder's own
     assert got(CENTRES, None, CENTRES_ANSWER)["file"]["path"] == str(tmp_path / "data" / "infrastructure" /
-                                                                    "osm-datacentres.json")
+                                                                    infrastore.FILE)
     assert remove(CENTRES)["said"] == "removed Data centres"
 
 
@@ -1796,10 +1776,10 @@ def test_layers_on_another_systems_drive_are_that_systems(tmp_path, monkeypatch)
     is never read, written or removed from here, and the page says why."""
     theirs = tmp_path / "theirs"
     got(CENTRES, theirs, CENTRES_ANSWER)  # (as that system left it)
-    before = (theirs / "osm-datacentres.json").read_bytes()
+    before = (theirs / infrastore.FILE).read_bytes()
     monkeypatch.setattr(mounts, "foreign", lambda path, table=None: str(path).startswith(os.path.realpath(theirs)))
     read = []
-    monkeypatch.setattr(infrastructure, "_kept", lambda path, ident: read.append(ident))
+    monkeypatch.setattr(infrastore.Store, "sets", lambda self: read.append("sets") or {})
     index = Index(theirs, [CENTRES], clock=Clock())
     assert index.elsewhere().startswith("Keeping the infrastructure layers: ")
     assert index.layers() == [] and index.sets()[0]["installed"] is False and index.forms() == [] and read == []
@@ -1815,7 +1795,7 @@ def test_layers_on_another_systems_drive_are_that_systems(tmp_path, monkeypatch)
             install(CENTRES, theirs, accept_licence=accepted, fetch=fetch, log=lines.append)
     with pytest.raises(ValueError, match=r"^Keeping the infrastructure layers: .* is on another system's drive"):
         remove(CENTRES, theirs)
-    assert fetch.asked == [] and lines == [] and read == [] and (theirs / "osm-datacentres.json").read_bytes() == before
+    assert fetch.asked == [] and lines == [] and read == [] and (theirs / infrastore.FILE).read_bytes() == before
 
 
 # -- the forms' words --------------------------------------------------------------------------------------------------
@@ -1845,7 +1825,7 @@ def test_the_forms_say_what_is_asked_of_whom_how_large_it_is_and_show_the_licenc
         "id": "world-layer-remove-osm-datacentres", "hook": "world_layer_remove", "title": "Remove Data centres",
         "fields": [{"name": "dataset", "type": "fixed", "value": "osm-datacentres"}],
         "confirm": {"title": "Remove Data centres?", "yes": "Remove it", "words": (
-            f"Its file is removed from {folder} and the globe no longer draws it. It can be downloaded again.")}}
+            f"It is removed from {folder} and the globe no longer draws it. It can be downloaded again.")}}
     assert (infrastructure.LAYER_HOOK, infrastructure.GET_HOOK, infrastructure.REMOVE_HOOK) == (
         "world_layer", "world_layer_get", "world_layer_remove")
     for made in (get, again, remove_form(CENTRES, folder)):  # no {name} the page would fill in from a field

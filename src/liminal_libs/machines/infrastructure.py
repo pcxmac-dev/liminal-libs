@@ -21,13 +21,15 @@ major internet infrastructure, (as many as possible) datacenter locations.").
   deadline. What is read and kept is bounded: MAX_ANSWER bytes of an answer, and as many unpacked (MAX_UNPACKED);
   MAX_MAPS files an archive, MAX_MAP bytes and GML_ITEMS nodes and edges a map; MAX_POINTS points and MAX_VERTICES
   vertices a layer; a line's vertices no nearer than STEP. A download that fails leaves the older file as it was.
-- The file is <folder>/<id>.json in the data folder's infrastructure/, each system's own (a folder on another system's
-  drive is that system's: geo.foreign), written whole beside itself and put in place in one step. The download itself
-  is not kept. Coordinates are packed (base64 of little-endian int32 pairs, longitude and latitude in 1e-5 degrees), so
-  a full layer is a few megabytes.
+- 1.104.0 (Monday list item 27; the user, 2026-11-23: "Kept here, from my downloads"): what is downloaded is kept in
+  the plugin's own database, infrastructure.db in the data folder's infrastructure/ (machines/infrastore.py), each
+  system's own (a folder on another system's drive is that system's: geo.foreign), each data set written in one
+  transaction. The download itself is not kept. Coordinates are packed as before (base64 of little-endian int32 pairs,
+  longitude and latitude in 1e-5 degrees) when a layer is read. An older <id>.json of a download made before is read
+  into the database once, at the first look, and then left where it is and no longer read.
 - Index says what is installed (the data sets, the layers they feed, the table the page draws) and reads no geometry
-  to look: a file is read again only when its size or its time changed, and only its counts, its credit and its date
-  are kept. layer() reads a layer's geometry when the globe asks for it, and keeps none.
+  to look: the database's sets and counts, read again only when it changed. layer() reads a layer's geometry when the
+  globe asks for it, whole or by area, and keeps none.
 - Nothing runs when unused: no thread, no timer, no file left open."""
 from __future__ import annotations
 
@@ -76,6 +78,7 @@ NAME = 80  # characters kept of a name
 STEP = 0.02  # degrees between a line's kept vertices
 OLDEST = 2000  # a network whose newest map is from a year before this is history, not a backbone: left out
 LICENCE_FIRST = "A data set is downloaded only once you accept its licence."
+COARSE_ZOOM = 6.0  # 1.104.0: the globe's zoom from which a layer is read by area, at every vertex; below it, coarse
 LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names from this zoom
     ("exchanges", "Exchange points", "points", "diamond", 5, True, 3.0),
     ("datacentres", "Data centres", "points", "square", 4, True, 5.0),
@@ -1492,14 +1495,15 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
             accepted()
         with _STATE:
             _NOW["id"] = dataset.id
-        return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall)
+        return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall,
+                        float(wall()))
     finally:
         with _STATE:
             _NOW["id"] = ""
         _INSTALLING.release()
 
 
-def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clock, wall) -> dict:
+def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clock, wall, agreed: float) -> dict:
     host = dataset.host
     budget = float(INSTALL_S)
     deadline = clock() + budget
@@ -1541,27 +1545,28 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
         whys = _whys(features["dropped"])
         raise InfrastructureError(f"{host} answered, but every feature was left out: {whys}" if whys
                                   else f"{host} answered with no features")
-    packed = pack(dataset, features, wall())
-    left = _left_out(features["dropped"])
-    del features
+    left, dropped = _left_out(features["dropped"]), sum(features["dropped"].values())
     if _asked(cancel):
         return {"said": CANCELLED, "ok": False}
-    path = _put(target, dataset, packed)
-    _changed()
+    from .infrastore import Store, StoreError
+    store, fetched = Store(target), float(wall())
     try:
-        kept = path.stat().st_size
-    except OSError:
-        kept = 0
-    lines = [f"asked of {host}", f"kept in {target}, in place of any older copy",
+        put = store.put(dataset, features, fetched, accepted=agreed, size=size, orbits=features.get("orbits") or (),
+                        probes=features.get("probes") or ())
+    except StoreError as e:
+        raise InfrastructureError(f"{dataset.title} could not be kept: {e}. Nothing was installed, and what was "
+                                  "installed before stays.") from None
+    del features
+    _changed()
+    lines = [f"asked of {host}", f"kept in {store.path}, in place of any older copy",
              f"credited on the globe as {dataset.credit['text']}"]
     if left:
         lines.append(left)
-    counts = {layer: sum(part["n"] for part in entry.values()) for layer, entry in packed["layers"].items()}
-    return {"said": f"installed {dataset.title}: {world._plural(packed['features'], 'feature')} ({size_words(kept)})",
+    counts = {layer: c["points"] + c["lines"] for layer, c in put["counts"].items()}
+    return {"said": f"installed {dataset.title}: {world._plural(put['features'], 'feature')} ({size_words(size)})",
             "ok": True, "lines": lines,
-            "file": {"set": dataset.id, "path": str(path), "bytes": kept, "downloaded": size,
-                     "features": packed["features"], "dropped": packed["dropped"], "fetched": packed["fetched"],
-                     "layers": counts}}
+            "file": {"set": dataset.id, "path": str(store.path), "bytes": size, "downloaded": size,
+                     "features": put["features"], "dropped": dropped, "fetched": _when(fetched), "layers": counts}}
 
 
 def remove(dataset, folder=None) -> dict:
@@ -1575,17 +1580,27 @@ def remove(dataset, folder=None) -> dict:
         raise ValueError(elsewhere)
     if _under_way() == dataset.id:
         raise ValueError(f"{dataset.title} is being downloaded: wait for it to finish, or cancel it")
+    from .infrastore import Store, StoreError
+    store = Store(target)
+    try:
+        there = store.remove(dataset.id)
+    except StoreError as e:
+        raise InfrastructureError(f"{dataset.title} could not be removed from {store.path}: {e}") from None
+    older = target / f"{dataset.id}.json"  # a download made before 1.104.0, read in already: removed with it
     try:
         with _FILES:
-            (target / f"{dataset.id}.json").unlink()
+            older.unlink()
+        there = True
     except FileNotFoundError:
-        return {"said": f"{dataset.title} is not installed here", "ok": True,
-                "lines": [f"nothing of it is kept in {target}"]}
+        pass
     except OSError as e:
         raise InfrastructureError(f"{dataset.title} could not be removed from {target}: {e}") from None
+    if not there:
+        return {"said": f"{dataset.title} is not installed here", "ok": True,
+                "lines": [f"nothing of it is kept in {target}"]}
     _changed()
     return {"said": f"removed {dataset.title}", "ok": True,
-            "lines": [f"its file is removed from {target}: the globe no longer draws it", "it can be downloaded again"]}
+            "lines": [f"it is removed from {store.path}: the globe no longer draws it", "it can be downloaded again"]}
 
 
 # -- the forms --------------------------------------------------------------------------------------------------------
@@ -1625,7 +1640,7 @@ def remove_form(dataset, folder) -> dict:
     return {"id": REMOVE_FORM + dataset.id, "hook": REMOVE_HOOK, "title": f"Remove {dataset.title}",
             "fields": [{"name": "dataset", "type": "fixed", "value": dataset.id}],
             "confirm": {"title": f"Remove {dataset.title}?", "yes": "Remove it",
-                        "words": (f"Its file is removed from {_resolved(folder)} and the globe no longer draws it. It "
+                        "words": (f"It is removed from {_resolved(folder)} and the globe no longer draws it. It "
                                   "can be downloaded again.")}}
 
 
@@ -1685,18 +1700,59 @@ def _facts(path: Path, ident: str) -> dict:
 
 
 def _version(drawn: list) -> str:
-    """A layer's version: 12 hex digits of the names, sizes and times of the files that feed it."""
-    said = "|".join(f"{fact['file']}:{fact['stamp'][0]}:{fact['stamp'][1]}" for _, fact, _ in drawn)
+    """A layer's version: 12 hex digits of the versions of the data sets that feed it (each install's own)."""
+    said = "|".join(f"{d.id}:{fact['version']}" for d, fact, _ in drawn)
     return hashlib.sha1(said.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def _unpack(doc: Mapping) -> dict:
+    """An older file's layers (pack's) as parse's features, to be read into the database."""
+    def ints(text: str, code: str) -> array:
+        values = array(code)
+        values.frombytes(base64.b64decode(text))
+        if sys.byteorder == "big":
+            values.byteswap()
+        return values
+    layers: dict = {}
+    for layer, entry in doc["layers"].items():
+        got = {"points": [], "lines": []}
+        points = entry.get("points")
+        if points:
+            xy = ints(points["xy"], _I32)
+            if len(xy) != 2 * points["n"]:
+                raise ValueError(f"its {layer} points do not read")
+            got["points"] = [(xy[2 * i] / SCALE, xy[2 * i + 1] / SCALE, points["names"][i], points["subs"][i])
+                             for i in range(points["n"])]
+        lines = entry.get("lines")
+        if lines:
+            xy, offsets = ints(lines["xy"], _I32), ints(lines["offsets"], _U32)
+            if len(offsets) != lines["n"] + 1 or offsets[-1] * 2 != len(xy):
+                raise ValueError(f"its {layer} lines do not read")
+            for i in range(lines["n"]):
+                a, b = offsets[i], offsets[i + 1]
+                got["lines"].append(([(xy[2 * j] / SCALE, xy[2 * j + 1] / SCALE) for j in range(a, b)],
+                                     lines["names"][i]))
+        layers[layer] = got
+    return {"layers": layers, "features": int(doc.get("features") or 0), "dropped": int(doc.get("dropped") or 0)}
+
+
+def _seconds_of(fetched: str) -> float:
+    """An older file's `fetched` (ISO, UTC) as seconds since 1970; 0 when it does not read."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(fetched).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class Index:
-    """What is installed of a plugin's data sets, in `folder` (the data folder's infrastructure/ when not given): the
-    files <id>.json of `datasets` (DataSets, or the plugin's dicts) and no other. The folder is looked at again INDEX_S
-    after the last look at the soonest (`clock`: monotonic, a test's own), and at once after an install or a removal in
-    this process. A look is one stat a data set: a file is read (whole, once) only when its size or its time changed,
-    and only its counts, its credit and its date are kept. A folder on another system's drive is never read: nothing
-    counts as installed there. Thread-safe: the platform asks from a thread per request."""
+    """What is installed of a plugin's data sets, in `folder` (the data folder's infrastructure/ when not given): those
+    of `datasets` (DataSets, or the plugin's dicts) its database holds (1.104.0: infrastore.Store), and no other. The
+    folder is looked at again INDEX_S after the last look at the soonest (`clock`: monotonic, a test's own), and at once
+    after an install or a removal in this process. A look reads the database's sets and counts only when its files
+    changed, and no geometry. An older <id>.json of one of them (a download made before 1.104.0) is read into the
+    database once, at the first look that finds it. A folder on another system's drive is never read: nothing counts
+    as installed there. Thread-safe: the platform asks from a thread per request."""
 
     def __init__(self, folder=None, datasets=(), clock=time.monotonic):
         self._given = None if folder is None else Path(folder)
@@ -1728,33 +1784,86 @@ class Index:
                              f"{', '.join(d.id for d in self.datasets) or 'it names none'}")
         return found
 
+    def store(self):
+        """The database it reads (infrastore.Store)."""
+        from .infrastore import Store
+        return Store(self.folder)
+
+    def _import(self, store, kept: dict) -> dict[str, dict]:
+        """Each older <id>.json of these data sets not read in yet, read into the database once (its fetched date
+        kept, accepted when its file was last written), then left where it is; the problems of those that do not
+        read, by their data set's id."""
+        problems: dict[str, dict] = {}
+        base, done = self.folder, None
+        for dataset in self.datasets:
+            path = base / f"{dataset.id}.json"
+            try:
+                found = path.stat()
+            except OSError:
+                continue
+            stamp = f"{found.st_size}:{found.st_mtime_ns}"
+            if done is None:
+                done = store.imported() if store.exists() else {}
+            if done.get(path.name) == stamp:
+                continue
+            if dataset.id in kept:  # downloaded again since: the database's copy is newer
+                continue
+            try:
+                doc = _kept(path, dataset.id)
+                features = _unpack(doc)
+                store.put(dataset, features, _seconds_of(doc.get("fetched")), accepted=found.st_mtime_ns / 1e9,
+                          size=0, imported=(path.name, stamp))
+            except (OSError, ValueError, KeyError, TypeError, IndexError) as e:
+                problems[dataset.id] = {
+                    "title": dataset.title, "source": dataset.source, "licence_name": dataset.licence_name,
+                    "credit": dict(dataset.credit), "fetched": "", "features": 0, "dropped": 0, "counts": {},
+                    "problem": f"its file does not read ({e}): download it again", "bytes": found.st_size,
+                    "version": "", "stand_in": False}
+            except Exception as e:  # noqa: BLE001 - the database's own (StoreError): said, the file left as it is
+                problems[dataset.id] = {
+                    "title": dataset.title, "source": dataset.source, "licence_name": dataset.licence_name,
+                    "credit": dict(dataset.credit), "fetched": "", "features": 0, "dropped": 0, "counts": {},
+                    "problem": f"its older file could not be read in ({e})", "bytes": found.st_size, "version": "",
+                    "stand_in": False}
+        return problems
+
     def _look(self) -> dict[str, dict]:
         with self._lock:
             now, seen = self.clock(), _changes()
             if self._looked is not None and seen == self._seen and 0 <= now - self._looked < INDEX_S:
                 return self._files
             self._looked, self._seen = now, seen
+            if foreign(self.folder):
+                self._files = {}
+                return self._files
+            store = self.store()
+            try:
+                kept = store.sets()
+                problems = self._import(store, kept)
+                if not problems and self._files and store.stamp() == getattr(self, "_stamp", None):
+                    return self._files
+                kept = store.sets()
+                counts = store.counts() if kept else {}
+            except Exception as e:  # noqa: BLE001 - a database that cannot be read: nothing installed, said
+                self._files = {d.id: {"title": d.title, "source": d.source, "licence_name": d.licence_name,
+                                      "credit": dict(d.credit), "fetched": "", "features": 0, "dropped": 0,
+                                      "counts": {}, "problem": f"its database does not read ({e})", "bytes": 0,
+                                      "version": "", "stand_in": False} for d in self.datasets}
+                return self._files
             files: dict[str, dict] = {}
-            base = self.folder
-            for dataset in self.datasets if not foreign(base) else ():
-                path = base / f"{dataset.id}.json"
-                try:
-                    found = path.stat()
-                except OSError:
+            for dataset in self.datasets:
+                row = kept.get(dataset.id)
+                if row is None:
+                    if dataset.id in problems:
+                        files[dataset.id] = problems[dataset.id]
                     continue
-                stamp = (found.st_size, found.st_mtime_ns)
-                old = self._files.get(dataset.id)
-                if old is not None and old["stamp"] == stamp:
-                    files[dataset.id] = old
-                    continue
-                try:
-                    fact = _facts(path, dataset.id)
-                except (OSError, ValueError) as e:
-                    fact = {"title": dataset.title, "source": dataset.source, "licence_name": dataset.licence_name,
-                            "credit": dict(dataset.credit), "fetched": "", "features": 0, "dropped": 0, "counts": {},
-                            "problem": f"its file does not read ({e}): download it again"}
-                fact.update(stamp=stamp, file=path.name, bytes=found.st_size)
-                files[dataset.id] = fact
+                files[dataset.id] = {
+                    "title": row["title"], "source": row["source"], "licence_name": row["licence_name"],
+                    "credit": {"text": row["credit_text"], "url": row["credit_url"]},
+                    "fetched": world._iso(row["fetched"]), "features": row["features"], "dropped": row["dropped"],
+                    "counts": counts.get(dataset.id, {}), "problem": "", "bytes": row["bytes"],
+                    "version": row["version"], "stand_in": bool(row["stand_in"])}
+            self._stamp = store.stamp()
             self._files = files
             return files
 
@@ -1821,23 +1930,41 @@ class Index:
             out.append(entry)
         return out
 
-    def layer(self, layer_id) -> dict:
-        """One layer's geometry as the files hold it, read now and not kept: {"id", "version", "parts": [{"set",
+    def layer(self, layer_id, area=None, zoom=None) -> dict:
+        """One layer's geometry as the database holds it, read now and not kept: {"id", "version", "parts": [{"set",
         "credit", "points"?: {"n", "xy", "names", "subs"}, "lines"?: {"n", "offsets", "xy", "names"}}]}, a part a data
-        set (pack says what `xy` and `offsets` are). LookupError when no such layer is installed here."""
+        set (pack says what `xy` and `offsets` are). LookupError when no such layer is installed here.
+
+        1.104.0: `area` (west, south, east, north in degrees; west greater than east across the antimeridian): only
+        the features crossing it; `zoom` (the globe's): below COARSE_ZOOM the lines' coarse copies, whole. Neither
+        given: the whole layer, every vertex (the network's graph is made of it). "cut": true where more was there
+        than an answer holds."""
+        from .infrastore import area_of
+        box = area_of(area)
+        if zoom is not None and (isinstance(zoom, bool) or not isinstance(zoom, (int, float)) or not zoom > 0):
+            raise ValueError("a zoom is a number above 0")
         drawn = self._feeding(layer_id, self._look())[0] if isinstance(layer_id, str) else []
-        parts = []
+        coarse = zoom is not None and zoom < COARSE_ZOOM
+        try:
+            found = self.store().layer(layer_id, [d.id for d, _, _ in drawn], area=None if coarse else box,
+                                       coarse=coarse) if drawn else {}
+        except Exception:  # noqa: BLE001 - gone or changed since the look: the next look says so
+            found = {}
+        parts, cut = [], False
         for dataset, fact, _ in drawn:
-            try:
-                entry = _kept(self.folder / fact["file"], dataset.id)["layers"].get(layer_id)
-            except (OSError, ValueError):
-                continue  # gone or changed since the look: the next look says so
+            entry = found.get(dataset.id)
             if entry:
+                cut = cut or entry.get("cut", False)
                 parts.append({"set": dataset.id, "credit": dict(fact["credit"]),
                               **{part: entry[part] for part in ("points", "lines") if part in entry}})
-        if not parts:
+        if not parts and (box is None or coarse):
             raise LookupError(f"no layer {world._shown(layer_id)} is installed here")
-        return {"id": layer_id, "version": _version(drawn), "parts": parts}
+        out = {"id": layer_id, "version": _version(drawn), "parts": parts}
+        if box is not None and not coarse:
+            out["area"] = list(box)
+        if cut:
+            out["cut"] = True
+        return out
 
     def forms(self, can: bool = True) -> list[dict]:
         """The forms the table's buttons open: each data set's download (an update once it is installed) and, once

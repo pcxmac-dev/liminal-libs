@@ -139,8 +139,9 @@ def test_map_tiles_are_named_and_asked_one_by_one_and_their_people_never_kept(tm
     out = install(AFTERFIBRE, tmp_path / "f", accept_licence=True, fetch=asked, clock=Clock())
     assert out["ok"] is True and out["file"]["layers"] == {"fibre": 2}  # 54 tiles not there: nothing in them
     assert [a[0] for a in asked.asked] == fibre.addresses()
-    text = (tmp_path / "f" / "afterfibre.json").read_text(encoding="ascii")
-    assert "Person" not in text and "mail.example" not in text and "Somebody" not in text  # the undersea layer too
+    kept = b"".join(p.read_bytes() for p in (tmp_path / "f").iterdir())  # the database, every file of it
+    assert b"Person" not in kept and b"mail.example" not in kept and b"Somebody" not in kept  # the undersea layer too
+    assert b"Liquid" in kept
     part = Index(tmp_path / "f", [AFTERFIBRE]).layer("fibre")["parts"][0]["lines"]
     assert part["names"] == ["Liquid", "Liquid (planned)"]
     (lon0, lat0), (lon1, lat1) = places(part)[:2]
@@ -165,3 +166,48 @@ def test_a_tile_that_fails_stops_the_install_with_nothing_kept(tmp_path):
                           ({"layer": ""}, "names no layer its lines go to")):
         with pytest.raises(ValueError, match=re.escape(words)):
             DataSet.of({**AFTERFIBRE, **change})
+
+
+# -- item 27: the database, and an older file read in once ------------------------------------------------------------
+def test_an_older_file_is_read_into_the_database_once_and_then_left(tmp_path, monkeypatch):
+    import json
+    import os
+    from liminal_libs.machines import infrastore
+    folder = tmp_path / "layers"
+    folder.mkdir()
+    older = pack(ROADS, parse(ROADS, roads_zip()), 1_763_294_400.0)  # 1.103.0's file of a download made then
+    (folder / "ne-roads.json").write_text(json.dumps(older), encoding="ascii")
+    os.utime(folder / "ne-roads.json", (1_763_300_000, 1_763_300_000))
+    index = Index(folder, [ROADS], clock=Clock())
+    (row,) = index.sets()
+    assert row["installed"] is True and row["fetched"] == "2025-11-16T12:00:00+00:00" and row["features"] == 3
+    kept = infrastore.Store(folder).sets()["ne-roads"]
+    assert kept["accepted"] == 1_763_300_000 and kept["licence"] == PD  # accepted: when its file was written
+    assert (folder / "ne-roads.json").exists()  # left where it is
+    got = Index(folder, [ROADS], clock=Clock()).layer("roads")["parts"][0]["lines"]
+    assert got == older["layers"]["roads"]["lines"]
+    reads = []
+    kept_of = infrastructure._kept
+    monkeypatch.setattr(infrastructure, "_kept", lambda path, ident: reads.append(ident) or kept_of(path, ident))
+    infrastructure._changed()
+    assert Index(folder, [ROADS], clock=Clock()).sets()[0]["installed"] is True and reads == []  # not read again
+    assert infrastructure.remove(ROADS, folder)["said"] == "removed Major roads (a stand-in for fibre)"
+    assert not (folder / "ne-roads.json").exists() and Index(folder, [ROADS], clock=Clock()).sets()[0][
+        "installed"] is False
+
+
+def test_a_layer_is_read_by_area_and_coarse_below_its_zoom(tmp_path):
+    folder = tmp_path / "layers"
+    at = DataSet.of(ROADS).address()
+    install(ROADS, folder, accept_licence=True, fetch=Downloads({at: roads_zip()}), clock=Clock())
+    index = Index(folder, [ROADS], clock=Clock())
+    near = index.layer("roads", area=[7.0, 49.0, 9.0, 51.0], zoom=8)
+    assert near["parts"][0]["lines"]["names"] == ["A 5"] and near["area"] == [7.0, 49.0, 9.0, 51.0]
+    assert index.layer("roads", area=[100.0, 0.0, 110.0, 10.0], zoom=8)["parts"] == []  # nothing there: none
+    coarse = index.layer("roads", area=[7.0, 49.0, 9.0, 51.0], zoom=2)  # below COARSE_ZOOM: the whole, coarse
+    assert coarse["parts"][0]["lines"]["n"] == 3 and "area" not in coarse
+    assert places(coarse["parts"][0]["lines"])[:2] == [(8.0, 50.0), (8.5, 50.3)]  # 8.2 nearer than 0.25 degrees
+    for wrong in ({"area": [0, 0, 1]}, {"area": ["0", 0, 1, 1]}, {"area": [0, 0, 1, 99]}, {"zoom": 0},
+                  {"zoom": True}):
+        with pytest.raises(ValueError):
+            index.layer("roads", **wrong)
