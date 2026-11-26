@@ -40,6 +40,9 @@ STEP_S = 60.0  # the page is given each place now and STEP_S later, to move it b
 STALE_D = 14.0  # an orbit older than this many days is left out (its place is no longer to be trusted)
 MAX_ROWS = 20_000  # rows read of CelesTrak's CSV (Starlink's some 9,000 in 2026)
 PACKAGES = "packages"  # the data folder's folder the packages downloaded for the globe are unpacked into
+# a removed package's mark in its folder: what this process still holds (Windows keeps a loaded .pyd locked) is
+# deleted when no process here has it loaded, at the next start (sweep); until then it is neither installed nor loaded
+REMOVED = ".removed"
 OMM_FIELDS = ("OBJECT_NAME", "OBJECT_ID", "EPOCH", "MEAN_MOTION", "ECCENTRICITY", "INCLINATION", "RA_OF_ASC_NODE",
               "ARG_OF_PERICENTER", "MEAN_ANOMALY", "EPHEMERIS_TYPE", "CLASSIFICATION_TYPE", "NORAD_CAT_ID",
               "ELEMENT_SET_NO", "REV_AT_EPOCH", "BSTAR", "MEAN_MOTION_DOT", "MEAN_MOTION_DDOT")
@@ -154,12 +157,33 @@ def package_folder(version: str, data_dir=None) -> Path:
 _LOCK = threading.Lock()
 
 
+def loaded_from(folder) -> bool:
+    """Whether the sgp4 loaded in this process is the one in `folder`."""
+    have = sys.modules.get("sgp4")
+    where = os.path.realpath(getattr(have, "__file__", "") or "") if have is not None else ""
+    return bool(where) and where.startswith(os.path.realpath(folder) + os.sep)
+
+
+def installed_at(folder) -> bool:
+    """Whether a whole package is in `folder`: its sgp4/__init__.py there, and the folder not marked removed."""
+    folder = Path(folder)
+    return (folder / "sgp4" / "__init__.py").is_file() and not (folder / REMOVED).exists()
+
+
+def sweep(folder) -> None:
+    """What is left of a removed package (its folder marked REMOVED) deleted, once this process has none of it loaded."""
+    folder = Path(folder)
+    if (folder / REMOVED).exists() and not loaded_from(folder):
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def load_package(folder) -> object:
     """The sgp4 package imported from `folder` (its unpacked wheel) and nowhere else: its `api` and `omm` modules.
-    SkyUnavailable when it is not there, does not import, or an sgp4 from elsewhere is loaded in this process."""
+    SkyUnavailable when it is not there, was removed, does not import, or an sgp4 from elsewhere is loaded in this
+    process."""
     folder = Path(folder)
     init = folder / "sgp4" / "__init__.py"
-    if not init.is_file():
+    if not installed_at(folder):
         raise SkyUnavailable(NEEDS_PACKAGE)
     with _LOCK:
         have = sys.modules.get("sgp4")
@@ -388,6 +412,10 @@ def install_package(package: Package, data_dir=None, *, accept_licence=False, lo
     if accept_licence is not True:
         raise LicenceRefused("The sgp4 package is downloaded only once you accept its licence.")
     into = package_folder(package.version, data_dir)
+    sweep(into)
+    if (into / REMOVED).exists():
+        raise PackageError("the sgp4 package removed earlier is still in use by this process: download it again once "
+                           "the platform has started again")
     downloads = into.parent / ".downloads"
     say = log if callable(log) else (lambda _line: None)
     wheel = download.fetch(package.source, downloads, log=log, cancel=cancel, resume=True, limit=16 << 20,
@@ -405,11 +433,28 @@ def install_package(package: Package, data_dir=None, *, accept_licence=False, lo
 
 
 def remove_package(package: Package, data_dir=None) -> dict:
+    """The package's folder deleted. One this process has loaded (on Windows its .pyd is locked while loaded), or
+    whatever of it cannot be deleted now, is marked REMOVED instead: neither installed nor loaded from then on, and
+    deleted at the next start (sweep). PackageError, in words, when even the mark cannot be made."""
     into = package_folder(package.version, data_dir)
-    if not into.exists():
+    if not into.exists() or (into / REMOVED).exists():
         return {"said": "the sgp4 package is not installed here", "ok": True}
-    shutil.rmtree(into)
-    return {"said": "removed the sgp4 package", "ok": True, "lines": [f"{into} is removed"]}
+    why = "it is loaded by this process" if loaded_from(into) else ""
+    if not why:
+        try:
+            shutil.rmtree(into)
+        except OSError as e:
+            shutil.rmtree(into, ignore_errors=True)
+            why = f"some of its files could not be deleted now ({e.strerror or e})"
+    if not why or not into.exists():
+        return {"said": "removed the sgp4 package", "ok": True, "lines": [f"{into} is removed"]}
+    try:
+        (into / REMOVED).write_text("removed on the user's word; deleted at the next start\n", encoding="utf-8")
+    except OSError as e:
+        raise PackageError(f"the sgp4 package in {into} could not be removed or marked removed: {e}") from None
+    return {"said": "removed the sgp4 package", "ok": True,
+            "lines": ["the satellites are no longer placed with it",
+                      f"{into} is deleted when the platform next starts: {why}"]}
 
 
 def _packed(values, code: str) -> str:
@@ -428,13 +473,15 @@ class SkyView:
     def __init__(self, index, package=None, data_dir=None, sky: Sky | None = None, clock=time.time):
         self.index, self.package, self.data_dir, self.clock = index, Package.of(package), data_dir, clock
         folder = package_folder(self.package.version, data_dir) if self.package else None
+        if folder is not None:
+            sweep(folder)  # what a removal left while it was loaded, deleted now nothing here holds it
         self.sky = sky if sky is not None else Sky(folder, clock=clock)
 
     def sets(self) -> list:
         return [d for d in self.index.datasets if d.format == "omm-csv"]
 
     def installed(self) -> bool:
-        return bool(self.package) and package_folder(self.package.version, self.data_dir).is_dir()
+        return bool(self.package) and installed_at(package_folder(self.package.version, self.data_dir))
 
     def spec(self) -> dict | None:
         """What the globe is told of the sky: {"hook", "every", "needs", "constellations": [{"id", "title", "slot",

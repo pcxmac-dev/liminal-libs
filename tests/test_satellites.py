@@ -248,3 +248,56 @@ def test_the_package_is_downloaded_checked_and_unpacked_on_the_users_word(tmp_pa
     with pytest.raises(ChecksumError):
         S.install_package(bad.package, bad.data_dir, accept_licence=True, opener=opener)
     assert not S.package_folder("2.27", bad.data_dir).exists()
+
+
+# -- the review: a removal on Windows, where a loaded .pyd is locked --------------------------------------------------
+def test_a_removal_that_cannot_delete_every_file_is_marked_and_finished_at_the_next_start(tmp_path, monkeypatch):
+    view, _ = sky_of(tmp_path)
+    into = S.package_folder("2.27", view.data_dir)
+    S.unpack_wheel(io.BytesIO(wheel(PACKAGE)), into)
+    real = S.shutil.rmtree
+    locked = {"on": True}
+
+    def rmtree(path, ignore_errors=False, **more):  # the .py files go, the locked one stays: as Windows does
+        for f in sorted(S.Path(path).rglob("*.py")):
+            if f.name != "api.py" or not locked["on"]:
+                f.unlink()
+        if locked["on"]:
+            if ignore_errors:
+                return None
+            raise PermissionError(13, "Access is denied", str(path / "sgp4" / "api.py"))
+        return real(path, ignore_errors=ignore_errors, **more)
+    monkeypatch.setattr(S.shutil, "rmtree", rmtree)
+    out = S.remove_package(view.package, view.data_dir)
+    assert out["ok"] and "is deleted when the platform next starts" in out["lines"][-1] and "Access is denied" in \
+        out["lines"][-1]
+    assert (into / S.REMOVED).is_file() and not view.installed()
+    assert view.row()[3:] == ["not downloaded", {"form": "world-sky-package", "title": "Download…"}, ""]
+    with pytest.raises(SkyUnavailable, match="Needs the sgp4 package"):
+        S.load_package(into)
+    locked["on"] = False  # the next start: nothing holds it
+    S.SkyView(view.index, view.package, data_dir=view.data_dir)
+    assert not into.exists()
+
+
+def test_a_package_loaded_by_this_process_is_marked_removed_and_never_loaded_again(tmp_path, monkeypatch):
+    for name in [m for m in sys.modules if m == "sgp4" or m.startswith("sgp4.")]:
+        monkeypatch.delitem(sys.modules, name)
+    view, _ = sky_of(tmp_path)
+    into = S.package_folder("2.27", view.data_dir)
+    S.unpack_wheel(io.BytesIO(wheel(PACKAGE)), into)
+    S.load_package(into)
+    assert S.loaded_from(into)
+    out = S.remove_package(view.package, view.data_dir)
+    assert out["ok"] and "it is loaded by this process" in out["lines"][-1]
+    assert (into / "sgp4" / "api.py").is_file() and (into / S.REMOVED).is_file() and not view.installed()
+    with pytest.raises(SkyUnavailable, match="Needs the sgp4 package"):
+        S.load_package(into)
+    with pytest.raises(PackageError, match="still in use by this process"):
+        S.install_package(view.package, view.data_dir, accept_licence=True, opener=lambda *a: None)
+    S.SkyView(view.index, view.package, data_dir=view.data_dir)  # still loaded: left for the next start
+    assert into.exists()
+    for name in [m for m in sys.modules if m == "sgp4" or m.startswith("sgp4.")]:
+        sys.modules.pop(name)  # the stand-in loaded here, gone for good (the start's own sgp4, if any, comes back)
+    S.SkyView(view.index, view.package, data_dir=view.data_dir)  # the next start: swept
+    assert not into.exists()

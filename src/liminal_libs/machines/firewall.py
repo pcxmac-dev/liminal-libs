@@ -1125,9 +1125,10 @@ class Firewall(MachinePlugin):
             raise ValueError("this plugin pins no sgp4 package")
         if not self._at_the_page():
             raise geosources.NotAsked()
-        out = satellites.remove_package(sky.package, sky.data_dir)
-        sky.sky._package = None
-        return out
+        try:
+            return satellites.remove_package(sky.package, sky.data_dir)
+        finally:  # placed with it no more: a folder marked removed is not loaded again (satellites.load_package)
+            sky.sky._package = None
 
     # -- attached, told, detached --------------------------------------------------------------------------------------
     def attach(self, app, login=None) -> dict:
