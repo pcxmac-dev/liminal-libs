@@ -1578,7 +1578,7 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
         False, "dash", "square", "diamond")
     assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "pops", "cables",
                                       "backbones", "lines", "airports", "cities", "fibre", "roads", "railways",
-                                      "models", "probes"]
+                                      "models", "modelcities", "probes"]
     # every layer the library has is one the shared globe lists (its MAX_LAYERS), each on a slot it draws (4 to 7)
     script = Path(infrastructure.__file__).parents[1] / "ui" / "static" / "liminal-globe.js"
     # 1.73.0: ten, the airports and the cities with them; 1.104.0: sixteen, the fibre, the roads and the railways too

@@ -243,7 +243,10 @@ def test_topohubs_model_is_read_into_its_layers_and_the_composite_database(tmp_p
     import sqlite3
     from liminal_libs.machines import composite
     got = parse(TOPOHUB, json.dumps(WORLD).encode())
-    assert [p[2] for p in got["layers"]["pops"]["points"]] == ["London", "Paris"]  # a city alone: no landing point
+    assert [p[2] for p in got["layers"]["modelcities"]["points"]] == ["London", "Paris"]  # a city alone, not a landing
+    assert "pops" not in got["layers"]  # its own layer (the user, 2026-11-26), not the points of presence of 2010-2011
+    entry = next(x for x in infrastructure.LAYERS if x[0] == "modelcities")
+    assert entry[2:6] == ("points", "circle", 6, False) and "no licence stated" in entry[1]
     assert [name for _, name in got["layers"]["models"]["lines"]] == ["London to Paris", "Porthcurno to London"]
     assert got["layers"]["models"]["lines"][1][0] == [(-5.55, 50.12), (-0.13, 51.51)]  # its seacable edge: a model's
     assert "cables" not in got["layers"] and got["dropped"] == {"with no place": 1, "between points not drawn": 1}

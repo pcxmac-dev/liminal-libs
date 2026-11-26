@@ -103,9 +103,12 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
     ("fibre", "Fibre on land", "lines", "line", 7, True, 4.0),
     ("roads", "Major roads (a stand-in for fibre)", "lines", "dash", 5, False, 7.0),
     ("railways", "Railways (a stand-in for fibre)", "lines", "dash", 4, False, 7.0),
-    # 1.104.0 (items 28 and 29): TopoHub's model of the world's backbones (its cities go to the points of presence),
+    # 1.104.0 (items 28 and 29): TopoHub's model of the world's backbones and its cities, a layer of their own (the
+    # user, 2026-11-26: not the points of presence of about 2010-2011; its data states no licence, as its title says),
     # and the places RIPE Atlas measures from
     ("models", "Backbone model (TopoHub)", "lines", "line", 6, False, 5.0),
+    ("modelcities", "Backbone model's cities (TopoHub; no licence stated for its data)", "points", "circle", 6, False,
+     5.0),
     ("probes", "RIPE Atlas probes and anchors", "points", "circle", 5, False, 6.0))
 LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
@@ -1234,9 +1237,9 @@ def _place_key(name: str, lat: float, lon: float) -> str:
 
 def _topohub(doc, kept: _Kept, host: str, free: bool) -> None:
     """TopoHub's model of the backbones (1.104.0, item 28: networkx node-link JSON, each node's `pos` [longitude,
-    latitude]): each City a point of pops, each edge a line of models from the end further west (its seacable edges
-    too: a model's links are no cable routes), and for the composite database each city a place and each edge a link
-    ({"a", "b", "km", "type", "source": "topohub"}). A node without a place is left out, and its edges with it."""
+    latitude]): each City a point of modelcities, each edge a line of models from the end further west (its seacable
+    edges too: a model's links are no cable routes), and for the composite database each city a place and each edge a
+    link ({"a", "b", "km", "type", "source": "topohub"}). A node without a place is left out, and its edges with it."""
     nodes = doc.get("nodes") if isinstance(doc, Mapping) else None
     edges = (doc.get("links") if isinstance(doc.get("links"), list) else doc.get("edges")) \
         if isinstance(doc, Mapping) else None
@@ -1252,7 +1255,7 @@ def _topohub(doc, kept: _Kept, host: str, free: bool) -> None:
         kind = _name(node.get("type"))
         placed[node.get("id")] = (lon, lat, name)
         if kind.lower() == "city":
-            kept.point("pops", lon, lat, name, "TopoHub's model")
+            kept.point("modelcities", lon, lat, name, "TopoHub's model")
             places.append((_place_key(name, lat, lon), {"lat": round(lat, 4), "lon": round(lon, 4), "label": name,
                                                         "type": kind}))
     for edge in edges:
