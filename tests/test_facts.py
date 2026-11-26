@@ -122,6 +122,48 @@ def test_the_internet_is_read_again_past_its_time_and_its_readings_kept():
     assert Count.n == 2 and [s for _t, s in r._readings] == ["yes", "yes"]
 
 
+def test_quick_fresh_reads_keep_a_confirmed_no_until_a_reading_that_is_not_no_m9(monkeypatch):
+    now, level = [0.0], [0x40]
+
+    class Net(facts.Reader):
+        def _read(self, group):
+            return {"nlm": level[0], "probing": True, "proxy": "", "sunk": "", "why": ""}
+
+    monkeypatch.setattr(facts, "system", lambda: "windows")
+    r = Net(clock=lambda: now[0], wall=lambda: now[0])
+
+    def judged():
+        return needs.internet_now({"internet": {"state": r._readings[-1][1], "readings": list(r._readings)}})[0]
+
+    r._group("internet", True)
+    level[0] = 0  # off line: no IPv4 nor IPv6 internet
+    now[0] = 10.0
+    r._group("internet", True)
+    assert judged() == "yes"  # one reading says no: judged as before
+    now[0] = 10.0 + needs.INTERNET_APART_S
+    r._group("internet", True)
+    assert judged() == "no"
+    for k in range(1, 7):  # "Read again" pressed six times within seconds
+        now[0] = 25.0 + k
+        r._group("internet", True)
+        assert judged() == "no", r._readings
+        assert len(r._readings) <= facts.READINGS
+    level[0] = 0x40
+    now[0] = 40.0
+    r._group("internet", True)
+    assert judged() == "yes"  # back at the first reading that is not no
+
+
+def test_the_readings_kept_hold_the_current_runs_first_m9():
+    keep = facts.keep_readings
+    assert keep([[0, "yes"], [1, "no"]]) == [[0, "yes"], [1, "no"]]
+    six = [[0, "yes"], [10, "no"], [25, "no"], [26, "no"], [27, "no"], [28, "no"]]
+    assert keep(six) == [[0, "yes"], [10, "no"], [27, "no"], [28, "no"]]
+    assert keep([[t, "no"] for t in range(6)]) == [[0, "no"], [3, "no"], [4, "no"], [5, "no"]]
+    turned = [[0, "no"], [20, "no"], [21, "no"], [22, "no"], [23, "yes"], [24, "yes"]]
+    assert keep(turned) == turned[-facts.READINGS:]
+
+
 def test_an_import_without_the_windows_modules_m8(monkeypatch):
     import ctypes
 

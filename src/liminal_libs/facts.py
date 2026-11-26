@@ -738,6 +738,21 @@ def _iso(at: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
 
 
+def keep_readings(readings: list) -> list:
+    """The internet's readings kept, READINGS at most (M9): the last ones, but where the current run of one state
+    began before them its first reading (and the one before it) are kept in place of the oldest, so quick reads ("Read
+    again") never push a confirmed "no" out of the window: it stays until a reading that is not "no" arrives."""
+    if len(readings) <= READINGS:
+        return readings
+    i = len(readings) - 1
+    while i > 0 and readings[i - 1][1] == readings[-1][1]:
+        i -= 1
+    if i >= len(readings) - READINGS:
+        return readings[-READINGS:]
+    head = readings[max(i - 1, 0):i + 1]  # the reading before the run, if any, and the run's first
+    return [*head, *readings[-(READINGS - len(head)):]]
+
+
 class Reader:
     """This machine's facts, read when first wanted and kept (the module's words say how long)."""
 
@@ -816,7 +831,7 @@ class Reader:
             files.update((piece or {}).get("routes") or {})
             state = parse_linux(files, dict(os.environ), os.uname().machine if hasattr(os, "uname") else "",
                                 nmcli=(piece or {}).get("nmcli"))["internet"]["state"]
-        self._readings = [*self._readings, [self.wall(), state]][-READINGS:]
+        self._readings = keep_readings([*self._readings, [self.wall(), state]])
 
     def begin_features(self, names) -> None:
         """Windows' features named, read in a daemon thread (the slow read, about 0.7 s), one read in flight; a name

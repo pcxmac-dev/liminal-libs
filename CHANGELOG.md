@@ -63,6 +63,10 @@ but for one rename (below); the plugin API stays 2.4, and an older library reads
   `PLATFORM_NEEDS`, `needs(kind)` and `attach_needs()` still work for this release (the charts and the integrator set
   the old attribute); the nearest class of its line says which name is read. `attach_kinds` leaves out a plugin
   whose required needs are unmet here (item 38: never started), a failed judgement hiding nothing.
+- **After the review: a confirmed no stays no.** The internet's readings were kept by count (four), so four quick
+  reads again (`?fresh=1`) within seconds pushed a confirmed no out of the window and brought an offline plugin back
+  as unknown; `facts.keep_readings` keeps the current run's first reading (and the one before it) in place of the
+  oldest, so a no stays no until a reading that is not no arrives.
 - **Tests**: every test's facts are a recorded machine's (conftest's autouse `stand_in_facts`: this-pc). New:
   test_needs.py (with the rows of codex-cli, lmdeploy, mcp and pi, which declared NEEDS before this module, held as
   written), test_facts.py, test_needs_machines.py, test_ui_needs.py, test_needs_contract.py, test_needs_frame.py.
