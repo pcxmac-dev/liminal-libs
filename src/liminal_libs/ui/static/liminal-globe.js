@@ -1122,6 +1122,10 @@
     let load = typeof opts.load === 'function' ? opts.load : null;  // the page's way to a layer's geometry, or none
     let skyLoad = typeof opts.sky === 'function' ? opts.sky : null;  // 1.104.0: the page's way to the satellites
     let sky = null, skyAsked = 0, skyTimer = 0;  // their places as last answered, when they were asked, the tick
+    // 1.105.0 (Monday list item 31): the page told of what a click, a tap or Enter picks (a place, home, a router, a
+    // layer's feature), to tell it in full in its right-hand menu, and of null when that is let go; a hover never picks
+    let onPick = typeof opts.onPick === 'function' ? opts.onPick : null;
+    let pinned = '';  // the key of what was last told picked, '' for none
     let storeName = typeof opts.key === 'string' ? text(opts.key, 200) : '';  // what the switches are remembered under
     let chosen = recall(storeName);  // a layer's id -> switched on or off here; a layer not in it is as its spec says
     let layersShown = null, layersKey = '';  // the layers drawn now and what tells them apart: made again when null
@@ -2207,12 +2211,27 @@
     }
     function fillTip(p) {
       tip.replaceChildren();
-      const line = (cls, words) => {
+      tipLines(p, (cls, words, kind) => {
+        if (cls === 'lg-tip-row') {  // the value first, what it is after it
+          const row = document.createElement('div');
+          row.className = 'lg-tip-row';
+          const b = document.createElement('b');
+          b.textContent = words[0];
+          const s = document.createElement('span');
+          s.textContent = words[1];
+          row.append(keyOf(kind), b, s);
+          tip.appendChild(row);
+          return;
+        }
         const d = document.createElement('div');
         if (cls) d.className = cls;
         d.textContent = words;
         tip.appendChild(d);
-      };
+      });
+    }
+    // The words a tooltip says of what it is about, one line(cls, words, kind) at a time: the tooltip draws them, and a
+    // pick (1.105.0) tells the same in full (pickOf).
+    function tipLines(p, line) {
       if (p.home) {
         line('lg-tip-head', 'This machine');
         if (data.home && data.home.label) line('lg-tip-sub', data.home.label);
@@ -2225,14 +2244,7 @@
       line('lg-tip-head', nameOf(o));
       const where = whereOf(o);
       if (where && where !== nameOf(o)) line('lg-tip-sub', where);
-      const row = document.createElement('div');  // the value first, what it is after it
-      row.className = 'lg-tip-row';
-      const b = document.createElement('b');
-      b.textContent = many(o.count, k.noun);
-      const s = document.createElement('span');
-      s.textContent = k.tip;
-      row.append(keyOf(o.kind), b, s);
-      tip.appendChild(row);
+      line('lg-tip-row', [many(o.count, k.noun), k.tip], o.kind);
       if (o.hosts != null) line('', many(o.hosts, 'host'));
       if (o.seconds != null) line('', `connected ${duration(o.seconds)}`);
       if (o.bytes) line('', bytes(o.bytes));
@@ -2310,6 +2322,58 @@
       anchor = key;
       placeTip(x, y, true);
     }
+    // What a pick is (1.105.0): its kind and key, and what it tells in full, the tooltip's words in a spec as
+    // side.js takes it ({key, title, sub, facts, lines}); null for nothing.
+    function keyOfPick(p) {
+      if (!p) return '';
+      if (p.home) return 'globe:home';
+      if (p.o) return `globe:place:${p.o.id}`;
+      if (p.h) return `globe:hop:${p.h.addresses[0] || p.h.label || ''}`;
+      if (p.f) {
+        const src = p.f.line == null ? p.f.geo.points : p.f.geo.lines, i = p.f.line == null ? p.f.first[0] : p.f.line;
+        return `globe:feature:${p.f.l.id}:${p.f.n === 1 ? src.names[i] || i : `${p.f.n}@${src.names[i] || i}`}`;
+      }
+      return '';
+    }
+    function pickOf(p) {
+      if (!p) return null;
+      const spec = { key: keyOfPick(p), title: '', sub: '', facts: [], lines: [] };
+      tipLines(p, (cls, words) => {
+        const w = Array.isArray(words) ? words.join(' ') : String(words || '');
+        if (cls === 'lg-tip-head' && !spec.title) spec.title = w;
+        else if (cls === 'lg-tip-sub' && !spec.sub && !spec.lines.length) spec.sub = w;
+        else if (w) spec.lines.push(w);
+      });
+      if (p.o) {
+        const o = p.o;
+        spec.kind = 'place';
+        spec.id = o.id;
+        spec.facts = [['Country', o.country], ['City', o.city], ['Network', networkOf(o)], ['Kind', KINDS[o.kind] ? KINDS[o.kind].tip : o.kind],
+          ['Connections', many(o.count, 'connection')], ['Bytes', o.bytes ? bytes(o.bytes) : ''], ['Ports', o.ports.length ? portsOf(o.ports) : ''],
+          ['Hosts', o.hosts != null ? many(o.hosts, 'host') : ''], ['Programs', o.programs.join(', ')],
+          ['Connected', o.seconds != null ? duration(o.seconds) : ''],
+          ['Where', Number.isFinite(o.lat) && Number.isFinite(o.lon) ? `${o.lat.toFixed(2)}, ${o.lon.toFixed(2)}` : '']]
+          .filter(([, v]) => v);
+      } else spec.kind = p.home ? 'home' : p.h ? 'hop' : 'feature';
+      return spec;
+    }
+    function tellPick(p) {  // a click, a tap or Enter: the page told, once for each change
+      const key = keyOfPick(p);
+      if (!onPick || key === pinned) return;
+      pinned = key;
+      try { onPick(p ? pickOf(p) : null); } catch (e) { /* the page's own */ }
+    }
+    // The pick told anew from the spec drawn now (the page asks it after each answer): null when it is not there now
+    function describeKey(key) {
+      if (!key) return null;
+      if (key === 'globe:home') return data.home ? pickOf({ home: true }) : null;
+      const o = data.origins.find((x) => `globe:place:${x.id}` === key);
+      if (o) return pickOf({ o });
+      const h = (data.hops || []).find((x) => `globe:hop:${x.addresses[0] || x.label || ''}` === key);
+      if (h) return pickOf({ h });
+      return pick && keyOfPick(pick) === key ? pickOf(pick) : null;
+    }
+
     function setPick(p) {
       const was = pick;
       pick = p;
@@ -2750,9 +2814,11 @@
       if (hit && hit.home) {  // as globe.js's sun: a click or a tap on home goes back home (a finger's shows its words too)
         if (finger) setPick({ home: true, by: 'finger' });
         home();
+        tellPick({ home: true });
         return;
       }
       if (finger) setPick(hit ? { ...hit, by: 'finger' } : null);  // its words stay until the next tap; a mouse's hover showed them
+      tellPick(hit);  // 1.105.0: told in full in the page's right-hand menu; a click on nothing lets it go
     });
     // The keyboard: the arrows step through the places (the busiest first), turning the globe to each and showing its
     // words, which a screen reader says; + and − zoom; Home goes back home; Escape puts the words away.
@@ -2771,7 +2837,8 @@
       } else if (e.key === '+' || e.key === '=') { zoomBy(1.6); sayZoom(); }
       else if (e.key === '-' || e.key === '_') { zoomBy(1 / 1.6); sayZoom(); }
       else if (e.key === 'Home') { setPick(null); home(); say('Back to this machine, the whole globe'); }
-      else if (e.key === 'Escape' && pick) setPick(null);
+      else if (e.key === 'Escape' && (pick || pinned)) { setPick(null); tellPick(null); }
+      else if (e.key === 'Enter' && pick) tellPick(pick);  // 1.105.0: the place stepped to, told in full
       else return;
       e.preventDefault();
     });
@@ -2838,6 +2905,7 @@
       if (more && more.theme !== undefined && more.theme !== theme) { theme = more.theme; recolour(); }
       if (more && typeof more.load === 'function') load = more.load;
       if (more && typeof more.sky === 'function') skyLoad = more.sky;  // 1.104.0
+      if (more && typeof more.onPick === 'function') onPick = more.onPick;
       if (more && typeof more.key === 'string' && text(more.key, 200) !== storeName) {  // the switches kept elsewhere
         storeName = text(more.key, 200);
         chosen = recall(storeName);
@@ -2908,7 +2976,8 @@
       }
     }
 
-    const handle = { update: (next) => update(next), destroy };
+    const handle = { update: (next) => update(next), destroy, describe: (key) => (destroyed ? null : describeKey(key)),
+      unpick: () => { pinned = ''; } };  // 1.105.0: the page let the pick go itself (a row of its table picked instead)
     const self = {
       handle, root, update, destroy,
       mapArrived() { changed(); },
@@ -3000,8 +3069,10 @@
 
   const instances = new WeakMap();  // an element -> the globe drawn in it
 
-  // LiminalGlobe.draw(el, spec, {theme, load, key}) -> {update(spec), destroy()}. Drawn into the same element again, it
-  // is the same globe updated in place (its view, zoom and words kept), and the same handle comes back.
+  // LiminalGlobe.draw(el, spec, {theme, load, key, onPick}) -> {update(spec), destroy(), describe(key), unpick()}. Drawn
+  // into the same element again, it is the same globe updated in place (its view, zoom and words kept), and the same
+  // handle comes back. onPick(spec) (1.105.0): what a click, a tap or Enter picked, as side.js tells it ({key, kind, title,
+  // sub, facts, lines}), or null when it is let go; describe(key) tells a pick anew from the spec drawn now.
   function draw(el, spec, opts) {
     if (!el || el.nodeType !== 1) {
       throw new TypeError('LiminalGlobe.draw(el, spec, {theme, load, key}): el is the element to draw in');
@@ -3019,5 +3090,8 @@
     return g.handle;
   }
 
-  window.LiminalGlobe = { draw, decodeTopo };
+  // A pick as side.js tells it (1.105.0): the spec onPick gave, as it is (a page drawing its side without side.js)
+  const describe = (item) => (item && typeof item === 'object' ? { ...item } : null);
+
+  window.LiminalGlobe = { draw, decodeTopo, describe };
 })();

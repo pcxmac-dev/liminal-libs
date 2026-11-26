@@ -83,6 +83,9 @@ CHART_PORTS = 4  # the busiest ports here charted
 MAX_DRAWN = 300  # places drawn on the globe: the most connections first, the rest summed as "more"
 ORIGIN_ROWS = 50  # places in the places' table
 PORT_ROWS = 25  # ports in the busiest ports' table
+PICK_PLACES = 5  # the places a port picked tells (1.105.0)
+PICK_PORTS = 16  # the ports a place picked tells
+PICK_HOSTS = 8  # the hosts and the programs a place picked tells, where the hosts view has them
 REMOTE_ROWS = 15  # ports in the ports elsewhere's table
 # each socket operation of the GeoIP download waits this long at most (less once less is left): the whole install, its
 # fetches with their connections, TLS, headers and redirects included, keeps one deadline, geo.INSTALL_S
@@ -992,6 +995,78 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
 
 
+def _share(part, whole, said: str = "") -> str:
+    """A count (or `said` for it) and its share of the whole, in words: "1,204 (12%)"; the count alone with no whole."""
+    part, whole = int(part or 0), int(whole or 0)
+    said = said or f"{part:,}"
+    if whole <= 0 or part <= 0:
+        return said
+    pct = 100.0 * part / whole
+    return f"{said} ({pct:.0f}%)" if pct >= 1 else f"{said} (under 1%)"
+
+
+def _port_detail(r: dict, side: str, totals: dict, origins) -> dict:
+    """A port of the ports' tables, picked (1.105.0, Monday list item 31: told in full in the right-hand menu): its
+    protocol and number, the service this system's services file names for it, what was counted on it with each
+    count's share of the whole, and the places it talked with, the most connections first."""
+    from ..apps.tabs import detail
+    from ..sockets import service_name
+
+    port, proto = r["port"], r["proto"]
+    t = {k: int(totals.get(k, 0) or 0) for k in traffic.COUNTS + ("in_packets", "out_packets")}
+    counted = [("In", _share(r.get("in_bytes", 0), t["in_bytes"], size_words(r.get("in_bytes", 0)))),
+               ("Out", _share(r.get("out_bytes", 0), t["out_bytes"], size_words(r.get("out_bytes", 0)))),
+               ("Packets", _share(r.get("packets", 0), t["in_packets"] + t["out_packets"]))]
+    if side == "here":
+        counted += [("New connections", _share(r.get("new_in", 0), t["new_in"])),
+                    ("Unanswered", _share(int(r.get("unanswered", 0)) + int(r.get("unanswered_udp", 0)),
+                                          t["unanswered"] + t["unanswered_udp"]))]
+    else:
+        counted.append(("New connections", _share(r.get("new_out", 0), t["new_out"])))
+    with_it = sorted((o for o in origins or () if isinstance(o, dict) and port in (o.get("ports") or ())),
+                     key=lambda o: (-int(o.get("count", 0)), -int(o.get("bytes", 0))))
+    places = [(", ".join(x for x in (o.get("city"), o.get("country")) if x) or str(o.get("id", "")),
+               f"{int(o.get('count', 0)):,} · {size_words(o.get('bytes', 0))} · {KIND_WORDS.get(o.get('kind'), '')}")
+              for o in with_it[:PICK_PLACES]]
+    where = ("this machine's port, reached by others" if side == "here"
+             else "the far end's port of the connections this machine started")
+    return detail(f"{port}/{proto}", [("Protocol", str(proto).upper()), ("Port", str(port)),
+                                      ("Service", service_name(port, proto))],
+                  sub=where, sections=[("Counted while the tab was shown", counted),
+                                       (f"Places it talked with ({len(with_it):,})", places)],
+                  note="" if with_it else "No place drawn on the globe used this port.")
+
+
+def _place_detail(o: dict, mark: dict | None) -> dict:
+    """A place of the places' table, picked (1.105.0): where it is, its network, what was counted with it, the ports
+    it used, and where the hosts view has them its hosts and programs, with the places' credit."""
+    from ..apps.tabs import detail
+
+    where = ", ".join(x for x in (o.get("city"), o.get("country")) if x) or str(o.get("id", ""))
+    lat, lon = o.get("lat"), o.get("lon")
+    placed = isinstance(lat, (int, float)) and isinstance(lon, (int, float))
+    facts = [("Network", str(o.get("id", ""))), ("ASN", f"AS{o['asn']}" if o.get("asn") else ""),
+             ("Operator", o.get("org", "")), ("Country", o.get("country", "")), ("City", o.get("city", "")),
+             ("Where", f"{lat:.2f}, {lon:.2f}" if placed else "not placed"),
+             ("Kind", KIND_WORDS.get(o.get("kind"), "")), ("Connections", f"{int(o.get('count', 0)):,}"),
+             ("Bytes", size_words(o.get("bytes", 0))),
+             ("Not judged", f"{int(o['unjudged']):,}" if o.get("unjudged") else "")]
+    sections = [("Connections started, by kind",
+                 [(KIND_WORDS.get(k, str(k)), f"{int(n):,}") for k, n in (o.get("starts") or {}).items() if n]),
+                ("Its ports", [("Ports", ", ".join(str(p) for p in list(o.get("ports") or ())[:PICK_PORTS]))])]
+    hosts = [h for h in (o.get("hosts") or ()) if isinstance(h, (str, dict))][:PICK_HOSTS]
+    if hosts:
+        sections.append(("Its hosts", [(str(h.get("host", "")), str(h.get("name", "") or "–")) if isinstance(h, dict)
+                                       else (h, "–") for h in hosts]))
+    programs = [p for p in (o.get("programs") or ()) if isinstance(p, (str, dict))][:PICK_HOSTS]
+    if programs:
+        sections.append(("Its programs", [("Program", str(p.get("program", "")) if isinstance(p, dict) else p)
+                                          for p in programs]))
+    credit = ", ".join(x for x in ((mark or {}).get("text"), (mark or {}).get("url")) if x)
+    return detail(where, facts, sub=str(o.get("label", "") or ""), sections=sections,
+                  note=f"Places: {credit}." if credit else "")
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n:,} {word}{'' if n == 1 else 's'}"
 
@@ -1606,7 +1681,7 @@ class WorldView:
             note += " Not read from the plugin: " + "; ".join(self.refused) + "."
         if elsewhere:
             note += f" {elsewhere}. Each system's platform downloads its own."
-        table = {"title": SOURCES_TITLE, "note": note,
+        table = {"title": SOURCES_TITLE, "note": note, "pick": False,  # its rows are buttons (1.105.0)
                  "columns": [{"title": "Source"}, {"title": "Gives"}, {"title": "Licence"}, {"title": "Key"},
                              {"title": "Here"}, {"title": ""}, {"title": ""}, {"title": ""}],
                  "rows": rows, "empty": "This plugin names no GeoIP source."}
@@ -2046,8 +2121,8 @@ class WorldView:
                  "note": " ".join(globe_notes), "more": more}
 
         out = {"title": TITLE, "note": self._note(status, snap), "globe": globe,
-               "tables": [self._ports_table(snap), self._origins_table(origins, local, more, mark),
-                          self._remote_table(snap)],
+               "tables": [self._ports_table(snap, origins), self._origins_table(origins, local, more, mark),
+                          self._remote_table(snap, origins)],
                "watching": {"running": bool(status["running"]), "address": self.address, "timeout": self.timeout,
                             "packets": int(status["packets"]), "error": self.error or status["error"],
                             "since": _iso(snap["since"]) if snap.get("since") else None}}
@@ -2128,9 +2203,10 @@ class WorldView:
                 "starts": dict(starts), "unjudged": int(g.get("unjudged", 0) or 0), "family": g.get("family")}
 
     @staticmethod
-    def _ports_table(snap: dict) -> dict:
+    def _ports_table(snap: dict, origins: list = ()) -> dict:
         rows = [[f"{r['port']}/{r['proto']}", size_words(r["in_bytes"]), size_words(r["out_bytes"]), f"{r['packets']:,}",
                  f"{r['new_in']:,}", f"{r['unanswered'] + r['unanswered_udp']:,}"] for r in snap["ports"][:PORT_ROWS]]
+        details = [_port_detail(r, "here", snap.get("totals") or {}, origins) for r in snap["ports"][:PORT_ROWS]]
         left = snap["ports"][PORT_ROWS:]
         others = [snap["other"]["ports"]] if snap["evicted"]["ports"] else []
         folded = int(snap["evicted"]["ports"]) + len(left)
@@ -2140,7 +2216,8 @@ class WorldView:
                          size_words(sum(t["out_bytes"] for t in tally)), f"{sum(t['packets'] for t in tally):,}",
                          f"{sum(t['new_in'] for t in tally):,}",
                          f"{sum(t['unanswered'] + t['unanswered_udp'] for t in tally):,}"])
-        return {"title": "Busiest ports here",
+            details.append(None)
+        return {"title": "Busiest ports here", "details": details,
                 "note": ("This machine's ports that others reached, the most bytes first. A connection this machine started "
                          "is counted at the far end's port, under Ports elsewhere. An attempt is unanswered when nothing "
                          "came back within 3 s."),
@@ -2150,10 +2227,12 @@ class WorldView:
                 "rows": rows, "empty": "No port here has been reached while this tab was shown."}
 
     @staticmethod
-    def _remote_table(snap: dict) -> dict:
+    def _remote_table(snap: dict, origins: list = ()) -> dict:
         rows = [[f"{r['port']}/{r['proto']}", size_words(r["in_bytes"]), size_words(r["out_bytes"]), f"{r['packets']:,}",
                  f"{r['new_out']:,}"] for r in snap["remote_ports"][:REMOTE_ROWS]]
-        return {"title": "Ports elsewhere",
+        details = [_port_detail(r, "elsewhere", snap.get("totals") or {}, origins)
+                   for r in snap["remote_ports"][:REMOTE_ROWS]]
+        return {"title": "Ports elsewhere", "details": details,
                 "note": "The far end's port of the connections this machine started (443 for the web), the most bytes first.",
                 "columns": [{"title": "Port"}, {"title": "In", "num": True}, {"title": "Out", "num": True},
                             {"title": "Packets", "num": True}, {"title": "New connections", "num": True}],
@@ -2170,6 +2249,7 @@ class WorldView:
 
         rows = [[o["country"] or "–", o["city"] or "–", network(o), f"{o['count']:,}", size_words(o["bytes"]),
                  KIND_WORDS[o["kind"]]] for o in origins[:ORIGIN_ROWS]]
+        details = [_place_detail(o, mark) for o in origins[:ORIGIN_ROWS]]
         if len(origins) > ORIGIN_ROWS:
             left = origins[ORIGIN_ROWS:]
             rows.append(["–", "–", {"text": _plural(len(left), "more place"), "sub": "drawn on the globe"},
@@ -2180,10 +2260,11 @@ class WorldView:
         if local["places"] or local["packets"]:
             rows.append(["–", "–", {"text": "the local network", "sub": "never placed"}, f"{local['count']:,}",
                          size_words(local["bytes"]), "local"])
+        details += [None] * (len(rows) - len(details))  # the rows folded and the local network: told by their cells
         whose = ""
         if mark:
             whose = " Places: " + ", ".join(x for x in (mark.get("text"), mark.get("url")) if x) + "."
-        return {"title": "Places",
+        return {"title": "Places", "details": details,
                 "note": ("Where traffic came from and went to, by network (an IPv4 /24, an IPv6 /48), the most connections "
                          "first: the count is the connections started while this tab was shown (the attempts, when "
                          "unanswered; one not judged when watching paused before its answer could come)." + whose),

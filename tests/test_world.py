@@ -292,6 +292,23 @@ def test_the_page_places_each_network_by_its_kind_and_sums_the_local_network_apa
     assert places["rows"][-1] == ["–", "–", {"text": "the local network", "sub": "never placed"}, "2", "300 B", "local"]
     assert "IP Geolocation by DB-IP, https://db-ip.com" in places["note"]  # wherever places are
     assert [r[0] for r in there["rows"]] == ["443/tcp", "53/udp", "5353/udp"]
+    # 1.105.0 (Monday list item 31): each row picked is told in full, its facts matching its row
+    for table in (here, places, there):
+        assert len(table["details"]) == len(table["rows"])
+    port = here["details"][0]
+    assert port["title"] == "8765/tcp" and ["Port", "8765"] in port["facts"] and ["Protocol", "TCP"] in port["facts"]
+    counted = dict(port["sections"][0]["facts"])
+    assert counted["In"].startswith("640 B (") and counted["Out"].startswith("1.5 KB (") and counted["New connections"].startswith("1 (")
+    assert port["sections"][1]["title"] == "Places it talked with (1)"
+    assert port["sections"][1]["facts"][0][0] == "London, United Kingdom"
+    assert here["details"][2]["sections"][1]["facts"][0][0] == "Changchun, China"  # 3389's two unanswered attempts
+    assert there["details"][0]["title"] == "443/tcp" and "far end's port" in there["details"][0]["sub"]
+    london = places["details"][2]
+    assert london["title"] == "London, United Kingdom" and ["Network", "81.2.69.0/24"] in london["facts"]
+    assert ["Where", "51.51, -0.09"] in london["facts"] and ["Ports", "8765"] in london["sections"][1]["facts"]
+    assert "IP Geolocation by DB-IP" in london["note"]
+    assert places["details"][-1] is None  # the local network: told by its cells
+    assert json.loads(json.dumps([here["details"], places["details"]], allow_nan=False))  # plain data
     assert "charts" not in page  # they begin with the second sample
     assert "forms" not in page and "actions" not in page  # this month's GeoIP file is installed
     assert page["watching"]["running"] is False and page["watching"]["since"] == "1970-01-01T00:00:10+00:00"

@@ -1196,7 +1196,9 @@ class NetstatView:
             m["connections"] += h["connections"] or 0
             m["seconds"] += h["seconds"] or 0.0
             m["first"], m["last"] = min(m["first"], h["first"]), max(m["last"], h["last"])
-        rows = []
+        from ..apps.tabs import detail
+
+        rows, details = [], []
         for m in merged.values():
             if m["network"] != hostbook.INTERNET:
                 place = "local network"
@@ -1206,6 +1208,15 @@ class NetstatView:
             rows.append([{"text": m["host"], "sub": m["name"]} if m["name"] else m["host"], m["program"], place, ports_,
                          f"{m['connections']:,}", _lasted(m["seconds"]), _when(m["first"], wall) or "–",
                          _when(m["last"], wall) or "–"])
+            # 1.105.0 (Monday list item 31): the host picked, told in full in the right-hand menu
+            details.append(detail(m["host"], [
+                ("Name", m.get("name") or ""), ("Program", m.get("program") or ""), ("Its path", m.get("path") or ""),
+                ("Place", place), ("Network", m.get("network") or ""),
+                ("ASN", f"AS{m['asn']}" if m.get("asn") else ""), ("Operator", m.get("org") or ""),
+                ("Connections", f"{m['connections']:,}"), ("Connected", _lasted(m["seconds"])),
+                ("First seen", _when(m["first"], wall) or ""), ("Last seen", _when(m["last"], wall) or "")],
+                sections=[("Its ports", [(f"{port}/{proto}", "in" if d == "in" else "out")
+                                         for port, proto, d in sorted(m["ports"])])]))
         filtered = any((c.program, c.port, c.direction, c.within))
         empty = "No host recorded passes the filters." if filtered else "No host is recorded yet."
         return {"title": "Hosts", "note": ("The hosts recorded that pass the filters, the last seen first: each with "
@@ -1214,7 +1225,7 @@ class NetstatView:
                 "columns": [{"title": "Host"}, {"title": "Program"}, {"title": "Place"}, {"title": "Ports"},
                             {"title": "Connections", "num": True}, {"title": "Connected"}, {"title": "First seen"},
                             {"title": "Last seen"}],
-                "rows": rows, "empty": empty}
+                "rows": rows, "details": details, "empty": empty}
 
     # -- the layers and their data sets -------------------------------------------------------------------------------
     def layer(self, layer_id, area=None, zoom=None) -> dict:

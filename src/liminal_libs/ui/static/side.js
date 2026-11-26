@@ -145,6 +145,7 @@
       if (!sec) continue;
       parts.push(`${sec.title ? `<h4>${esc(words(sec.title))}</h4>` : ''}${factsHtml(sec.facts)}${sec.words ? `<p class="small">${esc(words(sec.words))}</p>` : ''}`);
     }
+    for (const l of [].concat(s.lines || []).slice(0, MAX_FACTS)) if (l) parts.push(`<p class="small side-line">${esc(words(l))}</p>`);
     if (s.note) parts.push(`<p class="muted small side-note">${esc(words(s.note))}</p>`);
     return parts.join('');
   }

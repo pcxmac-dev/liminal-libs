@@ -339,6 +339,11 @@ def test_a_host_traced_before_has_its_kept_routes_read_back_not_traced_or_saved_
     assert "read back" in table["note"]
     hops = next(t for t in page["tables"] if t["title"] == routes_module.HOPS_TITLE)
     assert [row[2] if isinstance(row[2], str) else row[2]["text"] for row in hops["rows"]] == ["62.0.0.1", "*", target]
+    # 1.105.0: each router picked is told in full; a hop that did not answer says so
+    assert len(hops["details"]) == len(hops["rows"])
+    assert hops["details"][0]["title"] == "62.0.0.1" and ["On the route to", target] in hops["details"][0]["facts"]
+    assert hops["details"][0]["sections"][0]["title"] == "Its place"
+    assert hops["details"][1]["title"] == f"Hop 2 to {target}" and ["Answered", "no"] in hops["details"][1]["facts"]
     r.want([target, "81.2.69.160"])
     r.onto(page, Geo({}), [])  # the connection closed: kept already, never saved again
     assert reads == [[target, "81.2.69.160"]] and saved == [] and asked == []

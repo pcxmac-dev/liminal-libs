@@ -73,13 +73,13 @@ def _body(js: str, head: str) -> str:
 def test_one_global_draws_a_globe_and_hands_back_update_and_destroy(js):
     """The design's API: LiminalGlobe.draw(el, spec, {theme}) -> {update(spec), destroy()}; drawn into the same element
     again, the same globe is updated in place and the same handle comes back."""
-    assert js.rstrip().endswith("window.LiminalGlobe = { draw, decodeTopo };\n})();".rstrip())
+    assert js.rstrip().endswith("window.LiminalGlobe = { draw, decodeTopo, describe };\n})();".rstrip())
     assert js.count("window.LiminalGlobe") == 1 and "window.Globe" not in js  # the charts app's own global stays its own
     draw = _body(js, "function draw(el, spec, opts) {")
     assert "throw new TypeError(" in draw  # no element, no globe
     assert "there.update(spec, opts || {});" in draw and "return there.handle;" in draw and "return g.handle;" in draw
     assert "if (g.left()) g.destroy();" in draw  # a globe whose element left the page goes with the next draw
-    assert "const handle = { update: (next) => update(next), destroy };" in js
+    assert "const handle = { update: (next) => update(next), destroy, describe: (key) =>" in js
     destroy = _body(js, "function destroy() {")
     for gone in ("cancelAnimationFrame(raf)", "seenBy.disconnect()", "sized.disconnect()", "themed.disconnect()",
                  "unlisten(motion, onMotion)", "unlisten(scheme, recolour)", "unlisten(dpr, onRatio)",
@@ -1642,7 +1642,8 @@ def test_the_routers_places_the_routes_bend_at_are_drawn_named_and_told_on_hover
     assert "if (!best && data.heat) {" in hit and "best = { h }; bestD = d;" in hit
     tip = _body(js, "function hopTip(h, line) {")
     assert "a router on the way" in tip and "placed by the GeoIP file on this machine" in tip
-    assert "if (p.h) { hopTip(p.h, line); return; }" in _body(js, "function fillTip(p) {")
+    assert "if (p.h) { hopTip(p.h, line); return; }" in _body(js, "function tipLines(p, line) {")
+    assert "tipLines(p, (cls, words, kind) => {" in _body(js, "function fillTip(p) {")
     assert "was.h !== p.h" in _body(js, "function setPick(p) {")
     assert "pick.h ? project(pick.h.lon, pick.h.lat, g)" in _body(js, "function anchorTip(g) {")
     assert "const h = data.heat ? data.hops.find((x) => x.id === pick.h.id) : null;" in _body(js, "function update(next, more) {")
@@ -1714,3 +1715,31 @@ def test_the_sky_is_drawn_as_one_merged_area_a_constellation_with_its_faint_band
     assert "fetch(" not in _body(js, "function skyLayer(g, fr, ratio, W, H) {") and "fetch(" not in ask
     assert "skyTimer = setTimeout(() => { changed(); tickSky(); }, reduced ? SKY_TICK_REDUCED_MS : SKY_TICK_MS);" in js
     assert "clearTimeout(skyTimer);  // 1.104.0: the sky's tick goes with the globe" in _body(js, "function destroy() {")
+
+
+def test_a_click_a_tap_or_enter_picks_and_a_hover_never_does(js):
+    """1.105.0 (Monday list item 31; docs/PAGES.md): onPick tells the page what a click, a tap or Enter picked, as side.js
+    tells it, and null when it is let go (Escape, a click on nothing); the pointer's move only shows the tooltip. The
+    tooltip's words and the pick's are one (tipLines), and describe(key) tells a pick anew from the spec drawn now."""
+    assert "let onPick = typeof opts.onPick === 'function' ? opts.onPick : null;" in js
+    assert "if (more && typeof more.onPick === 'function') onPick = more.onPick;" in js  # kept through an update
+    click = _body(js, "canvas.addEventListener('click', (e) => {")
+    assert "tellPick(hit);" in click and "tellPick({ home: true });" in click
+    move = _body(js, "canvas.addEventListener('pointermove', (e) => {")
+    assert "tellPick" not in move and "onPick" not in move
+    keys = _body(js, "canvas.addEventListener('keydown', (e) => {")
+    assert "else if (e.key === 'Enter' && pick) tellPick(pick);" in keys
+    assert "{ setPick(null); tellPick(null); }" in keys
+    tell = _body(js, "function tellPick(p) {")
+    assert "if (!onPick || key === pinned) return;" in tell and "onPick(p ? pickOf(p) : null)" in tell
+    pick = _body(js, "function pickOf(p) {")
+    assert "tipLines(p, (cls, words) => {" in pick  # the tooltip's own words, in full
+    for kind in ("'place'", "'home'", "'hop'", "'feature'"):
+        assert kind in pick, kind
+    key = _body(js, "function keyOfPick(p) {")
+    for k in ("globe:home", "globe:place:", "globe:hop:", "globe:feature:"):
+        assert k in key, k
+    assert "describe: (key) => (destroyed ? null : describeKey(key))" in js and "unpick: () => { pinned = ''; }" in js
+    assert "const describe = (item) =>" in js
+    # nothing of a pick is markup: the tooltip's lines are textContent, and side.js escapes what it is given
+    assert "b.textContent = words[0];" in _body(js, "function fillTip(p) {")

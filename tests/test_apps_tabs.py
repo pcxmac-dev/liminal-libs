@@ -71,3 +71,25 @@ def test_a_machine_plugin_declares_no_tabs_by_default_and_its_own_when_it_has_th
     w = Walled()
     assert [t.id for t in w.TABS] == ["world", "filter"] and all(t.hook in w.interface()["hooks"] for t in w.TABS)
     assert w.ask("world") == {"title": "Who reaches this machine"}  # its hook asked by name, as the platform asks it
+
+
+def test_a_rows_detail_is_plain_words_cut_at_its_caps():
+    """1.105.0 (Monday list item 31): what a row picked tells in the right-hand menu, as plain JSON, cut at the caps."""
+    from liminal_libs.apps import tabs
+
+    d = tabs.detail("443/tcp", [("Port", 443), ("Service", "https"), ("Empty", ""), ("None", None), ("Share", 0.5)],
+                    sub="this machine's port", note="a note", sections=[("Counted", [("In", "1 KB")]), ("Nothing", [])])
+    assert d == {"title": "443/tcp", "facts": [["Port", "443"], ["Service", "https"], ["Share", "0.5"]],
+                 "sub": "this machine's port", "sections": [{"title": "Counted", "facts": [["In", "1 KB"]]}],
+                 "note": "a note"}
+    long = tabs.detail("x" * 500, [("v", "y" * 1000)] * 100, sections=[("s", [("a", "b")])] * 20)
+    assert len(long["title"]) == tabs.DETAIL_TITLE and long["title"].endswith("…")
+    assert len(long["facts"]) == tabs.DETAIL_FACTS and len(long["facts"][0][1]) == tabs.DETAIL_VALUE
+    assert "sections" not in long  # the facts' budget is spent on the first part
+    for bad in ({"a": 1}, ["a"], object(), True):
+        with pytest.raises(ValueError):
+            tabs.detail("t", [("k", bad)])
+    with pytest.raises(ValueError):
+        tabs.detail("t", [("only one",)])
+    with pytest.raises(ValueError):
+        tabs.detail("t", sections=["not a pair"])

@@ -37,7 +37,11 @@ The page a tab's hook answers is a dict, every key optional:
   flagged);
 - `charts`: a LiminalCharts spec ({span, t, charts}: ui/static/charts.js), or a list of them, drawn apart from the Main
   tab's (the page keys them by the tab's id);
-- `tables`, `forms` and `actions`: in the shapes a status has, drawn as the Main tab draws them."""
+- `tables`, `forms` and `actions`: in the shapes a status has, drawn as the Main tab draws them. A table may also carry
+  (1.105.0, Monday list item 31: a row picked in the middle is told in full in the right-hand menu, docs/PAGES.md)
+  `details`, a list beside its `rows` and as long, each what that row picked tells (`detail()` makes one: {title, sub,
+  facts: [[label, value]], sections: [{title, facts}], note}) or None for a row told by its cells; and `pick`: False
+  to keep its rows from being picked (a table of buttons). A page drawn by an older platform ignores both."""
 from __future__ import annotations
 
 import keyword
@@ -48,6 +52,11 @@ from dataclasses import asdict, dataclass
 MAX_ID = 40
 ID = re.compile(rf"[A-Za-z0-9_-]{{1,{MAX_ID}}}")  # url-safe, as the page's address carries it
 MIN_EVERY = 1.0  # seconds: no tab is asked more often than this
+# what a row picked tells, at most (detail()): a page asked every few seconds stays small
+DETAIL_TITLE = 120  # characters of its title (and of a section's, and of a label)
+DETAIL_FACTS = 40  # facts, in all its sections together
+DETAIL_VALUE = 400  # characters of a fact's value, of its sub and of its note
+DETAIL_SECTIONS = 8
 
 
 @dataclass(frozen=True)
@@ -76,3 +85,48 @@ class Tab:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _cut(value, most: int) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"a detail's words are text or a number (not {type(value).__name__})")
+    text = value if isinstance(value, str) else f"{value:,}" if isinstance(value, int) else f"{value:g}"
+    return text if len(text) <= most else text[: most - 1] + "…"
+
+
+def detail(title, facts=(), *, sub: str = "", note: str = "", sections=()) -> dict:
+    """What a row picked tells in the right-hand menu (a table's `details`), as plain JSON: its title, a line under it,
+    its facts ((label, value) pairs; a value None or "" left out), its sections ((title, facts)), and a note. Each is cut
+    at the caps (DETAIL_TITLE, DETAIL_VALUE; DETAIL_FACTS facts in all, DETAIL_SECTIONS sections); a value that is not
+    text or a number is refused (ValueError), so nothing but words travels."""
+    budget = [DETAIL_FACTS]
+
+    def pairs(given) -> list:
+        out = []
+        for pair in given or ():
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                raise ValueError(f"a fact is a (label, value) pair (not {pair!r})")
+            label, value = pair
+            if value is None or value == "":
+                continue
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            out.append([_cut(label, DETAIL_TITLE), _cut(value, DETAIL_VALUE)])
+        return out
+
+    spec = {"title": _cut(title, DETAIL_TITLE), "facts": pairs(facts)}
+    if sub:
+        spec["sub"] = _cut(sub, DETAIL_VALUE)
+    secs = []
+    for section in list(sections or ())[:DETAIL_SECTIONS]:
+        if not isinstance(section, (tuple, list)) or len(section) != 2:
+            raise ValueError(f"a section is a (title, facts) pair (not {section!r})")
+        got = pairs(section[1])
+        if got:
+            secs.append({"title": _cut(section[0], DETAIL_TITLE), "facts": got})
+    if secs:
+        spec["sections"] = secs
+    if note:
+        spec["note"] = _cut(note, DETAIL_VALUE)
+    return spec

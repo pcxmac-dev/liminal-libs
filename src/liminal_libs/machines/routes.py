@@ -81,6 +81,13 @@ LEGAL = frozenset({"inc", "incorporated", "llc", "ltd", "limited", "corp", "corp
                    "oy", "kk", "as", "asa", "aps", "the"})
 
 
+def _said(v) -> str:
+    """A cell's words, its sub after them in brackets (a cell is text or {text, sub})."""
+    if isinstance(v, dict):
+        return str(v.get("text", "")) + (f" ({v['sub']})" if v.get("sub") else "")
+    return str(v or "")
+
+
 def _operator(name: str) -> str:
     """An operator's name as two are compared (1.75.0): lower case, words alone, the legal words at its end left
     out ("Charter Communications, Inc." and "Charter Communications LLC" are one); "" for no name."""
@@ -424,7 +431,9 @@ class Routes:
         hop that did not answer kept, as *), its time, its name by reverse DNS, its network's number and operator
         as the GeoIP file has them, its holder by RDAP; where the operator is another than the hop's before, the
         crossing said in the last column. The host's own name beside it, on its route's first row."""
-        out, links = [], []
+        from ..apps.tabs import detail
+
+        out, links, details = [], [], []
         for _placed, address, _found, route, _way, _answered, _age in rows:
             name = self.lookups.known(address).get("name", "")
             first, last_op, last_who = True, "", ""
@@ -437,6 +446,8 @@ class Routes:
                 if not hop.address:
                     out.append([to, str(hop.n), {"text": "*", "sub": "no answer"}, "–", "", "", "", "", "", "",
                                 ""])
+                    details.append(detail(f"Hop {hop.n} to {address}", [("Answered", "no")],
+                                          note="This hop did not answer, so nothing more is known of it."))
                     continue
                 known = self.lookups.known(hop.address)
                 try:
@@ -484,6 +495,18 @@ class Routes:
                     last_op, last_who = op, who
                 out.append([to, str(hop.n), hop.address, f"{hop.ms:.1f} ms" if hop.ms is not None else "–",
                             known.get("name", ""), asn, org, holder, kind, link, crosses])
+                # 1.105.0 (Monday list item 31): the router picked, told in full in the right-hand menu: where the
+                # composite database puts it, with how sure and from what
+                placed_at = [("Where", f"{where[0]:.2f}, {where[1]:.2f}" if where else "not placed")]
+                if best:
+                    placed_at += [("Its label", str(best.get("label") or "")), ("Confidence", f"{best['confidence']:.2f}"),
+                                  ("Sources agreeing", str(best.get("sources") or "")), ("Led by", str(best.get("by") or ""))]
+                details.append(detail(hop.address, [
+                    ("On the route to", address), ("Hop", str(hop.n)),
+                    ("Time", f"{hop.ms:.1f} ms" if hop.ms is not None else ""), ("Name", known.get("name", "")),
+                    ("ASN", asn), ("Operator", org), ("Holder (RDAP)", holder), ("What it is", _said(kind)),
+                    ("Link from the hop before", _said(link)), ("Crosses", _said(crosses))],
+                    sections=[("Its place", placed_at)]))
         if links:  # the links, as evidence of the infrastructure, for the map (the composite database)
             try:
                 self.composite.record(links=links)
@@ -505,7 +528,7 @@ class Routes:
                 "columns": [{"title": "To"}, {"title": "Hop"}, {"title": "Address"}, {"title": "Time"},
                             {"title": "Name"}, {"title": "ASN"}, {"title": "Operator"}, {"title": "Holder (RDAP)"},
                             {"title": "What it is"}, {"title": "Link"}, {"title": "Crosses"}],
-                "rows": out}
+                "rows": out, "details": details}
 
     @staticmethod
     def _link(before, this, isp: str) -> dict | str:

@@ -672,6 +672,11 @@ def test_the_hosts_view_draws_each_programs_hosts_by_place_filtered_as_chosen_wi
     assert globe.rested >= 1  # the GeoIP file let go again
     titles = [t["title"] for t in page["tables"]]
     assert titles == ["What the globe shows", "Programs", "Ports", "Hosts", "Internet infrastructure"]
+    hosts_table = page["tables"][3]  # 1.105.0: each host picked is told in full, its facts matching its row
+    assert len(hosts_table["details"]) == len(hosts_table["rows"]) > 0
+    for row, said in zip(hosts_table["rows"], hosts_table["details"]):
+        host = row[0]["text"] if isinstance(row[0], dict) else row[0]
+        assert said["title"] == host and ["Program", row[1]] in said["facts"] and ["Place", row[2]] in said["facts"]
     first = page["tables"][0]
     assert [o["hook"] for o in first["options"]] == ["world_show", "world_direction", "world_within", "world_pick",
                                                      "world_pick"]
