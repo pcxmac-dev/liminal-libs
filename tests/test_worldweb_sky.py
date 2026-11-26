@@ -1,4 +1,5 @@
-"""The firewall's sky hooks (1.104.0, Monday list item 32): the sgp4 package's download and removal are the page's
+"""The World Wide Web plugin's sky hooks (1.104.0, Monday list item 32; the Firewall base's until 1.105.0 moved them
+with the tab to machines/worldweb.py): the sgp4 package's download and removal are the page's
 alone, as a data set's download is (the user's 11b), and its licence accepted at the page is kept in the person's own
 login store, as a data set's is (13a). The package's download is a stand-in: nothing is fetched."""
 from __future__ import annotations
@@ -14,6 +15,7 @@ from liminal_libs.apps.authorization import LICENCE
 from liminal_libs.machines import geosources, satellites as S, world
 from liminal_libs.machines.infrastructure import Index
 from liminal_libs.machines.netstat import NetstatView
+from liminal_libs.machines.worldweb import WorldWideWeb
 
 from test_firewall import FakeFirewall
 from test_firewall_geoip import Sourced, Store, licences  # noqa: F401 - the licences file's fixture
@@ -22,7 +24,7 @@ from test_world import NOW, Clock, socket_table
 
 
 class Skied(Sourced):
-    """A firewall naming two constellations and pinning the sgp4 package, its download a stand-in."""
+    """A World Wide Web plugin naming two constellations and pinning the sgp4 package, its download a stand-in."""
 
     INFRASTRUCTURE = SETS
     SKY_PACKAGE = pin(b"x")
@@ -52,10 +54,16 @@ def installs(monkeypatch):
 
 
 def test_the_packages_download_and_removal_are_the_pages_alone_in_the_base():
-    plain = FakeFirewall()
+    plain = WorldWideWeb.__new__(WorldWideWeb)  # names none of its own: the base's alone
+    plain.name = "plain-web"
     assert {"world_sky_get", "world_sky_remove"} <= set(internal.page_only(plain))
     assert "world_sky" not in internal.page_only(plain)  # the places, a read the page and others may ask
+    assert "world_sky" in WorldWideWeb.READ_HOOKS and "world_sky_get" in WorldWideWeb.JOB_HOOKS
     assert internal.problems(plain) == []
+    # 1.105.0: none of the sky is a firewall's any more
+    wall = FakeFirewall()
+    assert not {"world_sky", "world_sky_get", "world_sky_remove"} & set(wall.interface()["hooks"])
+    assert not hasattr(wall, "SKY_PACKAGE") and not hasattr(wall, "world_sky")
 
 
 @pytest.mark.parametrize("who", ["nobody", "a plugin", "the platform's login"])
@@ -127,3 +135,42 @@ def test_a_store_that_refuses_the_packages_licence_ends_it_with_nothing_fetched(
             fw.world_sky_get(True)
     assert installs == [] and not licences.exists()
     fw.detach()
+
+
+def test_the_bases_own_globe_view_has_the_sky_where_a_data_set_names_satellites(tmp_path, monkeypatch):
+    """1.105.0: the sky moved with the tab; WorldWideWeb.make_netstat_view sets it up (sky_onto) as the Firewall base's
+    netstat_view did in 1.104.0: a SkyView over the plugin's pin where an omm-csv data set is named, none otherwise or
+    for a pin that does not read; and the layers are still read by area through world_layer."""
+    from liminal_libs import layout
+    from test_worldweb import Web
+    monkeypatch.setattr(layout, "data_dir", lambda: tmp_path / "data")
+
+    class Sky(Web):
+        INFRASTRUCTURE = SETS
+        SKY_PACKAGE = pin(b"x")
+
+    sky = Sky()
+    view = sky.netstat_view()
+    assert isinstance(view.sky, S.SkyView) and view.sky.package.version == "2.27"
+    assert view.sky.spec()["hook"] == "world_sky"
+    assert sky.world_sky()["needs"]  # no package downloaded: the layer says it needs it
+
+    class Unpinned(Sky):
+        SKY_PACKAGE = {"version": "2.27"}  # names no wheel: no sky, and the tab still draws
+
+    assert Unpinned().netstat_view().sky is None
+    with pytest.raises(ValueError, match="names no satellites"):
+        Unpinned().world_sky()
+
+    class Plain(Web):
+        INFRASTRUCTURE = ()
+
+    plain = Plain()
+    assert getattr(plain.netstat_view(), "sky", None) is None
+    asked = []
+    monkeypatch.setattr(NetstatView, "layer", lambda self, layer, area=None, zoom=None: asked.append(
+        (layer, area, zoom)) or {"layer": layer})
+    assert plain.world_layer("fibre", [-10, 40, 10, 60], 8) == {"layer": "fibre"}
+    assert asked == [("fibre", [-10, 40, 10, 60], 8)]
+    for web in (sky, plain):
+        web.detach()

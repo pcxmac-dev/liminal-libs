@@ -39,6 +39,7 @@ from liminal_libs.machines.firewall import Firewall
 from liminal_libs.machines.infrastructure import DataSet, Index, pack, parse
 from liminal_libs.machines.netstat import EVERY, HOOK, HOSTS_S, TAB, TITLE, Choice, NetstatView
 from liminal_libs.machines.world import LicenceRefused, WorldView
+from liminal_libs.machines.worldweb import WorldWideWeb
 from liminal_libs.ui import STATIC
 
 from test_firewall import FakeFirewall
@@ -783,7 +784,7 @@ def test_the_hosts_views_globe_note_reaches_the_globe_whole(tmp_path):
     js = (STATIC / "liminal-globe.js").read_text(encoding="utf-8")
     [bound] = re.findall(r"\bnote: text\(s\.note, (\w+)\)", js)
     most = int(bound) if bound.isdecimal() else int(re.search(rf"\bconst {bound} = (\d+);", js).group(1))
-    fw = Wall(tmp_path, placing=None)  # no GeoIP file installed yet
+    fw = Webbed(tmp_path, placing=None)  # no GeoIP file installed yet
     fw.GEOIP_URL = "https://geoip.example/{year}-{month}.mmdb"  # the plugin names one, as both firewalls do
     fw.world()  # a first reading of the socket table, recorded
     fw.world_show("hosts")
@@ -848,6 +849,44 @@ class Wall(FakeFirewall):
         super().__init__()
         self.tmp, self.source, self.placing, self.more = tmp_path, source, placing, more
 
+    def make_netstat_view(self) -> NetstatView:
+        made = super().make_netstat_view()  # the base's own: its index, its listeners, its agent
+        view = view_of(self.source, login=None, index=made.index, listeners=self.netstat_listeners, agent=made.agent,
+                       refused=made.refused, **self.more)
+        view._login_of = lambda: getattr(self, "login", None)
+        return view
+
+
+class Webbed(WorldWideWeb):
+    """1.105.0: the World Wide Web plugin over a Wall (its firewall, asked in this process as the platform would ask
+    it): its globe a Globe, its routes traced by a stand-in, stepped by the test (no thread)."""
+
+    name = "web"
+    version = "0.7.0"
+    title = "A stand-in World Wide Web plugin"
+    about = "the globe over a stand-in firewall"
+    api = "2.1"
+    order = 960
+
+    def __init__(self, tmp_path: Path, source=None, placing=None, **more):
+        self.tmp, self.placing = tmp_path, placing
+        self.wall = Wall(tmp_path, source, placing, **more)
+
+    def present(self) -> bool:
+        return True
+
+    def firewall(self) -> str:
+        return self.wall.name
+
+    def firewalls(self) -> list[str]:
+        return [self.wall.name]
+
+    def _seen(self) -> dict:
+        return self.wall.netstat_seen()
+
+    def _ask(self, hook, *args):
+        return getattr(self.wall, hook)(*args)
+
     def make_world_view(self) -> WorldView:
         return Globe(self.tmp, self.placing)
 
@@ -858,14 +897,12 @@ class Wall(FakeFirewall):
         def tracer(address):
             return netpath.Trace(address, (netpath.Hop(1, ROUTER, 0.5), netpath.Hop(2, address, 9.0)), True, "stand-in")
         self.started = []
-        return Routes(tracer=tracer, start=self.started.append)
+        return Routes(tracer=tracer, start=self.started.append, keep=self._keep_route, known=self._routed,
+                      stored=self._stored_routes)
 
-    def make_netstat_view(self) -> NetstatView:
-        made = super().make_netstat_view()  # the base's own: its index, its listeners, its agent
-        view = view_of(self.source, login=None, index=made.index, listeners=self.netstat_listeners, agent=made.agent,
-                       refused=made.refused, **self.more)
-        view._login_of = lambda: getattr(self, "login", None)
-        return view
+    def detach(self) -> None:
+        super().detach()
+        self.wall.detach()
 
 
 class App:
@@ -887,7 +924,7 @@ def test_the_firewall_tab_reads_the_socket_table_says_not_for_here_and_what_wsl_
     assert away.netstat() == {"title": "Netstat",
                               "note": "Not for this machine: for a Windows machine. Nothing is read here."}
     with pytest.raises(ValueError, match="not for this machine"):
-        away.world_layer_get("osm-datacentres", True)
+        away.hosts_found("describe")
     assert away.netstat_view(make=False) is None
 
 
@@ -897,41 +934,48 @@ def test_on_a_machine_it_is_not_for_no_hook_records_keeps_forgets_or_removes_any
     all the time never starts there, and this system's own hosts and layers, which the plugin for it keeps, stay."""
     installed()
 
-    class Named(Wall):
+    class Named(Webbed):
         INFRASTRUCTURE = (CENTRES,)
-    here = Named(tmp_path, placing=Placing())
+    here = Wall(tmp_path, placing=Placing())
     here.netstat()  # the plugin this machine is for records its hosts
     book = here.netstat_view().book
     assert book.describe()["rows"] == 4
     login = Keeping()
-    away = Named(tmp_path)
+    away = Wall(tmp_path)
     away.not_for_here = lambda: "for a Windows machine"
     away.attach(App(), login)
-    given = {"hosts_recording": ("always",), "hosts_forget": (True,), "world_show": ("hosts",),
-             "world_direction": ("out",), "world_within": ("day",), "world_pick": ("port=tcp/443",),
-             "world_layer": ("datacentres",), "world_layer_get": ("osm-datacentres", True),
-             "world_layer_remove": ("osm-datacentres",),
+    web = Named(tmp_path)  # 1.105.0: the globe's hooks are the World Wide Web plugin's
+    web.not_for_here = lambda: "for a Windows machine"
+    web.attach(App(), login)
+    given = {"hosts_recording": ("always",), "hosts_forget": (True,)}
+    globe = {"world_show": ("hosts",), "world_direction": ("out",), "world_within": ("day",),
+             "world_pick": ("port=tcp/443",), "world_layer": ("datacentres",),
+             "world_layer_get": ("osm-datacentres", True), "world_layer_remove": ("osm-datacentres",),
              "world_sky": (), "world_sky_get": (True,), "world_sky_remove": ()}  # 1.104.0
-    assert set(given) == set(netstat.HOOKS) - {netstat.HOOK}  # every hook of the module but the tab's page
-    for hook, args in given.items():
-        with pytest.raises(ValueError, match="^not for this machine: for a Windows machine$"):
-            away.ask(hook, *args)
-    assert away.netstat_view(make=False) is None and threads() == []  # nothing made, nothing runs
+    assert set(given) == set(netstat.FIREWALL_HOOKS) - {netstat.HOOK}  # every hook of the module but the tab's page
+    assert set(globe) == set(netstat.GLOBE_HOOKS)
+    for plugin, hooks in ((away, given), (web, globe)):
+        for hook, args in hooks.items():
+            with pytest.raises(ValueError, match="^not for this machine: for a Windows machine$"):
+                plugin.ask(hook, *args)
+    assert away.netstat_view(make=False) is None and web.netstat_view(make=False) is None
+    assert threads() == []  # nothing made, nothing runs
     assert login.saved == [] and login.reads == 0  # nothing kept through its login, nothing read
     assert book.describe()["rows"] == 4 and len(book.hosts()) == 4  # this system's hosts are not forgotten
     assert infrastructure.folder().joinpath("osm-datacentres.json").is_file()  # nor its layer removed
     assert away.netstat()["note"] == "Not for this machine: for a Windows machine. Nothing is read here."
     away.detach()
+    web.detach()
     here.detach()
 
 
 def test_the_world_tab_reads_for_the_hosts_and_shows_them_when_chosen_with_no_capture(tmp_path):
-    fw = Wall(tmp_path, placing=Placing())
+    fw = Webbed(tmp_path, placing=Placing())
     page = fw.world()  # the traffic view (the default): its capture is a stand-in
     titles = [t["title"] for t in page["tables"]]
     assert titles[0] == "What the globe shows" and titles[-4:] == ["Internet infrastructure", "Routes",
                                                                     "Routes, hop by hop", "Legs waiting for a line"]
-    assert fw.netstat_view().book.describe()["rows"] == 4  # recorded while the tab is shown
+    assert fw.wall.netstat_view().book.describe()["rows"] == 4  # recorded by the firewall while the tab is shown
     assert fw.world_show("hosts")["said"] == "Hosts recorded · all of them"
     fw.world_view().stop()
     hosts = plain(fw.world())
@@ -976,11 +1020,11 @@ def test_attaching_follows_the_recording_setting_and_the_platforms_stop_and_a_de
 def test_a_firewalls_data_sets_make_its_index_and_those_that_do_not_read_are_said(tmp_path):
     installed()
 
-    class Named(Wall):
+    class Named(Webbed):
         INFRASTRUCTURE = (CENTRES, {"id": "broken", "title": "A data set"}, CENTRES)
     fw = Named(tmp_path)
     view = fw.netstat_view()
-    assert [d.id for d in view.index.datasets] == ["osm-datacentres"] and view.agent == "wall/0.7.0"
+    assert [d.id for d in view.index.datasets] == ["osm-datacentres"] and view.agent == "web/0.7.0"
     # the User-Agent a download is made with: a product's name and version and nothing else
     assert netstat.agent_of("firewall-windows", "0.7.0") == "firewall-windows/0.7.0"
     assert (netstat.agent_of("firewall linux\n", ""), netstat.agent_of("", "1.0"), netstat.agent_of("-x", "1")) == (
@@ -1022,7 +1066,7 @@ def test_every_connection_to_the_internet_has_its_route_traced_while_the_tab_is_
     """1.67.0 (the user, 2026-11-19: "trace all connections"): each ask of the World Wide Web tab hands the routes the
     remote addresses of the connections open to the internet, and only those; the routes' thread is started once, and
     nothing is traced but by it (here a stand-in, stepped by the test). Detached: the routes are closed."""
-    fw = Wall(tmp_path, placing=Placing())
+    fw = Webbed(tmp_path, placing=Placing())
     page = fw.world()
     routes = fw.world_routes()
     assert fw.started and len(fw.started) == 1  # the thread asked for once, not run here
@@ -1065,19 +1109,20 @@ def test_the_netstat_tab_tables_every_connection_recorded_its_who_what_when_wher
 
 
 def test_the_routes_the_hosts_database_keeps_are_handed_to_the_tabs_routes(tmp_path):
-    """1.74.1: the base's routes read the hosts database's routes back (HostBook.routes_of), here only."""
-    fw = Wall(tmp_path, placing=Placing())
-    book = fw.netstat_view().book
+    """1.74.1: the base's routes read the hosts database's routes back (HostBook.routes_of), here only; 1.105.0: the
+    firewall's database, asked by the World Wide Web plugin."""
+    fw = Webbed(tmp_path, placing=Placing())
+    book = fw.wall.netstat_view().book
     book.keep_route("81.2.69.142", NOW, True, "icmp", [{"n": 1, "address": "81.2.69.142", "ms": 9.0}], "")
     book.flush()
     got = fw._stored_routes(["81.2.69.142"])
     assert got["81.2.69.142"][-1]["hops"] == [{"n": 1, "address": "81.2.69.142", "ms": 9.0}]
-    routes = Firewall.make_world_routes(fw)
+    routes = WorldWideWeb.make_world_routes(fw)
     try:
         assert routes._stored == fw._stored_routes and routes._known == fw._routed
     finally:
         routes.close()
-    away = Wall(tmp_path)
+    away = Webbed(tmp_path)
     away.not_for_here = lambda: "for a Windows machine"
     assert away._stored_routes(["81.2.69.142"]) == {}
     fw.detach()

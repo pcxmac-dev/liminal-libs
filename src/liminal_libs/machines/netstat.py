@@ -75,9 +75,13 @@ RECORDING_HOOK, FORGET_HOOK = "hosts_recording", "hosts_forget"
 SHOW_HOOK, DIRECTION_HOOK, WITHIN_HOOK, PICK_HOOK = "world_show", "world_direction", "world_within", "world_pick"
 LAYER_HOOK, GET_HOOK, REMOVE_HOOK = infrastructure.LAYER_HOOK, infrastructure.GET_HOOK, infrastructure.REMOVE_HOOK
 SKY_HOOK, SKY_GET_HOOK, SKY_REMOVE_HOOK = "world_sky", "world_sky_get", "world_sky_remove"  # 1.104.0: satellites.py's
-# the Firewall base's hooks of this module, in the order its HOOKS name them
-HOOKS = (HOOK, RECORDING_HOOK, FORGET_HOOK, SHOW_HOOK, DIRECTION_HOOK, WITHIN_HOOK, PICK_HOOK, LAYER_HOOK, GET_HOOK,
-         REMOVE_HOOK, SKY_HOOK, SKY_GET_HOOK, SKY_REMOVE_HOOK)
+# this module's hooks, in the order a plugin's HOOKS name them: 1.105.0, the Firewall base's three (the Netstat tab,
+# the recording, the forgetting) and the World Wide Web plugin's globe's (what it shows, its layers and data sets, and
+# 1.104.0's sky)
+FIREWALL_HOOKS = (HOOK, RECORDING_HOOK, FORGET_HOOK)
+GLOBE_HOOKS = (SHOW_HOOK, DIRECTION_HOOK, WITHIN_HOOK, PICK_HOOK, LAYER_HOOK, GET_HOOK, REMOVE_HOOK, SKY_HOOK,
+               SKY_GET_HOOK, SKY_REMOVE_HOOK)
+HOOKS = (*FIREWALL_HOOKS, *GLOBE_HOOKS)
 SHOWS = ("traffic", "hosts")  # what the globe shows
 DIRECTIONS = ("", "out", "in")  # "": both
 WITHIN = {"hour": 3600, "day": 86400, "week": 604800, "month": 2592000}  # a host last seen within it
@@ -1315,7 +1319,7 @@ class NetstatView:
     def refresh(self) -> str:
         """1.104.0 (the user, 2026-11-26, CelesTrak's "Refresh by itself"): the first data set due to be downloaded
         again by itself (Index.refresh_due) started on a thread of its own; its id, "" when none is due or one runs.
-        Asked by the World Wide Web tab's page while it is open (Firewall.world, a person signed in at the page) and
+        Asked by the World Wide Web tab's page while it is open (WorldWideWeb.world, a person signed in at the page) and
         by no timer: nothing is refreshed while nobody looks. The download is infrastructure.install's, as on the
         user's click (one at a time, its deadline; the view's close cancels it); a refusal is kept in the database and
         stops the refreshing until the user's own Update succeeds."""

@@ -28,6 +28,34 @@ renamed or removed, and a page that passes none of the new options sees nothing 
 - **Codebase with a panel.** `LiminalCodebase.mount(data, side, {panel, scope})`: the side's whole is the panel's top
   and the repository picked is the pick; `repoSpec(r)`.
 
+The World Wide Web tab as a plugin of its own (Monday list item 33; plugin-platform-worldwideweb 0.1.0 is built on it).
+**Not additive for the firewalls:** the tab and its fourteen hooks leave the Firewall base, which keeps its rules, the
+Netstat tab and the hosts' recording. A firewall plugin written before still loads, without the tab (firewall-windows
+0.10.0 and firewall-linux 0.13.0 drop it themselves). Settings and files keep their names, so nothing kept is lost.
+
+- **`machines.worldweb.WorldWideWeb`.** The World Wide Web tab's base, its code moved from the Firewall base method by
+  method: the traffic watched, the GeoIP sources and installs, the watching's switch, the home, the globe's choices,
+  the infrastructure's layers and data sets, the routes. LIMINAL_HOME_PLACE, LIMINAL_TRAFFIC_WATCHING, the GeoIP sources
+  chosen and each licence accepted keep their names. What only a firewall knows it asks through the platform (ASKS,
+  plugin ""): the firewall serving it is the one LIMINAL_WWW_FIREWALL names, else the first that answers netstat_seen,
+  chosen again after a refusal; with none, the tab draws the traffic captured alone and says why. It offers `places`.
+  No lock is held while asking, and no service asks back.
+- **The Firewall base's services.** `netstat_seen`, `hosts_found`, `hosts_routes` and `rules_covering` (reads), and
+  `hosts_keep_route`, `hosts_keep_places` and `hosts_clear_places` (changes only another plugin may ask:
+  PLUGIN_ONLY_HOOKS). Each refuses on a machine the plugin is not for.
+- **The Firewall base without the tab.** TABS is the Netstat tab alone; HOOKS loses world, world_geoip, world_asn,
+  world_watching, the three GeoIP sources' hooks and netstat.GLOBE_HOOKS; JOB_HOOKS, CANCEL_HOOKS and PAGE_ONLY_HOOKS
+  go with them; `keys` is LIMINAL_HOSTS_RECORDING alone; KEEPS is the rules' labels alone. `world_view(make=False)` is
+  kept and answers None; `world_view()` raises LookupError in words. The Netstat tab's places are asked of the World Wide
+  Web plugin's `places`, once a page, and its note says why when no plugin answers.
+- **`machines.hostsvia`.** `HostsVia`, the HostBook face NetstatView's globe paths call, each method one ask of the
+  serving firewall; `PlacesVia` and `GeoVia`, the WorldView and GeoIP faces a firewall's Netstat tab places with.
+- **`NetstatView(records=False)`, the globe's mode.** Its reader answers a firewall's reading and its book is that
+  firewall's database: nothing fed, no thread, the recording setting and the forgetting refused in words.
+  `netstat.FIREWALL_HOOKS` and `netstat.GLOBE_HOOKS` split `netstat.HOOKS` (unchanged).
+- **`HostBook.unplaced_hosts(stamp, most)`** names the hosts the next `place` would look up, and `place(..., only=)`
+  marks no other row, so places looked up by another plugin are kept for those hosts alone.
+
 ## 1.104.0 (2026-11-26)
 
 The firewalls' globe gets its Monday list items 24, 27, 28, 29 and 32: fibre on land and its stand-ins, the

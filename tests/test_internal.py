@@ -181,37 +181,31 @@ def test_a_firewall_is_built_on_firewall_and_implements_its_three_standard_layer
     adds = [h for h in Firewall.HOOKS if h not in MachinePlugin.HOOKS]
     # the critique's count, Firewall's 9, and 1.65.0's 10 more (the Netstat tab, the hosts' recording, the globe's
     # filters and its layers' data sets), 1.74.0's world_watching, 1.75.0's world_asn and 1.101.0's three GeoIP sources'
-    # hooks (download, use, remove), 1.104.0's three of the sky (world_sky, its package's download and removal),
-    # 1.105.0's seven services the World Wide Web plugin asks: Firewall's 34, MachinePlugin's 5, Plugin's 2
-    assert len(adds) == 34 and "world_watching" in adds and "world_asn" in adds
-    assert {"world_geoip_get", "world_geoip_use", "world_geoip_remove"} <= set(adds)
+    # hooks (download, use, remove), 1.104.0's three of the sky, 1.105.0's seven services the World Wide Web plugin asks,
+    # and the seventeen of the tab and its globe (the sky's three among them) gone with it (machines/worldweb.py):
+    # Firewall's 17, MachinePlugin's 5, Plugin's 2
+    assert len(adds) == 17 and "netstat_seen" in adds and "hosts_keep_route" in adds
+    assert not {"world", "world_watching", "world_asn", "world_geoip_get", "world_layer"} & set(adds)
     assert [(s["class"], s["hooks"]) for s in got["standard"]] == [
         ("Firewall", adds), ("MachinePlugin", ["present", "status", "setup", "run", "instances"]),
         ("Plugin", ["scan", "settings"])]
     assert [h["name"] for h in got["hooks"]] == [*adds, "present", "status", "setup", "run", "instances", "scan",
                                                  "settings", "refresh"]
     by = rows(got)
-    assert (by["world"]["layer"], by["world"]["answered"]) == ("Firewall", "Firewall")  # the base's code answers it
+    assert (by["netstat"]["layer"], by["netstat"]["answered"]) == ("Firewall", "Firewall")  # the base's code answers
     assert (by["status"]["layer"], by["status"]["answered"]) == ("MachinePlugin", "itself")  # its own override
     assert (by["instances"]["layer"], by["instances"]["answered"]) == ("MachinePlugin", "")  # the contract's default
     assert (by["refresh"]["layer"], by["refresh"]["answered"]) == ("", "itself")  # its own hook
     assert by["status"]["line"] == internal.line_of(Firewall.status.__doc__)  # an override without one: its base's
-    assert by["world"]["tab"] == "world" and by["world"]["every"] == 2.0 and by["world"]["kind"] == "tab"
-    assert by["world_geoip"]["job"] and by["world_geoip"]["twice"] == ["accept_licence"]
+    assert by["netstat_seen"]["kind"] == "service" and by["hosts_keep_route"]["kind"] == "service"
     assert by["rename_label"]["line"], "Firewall.rename_label says what it does (its line on every firewall's tab)"
-    # 1.65.0: the Netstat tab's hook is a tab's; a layer's geometry a read; a data set's download a job the page may
-    # cancel, asked twice for its licence; forgetting the hosts asked twice too; the filters and the recording changes
+    # 1.65.0: the Netstat tab's hook is a tab's; forgetting the hosts asked twice; the recording a change
     assert (by["netstat"]["kind"], by["netstat"]["tab"], by["netstat"]["every"]) == ("tab", "netstat", 3.0)
-    assert by["world_layer"]["kind"] == "read" and by["world_layer"]["reads"]
-    assert (by["world_layer_get"]["kind"], by["world_layer_get"]["cancels"]) == ("job", True)
-    assert by["world_layer_get"]["twice"] == ["accept_licence"] and by["hosts_forget"]["twice"] == ["accept_forget"]
-    assert {by[h]["kind"] for h in ("hosts_recording", "hosts_forget", "world_show", "world_direction", "world_within",
-                                    "world_pick", "world_layer_remove")} == {"change"}
+    assert by["hosts_forget"]["twice"] == ["accept_forget"]
+    assert {by[h]["kind"] for h in ("hosts_recording", "hosts_forget")} == {"change"}
     assert all(by[h]["line"] for h in adds), "each of the base's hooks says what it does"
-    # 1.74.0: world_watching; 1.75.0: world_asn; 1.101.0: world_geoip_get, world_geoip_use, world_geoip_remove;
-    # 1.104.0: world_sky (a read), world_sky_get (a job), world_sky_remove; 1.105.0: the seven services
-    assert (by["world_sky"]["kind"], by["world_sky_get"]["kind"]) == ("read", "job")
-    assert got["counts"]["standard"] == 41 and got["counts"]["own"] == 1
+    # 1.105.0: the seven services in, the World Wide Web tab's seventeen out (1.104.0's sky among them)
+    assert got["counts"]["standard"] == 24 and got["counts"]["own"] == 1
     assert got["left"] == ["present", "run", "instances", "scan", "settings"]  # MachinePlugin's defaults (CONTRACT)
 
 

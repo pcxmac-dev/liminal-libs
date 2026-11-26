@@ -1,4 +1,5 @@
-"""The firewalls' World Wide Web tab (liminal_libs.machines.world, and the Firewall base's world, world_geoip and detach;
+"""The World Wide Web tab (liminal_libs.machines.world, and the World Wide Web plugin's base's world, world_geoip and
+detach: machines/worldweb.py since 1.105.0, the Firewall base's before;
 the user, 2026-11-14: "so for the firewall's both are going to get a 'world wide web view' that shows the globe and the
 routes incoming all traffic, as well as monitoring port traffic stats"). The tab's page from the traffic counted: each
 public network a place on the globe with its kind, count, bytes and ports, placed by the GeoIP file; the local network's
@@ -39,6 +40,7 @@ from liminal_libs.capture import ACK, PSH, SYN, CaptureError, Packet
 from liminal_libs.machines import world
 from liminal_libs.machines.firewall import Firewall
 from liminal_libs.machines.netstat import NetstatView
+from liminal_libs.machines.worldweb import WorldWideWeb
 from liminal_libs.machines.world import (ACCEPT_LICENCE, MAX_DRAWN, RETRY_S, SETTING_S, LicenceRefused, RedirectRefused,
                                          WorldView, capture_help, home_place, servers_of)
 from liminal_libs.sources.conformance import problems
@@ -192,65 +194,104 @@ def socket_table(*rows, at: float = NOW) -> dict:
             "read": ("tcp4", "tcp6", "udp4", "udp6"), "cut": False, "rows": list(rows), "notes": []}
 
 
-class Walled(FakeFirewall):
-    """A stand-in firewall naming its GeoIP download, its places' attribution and its name servers, its WorldView
-    watching through the test's stand-ins, and its NetstatView reading a stand-in socket table (1.65.0: the tab's ask
-    reads it for the hosts database; the suite's guard refuses the real one, and keeps the database in tmp_path)."""
+class SocketWall(FakeFirewall):
+    """The firewall serving a Walled tab: its NetstatView reads a stand-in socket table (the tab's ask reads it for the
+    hosts database; the suite's guard refuses the real one, and keeps the database in tmp_path), its recording set
+    through the tab's plugin's login, as the platform lends both plugins the same one."""
 
-    name = "walled-firewall"
-    GEOIP_URL, GEOIP_LICENCE, ATTRIBUTION, PUBLIC_DNS = URL, LICENCE, MARK, SERVERS
+    name = "stand-in-firewall"
 
-    def __init__(self, **view):
+    def __init__(self, walled):
         super().__init__()
-        view.setdefault("resolve", lambda version, servers: (None, "no name server answers in a test"))
-        self.view, self.made, self.readings = view, 0, 0
-
-    def make_world_view(self) -> WorldView:
-        self.made += 1
-        return WorldView(self.name, **self.view)
+        self.walled, self.readings = walled, 0
 
     def make_netstat_view(self) -> NetstatView:
         def reader() -> dict:
             self.readings += 1
             return socket_table()
-        return NetstatView(self.name, reader=reader, names={}, login_of=lambda: getattr(self, "login", None),
-                           clock=self.view.get("clock", time.monotonic), wall=self.view.get("wall", time.time))
+        view = self.walled.view
+        return NetstatView(self.name, reader=reader, names={}, login_of=lambda: getattr(self.walled, "login", None),
+                           clock=view.get("clock", time.monotonic), wall=view.get("wall", time.time))
 
 
-# -- the tab as the Firewall base declares it ----------------------------------------------------------------------------
-def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
-    fw = FakeFirewall()
-    # 1.65.0: the Netstat tab after it, asked every three seconds while it is shown
-    assert Firewall.TABS == (Tab("world", "World Wide Web", "world", 2.0), Tab("netstat", "Netstat", "netstat", 3.0))
-    assert fw.TABS == Firewall.TABS
+class Walled(WorldWideWeb):
+    """A stand-in World Wide Web plugin (1.105.0: the tab left the Firewall base for machines/worldweb.py) naming its
+    GeoIP download, its places' attribution and its name servers, its WorldView watching through the test's stand-ins,
+    and the firewall serving it a SocketWall, asked in this process as the platform would ask it (no app needed)."""
+
+    name = "walled-firewall"
+    title = "A stand-in World Wide Web plugin"
+    about = "the traffic of a stand-in capture"
+    api = "2.1"
+    order = 950
+    GEOIP_URL, GEOIP_LICENCE, ATTRIBUTION, PUBLIC_DNS = URL, LICENCE, MARK, SERVERS
+
+    def __init__(self, **view):
+        view.setdefault("resolve", lambda version, servers: (None, "no name server answers in a test"))
+        self.view, self.made = view, 0
+        self.wall = SocketWall(self)
+
+    def present(self) -> bool:
+        return True
+
+    @property
+    def readings(self) -> int:
+        return self.wall.readings
+
+    def make_world_view(self) -> WorldView:
+        self.made += 1
+        return WorldView(self.name, **self.view)
+
+    def firewalls(self) -> list[str]:
+        return [self.wall.name]
+
+    def firewall(self) -> str:
+        return self.wall.name
+
+    def _seen(self) -> dict:
+        return self.wall.netstat_seen()
+
+    def _ask(self, hook, *args):
+        return getattr(self.wall, hook)(*args)
+
+
+# -- the tab as its base declares it (1.105.0: the World Wide Web plugin's, no longer the Firewall base's) ---------------
+def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
+    fw = Walled()
+    assert WorldWideWeb.TABS == (Tab("world", "World Wide Web", "world", 2.0),)
+    assert Firewall.TABS == (Tab("netstat", "Netstat", "netstat", 3.0),)  # the firewalls keep the Netstat tab
+    assert fw.TABS == WorldWideWeb.TABS
     hooks = fw.interface()["hooks"]
     # asked by name (Plugin.ask): the tab's hook with no arguments, the install with the one its form sets, and the log
     # the platform hands a job (the install runs as one: JOB_HOOKS, its progress in the plugin's panel)
     assert hooks["world"].startswith("() ") and hooks["world_geoip"].startswith("(accept_licence=False, log=None) ")
-    assert hooks["netstat"].startswith("() ") and hooks["world_layer_get"].startswith(
+    assert hooks["world_layer_get"].startswith(
         "(dataset, accept_licence=False, log=None) ")  # a data set's download: a job too, which the page may cancel
-    assert Firewall.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get",  # 1.101.0
-                                  "world_sky_get")  # 1.104.0
-    assert fw.JOB_HOOKS == Firewall.JOB_HOOKS
+    assert WorldWideWeb.JOB_HOOKS == ("world_geoip", "world_layer_get", "world_asn", "world_geoip_get",  # 1.101.0
+                                      "world_sky_get")  # 1.104.0
+    assert fw.JOB_HOOKS == WorldWideWeb.JOB_HOOKS and Firewall.JOB_HOOKS == ()
     assert hooks["world_asn"].startswith("(accept_licence=False, log=None) ")  # 1.75.0: the ASN file's, a job too
-    assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
-    assert Firewall.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and Firewall.INFRASTRUCTURE == ()
-    assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.101.0
-                                        "world_geoip", "world_asn", "world_layer_get",  # the user's 11b
-                                        "world_sky_get", "world_sky_remove")  # 1.104.0's review: the sgp4 package's
-    assert Firewall.GEOIP_SOURCES == ()
-    assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
-    assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())
-    # the home on the globe, when the hosts are recorded and (1.74.0) when the traffic is watched, set on the plugin's
-    # page and kept through the login
-    [home, recording, watching] = fw.keys
+    assert (WorldWideWeb.GEOIP_ASN_URL, WorldWideWeb.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
+    assert WorldWideWeb.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and WorldWideWeb.INFRASTRUCTURE == ()
+    assert WorldWideWeb.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.101.0
+                                            "world_geoip", "world_asn", "world_layer_get",  # the user's 11b
+                                            "world_sky_get", "world_sky_remove")  # 1.104.0's review: the sgp4 package's
+    assert WorldWideWeb.GEOIP_SOURCES == ()
+    assert not {"world", "world_geoip", "world_show", "world_layer"} & set(FakeFirewall().interface()["hooks"])
+    assert (WorldWideWeb.GEOIP_URL, WorldWideWeb.GEOIP_LICENCE, WorldWideWeb.ATTRIBUTION,
+            WorldWideWeb.PUBLIC_DNS) == ("", "", {}, ())
+    # the home on the globe and (1.74.0) when the traffic is watched, set on the plugin's page and kept through the
+    # login; when the hosts are recorded is the firewall's (FakeFirewall's keys)
+    [home, watching, serving] = fw.keys
+    [recording] = FakeFirewall().keys
     assert (home.name, home.secret, home.pair) == ("LIMINAL_HOME_PLACE", False, "liminal-home-place")
     assert (recording.name, recording.secret, recording.pair) == ("LIMINAL_HOSTS_RECORDING", False,
                                                                   "liminal-hosts-recording")
     assert (watching.name, watching.secret, watching.pair) == ("LIMINAL_TRAFFIC_WATCHING", False,
                                                             "liminal-traffic-watching")
-    assert all(k.hint.startswith("optional") for k in (home, recording, watching))
-    assert problems(fw) == [] and problems(Walled()) == []
+    assert serving.name == "LIMINAL_WWW_FIREWALL" and not serving.secret
+    assert all(k.hint.startswith("optional") for k in (home, recording, watching, serving))
+    assert problems(fw) == [] and problems(FakeFirewall()) == []
     assert ACCEPT_LICENCE.isidentifier() and LicenceRefused.accept == ACCEPT_LICENCE and issubclass(LicenceRefused, ValueError)
 
 
@@ -542,6 +583,12 @@ def test_the_default_capture_is_every_packet_tcp_and_udp_the_headers_alone(monke
         world.default_capture()
 
 
+class Bare(WorldWideWeb):
+    """A World Wide Web plugin naming no download."""
+
+    name = "bare-web"
+
+
 def test_a_firewall_not_for_this_machine_watches_nothing():
     made = []
     fw = Walled(capture_factory=lambda: made.append(1) or Feed())
@@ -760,7 +807,7 @@ def test_a_download_is_refused_without_https_an_address_or_a_reader(tmp_path, mo
     with pytest.raises(ValueError, match="names none"):
         view.install("")
     with pytest.raises(ValueError, match="offers no GeoIP file"):
-        FakeFirewall().world_geoip(True)  # a firewall naming no download
+        Bare().world_geoip(True)  # a plugin naming no download
     monkeypatch.setattr(geo, "available", lambda: (False, "maxminddb is not installed in this Python"))
     with pytest.raises(ValueError, match="maxminddb is not installed"):
         view.install(URL)

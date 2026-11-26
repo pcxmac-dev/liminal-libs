@@ -3,7 +3,9 @@ World Wide Web tab as a plugin of its own"): plugin-platform-worldwideweb is bui
 Firewall base's (1.55.0); its code moved here method by method, its words kept: the traffic watched at this machine's
 adapter (machines/world.py: a WorldView), its GeoIP sources, files and installs (1.101.0), the switch of the watching
 (1.74.0), the globe's home, the globe's choices and the internet infrastructure's layers and data sets (1.65.0), the
-routes traced (1.67.0). The settings are the system's and keep their names: LIMINAL_HOME_PLACE,
+routes traced (1.67.0), and (1.104.0, moved here with the tab) the satellites in the sky: the sgp4 package's download
+and removal, the places of the satellites, CelesTrak's orbits refreshed by themselves while the tab is open, and the
+layers read by the view's area past 6x. The settings are the system's and keep their names: LIMINAL_HOME_PLACE,
 LIMINAL_TRAFFIC_WATCHING, the GeoIP sources chosen and each licence accepted, read through the same login; and so are
 the files: the GeoIP files in the data folder, the infrastructure's folder and composite.db.
 
@@ -56,6 +58,14 @@ NO_FIREWALL = ("No firewall plugin answers here, so no connection is read, no ho
                "kept: the globe shows the traffic captured at this machine's adapter alone.")
 _WORLD_LOCK = threading.Lock()  # a plugin's WorldView made once, however many asks come at once
 _NETSTAT_LOCK = threading.Lock()  # ... and its NetstatView in the globe's mode
+# 1.104.0: the sgp4 package's licence accepted at the page, kept in the person's own store (the user's 13a), one pair
+# a version (the user, 2026-11-26: asked again per version): licence-sgp4-2.27
+SKY_LICENCE = "sgp4-{version}"
+
+
+def sky_licence(version) -> str:
+    """The name the sgp4 package's licence acceptance is kept under for that version (its pair: licence-<this>)."""
+    return SKY_LICENCE.format(version=str(version))
 
 
 class WorldWideWeb(MachinePlugin):
@@ -68,9 +78,9 @@ class WorldWideWeb(MachinePlugin):
 
     HOOKS = (*MachinePlugin.HOOKS,
              WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK, ASN_HOOK, GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK,
-             netstat.SHOW_HOOK, netstat.DIRECTION_HOOK, netstat.WITHIN_HOOK, netstat.PICK_HOOK, netstat.LAYER_HOOK,
-             netstat.GET_HOOK, netstat.REMOVE_HOOK, PLACES_HOOK)
-    READ_HOOKS = (netstat.LAYER_HOOK, PLACES_HOOK)
+             *netstat.GLOBE_HOOKS, PLACES_HOOK)
+    # its reads: a layer's geometry, the satellites' places (1.104.0: world_sky) and the places it offers
+    READ_HOOKS = (netstat.LAYER_HOOK, netstat.SKY_HOOK, PLACES_HOOK)
     SERVICE_HOOKS = (PLACES_HOOK,)  # a firewall's Netstat tab asks it for its place column
     # what it asks of a firewall, through the platform: "" for whichever offers it (internal.py's words)
     ASKS = (("", SERVES, "the socket table's reading now: the open connections the tab watches and traces"),
@@ -83,11 +93,19 @@ class WorldWideWeb(MachinePlugin):
     ICON = "globe"
     SECTION = "os"
     TABS = (Tab(WORLD_TAB, WORLD_TITLE, WORLD_HOOK, 2.0),)
-    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK, GEOIP_GET_HOOK)
+    JOB_HOOKS = (GEOIP_HOOK, netstat.GET_HOOK, ASN_HOOK, GEOIP_GET_HOOK,
+                 netstat.SKY_GET_HOOK)  # 1.104.0: the sgp4 package's download
     CANCEL_HOOKS = (netstat.GET_HOOK, GEOIP_GET_HOOK)
-    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK)
+    # what only a person at the platform's page may ask (each refuses any other ask itself too: geosources.NotAsked):
+    # the GeoIP sources' download, use and removal, the older installs, a data set's download (the user's 11b), and
+    # (1.104.0) the sgp4 package's download and removal, code the plugin imports
+    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK,
+                       netstat.SKY_GET_HOOK, netstat.SKY_REMOVE_HOOK)
     GEOIP_SOURCES: tuple = ()
     INFRASTRUCTURE: tuple = ()
+    # 1.104.0 (Monday list item 32): the sgp4 package the satellites are placed with, as the plugin pins it ({version,
+    # url, name, size, sha256, hosts, licence}): offered on the World Wide Web tab beside the data sets; None: none
+    SKY_PACKAGE = None
     GEOIP_URL = ""
     RDAP_BOOTSTRAP: tuple = ()
     GEOIP_LICENCE = ""
@@ -558,13 +576,15 @@ class WorldWideWeb(MachinePlugin):
         self._only_here()
         return self.netstat_view().pick(choice)
 
-    def world_layer(self, layer) -> dict:
-        """One infrastructure layer's geometry for the globe, read from this machine's files (a read).
+    def world_layer(self, layer, area=None, zoom=None) -> dict:
+        """One infrastructure layer's geometry for the globe, read from this machine's database (a read).
 
-        The page asks it once a layer's version, with the layer's id (Index.layer); LookupError when none is
-        installed, ValueError on a machine the plugin is not for."""
+        The page asks it once a layer's version, with the layer's id (Index.layer); 1.104.0: and, past the globe's
+        AREA_ZOOM, with the view's `area` ([west, south, east, north] in degrees) and its `zoom`, so the globe asks
+        for what it shows. LookupError when none is installed, ValueError for an area or a zoom that is none and on a
+        machine the plugin is not for."""
         self._only_here()
-        return self.netstat_view().layer(layer)
+        return self.netstat_view().layer(layer, area=area, zoom=zoom)
 
     def world_layer_get(self, dataset, accept_licence=False, log=None) -> dict:
         """A data set of INFRASTRUCTURE downloaded on the user's word, run by the platform as a job (Cancel stops it).
@@ -603,6 +623,59 @@ class WorldWideWeb(MachinePlugin):
         files are left as they are."""
         self._only_here()
         return self.netstat_view().drop(dataset)
+
+    # -- the satellites (1.104.0, moved here from the Firewall base with the tab) --------------------------------------
+    def _sky(self):
+        self._only_here()
+        sky = getattr(self.netstat_view(), "sky", None)
+        if sky is None:
+            raise ValueError("this plugin names no satellites")
+        return sky
+
+    def world_sky(self, t=None) -> dict:
+        """The satellites' places for the globe at `t` (seconds since 1970; now when not given) and a minute later,
+        worked out with the sgp4 package downloaded for it (a read): {"needs": why} without it. The page asks it while
+        the tab is shown, once a minute at most."""
+        return self._sky().read(t)
+
+    def world_sky_get(self, accept_licence=False, log=None) -> dict:
+        """The sgp4 package downloaded on the user's word (a job): its size and sha256 checked, each file against its
+        RECORD, unpacked into the data folder's packages/ and imported from there alone (satellites.install_package).
+        world.LicenceRefused until its licence is accepted. Only a person signed in at the platform's page may ask it
+        (PAGE_ONLY_HOOKS, and geosources.NotAsked here to any other ask): it is code this plugin then imports."""
+        from . import satellites
+        sky = self._sky()
+        if sky.package is None:
+            raise ValueError("this plugin pins no sgp4 package")
+        if not self._at_the_page():
+            raise geosources.NotAsked()
+        package = sky.package
+        if accept_licence is True:  # the user's 13a: the acceptance kept in their own login store, as a data set's
+            try:
+                keep_licence(asking_login(), sky_licence(package.version), title=f"The sgp4 package {package.version}",
+                             version=package.licence_name, url=package.source.url, words=package.licence, file=False)
+            except Unauthorized as e:
+                raise ValueError(f"your acceptance of the sgp4 package's licence could not be kept in your login "
+                                 f"store ({e.reason}): nothing was downloaded") from None
+        out = satellites.install_package(package, sky.data_dir, accept_licence=accept_licence, log=log,
+                                         cancel=lambda: bool(getattr(log, "cancelled", False)))
+        if out.get("ok"):
+            out.setdefault("lines", []).append("your acceptance of its licence is kept in your own login store")
+        return out
+
+    def world_sky_remove(self) -> dict:
+        """The sgp4 package's folder removed, confirmed on the page: the satellites are no longer placed. The page's
+        alone, as its download is."""
+        from . import satellites
+        sky = self._sky()
+        if sky.package is None:
+            raise ValueError("this plugin pins no sgp4 package")
+        if not self._at_the_page():
+            raise geosources.NotAsked()
+        try:
+            return satellites.remove_package(sky.package, sky.data_dir)
+        finally:  # placed with it no more: a folder marked removed is not loaded again (satellites.load_package)
+            sky.sky._package = None
 
     # -- the routes (1.67.0), kept in the serving firewall's hosts database ------------------------------------------
     def world_routes(self) -> routes_module.Routes:
@@ -647,12 +720,20 @@ class WorldWideWeb(MachinePlugin):
         machine) and their routes to home, the busiest ports' charts, the ports and the places tabled, and the GeoIP
         file's install form while none is installed; or, while it shows the hosts recorded, each program's remote hosts
         by place, as the firewall's hosts database recorded them. With no firewall serving, the traffic captured alone,
-        and why. Not for this machine (not_for_here): a page saying so, and nothing started."""
+        and why. Always what the globe shows and the internet infrastructure's layers and data sets (NetstatView.onto).
+        1.104.0: asked by a person signed in at the page, the data sets refreshed by themselves that are due
+        (CelesTrak's orbits, every 2 hours at most) are downloaded again (NetstatView.refresh): only while the tab is
+        open. Not for this machine (not_for_here): a page saying so, and nothing started."""
         here = self.not_for_here()
         if here:
             return not_here_page(here)
         view = self.world_view()
         net = self.netstat_view()
+        if self._at_the_page():  # 1.104.0: what is refreshed by itself (CelesTrak's orbits), while a person looks
+            try:
+                net.refresh()
+            except Exception:  # noqa: BLE001 - a refresh never costs the tab its page
+                pass
         seen = net.touch()  # the firewall asked here, with no lock of this plugin held
         alone = self.firewall() == ""
         remotes = [r.get("remote") for r in seen.get("rows") or ()
@@ -716,8 +797,8 @@ class WorldWideWeb(MachinePlugin):
 
     def make_netstat_view(self) -> NetstatView:
         """The NetstatView the globe asks, recording nothing: its reading the serving firewall's (`_seen`), its hosts
-        database that firewall's (hostsvia.HostsVia), the data sets of INFRASTRUCTURE as the Firewall base read them. A
-        subclass's tests make it here with stand-ins."""
+        database that firewall's (hostsvia.HostsVia), the data sets of INFRASTRUCTURE as the Firewall base read them,
+        and (1.104.0) the sky where those name satellites (sky_onto). A subclass's tests make it here with stand-ins."""
         sets, refused, ids = [], [], set()
         for said in self.INFRASTRUCTURE or ():
             try:
@@ -730,9 +811,23 @@ class WorldWideWeb(MachinePlugin):
                 continue
             ids.add(found.id)
             sets.append(found)
-        return NetstatView(self.name, reader=self._seen, book=HostsVia(self._ask, self.firewall),
+        view = NetstatView(self.name, reader=self._seen, book=HostsVia(self._ask, self.firewall),
                            login_of=lambda: getattr(self, "login", None), index=Index(datasets=sets), refused=refused,
                            agent=netstat.agent_of(self.name, self.version), records=False)
+        return self.sky_onto(view)
+
+    def sky_onto(self, view: NetstatView) -> NetstatView:
+        """1.104.0 (moved here with the tab): the sky set up on the globe's view (view.sky, a satellites.SkyView) where
+        its data sets name satellites (an omm-csv set) and none is set yet, with the plugin's SKY_PACKAGE; a pin that
+        does not read sets none. The view, for make_netstat_view to hand back."""
+        if getattr(view, "sky", None) is None and any(
+                d.format == "omm-csv" for d in getattr(getattr(view, "index", None), "datasets", ())):
+            from . import satellites
+            try:
+                view.sky = satellites.SkyView(view.index, self.SKY_PACKAGE)
+            except ValueError:  # a pin that does not read: no sky
+                view.sky = None
+        return view
 
     def _only_here(self) -> None:
         """A ValueError in words on a machine this plugin is not for (not_for_here), asked first by every hook of the
@@ -749,7 +844,8 @@ class WorldWideWeb(MachinePlugin):
     def KEEPS(self) -> tuple:
         """What it keeps through its login beside its keys (Plugin.KEEPS, for its Internal API tab): the GeoIP sources
         chosen, and each offered file's licence acceptance (in the asking person's own store), and each data set's of
-        INFRASTRUCTURE (licence-<its id>, the same). Said by name: no login is asked."""
+        INFRASTRUCTURE (licence-<its id>, the same), and (1.104.0) the sgp4 package's, one pair a version
+        (licence-sgp4-<version>). Said by name: no login is asked."""
         kept = []
         if self.GEOIP_SOURCES:
             kept.append((geosources.VAR, "the GeoIP sources chosen for places and for networks"))
@@ -766,6 +862,11 @@ class WorldWideWeb(MachinePlugin):
             pair = licence_pair(found.id)
             if pair not in dict(kept):
                 kept.append((pair, f"your acceptance of {found.title}'s licence, in your own login store"))
+        version = self.SKY_PACKAGE.get("version") if isinstance(self.SKY_PACKAGE, dict) else getattr(
+            self.SKY_PACKAGE, "version", None)
+        if version:  # 1.104.0: the sgp4 package's, the same, one a version
+            kept.append((licence_pair(sky_licence(version)), f"your acceptance of the sgp4 package {version}'s "
+                                                              "licence, in your own login store"))
         return tuple(kept)
 
     # -- attached, told, detached --------------------------------------------------------------------------------------

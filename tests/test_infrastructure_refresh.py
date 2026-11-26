@@ -134,7 +134,7 @@ def test_the_view_refreshes_one_set_at_a_time_on_a_thread_of_its_own_and_nothing
 
 def test_the_tab_refreshes_only_for_a_person_at_the_page(tmp_path, monkeypatch):
     from test_firewall_geoip import Store as Login
-    from test_firewall_sky import Skied
+    from test_worldweb_sky import Skied
     asked = []
     monkeypatch.setattr(NetstatView, "refresh", lambda self: asked.append(self.name) or "")
     fw = Skied(tmp_path)

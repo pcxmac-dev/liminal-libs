@@ -103,8 +103,12 @@ def test_the_firewall_plugin_conforms_and_reports():
     assert {"allow", "remove", "wanted", "status", "setup"} <= set(fw.interface()["hooks"])  # asked by name (Plugin.ask)
     # 1.65.0: the Netstat tab, the hosts' recording, the globe's filters and its layers, each a hook of the base's, and
     # what it says of them sound (its tabs' hooks, a read that is no job and accepts no refusal, each with its line)
-    assert set(netstat.HOOKS) <= set(fw.interface()["hooks"]) and internal.problems(fw) == []
-    assert fw.READ_HOOKS[:3] == ("wanted", "world_layer", "world_sky") and fw.netstat_listeners() == {}
+    assert set(netstat.FIREWALL_HOOKS) <= set(fw.interface()["hooks"]) and internal.problems(fw) == []
+    assert not set(netstat.GLOBE_HOOKS) & set(fw.interface()["hooks"])  # 1.105.0: the World Wide Web plugin's
+    assert fw.READ_HOOKS == ("wanted", "netstat_seen", "hosts_found", "hosts_routes", "rules_covering")
+    assert fw.netstat_listeners() == {} and fw.world_view(make=False) is None  # 1.105.0: no tab of the world here
+    with pytest.raises(LookupError, match="plugin-platform-worldwideweb"):
+        fw.world_view()
     assert fw.ask("allow", "asked", [9000]).name == "asked" and fw.ask("remove", "asked") is True
     fw.allow("web", (8443,), detail="a test")
     with pytest.raises(FirewallError):
@@ -171,9 +175,10 @@ def test_a_firewall_not_for_this_machine_asks_nothing_and_changes_nothing():
 def test_the_traffic_is_watched_all_the_time_on_the_users_switch(monkeypatch):
     """1.74.0 (the user: "lets have a selectable switch on firewall which allows it to run while not selected as far as
     monitoring traffic"): kept through the login; always: the capture never stops for want of an ask, started at once;
-    shown: its timeout back."""
+    shown: its timeout back. 1.105.0: the World Wide Web plugin's switch (machines/worldweb.py), by the same name."""
     from types import SimpleNamespace
     from liminal_libs.machines import firewall as firewall_module
+    from liminal_libs.machines.worldweb import WorldWideWeb
     kept = {}
 
     class Login:
@@ -185,7 +190,8 @@ def test_the_traffic_is_watched_all_the_time_on_the_users_switch(monkeypatch):
             return "the login"
     touched = []
     view = SimpleNamespace(timeout=20.0, watcher=SimpleNamespace(timeout=20.0), touch=lambda: touched.append(1))
-    fw = FakeFirewall()
+    fw = WorldWideWeb.__new__(WorldWideWeb)
+    fw.name = "web"
     fw.login = Login()
     monkeypatch.setattr(fw, "not_for_here", lambda: "")
     monkeypatch.setattr(fw, "world_view", lambda make=True: view)
@@ -201,7 +207,7 @@ def test_the_traffic_is_watched_all_the_time_on_the_users_switch(monkeypatch):
         fw.world_watching("sometimes")
     # also one of the plugin's keys, beside the hosts' recording: kept on its page, followed at once
     key = firewall_module.WATCH_KEY
-    assert fw.keys[-1] is key and key.name == firewall_module.WATCH_VAR and not key.secret
+    assert fw.keys[1] is key and key.name == firewall_module.WATCH_VAR and not key.secret
     assert key.hint.startswith("optional") and "all the time the platform runs" in key.hint
     net = SimpleNamespace(forget_setting=lambda: None, follow=lambda **_: None)
     monkeypatch.setattr(fw, "netstat_view", lambda make=True: net)

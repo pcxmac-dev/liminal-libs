@@ -1,4 +1,5 @@
-"""The firewall base's GeoIP sources (1.101.0, Monday list item 20): the three hooks only a person signed in at the
+"""The World Wide Web tab's GeoIP sources (1.101.0, Monday list item 20; the Firewall base's until 1.105.0, the World
+Wide Web plugin's base's since, machines/worldweb.py): the three hooks only a person signed in at the
 platform's page may ask, each refusing any other ask itself; the licence's acceptance kept in that person's own login
 store, or nothing downloaded, and the licences file never written; DB-IP's two old installs downloading as before, with
 no record, for any other asker; a source not offered refused before anything is read; the choice kept through the
@@ -16,8 +17,10 @@ from liminal_libs.apps.asking import PAGE, asking
 from liminal_libs.apps.authorization import LICENCE
 from liminal_libs.machines import geosources, world
 from liminal_libs.machines.firewall import Firewall
+from liminal_libs.machines.hostsvia import HostsVia
 from liminal_libs.machines.infrastructure import Index
 from liminal_libs.machines.netstat import NetstatView
+from liminal_libs.machines.worldweb import WorldWideWeb
 from liminal_libs.machines.world import LicenceRefused, WorldView
 from liminal_libs.sources.keys import KeyVar
 
@@ -75,23 +78,55 @@ class Fetches:
         return io.BytesIO(self.pages[url])
 
 
-class Sourced(FakeFirewall):
+class Recording(FakeFirewall):
+    """The firewall serving a Sourced tab: a stand-in socket table, its hosts database the test's (`book`) or the
+    suite's in tmp_path."""
+
+    name = "recording-firewall"
+
+    def __init__(self, sourced, book=None):
+        super().__init__()
+        self.sourced, self.book = sourced, book
+
+    def make_netstat_view(self):
+        return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.sourced.login,
+                           book=self.book, clock=Clock(), wall=Clock(NOW))
+
+
+class Sourced(WorldWideWeb):
+    """A stand-in World Wide Web plugin naming GeoIP sources, its firewall a Recording asked in this process."""
+
     name = "sourced-firewall"
+    title = "A stand-in World Wide Web plugin"
+    about = "its GeoIP sources"
+    api = "2.1"
+    order = 950
     GEOIP_SOURCES = tuple(source_dicts(offered=False))
 
-    def __init__(self, folder, fetch, **more):
-        super().__init__(**more)
+    def __init__(self, folder, fetch, book=None):
         self.folder, self.fetch = folder, fetch
         self.login = EnvironmentLogin(env={})
+        self.wall = Recording(self, book)
+
+    def present(self) -> bool:
+        return True
+
+    def firewall(self) -> str:
+        return self.wall.name
+
+    def firewalls(self) -> list[str]:
+        return [self.wall.name]
+
+    def _seen(self) -> dict:
+        return self.wall.netstat_seen()
+
+    def _ask(self, hook, *args):
+        return getattr(self.wall, hook)(*args)
 
     def make_world_view(self):
         return WorldView(self.name, capture_factory=Feed, geo_folder=self.folder, clock=Clock(), wall=Clock(NOW),
                          fetch=self.fetch, sources=self.world_sources(),
                          resolve=lambda version, servers: (None, "no name server answers in a test"))
-
-    def make_netstat_view(self):
-        return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.login,
-                           clock=Clock(), wall=Clock(NOW))
 
 
 @pytest.fixture
@@ -114,7 +149,8 @@ def test_the_three_hooks_are_the_pages_alone():
     assert internal.problems(fw) == []
     names = dict(fw.KEEPS)
     assert geosources.VAR in names and "licence-dbip-lite" in names and "licence-ipinfo-lite" not in names
-    assert Firewall.GEOIP_SOURCES == () and Firewall.world_sources(FakeFirewall()) is None
+    assert WorldWideWeb.GEOIP_SOURCES == () and WorldWideWeb.__new__(WorldWideWeb).world_sources() is None
+    assert not hasattr(Firewall, "world_sources")  # 1.105.0: the firewalls name no GeoIP source
 
 
 @needs_reader
@@ -248,11 +284,7 @@ def test_removing_the_default_sources_file_clears_what_it_placed(tmp_path, licen
     from test_hostbook import NUREMBERG, T0, WEB, atlas, row, win
     book = HostBook(tmp_path / "hosts" / "hosts.db")
 
-    class Booked(Sourced):
-        def make_netstat_view(self):
-            return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.login,
-                               book=book, clock=Clock(), wall=Clock(NOW))
-    fw = Booked(tmp_path / "geoip", Fetches({}))
+    fw = Sourced(tmp_path / "geoip", Fetches({}), book=book)  # 1.105.0: the firewall's database, cleared through it
     geo.install_mmdb(mmdb(PLACES, built=NOVEMBER), tmp_path / "geoip", "dbip-city-lite-2026-11")
     geo.install_mmdb(mmdb(ASNS, kind="DBIP-ASN-Lite"), geo.asn_folder(tmp_path / "geoip"), "dbip-asn-lite-2026-11")
     win(book, T0, row(started=T0))
@@ -293,11 +325,13 @@ def test_the_hosts_recorded_view_keeps_the_sources_table_and_its_buttons(tmp_pat
 # -- the user's 11b and 13a: the older installs and a data set's download are the page's alone, by the base; a data
 # set's licence accepted at the page is kept as DB-IP's are ---------------------------------------------------------------
 def test_the_older_installs_and_a_data_sets_download_are_the_pages_alone_in_the_base():
-    plain = FakeFirewall()  # names none of its own: the base's alone
-    assert {"world_geoip", "world_asn", "world_layer_get"} <= set(Firewall.PAGE_ONLY_HOOKS)
+    plain = WorldWideWeb.__new__(WorldWideWeb)  # names none of its own: the base's alone
+    plain.name = "plain-web"
+    assert {"world_geoip", "world_asn", "world_layer_get"} <= set(WorldWideWeb.PAGE_ONLY_HOOKS)
     assert {"world_geoip", "world_asn", "world_layer_get", "world_geoip_get", "world_geoip_use",
             "world_geoip_remove"} <= set(internal.page_only(plain))
     assert internal.problems(plain) == [] and internal.problems(Sourced(None, None)) == []
+    assert internal.problems(FakeFirewall()) == [] and not set(internal.page_only(FakeFirewall()))
 
 
 class Layered(Sourced):
@@ -310,9 +344,9 @@ class Layered(Sourced):
         self.downloads, self.layers = downloads, layers
 
     def make_netstat_view(self):
-        return NetstatView(self.name, reader=lambda: socket_table(), names={}, login_of=lambda: self.login,
-                           index=Index(self.layers, self.INFRASTRUCTURE), fetch=self.downloads,
-                           clock=Clock(), wall=Clock(NOW))
+        return NetstatView(self.name, reader=self._seen, book=HostsVia(self._ask, self.firewall), names={},
+                           login_of=lambda: self.login, index=Index(self.layers, self.INFRASTRUCTURE),
+                           fetch=self.downloads, clock=Clock(), wall=Clock(NOW), records=False)
 
 
 def layered(tmp_path):
