@@ -34,6 +34,10 @@ A NetstatView is one firewall plugin's (machines/firewall.py makes it, `Firewall
   made in that view.
 - The filters are this view's, one for every page that shows the tab, kept until the plugin is detached; a pick also
   sets the globe to the hosts recorded. The data sets are downloaded only on the user's word, as a job (`get`).
+- 1.105.0 (Monday list item 33): the World Wide Web tab is plugin-platform-worldwideweb's, and its view is made with
+  `records=False`, the globe's mode. It records nothing: its `reader` answers a firewall's reading (that firewall's
+  `touch`, asked through the platform), its `book` is a hostsvia.HostsVia asking that firewall's hosts database, and
+  it starts no thread, keeps no recording setting and forgets nothing (the firewall records the hosts).
 
 Nothing here starts a process or opens a window; nothing runs while no tab asks unless the user chose always. Every
 outside thing is a test's stand-in when given (the reader, the book, the index, the login, the hosts file's names)."""
@@ -259,11 +263,18 @@ class NetstatView:
     set's download; world.fetch_url when None), `names` (() -> {address: name}; sockets.known_names when None). `agent`:
     the User-Agent of a download (the plugin's name and version). `refused`: the words of the plugin's data sets that
     could not be read. `clock` is monotonic (a test's own), `wall` the time of day. Thread-safe: the platform asks from
-    a thread per request."""
+    a thread per request.
+
+    `records` (1.105.0): False for the World Wide Web plugin's view, the globe's mode. `reader` then answers a reading
+    as a firewall's `touch` does ({"reading", "rows" judged, "error"}), and `book` is that firewall's hosts database as
+    hostsvia.HostsVia asks it; nothing is fed, no thread starts, and the recording setting and the forgetting are
+    refused in words (the firewall records the hosts)."""
 
     def __init__(self, name: str, *, reader=None, book=None, index=None, login_of=None, listeners=None, app_ports=None,
-                 fetch=None, agent: str = "", names=None, refused=(), clock=time.monotonic, wall=time.time):
+                 fetch=None, agent: str = "", names=None, refused=(), clock=time.monotonic, wall=time.time,
+                 records: bool = True):
         self.name = str(name or "")
+        self.records = bool(records)
         self._reader, self._book, self._login_of = reader, book, login_of
         self.index = index if index is not None else Index()
         self._listeners, self._app_ports, self._fetch, self._names_of = listeners, app_ports, fetch, names
@@ -298,8 +309,17 @@ class NetstatView:
         return self._book
 
     def elsewhere(self) -> str:
-        """Why the hosts database is not kept from here ("" when it is): its folder is on another system's drive."""
+        """Why the hosts database is not kept from here ("" when it is): its folder is on another system's drive. In the
+        globe's mode (records=False), what the firewall keeping it says."""
+        if not self.records:
+            said = getattr(self.book, "elsewhere", None)
+            return str(said() or "") if callable(said) else ""
         return hostbook.foreign(self.book.path)
+
+    def _recorder(self) -> str:
+        """1.105.0: who records the hosts, in words, for the globe's mode's refusals."""
+        owner = getattr(self._book, "owner", "") if self._book is not None else ""
+        return f"the hosts are recorded by {owner or 'the firewall'}, and set on its own page"
 
     def _login(self):
         if not callable(self._login_of):
@@ -336,6 +356,13 @@ class NetstatView:
         return self._mode()[0]
 
     def _mode(self) -> tuple[str, str]:
+        if not self.records:  # 1.105.0: the firewall's own setting, as it said it
+            said = getattr(self.book, "mode", None)
+            try:
+                word = str(said() or "") if callable(said) else ""
+            except Exception:  # noqa: BLE001 - a firewall that cannot say: shown
+                word = ""
+            return (word if word in hostbook.MODES else "shown"), ""
         now = self.clock()
         with self._lock:
             kept = self._setting
@@ -365,7 +392,9 @@ class NetstatView:
     def set_mode(self, mode) -> dict:
         """Recording set to "shown" or "always" and kept through the plugin's login; the recording thread started or
         stopped as it says. ValueError, in words: neither word, a folder on another system's drive, no login, a login
-        that keeps nothing."""
+        that keeps nothing; in the globe's mode (records=False), always, as the firewall records the hosts."""
+        if not self.records:
+            raise ValueError(self._recorder())
         word = _word(mode)
         if word not in hostbook.MODES:
             raise ValueError(f"recording is shown or always, not {world_module._shown(mode)}")
@@ -398,7 +427,7 @@ class NetstatView:
         kept from the attach: no thread then). Not after close(), nor on a folder of another system's drive."""
         if once is not None:
             self._once = bool(once)
-        if self.closed:
+        if self.closed or not self.records:  # 1.105.0: the globe's mode records nothing
             return
         if not self._once and self.mode() == "always" and not self.elsewhere():
             self._start()
@@ -407,7 +436,7 @@ class NetstatView:
 
     def _start(self) -> None:
         with self._lock:
-            if self.closed or self.recording():
+            if self.closed or not self.records or self.recording():
                 return
             halt = self._halt = threading.Event()
             thread = threading.Thread(target=self._run, args=(halt,), name=f"{self.name or 'firewall'}-hosts",
@@ -489,9 +518,35 @@ class NetstatView:
         """A reading of the socket table no older than sockets.READ_S, judged and fed to the hosts database exactly
         once, and written: {"reading" (its own facts, its rows left out), "rows" (judged), "error" (why the last
         try failed, "")}. Every ask of the Netstat or the World Wide Web tab makes one, and the recording thread's
-        rounds; they share it. The file is let go after it unless recording runs all the time."""
+        rounds; they share it. The file is let go after it unless recording runs all the time. In the globe's mode
+        (records=False, 1.105.0), the firewall's own reading, as its `reader` answers it, kept sockets.READ_S here."""
+        if not self.records:
+            return self._via()
         seen = self._take()
         self._flush()
+        return {"reading": seen.reading, "rows": seen.rows, "error": seen.error}
+
+    def _via(self) -> dict:
+        """1.105.0: the globe's mode's reading, the firewall's (`reader`), kept sockets.READ_S; a failure in words."""
+        now = self.clock()
+        with self._lock:
+            seen = self._seen
+            if self.closed or (seen is not None and 0 <= now - seen.at < sockets.READ_S):
+                seen = seen or _NOTHING
+                return {"reading": seen.reading, "rows": seen.rows, "error": seen.error}
+        try:  # asked with no lock of this view held: the firewall's touch takes its own
+            got = self._reader() if callable(self._reader) else None
+            if not isinstance(got, Mapping):
+                raise ValueError("no firewall answered a reading")
+            rows = [dict(r) for r in got.get("rows") or () if isinstance(r, Mapping)]
+            reading = got.get("reading")
+            seen = _Seen(now, dict(reading) if isinstance(reading, Mapping) else None, rows,
+                         str(got.get("error") or ""), len(rows))
+        except Exception as e:  # noqa: BLE001 - no reading: said, the last one kept, asked again later
+            seen = _Seen(now, seen.reading if seen else None, seen.rows if seen else [], f"{type(e).__name__}: {e}",
+                         seen.count if seen else 0)
+        with self._lock:
+            self._seen = seen
         return {"reading": seen.reading, "rows": seen.rows, "error": seen.error}
 
     def _take(self) -> _Seen:
@@ -516,7 +571,7 @@ class NetstatView:
             return seen
 
     def _feed(self, reading: dict, rows: list) -> None:
-        if not reading.get("system"):  # no socket table is read on this system: nothing to keep
+        if not self.records or not reading.get("system"):  # none read on this system, or none kept here (1.105.0)
             return
         try:
             self.book.feed(rows, reading.get("at"), starts=bool(reading.get("starts")),
@@ -787,7 +842,10 @@ class NetstatView:
     def forget(self, accept_forget=False) -> dict:
         """Every row of the hosts database removed, on the user's word asked twice: hostbook.ForgetRefused (naming
         accept_forget, which the page asks as a second confirmation) unless `accept_forget` is exactly True. ValueError
-        for a folder on another system's drive; OSError, in words, when the file cannot be emptied."""
+        for a folder on another system's drive; OSError, in words, when the file cannot be emptied. In the globe's mode
+        (records=False, 1.105.0), a ValueError: the firewall forgets its own."""
+        if not self.records:
+            raise ValueError(self._recorder())
         elsewhere = self.elsewhere()
         if elsewhere:
             raise ValueError(elsewhere)

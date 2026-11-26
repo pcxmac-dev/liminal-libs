@@ -1174,17 +1174,19 @@ class HostBook:
         if not keep_open:
             self._close()
 
-    def place(self, lookup, stamp, most: int = PLACE_ROWS) -> int:
+    def place(self, lookup, stamp, most: int = PLACE_ROWS, only=None) -> int:
         """The internet's rows with no place looked up yet, or one from an older GeoIP file, looked up and kept: the
         `most` last seen of them; how many were looked up. `lookup(host)` answers a geo.Place (or a mapping of its
         keys), None where the file has no place: GeoIP.lookup. `stamp` is the GeoIP file's own date, as text
         ("2026-11-01"): it is kept on each row looked up, so a host the file has no point for is not asked again
         until a newer file is here. A local host is never looked up. Ask `unplaced(stamp)` first, and open the GeoIP
-        file only when it is not 0."""
+        file only when it is not 0. `only` (1.105.0): the hosts looked up elsewhere (a firewall handed the World Wide
+        Web plugin's places): a row of any other host is left as it is, to be placed at a later call."""
         with self._lock:
             if not self._ready():
                 return 0
             stamp, most = _clip(stamp, PLACE_STAMP), _most(most)
+            only = None if only is None else {str(h) for h in only}
             self.stamp = stamp
             was_open = self._conn is not None
             try:
@@ -1195,6 +1197,8 @@ class HostBook:
                     "SELECT program, host, proto, port, direction FROM hosts WHERE network = ? AND (placed IS NULL OR "
                     "placed <> ?) ORDER BY last DESC, program, host, proto, port, direction LIMIT ?",
                     (INTERNET, stamp, most)).fetchall()
+                if only is not None:
+                    rows = [row for row in rows if row[1] in only]
                 if not rows:
                     return 0
                 found: dict[str, tuple] = {}
@@ -1436,6 +1440,20 @@ class HostBook:
         stamp = _clip(stamp, PLACE_STAMP)
         self.stamp = stamp  # 1.101.0: what a new connection's place is taken from
         return self._read(lambda conn: conn.execute(sql, (INTERNET, stamp)).fetchone()[0], 0)
+
+    def unplaced_hosts(self, stamp, most: int = PLACE_ROWS) -> list[str]:
+        """1.105.0: the hosts `place(lookup, stamp, most)` would look up, each once, in the order it takes them: the
+        internet's rows with no place yet, or one from a GeoIP file older than `stamp`, the `most` last seen. A firewall
+        asks the World Wide Web plugin's places of these, then hands its answers to `place`."""
+        stamp, most = _clip(stamp, PLACE_STAMP), _most(most)
+        if not most:
+            return []
+        sql = ("SELECT host FROM hosts WHERE network = ? AND (placed IS NULL OR placed <> ?) "
+               "ORDER BY last DESC, program, host, proto, port, direction LIMIT ?")
+
+        def hosts(conn: sqlite3.Connection) -> list[str]:
+            return list(dict.fromkeys(row[0] for row in conn.execute(sql, (INTERNET, stamp, most))))
+        return self._read(hosts, [])
 
     def clear_places(self, role: str, pattern: str, *, bare: bool = False) -> int:
         """1.101.0: the places a source gave in `role` taken out, where no file in use can place them: rows whose

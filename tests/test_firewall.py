@@ -104,7 +104,7 @@ def test_the_firewall_plugin_conforms_and_reports():
     # 1.65.0: the Netstat tab, the hosts' recording, the globe's filters and its layers, each a hook of the base's, and
     # what it says of them sound (its tabs' hooks, a read that is no job and accepts no refusal, each with its line)
     assert set(netstat.HOOKS) <= set(fw.interface()["hooks"]) and internal.problems(fw) == []
-    assert fw.READ_HOOKS == ("wanted", "world_layer", "world_sky") and fw.netstat_listeners() == {}
+    assert fw.READ_HOOKS[:3] == ("wanted", "world_layer", "world_sky") and fw.netstat_listeners() == {}
     assert fw.ask("allow", "asked", [9000]).name == "asked" and fw.ask("remove", "asked") is True
     fw.allow("web", (8443,), detail="a test")
     with pytest.raises(FirewallError):

@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .. import sockets
+from .. import hostbook as hostbook_module, sockets
 from ..apps import asking
 from ..apps.authorization import (PREFERENCE, Unauthorized, accept_licence as keep_licence, asking_login, keep, keeps,
                                    licence_pair, recall)
@@ -73,6 +73,15 @@ APP_PORTS = (  # the framework's own pages: (the app, the variable moving it, it
 )  # these four and no other (the user, 2026-11-14: "i only want ports for liminal-login ; liminal-platform ;
 # liminal-charts ; liminal-integrator"; 1.52.0: the integrator's login at 8796 gone, a login inherited is an object in
 # its app, at that app's port)
+# 1.105.0: what the World Wide Web plugin may ask of the hosts database (Firewall.hosts_found), and its bounds
+HOSTS_FOUND = ("places", "programs", "ports", "hosts", "sums", "describe", "changes", "unplaced", "unplaced_hosts")
+HOSTS_QUERY = ("program", "proto", "port", "direction", "since", "limit", "most", "stamp")
+MAX_HOPS = 64  # hops of a route kept (as HostBook.keep_route keeps them)
+PLACES_MOST = 2000  # places handed in one ask, at most
+RULES_COVERING = 200  # rules covering a port, at most
+SERVICE_READS = ("netstat_seen", "hosts_found", "hosts_routes", "rules_covering")
+SERVICE_CHANGES = ("hosts_keep_route", "hosts_keep_places", "hosts_clear_places")
+SERVICES = (*SERVICE_READS, *SERVICE_CHANGES)
 _WORLD_LOCK = threading.Lock()  # a plugin's WorldView made once, however many asks come at once
 _NETSTAT_LOCK = threading.Lock()  # ... and its NetstatView
 # 1.104.0: the sgp4 package's licence accepted at the page, kept in the person's own store (the user's 13a), one pair
@@ -83,6 +92,18 @@ SKY_LICENCE = "sgp4-{version}"
 def sky_licence(version) -> str:
     """The name the sgp4 package's licence acceptance is kept under for that version (its pair: licence-<this>)."""
     return SKY_LICENCE.format(version=str(version))
+
+
+def _plain(value):
+    """1.105.0: an answer to another plugin as plain JSON (tuples as lists, anything else as its words)."""
+    return json.loads(json.dumps(value, default=str))
+
+
+def _count(value, default: int) -> int:
+    """A count another plugin asked (limit, most): a whole number from 1 to `default`, else `default`."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return min(value, default)
 
 
 class FirewallError(CommandError):
@@ -240,10 +261,17 @@ class Firewall(MachinePlugin):
              # recording set and its rows forgotten; world_show, world_direction, world_within and world_pick, what the
              # globe shows; world_layer, a layer's geometry (a read); world_layer_get and world_layer_remove, a data
              # set downloaded (a job) and removed
-             *netstat.HOOKS)
+             *netstat.HOOKS,
+             # 1.105.0: what the World Wide Web plugin asks of a firewall (SERVICE_HOOKS)
+             *SERVICES)
     # its reads beside MachinePlugin's (Plugin.READ_HOOKS): world and netstat read as its tabs' hooks; world_layer reads
-    # a layer's file on this machine for the globe (the page asks it, and it writes no log line)
-    READ_HOOKS = ("wanted", netstat.LAYER_HOOK, netstat.SKY_HOOK)  # 1.104.0: world_sky, the satellites' places
+    # a layer's file on this machine for the globe (the page asks it, and it writes no log line); 1.104.0: world_sky, the
+    # satellites' places; 1.105.0: the services' reads
+    READ_HOOKS = ("wanted", netstat.LAYER_HOOK, netstat.SKY_HOOK, *SERVICE_READS)
+    # 1.105.0: other plugins ask these through the platform (the World Wide Web plugin, plugin-platform-worldwideweb);
+    # the changes among them only another plugin may ask, never a page
+    SERVICE_HOOKS = SERVICES
+    PLUGIN_ONLY_HOOKS = SERVICE_CHANGES
     STEPS = STEPS
     ICON = "shield"
     GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS
@@ -1145,6 +1173,141 @@ class Firewall(MachinePlugin):
             return satellites.remove_package(sky.package, sky.data_dir)
         finally:  # placed with it no more: a folder marked removed is not loaded again (satellites.load_package)
             sky.sky._package = None
+
+    # -- 1.105.0: what the World Wide Web plugin asks of a firewall (Monday list item 33) ------------------------------
+    # plugin-platform-worldwideweb draws the World Wide Web tab; what only a firewall knows it asks through the platform,
+    # never importing a firewall. Each hook refuses on a machine the plugin is not for, asks no other plugin and holds
+    # none of this plugin's locks while another plugin asks it, so the two cannot wait on each other.
+    def netstat_seen(self) -> dict:
+        """The socket table's reading now, as the Netstat tab has it, for the World Wide Web tab: its open connections.
+
+        A read for another plugin (SERVICE_HOOKS): one reading shared with this plugin's own tabs (NetstatView.touch),
+        which counts as a tab shown for the hosts' recording, as the World Wide Web tab of this plugin counted until
+        1.105.0. Its rows are cut at netstat.FLOW_ROWS and are plain JSON: {"reading", "rows", "error"}."""
+        self._only_here()
+        seen = self.netstat_view().touch()
+        rows = list(seen.get("rows") or ())[:netstat.FLOW_ROWS]
+        return _plain({"reading": seen.get("reading"), "rows": rows, "error": seen.get("error") or ""})
+
+    def hosts_found(self, what, query=None):
+        """The hosts recorded, as the World Wide Web tab's hosts view asks the hosts database (a read for another plugin).
+
+        `what` is one of HOSTS_FOUND: the places, programs, ports or hosts that pass the filters in `query` (program,
+        proto, port, direction, since, and limit or most), their sums, the database's facts (with the recording's mode
+        and why it is kept elsewhere, if it is), how many rows are not placed as of a GeoIP stamp, or those hosts. Plain
+        JSON; a ValueError, in words, for anything else."""
+        self._only_here()
+        word = str(what or "").strip()
+        if word not in HOSTS_FOUND:
+            raise ValueError(f"the hosts found are {', '.join(HOSTS_FOUND)}, not {world_module._shown(what)}")
+        q = dict(query) if isinstance(query, dict) else {}
+        unknown = sorted(set(q) - set(HOSTS_QUERY))
+        if unknown:
+            raise ValueError(f"a hosts query names {', '.join(HOSTS_QUERY)}, not {', '.join(map(str, unknown))}")
+        net = self.netstat_view()
+        book = net.book
+        filters = {k: q[k] for k in ("program", "proto", "port", "direction", "since") if k in q}
+        if word == "describe":
+            facts = dict(book.describe() or {})
+            return _plain({**facts, "mode": net.mode(), "elsewhere": net.elsewhere(), "changes": book.changes})
+        if word == "changes":
+            return int(book.changes)
+        if word in ("unplaced", "unplaced_hosts"):
+            stamp = str(q.get("stamp") or "")
+            if word == "unplaced":
+                return int(book.unplaced(stamp))
+            return list(book.unplaced_hosts(stamp, _count(q.get("most"), hostbook_module.PLACE_ROWS)))
+        net._flush()  # what is pending written first, as the view's own hosts view does
+        if word == "places":
+            drawn, rest = book.places(**filters, most=_count(q.get("most"), world_module.MAX_DRAWN))
+            return _plain([drawn, rest])
+        if word == "sums":
+            return _plain(book.sums(**filters))
+        limit = _count(q.get("limit"), netstat.MOST)
+        if word == "hosts":
+            return _plain(book.hosts(**filters, limit=limit))
+        return _plain(getattr(book, word)(limit=limit, **filters))  # programs, ports
+
+    def hosts_routes(self, addresses=None):
+        """The routes traced and kept in the hosts database, read back for the World Wide Web tab (a read).
+
+        With no addresses, the hosts that have a route (each is not traced again); with addresses, their routes as the
+        last check found them (HostBook.routes_of)."""
+        self._only_here()
+        book = self.netstat_view().book
+        if addresses is None:
+            return sorted(book.routed())
+        if not isinstance(addresses, (list, tuple)):
+            raise ValueError("the routes are asked of a list of addresses")
+        return _plain(book.routes_of([str(a) for a in addresses[:hostbook_module.ROUTES_OF] if a]))
+
+    def hosts_keep_route(self, remote, traced, reached, how, hops, way) -> dict:
+        """A route the World Wide Web plugin traced, kept in this plugin's hosts database (asked only by another plugin).
+
+        Plain values only, at most MAX_HOPS hops, each a mapping: a ValueError, in words, otherwise. Kept with the
+        database's next write (HostBook.keep_route)."""
+        self._only_here()
+        if not isinstance(remote, str) or not remote or not isinstance(hops, (list, tuple)):
+            raise ValueError("a route is kept of an address and its hops")
+        if len(hops) > MAX_HOPS or any(not isinstance(h, dict) for h in hops):
+            raise ValueError(f"a route has at most {MAX_HOPS} hops, each a mapping")
+        if isinstance(traced, bool) or not isinstance(traced, (int, float)):
+            raise ValueError("a route's time is a number of seconds")
+        self.netstat_view().book.keep_route(remote, traced, bool(reached), str(how or ""), _plain(list(hops)),
+                                            str(way or ""))
+        return {"ok": True}
+
+    def hosts_keep_places(self, stamp, places) -> dict:
+        """The places the World Wide Web plugin's GeoIP files gave the hosts this database has none for, kept (asked
+        only by another plugin).
+
+        `places` is {address: a place's mapping (country, country_name, city, lat, lon, asn, org) or None}, of the hosts
+        hosts_found("unplaced_hosts") named for `stamp`; the rows are placed as of `stamp` (HostBook.place)."""
+        self._only_here()
+        if not isinstance(places, dict):
+            raise ValueError("the places are a mapping of addresses")
+        found = {str(k): (v if isinstance(v, dict) else None) for k, v in list(places.items())[:PLACES_MOST]}
+        view = self.netstat_view()
+        if view.elsewhere():
+            return {"ok": False, "placed": 0}
+        placed = view.book.place(found.get, str(stamp or ""), only=found) if found else 0
+        view.replaced()
+        return {"ok": True, "placed": int(placed)}
+
+    def hosts_clear_places(self, role, pattern, bare=False) -> dict:
+        """The places a GeoIP source gave, cleared from the hosts database when the World Wide Web plugin removed its file
+        (asked only by another plugin): placed again at the next ask (HostBook.clear_places)."""
+        self._only_here()
+        if role not in geosources.ROLES or not isinstance(pattern, str) or not pattern:
+            raise ValueError("places are cleared of a role (places or networks) and a stamp's pattern")
+        view = self.netstat_view()
+        if view.elsewhere():
+            return {"ok": False, "cleared": 0}
+        cleared = view.book.clear_places(role, pattern, bare=bool(bare))
+        view.replaced()
+        return {"ok": True, "cleared": int(cleared or 0)}
+
+    def rules_covering(self, port, proto="tcp") -> list[dict]:
+        """The firewall's rules covering a port, for the World Wide Web tab's port picked (a read).
+
+        Every rule this firewall lists (Liminal's and the others'), whose ports name the port or that names none, of the
+        protocol or of any: [{name, label, direction, action, enabled, owned, group, why}], RULES_COVERING at most. A
+        subclass that knows more of its rules (their programs, their remote addresses) refines it."""
+        self._only_here()
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+            raise ValueError(f"a port is a number from 1 to 65535, not {world_module._shown(port)}")
+        if proto not in ("tcp", "udp"):
+            raise ValueError(f"a port's protocol is tcp or udp, not {world_module._shown(proto)}")
+        out = []
+        for rule in self.list_rules(owned_only=False):
+            if rule.protocol not in (proto, "any") or (rule.ports and port not in rule.ports):
+                continue
+            out.append({"name": rule.name, "label": rule.label, "direction": rule.direction, "action": rule.action,
+                        "enabled": rule.enabled, "owned": rule.owned, "group": "",
+                        "why": f"port {port}/{proto}" if rule.ports else "every port"})
+            if len(out) >= RULES_COVERING:
+                break
+        return out
 
     # -- attached, told, detached --------------------------------------------------------------------------------------
     def attach(self, app, login=None) -> dict:
