@@ -236,7 +236,8 @@ def test_every_firewall_has_the_world_wide_web_tab_its_hooks_and_its_setting():
     assert (Firewall.GEOIP_ASN_URL, Firewall.GEOIP_ASN_LICENCE) == ("", "")  # none unless the plugin names one
     assert Firewall.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and Firewall.INFRASTRUCTURE == ()
     assert Firewall.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.101.0
-                                        "world_geoip", "world_asn", "world_layer_get")  # the user's 11b
+                                        "world_geoip", "world_asn", "world_layer_get",  # the user's 11b
+                                        "world_sky_get", "world_sky_remove")  # 1.104.0's review: the sgp4 package's
     assert Firewall.GEOIP_SOURCES == ()
     assert {"allow", "remove", "move_rules"} <= set(hooks)  # what was there stays
     assert (Firewall.GEOIP_URL, Firewall.GEOIP_LICENCE, Firewall.ATTRIBUTION, Firewall.PUBLIC_DNS) == ("", "", {}, ())
