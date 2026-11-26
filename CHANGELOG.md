@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.102.0 (2026-11-26)
+
+More GeoIP sources for the firewalls' World Wide Web tab, phase 1 (Monday list item 20; the user, 2026-11-19: "add a
+way to download different GEOIP sources"; the design of 2026-11-24 with the user's answers of 2026-11-25). The framework
+for a choice of sources, places and networks chosen apart, DB-IP the default for both; DB-IP's two licence acceptances
+recorded in the signed-in person's own login store; three hooks only that person may ask from the platform's page; and
+IPinfo Lite for networks built whole but not offered (a plugin names it with `offered: false`: no card, no key asked,
+nothing downloaded) until the user says yes. MaxMind GeoLite2 (phase 2) and IP2Location LITE (phase 3) are not built.
+Nothing changes for DB-IP until another source is chosen, but that each acceptance of its licence is now recorded.
+- **`machines/geosources.py`** (new). A plugin's GEOIP_SOURCES (plain dicts: every host, address, licence and credit
+  its own) read as `GeoSource` and `GeoFile` and refused in words as a data set is: https only, no user name in an
+  address, plain host names, a known role (places, networks), packing (mmdb, mmdb.gz), shape (geoip2, ipinfo-lite),
+  checksum and way of sending a key, licence words of 1,500 characters at most ending with the pointer to the full
+  licence, a credit of 160 at most, and an offered source's keys among those the plugin declares. `folder` keeps each
+  source's files apart (the default's in geoip/ and geoip/asn/, as before; any other in geoip/<id>/ and its asn/), so
+  no install prunes another source's file. `due` says fresh, update or expired from a file's build date, asking nobody;
+  `stamp` and `cleared` are the places' stamps. A key is read only in its download's job, through the asking person's
+  login (`credentials`), checked (`checked`: keys.clean, then the maker's form), and never said: `redact` takes it out
+  of every word in the forms an error may print it (as typed, percent-encoded both ways, repr-escaped, its base64 and
+  the base64 of id:key).
+- **`geo.py`.** `install_mmdb(..., packing=, name_of=, sha256=)`: a plain or a gzipped file insisted on, a fixed
+  address's file named from its own build date after the check (never "download"), and the bytes as downloaded
+  compared with the maker's SHA-256 before anything is put in place. `GeoIP.find(asn=, usable=)`: the networks file
+  read beside (the folder's own asn/ as before, none, or another folder's), and a `usable` test that passes over a file
+  too old to be read, in `find_asn`, the new `newest` and a let-go reader's reopening too. `remove` closes every reader
+  of a file for good, then removes it and its notes (<stem>.json), which the prune takes with their file as well.
+- **`machines/world.py`.** `fetch_url(hosts=)`: a redirect followed, and the answer taken, from the hosts a source
+  names for its storage (none: the same host alone, as the data sets keep it). A keyed download's failure is said in
+  fixed words, its status and host alone (`_fixed`: the key refused, the storage host's signed address refused, the
+  maker's limit), raised after the except block. `WorldView(sources=)` opens the chosen places and networks files
+  (a choice whose file is missing, too old or of a source not offered falls back to the default's, said in words),
+  lets a file too old to be read go at whichever ask finds it, and answers the "GeoIP sources" table, whose Use…,
+  Download… (Update… once one is due) and Remove… take the place of the two install buttons. `get` downloads a month's
+  file as `install` does, into the source's folder, or a fixed address's with its checksum asked first (the newest
+  installed already: nothing downloaded), its SHA-256 compared, its notes beside it (never a key, a token or an
+  address); `remove` takes a file and its notes, or leaves one Windows still holds unread and says so.
+- **`hostbook.py` and `machines/netstat.py`.** A host is placed again whenever its stamp is not the one of the files
+  in use (`placed <> ?`, kept to PLACE_STAMP, 64 characters): the default source's stamp is the places file's date, as
+  before, so no row placed already is placed again; any other pair's is `#<places>:<date>+<networks>:<date>`. A new
+  connection takes its host's place only from a row those files placed. `HostBook.clear_places` takes one source's
+  places out of hosts and connections by role. The Netstat view's stamp is the WorldView's, and `replaced()` forgets
+  it, so a switch places the hosts again at the next ask.
+- **`machines/firewall.py`.** `GEOIP_SOURCES`, read when the view is made. `world_geoip_get` (a job, which Cancel
+  stops), `world_geoip_use` and `world_geoip_remove` (asked twice: `geosources.RemovalRefused`, naming
+  accept_removal) are in `PAGE_ONLY_HOOKS`, and each refuses itself any ask but a person's signed in at the page
+  (the page asks it, and the asking login keeps settings): "sign in on the platform's page, then ask again". A
+  download's acceptance is kept with `accept_licence(..., file=False)` in that person's store, or the download is
+  refused with nothing fetched. `world_geoip` and `world_asn` now ask the default source's files: they record the
+  acceptance only for such an ask, and for any other download as before and record nothing. The choice is kept per
+  machine through the plugin's login (LIMINAL_GEOIP_SOURCES while it keeps no settings); on a Linux platform, whose
+  login keeps a value only until it stops, another source is not used. The globe's credit is the places file's in use.
+- **`sources/keys.py`.** `KeyVar.personal`: a key kept in each person's own login store, typed on the login's page and
+  read through the asking person's login, never through the app's (the platform's Settings leave it out: its own
+  release). None is declared yet.
+- **`apps/authorization.py`.** `accept_licence(..., file=False)`: kept in the person's own store or not at all
+  (Unauthorized with a login that keeps none, or a store that refuses); the licences file is never read or written.
+  The default is 1.88.0's.
+- **The way back.** An older library asks `placed < ?`, and `#` sorts before every digit, so it places every row a
+  new source placed again from DB-IP. Before an older library is put back, Remove… every file that is not DB-IP's: its
+  folder is never read by an older library, and its places are cleared.
+- **The plugins.** Their own releases name GEOIP_SOURCES (firewall-windows 0.9.0, firewall-linux 0.12.0). Their
+  tests pin JOB_HOOKS, CANCEL_HOOKS and the page-only hooks as whole tuples, so they fail against this release until
+  then: the three land together, the library first.
+- Tests: `tests/test_geosources.py` (new), `tests/test_firewall_geoip.py` (new), and new cases in test_geo.py,
+  test_world.py, test_hostbook.py, test_netstat.py, test_authorization.py and test_settings_through_login.py, every
+  one on stand-ins (`no_outside`), canary keys holding a tab, a space, %, &, # and a non-ASCII character. Restated:
+  the Firewall base's hook count (test_internal.py, 21 to 24 and 28 to 31), JOB_HOOKS and CANCEL_HOOKS
+  (test_world.py), a stamp's 64 characters and an older file's stamp placing again (test_hostbook.py).
+
 ## 1.100.0 (2026-11-25)
 
 A piped child's reader, its own run's alone; and the tests of a child, by their order. CI failed on windows-latest
