@@ -31,7 +31,7 @@ from . import journal
 from .shared import ROOT_HEAD, Refused, clean_words, sh_word
 
 __all__ = ["Action", "Step", "Guard", "Plan", "Outcome", "Folder", "Refused", "WrongPassword", "chain", "prefixes",
-           "TOOLS", "SCRIPT_MAX", "CHAINS", "LOCK"]
+           "TOOLS", "SCRIPT_MAX", "CHAINS", "LOCK", "known"]
 
 SCRIPT_MAX = 96 * 1024  # bytes: Linux takes 128 KiB in one argument (MAX_ARG_STRLEN), and sudo logs the whole of it
 LOCK = "/run/liminal-linux.lock"
@@ -40,6 +40,16 @@ CHAINS = (journal.FOLDER, "/etc/sysusers.d")
 TOO_LARGE = "this change is too large to hand to sudo in one piece"
 CHANGED = "this system changed since you confirmed: review it again"
 HELD = "another Linux administration change is running"
+
+
+KNOWN_MAX = 32
+_KNOWN: dict = {}  # the plans whose script was made last, by its sha256: the stand-in plays the plan of a script
+
+
+def known(script: str) -> "Plan | None":
+    """The Plan whose script this is, among the last KNOWN_MAX made in this process; None for any other text. The
+    stand-in machine plays a script's Actions by it, since no test may run sh."""
+    return _KNOWN.get(hashlib.sha256(script.encode("utf-8")).hexdigest())
 
 
 class WrongPassword(Refused):
@@ -258,6 +268,9 @@ class Plan:
         text = "\n".join(out) + "\n"
         if len(text.encode("utf-8")) > SCRIPT_MAX:
             raise Refused(TOO_LARGE)
+        _KNOWN[hashlib.sha256(text.encode("utf-8")).hexdigest()] = self
+        while len(_KNOWN) > KNOWN_MAX:
+            del _KNOWN[next(iter(_KNOWN))]
         return text
 
     @property

@@ -39,8 +39,10 @@ where = ["src"]
 [tool.setuptools.package-data]
 # the icons and the theme every app serves beside its page; vendor/world: the globe's land and borders
 # (liminal-globe.js), and vendor/world/coast-h its coast tiles past 24x (a glob takes no folder's files);
-# ebpf/scripts: the bpftrace programs the Linux watch runs
-liminal_libs = ["ui/static/*", "ui/static/vendor/world/*", "ui/static/vendor/world/coast-h/*", "ebpf/scripts/*.bt"]
+# ebpf/scripts: the bpftrace programs the Linux watch runs; linuxsys/recorded: the recorded Linux machines the
+# stand-in plays (every suite that tests Linux administration runs on them)
+liminal_libs = ["ui/static/*", "ui/static/vendor/world/*", "ui/static/vendor/world/coast-h/*", "ebpf/scripts/*.bt",
+                "linuxsys/recorded/*/*", "linuxsys/recorded/*/overlays/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

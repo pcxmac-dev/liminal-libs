@@ -1,0 +1,9 @@
+{
+ "source": "overlay, written 2026-11-26: sudo's listing gives ALL without a password, as a cloud image's first user has (90-cloud-init-users: pat ALL=(ALL) NOPASSWD:ALL)",
+ "sudo": {
+  "asks": false,
+  "kind": "sudo",
+  "listing": "Matching Defaults entries for pat on Ubuntu:\n    env_reset, mail_badpass,\n    secure_path=/usr/local/sbin\\:/usr/local/bin\\:/usr/sbin\\:/usr/bin\\:/sbin\\:/bin, use_pty\n\nUser pat may run the following commands on Ubuntu:\n    (ALL : ALL) ALL\n    (ALL) NOPASSWD: ALL\n",
+  "whose": "self"
+ }
+}

@@ -1,0 +1,1 @@
+written 2026-11-26 from the read of the user's WSL Ubuntu on 2026-11-17 (linuxperm map-existing.md section 1: Ubuntu 24.04.5, systemd 255.4, sudo 1.9.15p5 asking a password for everything, shadow 4.13, Debian's adduser, systemd-sysusers with no /etc/sysusers.d, AppArmor off) and Ubuntu noble's base passwd and group; the person's name is replaced by pat
