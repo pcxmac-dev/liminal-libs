@@ -267,3 +267,49 @@ def test_a_link_passes_on_only_the_linked_apps_own_cookies_when_told():
         front.server_close()
         up.shutdown()
         up.server_close()
+
+
+def test_a_bound_apps_wait_is_passed_back_with_its_answer():
+    """1.98.0 (PASSED_BACK gains Retry-After): liminal-login answers 429 with Retry-After once too many sign-ins have
+    failed, and an app's front that passes its pages' requests on (the charts' front, with the platform's login behind
+    it) dropped the header, so the wait was in the answer's words alone. It is passed back with the status and the
+    body, as the bound app said it; an answer that says none gets none."""
+
+    class Busy(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            wait = self.path == "/api/sign-in"
+            body = json.dumps({"error": "too many failed sign-ins: try again in 60 s"} if wait else {"signedOut": True}).encode()
+            self.send_response(429 if wait else 200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            if wait:
+                self.send_header("Retry-After", "60")
+            self.end_headers()
+            self.wfile.write(body)
+
+    up = ThreadingHTTPServer(("127.0.0.1", 0), Busy)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    front = ThreadingHTTPServer(("127.0.0.1", 0), _front(f"http://127.0.0.1:{up.server_address[1]}"))
+    threading.Thread(target=front.serve_forever, daemon=True).start()
+
+    def post(path):
+        conn = HTTPConnection("127.0.0.1", front.server_address[1], timeout=5)
+        try:
+            conn.request("POST", path, body=b"{}", headers={"Content-Type": "application/json", web.WRITE_HEADER: "1"})
+            r = conn.getresponse()
+            return r.status, json.loads(r.read()), r.getheader("Retry-After")
+        finally:
+            conn.close()
+
+    try:
+        assert post("/demo/api/sign-in") == (429, {"error": "too many failed sign-ins: try again in 60 s"}, "60")
+        assert post("/demo/api/sign-out") == (200, {"signedOut": True}, None)
+    finally:
+        front.shutdown()
+        front.server_close()
+        up.shutdown()
+        up.server_close()

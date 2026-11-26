@@ -4,7 +4,7 @@ calls will point to liminal-libs"."""
 
 import os
 
-__version__ = "1.97.0"
+__version__ = "1.98.0"
 
 
 def limit_threads() -> None:

@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.98.0 (2026-11-25)
+
+A request a front handed on, told from one a program on this machine sent: the library's half of LOG-C1 (the
+independent review checked 2026-11-23, rated high; the user, 2026-11-23: "The two high ones"). liminal-login's Docker
+recipe (its docker/) gave anyone who reached it a passwordless admin session. Its front, Caddy in the login's own
+network, connects from 127.0.0.1 as a program here does and hands every request on as `Host: 127.0.0.1:8795` with no
+Origin, so the login took everyone who reached the front for someone at the machine: `POST /api/sign-in/secret` signed
+them in as secret (the admin) or default with no password, and `POST /api/users` made accounts without a session. A
+front now marks what it hands on, and an app tells that from what a program here sends by the mark; under the mark, a
+request that carries a front's word on where the browser was or how it came is not a program's here either. The
+login's half is its next release, whose floor rises to this one: its front sets the mark, a sign-in without a password
+and an account made without a session ask `from_this_machine`, its sign-in throttle counts by `peer`, and its session
+cookie is Secure behind TLS (`forwarded_https`). Additive: nothing renamed or removed, an app that asks none of these
+answers as before, and the plugin API stays 2.4.
+
+- **The front's mark** (`web.FRONT_HEADER`, X-Liminal-Front): a front beside an app (liminal-login's docker/Caddyfile,
+  `header_up X-Liminal-Front 1`) sets it on every request it hands on, over whatever a client sent.
+  `web.handed_on(handler)`: the request carries it, whatever its value, empty too, its name in any case.
+- **From this machine** (`web.from_this_machine(handler)`): sent from a loopback address and not handed on.
+  `web.loopback(address)`: 127.0.0.0/8, ::1, or an IPv4 one written as IPv6 (::ffff:127.0.0.1), a zone id left off. A
+  peer elsewhere, a peer that is no address, or no peer known (a stand-in handler) is not this machine. A login an app
+  holds is asked with the browser's own request, its peer and headers as they came (`serve_object` copies them), so a
+  page here is from this machine there too, and what a front handed on is not.
+- **A net under the mark** (`web.FRONT_SAYS`: X-Forwarded-For, X-Forwarded-Proto): a request that carries either,
+  whatever it says, empty too, is not from this machine, marked or not. The review of this change (2026-11-25): by the
+  mark alone, an app that holds a local login (the platform, the charts, the integrator) behind a front set up without
+  the mark let everyone who reached it in as its admin, as LOG-C1 found the Docker login. Caddy writes both unasked, and
+  no page or program of Liminal's sends either, so such a front now hands nothing on as a program's here. Its word on
+  the address is still believed only with the mark (`peer`), and `handed_on` is still the mark's. The mark stays what
+  a front must set: nginx's plain `proxy_pass` and a TCP forward write neither. The README says so, for whatever hands
+  requests on to an app's port, and that a mark does not by itself make an app fit to be reached from elsewhere (the
+  frame's own `/api/` routes ask no session).
+- **Where it came from** (`web.peer(handler)`): the address it was sent from; for a request a front handed on, the last
+  of X-Forwarded-For, which the front writes itself, cut to 64 characters, else the front's own. The last of its last
+  line when it comes on several (`web.header_lines(handler, name)`: every line of a header, in the order sent): Caddy
+  writes one line, HAProxy's forwardfor adds the front's line under a client's, and `headers.get` gives one of
+  several without promising which. A program here that names another address is not believed. The login's throttle
+  counts by it.
+- **Over https** (`web.forwarded_https(handler)`): the first of X-Forwarded-Proto says https, as Caddy writes it; a
+  cookie set then may be Secure, sent over https alone. A program here reaches an app over http and says no such thing.
+- **An app's front passes a mark on and adds none** (`apps.FORWARDED`, `forward`): web.FRONT_HEADER, X-Forwarded-For
+  (every line of it, as one list in the order sent) and X-Forwarded-Proto go to the bound app as they came. What a TLS
+  front handed one app's front is not from this machine at the app behind it either, marked or by its word alone; a
+  page here still is (the charts' front passing the platform's login on, say).
+- **An app's front passes a wait back** (`apps.PASSED_BACK` gains Retry-After): the login answers 429 with Retry-After
+  once too many sign-ins or sign-up codes have failed, and passed back by an app's front (the charts' front, the
+  platform's login behind it) the header was dropped: the wait was left in the answer's words alone. The last check of
+  this change (2026-11-25) saw it. At an app's own port and behind Caddy the header arrived already.
+- Tests: tests/test_web_front.py (9 tests, 39 cases): the helpers asked of stand-in handlers, then real servers on
+  127.0.0.1 (port 0) answering a request from here, one a front marked and one that carries a front's word with no
+  mark, X-Forwarded-For on one line and on two: directly, through `apps.forward`, and through a login an app holds. No
+  process started and no network. tests/test_binding.py, one more: a bound app's 429 passed back through a front with
+  its Retry-After.
+
+Reviewed before landing, with the login's half: three lenses (security, what it breaks, whether the tests can fail),
+each finding put to a second check. One was the library's, the net under the mark above. What it changes on a machine:
+a browser whose requests to 127.0.0.1 pass through something that adds X-Forwarded-For or X-Forwarded-Proto (a
+debugging proxy) is no longer at the machine, and the secret user's way in is refused to it. No such thing is known on
+this one; what its browser sends was not looked at.
+
 ## 1.97.0 (2026-11-25)
 
 The service interface's last library pass (INTERFACE-GAPS.md P1 to P5 and S1 to S5) and an image built here

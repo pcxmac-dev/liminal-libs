@@ -35,6 +35,16 @@ command (`machines/hub.py`). Who may ask a hook is a plugin's word too (1.66.0):
 another plugin, and `PAGE_ONLY_HOOKS`, asked only from its page (`apps/asking.py` says who asks; INTEGRATION.md says
 the rest).
 
+An app behind a front (1.98.0). Every app answers 127.0.0.1 alone, and whatever hands requests on to its port (a
+reverse proxy beside it, its TLS end) connects from there as a program of the machine does. It must set
+`X-Liminal-Front: 1` on every request it hands on, over whatever a client sent (`web.FRONT_HEADER`; Caddy:
+`header_up X-Liminal-Front 1`; nginx: `proxy_set_header X-Liminal-Front 1;`): the mark is how `web.from_this_machine`
+tells them from a program's here. An app that holds a local login lets a request from this machine in as its secret
+user, the admin, without a password, so behind a front with no mark it lets in everyone who reaches the front. A net
+under the mark: a request that carries X-Forwarded-For or X-Forwarded-Proto is not this machine's either. That covers a
+front that writes them unasked (Caddy) and not one that writes neither (nginx's plain `proxy_pass`, a TCP forward). A
+mark does not by itself make an app fit to be reached from elsewhere: the frame's own `/api/` routes ask no session.
+
 The workspace (`layout.py`): one folder holds `common/` (this library's checkout), `app/` (the chart app),
 `store/` (the integrator, the databases in `store/data/`) and `plugins/` (a checkout per plugin, loaded from
 there by the registry). Found by its four folders above this checkout, or named by `LIMINAL_HOME`.

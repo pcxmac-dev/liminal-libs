@@ -28,9 +28,15 @@ from .login import SESSION_HEADER
 # The request headers passed on to a bound app: who the page is (the charts profile cookie and
 # header, the login session), that it is the app's own page (the write header), what it accepts. Not
 # where it comes from (Origin, Sec-Fetch-Site: the front checked them; the bound app takes a request
-# saying neither)
-FORWARDED = ("Cookie", "Content-Type", "Accept", "Last-Event-ID", web.WRITE_HEADER, web.PROFILE_HEADER, SESSION_HEADER)
-PASSED_BACK = ("Content-Type", "Cache-Control", "X-Content-Type-Options")
+# saying neither). A TLS front's mark is passed on as it came, with its word on where the browser was and
+# how it came (web.FRONT_HEADER, X-Forwarded-For, X-Forwarded-Proto), and never added: what such a front
+# handed this app is not from this machine at the bound app either, and a page here still is
+FORWARDED = ("Cookie", "Content-Type", "Accept", "Last-Event-ID", web.WRITE_HEADER, web.PROFILE_HEADER, SESSION_HEADER,
+             web.FRONT_HEADER, "X-Forwarded-For", "X-Forwarded-Proto")
+# The answer's headers passed back to the page, beside its status, its body and its cookies. Retry-After among them
+# (1.98.0): a bound app that says how long to wait (the login's 429 once too many sign-ins have failed) is heard
+# through a front as at its own port; until then the wait was in the answer's words alone
+PASSED_BACK = ("Content-Type", "Cache-Control", "X-Content-Type-Options", "Retry-After")
 START_SECONDS = 30.0  # how long wait_for waits for an app to answer, at the most
 
 
@@ -121,6 +127,8 @@ def forward(handler, method: str, url: str, path: str, *, cookie_path: str | Non
     body = handler.rfile.read(length) if length else None
     target = urlsplit(url)
     headers = {name: value for name in FORWARDED if (value := handler.headers.get(name)) is not None}
+    if "X-Forwarded-For" in headers:  # every line of it, in the order sent: its last is the front's own (web.peer)
+        headers["X-Forwarded-For"] = ", ".join(web.header_lines(handler, "X-Forwarded-For"))
     if (drop_cookies or keep_cookies) and headers.get("Cookie"):
         kept = []
         for c in (c.strip() for c in headers["Cookie"].split(";")):

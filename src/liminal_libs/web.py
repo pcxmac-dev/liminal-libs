@@ -12,6 +12,7 @@ Windows as well, where the standard one lets a second server share it.
 Nothing here opens a database."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
@@ -26,6 +27,15 @@ PROFILE_COOKIE = "mc_profile"  # the chart app's profile this browser signed in 
 # The profile a page loaded as, sent with its writes: a tab left open as one profile while another
 # tab signed in as a second (or out) wrote its lists over the second's (the cookie names the newest)
 PROFILE_HEADER = "X-Liminal-Profile"
+# A front (a reverse proxy beside an app, its TLS end: liminal-login's docker/Caddyfile) sets it on every request it hands
+# on, over whatever a client sent. It connects from this machine too, so its mark tells the requests of anyone who
+# reaches the front from those of a program here (from_this_machine). Never set by the apps' own fronts (apps.binding),
+# which pass on a mark they were handed and add none
+FRONT_HEADER = "X-Liminal-Front"
+# A front's word on where the browser was and how it came: read by peer and forwarded_https, and passed on by the apps'
+# own fronts as they came (apps.binding.FORWARDED). Caddy writes both unasked, and no page or program of Liminal's sends
+# either, so a request that carries one was handed on by something, marked or not (from_this_machine)
+FRONT_SAYS = ("X-Forwarded-For", "X-Forwarded-Proto")
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 ALWAYS = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"))
 NO_BODY = (HTTPStatus.ACCEPTED, HTTPStatus.NO_CONTENT)  # send_json sends these with no body when their data is None
@@ -154,6 +164,66 @@ def from_this_app(handler) -> bool:
         return True
     refuse(handler, HTTPStatus.FORBIDDEN, b"forbidden: not from this app's pages")
     return False
+
+
+def loopback(address) -> bool:
+    """Whether an address is this machine's own: 127.0.0.0/8, ::1, or an IPv4 one written as IPv6 (::ffff:127.0.0.1)."""
+    try:
+        ip = ipaddress.ip_address(str(address or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+
+
+def handed_on(handler) -> bool:
+    """Whether a front handed the request on: it carries the front's mark (FRONT_HEADER), whatever its value, empty too."""
+    return handler.headers.get(FRONT_HEADER) is not None
+
+
+def from_this_machine(handler) -> bool:
+    """Whether a request was sent by a program on this machine itself: from a loopback address, and not handed on by a
+    front. A front beside an app connects from loopback as well (Caddy in the app's own network, docker/), so what it
+    hands on, the requests of anyone who reaches it, is told apart by its mark (FRONT_HEADER). A net under the mark: a
+    request that carries a front's word on where the browser was or how it came (FRONT_SAYS), whatever it says, empty
+    too, is not from this machine either, so a front set up without the mark that writes them, as Caddy does unasked,
+    still lets nobody be someone at the machine. The mark stays what a front must set: nginx's plain proxy_pass and a
+    TCP forward write neither, and what they hand on reads as a program's here. What only someone at the machine may do
+    asks this: a sign-in without a password, an account made without a session (liminal-login). A request with no peer
+    known (a stand-in handler) is not from this machine."""
+    address = getattr(handler, "client_address", None) or ("",)
+    if handed_on(handler) or any(handler.headers.get(name) is not None for name in FRONT_SAYS):
+        return False
+    return loopback(address[0])
+
+
+def header_lines(handler, name: str) -> list[str]:
+    """Every line a request carries of one header, in the order sent. `headers.get` gives one of several and does not
+    promise which, and several read as one list (RFC 9110, 5.3): a front may add its own line under a client's where
+    another writes one line (X-Forwarded-For: HAProxy's forwardfor). A stand-in's plain dict of headers has one."""
+    every = getattr(handler.headers, "get_all", None)
+    found = every(name) if every is not None else [handler.headers.get(name)]
+    return [str(value) for value in found or () if value is not None]
+
+
+def peer(handler) -> str:
+    """Where a request came from, as far as an app can tell: the address it was sent from; for one a front handed on,
+    the address the front says it was reached from (the last of X-Forwarded-For, of its last line when it has several:
+    the one the front writes itself, whatever a client sent before it), else the front's own. What a sign-in's throttle
+    counts by (liminal-login)."""
+    address = getattr(handler, "client_address", None) or ("",)
+    if handed_on(handler):
+        said = ",".join(header_lines(handler, "X-Forwarded-For")).rsplit(",", 1)[-1].strip()
+        if said:
+            return said[:64]
+    return str(address[0])
+
+
+def forwarded_https(handler) -> bool:
+    """Whether the browser reached a front over https, as the front says (X-Forwarded-Proto: the scheme the first of
+    them was reached by, which Caddy writes itself over whatever a client sent). A cookie set then is Secure, so that the
+    browser sends it over https alone; a program on this machine reaches an app over http and says no such thing."""
+    said = (handler.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+    return said == "https"
 
 
 def cookie(handler, name: str) -> str | None:
