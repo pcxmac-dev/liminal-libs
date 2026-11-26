@@ -907,7 +907,10 @@ class NetstatView:
                 page["note"] = made.note
                 page.pop("charts", None)
                 page.pop("watching", None)
-                tables = [self._first(c, made), *made.tables]
+                # 1.102.0: the GeoIP sources' table the frame kept, its buttons with it
+                kept = [t for t in page.get("tables") or ()
+                        if isinstance(t, dict) and t.get("title") == world_module.SOURCES_TITLE]
+                tables = [self._first(c, made), *made.tables, *kept]
             else:
                 tables = [self._first(c, None), *[t for t in page.get("tables") or () if isinstance(t, dict)]]
                 if (page.get("watching") or {}).get("error"):
@@ -931,18 +934,21 @@ class NetstatView:
                 world.rest()
 
     def _frame(self, world, *, home=None, public=None, attribution=None, can_install: bool = True, licence: str = "",
-               source: str = "", asn_source: str = "", asn_licence: str = "") -> dict:
+               source: str = "", asn_source: str = "", asn_licence: str = "", keys=None) -> dict:
         """The tab's page with no traffic in it, from the WorldView's own words: the globe's home (the user's place, or
         this network's public address placed), its places' attribution, the notes on the GeoIP file and its install
-        offered where none is (an empty count of traffic stands in, so nothing counted is read or thrown away)."""
+        offered where none is (an empty count of traffic stands in, so nothing counted is read or thrown away). With
+        GeoIP sources (1.102.0), their table is the one table kept, its buttons shown from `keys` (the key names set in
+        the asking person's login store, as WorldView.page)."""
         if world is None or getattr(world, "closed", False):
             return {"title": world_module.TITLE, "note": "Nothing is shown now: the plugin was detached.", "globe": {}}
         readable, unreadable = geo.available()
         geoip = world.geoip() if readable else None
         page = world._page(world.watcher.status(), traffic.TrafficBook().snapshot(), world.wall(), None, readable,
                            unreadable, geoip, home, public, attribution, can_install, licence, source,
-                           asn_source=asn_source, asn_licence=asn_licence)  # 1.75.0: the ASN file's offer
-        page["tables"] = []
+                           asn_source=asn_source, asn_licence=asn_licence, keys=keys)  # 1.75.0: the ASN file's offer
+        page["tables"] = [t for t in page.get("tables") or ()
+                          if isinstance(t, dict) and t.get("title") == world_module.SOURCES_TITLE]
         return page
 
     def _first(self, c: Choice, made: _Made | None) -> dict:

@@ -719,11 +719,12 @@ class Firewall(MachinePlugin):
             attribution = (view.credits() or {}).get("places") or attribution
         frame = {"home": self.world_home(view), "public": self.PUBLIC_DNS, "attribution": attribution,
                  "can_install": bool(self.GEOIP_URL), "licence": self.GEOIP_LICENCE, "source": self.GEOIP_URL,
-                 "asn_source": self.GEOIP_ASN_URL, "asn_licence": self.GEOIP_ASN_LICENCE}  # 1.75.0
+                 "asn_source": self.GEOIP_ASN_URL, "asn_licence": self.GEOIP_ASN_LICENCE,  # 1.75.0
+                 "keys": self._geoip_keys(view)}  # 1.102.0: for the sources' table, in either view
         page = None
         if net.shows() == "traffic":
             view.touch()
-            page = view.page(**frame, keys=self._geoip_keys(view))
+            page = view.page(**frame)
         page = net.onto(page, view, **frame)
         try:
             routes.onto(page, view.geoip(), remotes, index=net.index, licence=frame["licence"])  # 1.69.0, 1.71.0

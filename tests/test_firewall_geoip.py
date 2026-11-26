@@ -270,3 +270,19 @@ def test_removing_the_default_sources_file_clears_what_it_placed(tmp_path, licen
     gone = "country" if role == "places" else "asn"
     assert all(c[gone] in (None, "") for c in book.connections())
     fw.detach()
+
+
+@needs_reader
+def test_the_hosts_recorded_view_keeps_the_sources_table_and_its_buttons(tmp_path):
+    """Review finding: the hosts view's frame threw every table of the traffic page away, the GeoIP sources' too, so
+    its forms were kept with no button pointing at them and DB-IP's file could not be updated from that view."""
+    fw, _ = firewall(tmp_path)
+    geo.install_mmdb(mmdb(PLACES, built=NOVEMBER), tmp_path / "geoip", "dbip-city-lite-2026-11")
+    fw.world_show("hosts")
+    page = fw.world()
+    (table,) = [t for t in page["tables"] if t.get("title") == world.SOURCES_TITLE]
+    buttons = [b for r in table["rows"] for b in r[5:] if b]
+    assert {b["title"] for b in buttons} >= {"Download…", "Remove…"}  # the ASN file to download, the city file's remove
+    forms = {f["id"] for f in page.get("forms", ())}
+    assert {b["form"] for b in buttons} <= forms
+    fw.detach()
