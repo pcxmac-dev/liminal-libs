@@ -1,0 +1,1 @@
+written 2026-11-26 from L/machines/wsl.py (useradd -m -s /bin/bash liminal at Liminal-Ubuntu's setup: a login user, no password, not in sudo; USERGROUPS_ENAB gives it the group liminal 1000) on the user's Ubuntu 24.04 base

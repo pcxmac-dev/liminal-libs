@@ -1,0 +1,57 @@
+{
+ "env": {},
+ "execs": [
+  "/bin/false"
+ ],
+ "files": {
+  "/.dockerenv": "",
+  "/etc/group": "root:x:0:\nnogroup:x:65534:\n",
+  "/etc/os-release": "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nID=debian\nVERSION_ID=\"13\"\n",
+  "/etc/passwd": "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/bin/false\n",
+  "/proc/1/comm": "sleep\n",
+  "/proc/mounts": "overlay / overlay rw,relatime,lowerdir=/l,upperdir=/u,workdir=/w 0 0\n",
+  "/proc/self/status": "Name:\tcat\nUmask:\t0022\nState:\tR (running)\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\nNoNewPrivs:\t0\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n",
+  "/proc/sys/kernel/arch": "x86_64\n",
+  "/proc/sys/kernel/osrelease": "6.8.0-88-generic\n"
+ },
+ "folders": {
+  "/": "0 0 755 -",
+  "/etc": "0 0 755 -",
+  "/usr": "0 0 755 -",
+  "/usr/local": "0 0 755 -",
+  "/var": "0 0 755 -",
+  "/var/lib": "0 0 755 -"
+ },
+ "groupnames": "root",
+ "groups": "0",
+ "id": "0 root",
+ "sudo": {},
+ "time": 1764100000,
+ "tools": {
+  "cat": "/usr/bin/cat",
+  "chgrp": "/usr/bin/chgrp",
+  "chmod": "/usr/bin/chmod",
+  "cut": "/usr/bin/cut",
+  "date": "/usr/bin/date",
+  "env": "/usr/bin/env",
+  "id": "/usr/bin/id",
+  "install": "/usr/bin/install",
+  "ls": "/usr/bin/ls",
+  "mkdir": "/usr/bin/mkdir",
+  "mv": "/usr/bin/mv",
+  "readlink": "/usr/bin/readlink",
+  "rm": "/usr/bin/rm",
+  "rmdir": "/usr/bin/rmdir",
+  "sed": "/usr/bin/sed",
+  "sh": "/usr/bin/sh /usr/bin/dash",
+  "sha256sum": "/usr/bin/sha256sum",
+  "sort": "/usr/bin/sort",
+  "stat": "/usr/bin/stat",
+  "sync": "/usr/bin/sync",
+  "tr": "/usr/bin/tr",
+  "uname": "/usr/bin/uname"
+ },
+ "versions": {
+  "ls": "ls (GNU coreutils) 9.7"
+ }
+}

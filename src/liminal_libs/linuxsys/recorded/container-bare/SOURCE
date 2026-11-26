@@ -1,0 +1,1 @@
+written 2026-11-26: a container with no init and no account tool (an image made from a root file system with coreutils alone), run as root; Docker's /.dockerenv

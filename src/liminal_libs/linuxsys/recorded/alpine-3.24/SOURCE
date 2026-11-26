@@ -1,0 +1,1 @@
+written 2026-11-26 from the linuxperm research (Alpine 3.24.4: BusyBox 1.37.0's adduser, addgroup, deluser, delgroup and flock, ids 100-999 lowest free first, /sbin/nologin, doas in main, no sudo, OpenRC, no login.defs)

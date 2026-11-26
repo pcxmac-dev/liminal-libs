@@ -1,0 +1,1 @@
+written 2026-11-26 from the linuxperm research (Tumbleweed: Defaults targetpw with ALL ALL=(ALL) ALL, so sudo asks root's password; system ids 201-499; systemd 262.2; SELinux since 20250211; sudo-policy-wheel-auth-self not installed)

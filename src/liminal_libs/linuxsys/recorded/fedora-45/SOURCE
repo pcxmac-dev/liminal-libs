@@ -1,0 +1,1 @@
+written 2026-11-26 from the linuxperm research (Fedora 45: shadow-utils 4.20.0, systemd 262.2, sudo 1.9.17, system ids 201-999, SELinux enforcing, unified bin with nologin in /usr/bin, /etc/sudoers.d 0750)

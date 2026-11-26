@@ -1,0 +1,83 @@
+{
+ "env": {},
+ "execs": [
+  "/usr/sbin/nologin",
+  "/sbin/nologin",
+  "/bin/false"
+ ],
+ "files": {
+  "/etc/group": "root:x:0:\ndaemon:x:1:\nbin:x:2:\nsys:x:3:\nadm:x:4:\ntty:x:5:\ndisk:x:6:\nwww-data:x:33:\nshadow:x:42:\nsudo:x:27:pat\nusers:x:100:pat\nnogroup:x:65534:\nsystemd-journal:x:999:\nsystemd-network:x:998:\nsystemd-timesync:x:997:\nmessagebus:x:996:\npat:x:1000:\n",
+  "/etc/login.defs": "UID_MIN\t\t\t 1000\nUID_MAX\t\t\t60000\nGID_MIN\t\t\t 1000\nGID_MAX\t\t\t60000\nUSERGROUPS_ENAB yes\n",
+  "/etc/os-release": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nID=ubuntu\nID_LIKE=\"debian\"\nVERSION_ID=\"26.04\"\n",
+  "/etc/passwd": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nbin:x:2:2:bin:/bin:/usr/sbin/nologin\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\nsystemd-network:x:998:998:systemd Network Management:/:/usr/sbin/nologin\nsystemd-timesync:x:997:997:systemd Time Synchronization:/:/usr/sbin/nologin\nmessagebus:x:996:996::/nonexistent:/usr/sbin/nologin\npat:x:1000:1000:Pat,,,:/home/pat:/bin/bash\n",
+  "/proc/1/comm": "systemd\n",
+  "/proc/mounts": "/dev/vda2 / ext4 rw,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev 0 0\n",
+  "/proc/self/status": "Name:\tcat\nUmask:\t0022\nState:\tR (running)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t27 100 1000\nNoNewPrivs:\t0\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n",
+  "/proc/sys/kernel/arch": "x86_64\n",
+  "/proc/sys/kernel/osrelease": "7.0.0-14-generic\n"
+ },
+ "folders": {
+  "/": "0 0 755 -",
+  "/etc": "0 0 755 -",
+  "/run/systemd/system": "0 0 755 -",
+  "/usr": "0 0 755 -",
+  "/usr/local": "0 0 755 -",
+  "/var": "0 0 755 -",
+  "/var/lib": "0 0 755 -"
+ },
+ "groupnames": "sudo users pat",
+ "groups": "27 100 1000",
+ "id": "1000 pat",
+ "sudo": {
+  "asks": true,
+  "kind": "sudo-rs",
+  "listing": null,
+  "refuses": "sudo: interactive authentication is required\n",
+  "whose": "self"
+ },
+ "time": 1764100000,
+ "tools": {
+  "awk": "/usr/bin/awk /usr/bin/mawk",
+  "cat": "/usr/bin/cat",
+  "chgrp": "/usr/bin/chgrp",
+  "chmod": "/usr/bin/chmod",
+  "cut": "/usr/bin/cut",
+  "date": "/usr/bin/date",
+  "env": "/usr/bin/env",
+  "flock": "/usr/bin/flock",
+  "getent": "/usr/bin/getent",
+  "gpasswd": "/usr/bin/gpasswd",
+  "groupadd": "/usr/sbin/groupadd",
+  "groupdel": "/usr/sbin/groupdel",
+  "id": "/usr/bin/id",
+  "install": "/usr/bin/install",
+  "ls": "/usr/bin/ls",
+  "mkdir": "/usr/bin/mkdir",
+  "mv": "/usr/bin/mv",
+  "readlink": "/usr/bin/readlink",
+  "rm": "/usr/bin/rm",
+  "rmdir": "/usr/bin/rmdir",
+  "sed": "/usr/bin/sed",
+  "sh": "/usr/bin/sh /usr/bin/dash",
+  "sha256sum": "/usr/bin/sha256sum",
+  "sort": "/usr/bin/sort",
+  "stat": "/usr/bin/stat",
+  "su": "/usr/bin/su",
+  "sudo": "/usr/bin/sudo",
+  "sync": "/usr/bin/sync",
+  "systemctl": "/usr/bin/systemctl",
+  "systemd-sysusers": "/usr/bin/systemd-sysusers",
+  "tr": "/usr/bin/tr",
+  "uname": "/usr/bin/uname",
+  "useradd": "/usr/sbin/useradd",
+  "userdel": "/usr/sbin/userdel",
+  "usermod": "/usr/sbin/usermod"
+ },
+ "versions": {
+  "flock": "flock from util-linux 2.41.5",
+  "ls": "ls (uutils coreutils) 0.2.2",
+  "sudo": "sudo-rs 0.2.13",
+  "systemctl": "systemd 259 (259.5-1ubuntu1)",
+  "systemd-sysusers": "systemd 259 (259.5-1ubuntu1)"
+ }
+}

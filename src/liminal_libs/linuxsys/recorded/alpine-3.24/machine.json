@@ -1,0 +1,69 @@
+{
+ "env": {},
+ "execs": [
+  "/sbin/nologin",
+  "/bin/false"
+ ],
+ "files": {
+  "/etc/group": "root:x:0:root\nbin:x:1:root,bin,daemon\ndaemon:x:2:root,bin,daemon\nsys:x:3:root,bin,adm\nadm:x:4:root,adm,daemon\ntty:x:5:\ndisk:x:6:root,adm\nwheel:x:10:root,pat\nwww-data:x:82:\nusers:x:100:games\nnogroup:x:65533:\nnobody:x:65534:\npat:x:1000:\n",
+  "/etc/os-release": "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.24.4\nPRETTY_NAME=\"Alpine Linux v3.24\"\n",
+  "/etc/passwd": "root:x:0:0:root:/root:/bin/sh\nbin:x:1:1:bin:/bin:/sbin/nologin\ndaemon:x:2:2:daemon:/sbin:/sbin/nologin\ngames:x:35:35:games:/usr/games:/sbin/nologin\nwww-data:x:82:82:Linux User,,,:/home/www-data:/sbin/nologin\nnobody:x:65534:65534:nobody:/:/sbin/nologin\npat:x:1000:1000:Pat:/home/pat:/bin/sh\n",
+  "/proc/1/comm": "init\n",
+  "/proc/mounts": "/dev/vda2 / ext4 rw,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev 0 0\n",
+  "/proc/self/status": "Name:\tcat\nUmask:\t0022\nState:\tR (running)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t10 1000\nNoNewPrivs:\t0\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n",
+  "/proc/sys/kernel/arch": "x86_64\n",
+  "/proc/sys/kernel/osrelease": "6.12.58-0-lts\n"
+ },
+ "folders": {
+  "/": "0 0 755 -",
+  "/etc": "0 0 755 -",
+  "/usr": "0 0 755 -",
+  "/usr/local": "0 0 755 -",
+  "/var": "0 0 755 -",
+  "/var/lib": "0 0 755 -"
+ },
+ "groupnames": "wheel pat",
+ "groups": "10 1000",
+ "id": "1000 pat",
+ "sudo": {},
+ "time": 1764100000,
+ "tools": {
+  "addgroup": "/usr/sbin/addgroup /bin/busybox",
+  "adduser": "/usr/sbin/adduser /bin/busybox",
+  "awk": "/bin/awk /bin/busybox",
+  "busybox": "/bin/busybox",
+  "cat": "/bin/cat /bin/busybox",
+  "chgrp": "/bin/chgrp /bin/busybox",
+  "chmod": "/bin/chmod /bin/busybox",
+  "cut": "/bin/cut /bin/busybox",
+  "date": "/bin/date /bin/busybox",
+  "delgroup": "/usr/sbin/delgroup /bin/busybox",
+  "deluser": "/usr/sbin/deluser /bin/busybox",
+  "doas": "/usr/bin/doas",
+  "env": "/bin/env /bin/busybox",
+  "flock": "/bin/flock /bin/busybox",
+  "getent": "/usr/bin/getent",
+  "id": "/bin/id /bin/busybox",
+  "install": "/bin/install /bin/busybox",
+  "ls": "/bin/ls /bin/busybox",
+  "mkdir": "/bin/mkdir /bin/busybox",
+  "mv": "/bin/mv /bin/busybox",
+  "readlink": "/bin/readlink /bin/busybox",
+  "rm": "/bin/rm /bin/busybox",
+  "rmdir": "/bin/rmdir /bin/busybox",
+  "sed": "/bin/sed /bin/busybox",
+  "sh": "/bin/sh /bin/busybox",
+  "sha256sum": "/bin/sha256sum /bin/busybox",
+  "sort": "/bin/sort /bin/busybox",
+  "stat": "/bin/stat /bin/busybox",
+  "su": "/bin/su /bin/busybox",
+  "sync": "/bin/sync /bin/busybox",
+  "tr": "/bin/tr /bin/busybox",
+  "uname": "/bin/uname /bin/busybox"
+ },
+ "versions": {
+  "busybox": "BusyBox v1.37.0 (2026-10-02 08:11:42 UTC) multi-call binary.",
+  "flock": "flock: unrecognized option: version",
+  "ls": "ls: unrecognized option: version"
+ }
+}

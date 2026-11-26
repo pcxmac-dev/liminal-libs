@@ -1,0 +1,1 @@
+written 2026-11-26 from the linuxperm research (NixOS 26.05: accounts declared and written by activation, sudo a set-uid wrapper in /run/wrappers/bin, systemd 260.5, nologin in /run/current-system/sw/bin)

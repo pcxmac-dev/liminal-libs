@@ -1,0 +1,82 @@
+{
+ "env": {},
+ "execs": [
+  "/run/current-system/sw/bin/nologin"
+ ],
+ "files": {
+  "/etc/NIXOS": "",
+  "/etc/group": "root:x:0:\nwheel:x:1:pat\nusers:x:100:pat\nnogroup:x:65534:\nsystemd-journal:x:62:\nmessagebus:x:4:\nnscd:x:997:\nsystemd-oom:x:998:\n",
+  "/etc/os-release": "PRETTY_NAME=\"NixOS 26.05 (Yarara)\"\nID=nixos\nVERSION_ID=\"26.05\"\n",
+  "/etc/passwd": "root:x:0:0:System administrator:/root:/run/current-system/sw/bin/bash\nmessagebus:x:4:4:D-Bus system message bus daemon user:/run/dbus:/run/current-system/sw/bin/nologin\nnobody:x:65534:65534:Unprivileged account (don't use!):/var/empty:/run/current-system/sw/bin/nologin\nnscd:x:997:997::/var/empty:/run/current-system/sw/bin/nologin\nsystemd-oom:x:998:998::/var/empty:/run/current-system/sw/bin/nologin\npat:x:1000:100:Pat:/home/pat:/run/current-system/sw/bin/bash\n",
+  "/proc/1/comm": "systemd\n",
+  "/proc/mounts": "/dev/vda2 / ext4 rw,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev 0 0\n",
+  "/proc/self/status": "Name:\tcat\nUmask:\t0022\nState:\tR (running)\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t1 100\nNoNewPrivs:\t0\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n",
+  "/proc/sys/kernel/arch": "x86_64\n",
+  "/proc/sys/kernel/osrelease": "6.12.60\n"
+ },
+ "folders": {
+  "/": "0 0 755 -",
+  "/etc": "0 0 755 -",
+  "/run/current-system": "0 0 755 0",
+  "/run/systemd/system": "0 0 755 -",
+  "/usr": "0 0 755 -",
+  "/usr/local": "0 0 755 -",
+  "/var": "0 0 755 -",
+  "/var/lib": "0 0 755 -"
+ },
+ "groupnames": "wheel users",
+ "groups": "1 100",
+ "id": "1000 pat",
+ "sudo": {
+  "asks": true,
+  "kind": "sudo",
+  "listing": null,
+  "refuses": "sudo: a password is required\n",
+  "whose": "self"
+ },
+ "time": 1764100000,
+ "tools": {
+  "awk": "/run/current-system/sw/bin/awk",
+  "cat": "/run/current-system/sw/bin/cat /nix/store/0000-coreutils-9.8/bin/cat",
+  "chgrp": "/run/current-system/sw/bin/chgrp /nix/store/0000-coreutils-9.8/bin/chgrp",
+  "chmod": "/run/current-system/sw/bin/chmod /nix/store/0000-coreutils-9.8/bin/chmod",
+  "cut": "/run/current-system/sw/bin/cut /nix/store/0000-coreutils-9.8/bin/cut",
+  "date": "/run/current-system/sw/bin/date /nix/store/0000-coreutils-9.8/bin/date",
+  "env": "/run/current-system/sw/bin/env /nix/store/0000-coreutils-9.8/bin/env",
+  "flock": "/run/current-system/sw/bin/flock",
+  "getent": "/run/current-system/sw/bin/getent",
+  "gpasswd": "/run/current-system/sw/bin/gpasswd",
+  "groupadd": "/run/current-system/sw/bin/groupadd",
+  "groupdel": "/run/current-system/sw/bin/groupdel",
+  "id": "/run/current-system/sw/bin/id /nix/store/0000-coreutils-9.8/bin/id",
+  "install": "/run/current-system/sw/bin/install /nix/store/0000-coreutils-9.8/bin/install",
+  "ls": "/run/current-system/sw/bin/ls /nix/store/0000-coreutils-9.8/bin/ls",
+  "mkdir": "/run/current-system/sw/bin/mkdir /nix/store/0000-coreutils-9.8/bin/mkdir",
+  "mv": "/run/current-system/sw/bin/mv /nix/store/0000-coreutils-9.8/bin/mv",
+  "readlink": "/run/current-system/sw/bin/readlink /nix/store/0000-coreutils-9.8/bin/readlink",
+  "rm": "/run/current-system/sw/bin/rm /nix/store/0000-coreutils-9.8/bin/rm",
+  "rmdir": "/run/current-system/sw/bin/rmdir /nix/store/0000-coreutils-9.8/bin/rmdir",
+  "sed": "/run/current-system/sw/bin/sed",
+  "sh": "/run/current-system/sw/bin/sh /nix/store/0000-bash-5.3/bin/bash",
+  "sha256sum": "/run/current-system/sw/bin/sha256sum /nix/store/0000-coreutils-9.8/bin/sha256sum",
+  "sort": "/run/current-system/sw/bin/sort /nix/store/0000-coreutils-9.8/bin/sort",
+  "stat": "/run/current-system/sw/bin/stat /nix/store/0000-coreutils-9.8/bin/stat",
+  "su": "/run/wrappers/bin/su",
+  "sudo": "/run/wrappers/bin/sudo",
+  "sync": "/run/current-system/sw/bin/sync /nix/store/0000-coreutils-9.8/bin/sync",
+  "systemctl": "/run/current-system/sw/bin/systemctl",
+  "systemd-sysusers": "/run/current-system/sw/bin/systemd-sysusers",
+  "tr": "/run/current-system/sw/bin/tr /nix/store/0000-coreutils-9.8/bin/tr",
+  "uname": "/run/current-system/sw/bin/uname /nix/store/0000-coreutils-9.8/bin/uname",
+  "useradd": "/run/current-system/sw/bin/useradd",
+  "userdel": "/run/current-system/sw/bin/userdel",
+  "usermod": "/run/current-system/sw/bin/usermod"
+ },
+ "versions": {
+  "flock": "flock from util-linux 2.41.2",
+  "ls": "ls (GNU coreutils) 9.8",
+  "sudo": "Sudo version 1.9.17p2",
+  "systemctl": "systemd 260 (260.5)",
+  "systemd-sysusers": "systemd 260 (260.5)"
+ }
+}

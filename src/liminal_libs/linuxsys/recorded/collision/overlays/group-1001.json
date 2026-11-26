@@ -1,0 +1,6 @@
+{
+ "files": {
+  "/etc/group": "root:x:0:\ndaemon:x:1:\nbin:x:2:\nsys:x:3:\nadm:x:4:syslog,pat\ntty:x:5:\ndisk:x:6:\nlp:x:7:\nmail:x:8:\nnews:x:9:\nuucp:x:10:\nman:x:12:\nproxy:x:13:\nkmem:x:15:\ndialout:x:20:\ncdrom:x:24:pat\nsudo:x:27:pat\naudio:x:29:\nwww-data:x:33:\nbackup:x:34:\noperator:x:37:\nlist:x:38:\nirc:x:39:\nsrc:x:40:\nshadow:x:42:\nutmp:x:43:\nvideo:x:44:\nplugdev:x:46:pat\nstaff:x:50:\ngames:x:60:\nusers:x:100:pat\nnogroup:x:65534:\nsystemd-journal:x:999:\nsystemd-network:x:998:\nsystemd-timesync:x:997:\nmessagebus:x:101:\nsyslog:x:102:\nsystemd-resolve:x:996:\n_ssh:x:103:\nuuidd:x:104:\npolkitd:x:995:\npat:x:1000:\nliminal:x:1001:pat\n"
+ },
+ "source": "overlay, written 2026-11-26: a group liminal with gid 1001, not a system group"
+}

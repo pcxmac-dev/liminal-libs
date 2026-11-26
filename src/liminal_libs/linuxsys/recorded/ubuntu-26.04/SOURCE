@@ -1,0 +1,1 @@
+written 2026-11-26 from the linuxperm research (research-accounts.md, research-elevation.md: Ubuntu 26.04.1, systemd 259.5, sudo-rs 0.2.13 as sudo, uutils coreutils, sg only in util-linux-extra); the kernel's and uutils' version numbers are written, to check in Tier B

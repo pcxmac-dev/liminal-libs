@@ -348,3 +348,64 @@ def test_a_held_run_told_term_finishes_its_step_and_one_resumed_ends():
 def test_wait_for_answers_once_ended():
     m = standin.Machine(UBUNTU, "nopasswd-all")
     assert standin.wait_for(m.spawn(_argv(make_plan(m)))) == 0
+
+
+# ---- the recorded machines, each for the decision it changes -----------------------------------------------------
+
+#        machine, overlay: family, WSL, container, account tool, lock, coreutils, euid, sudo, doas, SELinux
+FACTS = [
+    ("wsl-ubuntu-24.04", None, "debian", "Ubuntu", "", "sysusers", "flock", "gnu", 1000, "sudo", False, "absent"),
+    ("ubuntu-26.04", None, "debian", "", "", "sysusers", "flock", "uutils", 1000, "sudo-rs", False, "absent"),
+    ("debian-13", None, "debian", "", "", "sysusers", "flock", "gnu", 1000, "sudo", False, "absent"),
+    ("debian-13-su", None, "debian", "", "", "sysusers", "flock", "gnu", 1000, "", False, "absent"),
+    ("fedora-45", None, "fedora", "", "", "sysusers", "flock", "gnu", 1000, "sudo", False, "enforcing"),
+    ("opensuse-tumbleweed", None, "suse", "", "", "sysusers", "flock", "gnu", 1000, "sudo", False, "enforcing"),
+    ("alpine-3.24", None, "alpine", "", "", "busybox", "flock", "busybox", 1000, "", True, "absent"),
+    ("nixos-26.05", None, "nixos", "", "", "nix", "flock", "gnu", 1000, "sudo", False, "absent"),
+    ("container-bare", None, "debian", "", "docker", "none", "mkdir", "gnu", 0, "", False, "absent"),
+    ("liminal-ubuntu", None, "debian", "Liminal-Ubuntu", "", "sysusers", "flock", "gnu", 1000, "sudo", False,
+     "absent"),
+    ("service-account", None, "debian", "", "", "sysusers", "flock", "gnu", 994, "sudo", False, "absent"),
+    ("collision", None, "debian", "", "", "sysusers", "flock", "gnu", 1000, "sudo", False, "absent"),
+]
+
+
+@pytest.mark.parametrize("name, overlay, family, wsl, container, tool, lock, coreutils, euid, sudo, doas, selinux",
+                         FACTS)
+def test_each_recorded_machine_s_facts(name, overlay, family, wsl, container, tool, lock, coreutils, euid, sudo, doas,
+                                       selinux):
+    f = standin.Machine(name, overlay).facts()
+    assert (f.os["family"], f.kernel.wsl, f.kernel.container, f.accounts["tool"], f.lock, f.coreutils) == (
+        family, wsl, container, tool, lock, coreutils)
+    assert (f.elevation["euid"], f.elevation["sudo_kind"], bool(f.elevation["doas"]), f.security["selinux"]) == (
+        euid, sudo, doas, selinux)
+    assert f.notes == ()
+
+
+def test_the_machines_that_hold_the_name_liminal_already():
+    assert [standin.Machine(n).facts().liminal["group"] for n in ("debian-13", "collision")] == [None, None]
+    lu = standin.Machine("liminal-ubuntu").facts()
+    assert lu.liminal["user"] == facts.User("liminal", 1000, 1000, "", "/home/liminal", "/bin/bash")
+    # a login user by its shell and uid, Liminal's by its name: B2's rule counts it as Liminal's service account
+    assert lu.elevation["user"] == "liminal" and lu.system_account(lu.liminal["user"])
+    assert lu.system_account(lu.accounts["users"]["root"])  # uid 0 is below UID_MIN
+    sa = standin.Machine("service-account").facts()
+    assert sa.elevation["user"] == "liminal" and sa.system_account(sa.accounts["users"]["liminal"])
+    made = sa.made()
+    assert (made.group, made.user, made.stopped) == (994, (994, 994), False)
+    assert made.files[facts.SYSUSERS] == sa.here().paths[facts.SYSUSERS]  # the journal's digest is the file's
+    c = {o: standin.Machine("collision", o).facts() for o in standin.overlays("collision")}
+    assert c["person-user"].liminal["user"].uid == 1001 and c["group-1001"].liminal["group"].gid == 1001
+    assert c["system-group-mixed"].liminal["group"].members == ("alice", "www-data")
+
+
+def test_the_targetpw_and_nixos_and_su_machines():
+    suse = standin.Machine("opensuse-tumbleweed")
+    assert suse.sudo["whose"] == "root" and suse.facts().elevation["wheel_auth_self"] is False
+    assert suse.facts().accounts["logindefs"]["SYS_GID_MAX"] == "499"
+    nix = standin.Machine("nixos-26.05").facts()
+    assert nix.elevation["sudo"] == "/run/wrappers/bin/sudo" and nix.layout["nixos"]
+    assert standin.Machine("debian-13-su").facts().elevation["su"] == "/usr/bin/su"
+    fedora = standin.Machine("fedora-45").facts()
+    assert fedora.layout["folders"].get("/etc/sudoers.d") is None  # not one of the probe's folders: root's to read
+    assert fedora.security["restorecon"] and fedora.accounts["logindefs"]["SYS_UID_MIN"] == "201"
