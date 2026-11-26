@@ -221,6 +221,13 @@ class Plugin:
     KEEPS: tuple = ()  # what it keeps through its login beside its keys: (variable, about); a property where the
     # variable is named after the plugin (Firewall's groups)
     INTERNAL_NOTES: tuple[str, ...] = ()  # a few lines more for that tab, each at most 400 characters
+    # What it needs of the machine it runs on (1.103.0, Monday list item 19 part two; liminal_libs.needs): NEEDS, a
+    # plain tuple of rows (attribute, value[, strength[, words]]) read by name and never called, so a plugin imports
+    # nothing for it. Plugin itself has none, so a plugin that says nothing is told apart from one that needs nothing
+    # (`NEEDS = ()`). A class adds to its base's only so: NEEDS = (*getattr(Base, "NEEDS", ()), rows...), never a
+    # property and never annotated (a record's dataclass would take it for a field). The attributes, values and the
+    # three strengths (required, part, preferred) are liminal_libs.needs' VOCABULARY; needs.problems(plugin) checks a
+    # plugin's rows, as its own test asserts.
     # How it runs and ends (1.86.0, Monday list item 38; liminal_libs.lifecycle): on demand, while a client holds it
     # (its app, a node's synapse), ending what it started when let go; "service" (a daemon) is named and refused by the
     # conformance for now (the user, 2026-11-24: "for now lets just do on demand only"). Its start is given
@@ -585,6 +592,10 @@ class FeedPlugin(IntegratorPlugin):
              "settings")
     # its reads beside Plugin's settings (Plugin.READ_HOOKS): every hook but its scan, which sends requests
     READ_HOOKS = ("build", "view", "rate", "has_keys", "serves", "markets", "carries", "plan_resolutions", "reporter")
+    # what it needs of the machine (liminal_libs.needs): the internet for its fetching alone, a part, so it is listed
+    # and loaded offline and serves what it fetched (the user's answer 7)
+    NEEDS = (*getattr(IntegratorPlugin, "NEEDS", ()),
+             ("internet", "yes", "part", "its fetching: what it fetched stays readable here"))
 
     assets: frozenset = frozenset()  # asset classes it can collect at all (with keys / on some plan)
     keyless: frozenset = frozenset()  # asset classes served without its keys (Alpaca: crypto)

@@ -94,6 +94,7 @@ def problems(p: object) -> list[str]:
         out.append(f"{tag}: with_() failed: {type(e).__name__}: {e}")
     out += _apis(tag, p)
     out += _lifecycle(tag, p)
+    out += _needs(p)
     if expected == "feed":
         out += _feed(tag, p)
     elif expected == "publisher":
@@ -492,6 +493,14 @@ def _login(tag: str, p: LoginPlugin) -> list[str]:
     if not isinstance(getattr(p, "ICON", ""), str):
         out.append(f"{tag}: ICON is not a str")
     return out
+
+
+def _needs(p: Plugin) -> list[str]:
+    """Its NEEDS rows' shape, where it declares any (1.103.0; liminal_libs.needs, plain): a value or an attribute the
+    installed vocabulary does not know is its own package's test's to hold (needs.problems(plugin))."""
+    from .. import needs
+
+    return needs.problems(p, values=False) if needs.says(p) else []
 
 
 def _lifecycle(tag: str, p: Plugin) -> list[str]:

@@ -43,6 +43,9 @@ class AssistantPlugin(PlatformPlugin):
     KIND = "assistant"
     HOOKS = ("build", "scan", "settings")
     READ_HOOKS = ("build",)  # its reads beside Plugin's settings (Plugin.READ_HOOKS): its scan, Connect, sends requests
+    # what it needs of the machine (liminal_libs.needs, 1.103.0): a service that answers over the internet, required
+    NEEDS = (*getattr(PlatformPlugin, "NEEDS", ()),
+             ("internet", "yes", "required", "an AI service that answers over the internet"))
 
     vendor: str = ""  # Anthropic, xAI, OpenAI
     assistant: "type[Assistant] | None" = None  # its Assistant subclass

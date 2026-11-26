@@ -76,7 +76,9 @@ class MachinePlugin(PlatformPlugin):
     def not_for_here(self) -> str:
         """Why this machine is not one the plugin is for at all, in words ("" when it is): a Linux plugin on Windows
         or macOS (linux.why_not_native). Honored before anything else by this base's status and
-        by the Admin and Firewall bases' status and setup: nothing asked, nothing changed, `applies` False."""
+        by the Admin and Firewall bases' status and setup: nothing asked, nothing changed, `applies` False. An app
+        that judges needs (liminal_libs.needs, 1.103.0) reads it as one more unmet need of the machine, in these words,
+        before its NEEDS rows; by contract it asks nothing."""
         return ""
 
     def not_here_status(self, note: str, **empty) -> dict:

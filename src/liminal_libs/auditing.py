@@ -150,6 +150,7 @@ class AuditorPlugin(IntegratorPlugin):
     KIND = "auditor"
     HOOKS = ("scan", "settings")
     ICON = "scales"  # its icon on a page (icons.js)
+    NEEDS = ()  # it needs nothing of the machine: it holds the auditors' options alone (liminal_libs.needs, 1.103.0)
     options = tuple(CHOICES)
     plan_choices = CHOICES
 

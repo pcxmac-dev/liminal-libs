@@ -82,6 +82,9 @@ class PublisherPlugin(IntegratorPlugin):
     KIND = "publisher"
     HOOKS = ("moments", "calendar", "read", "scan", "settings")
     READ_HOOKS = ("moments", "calendar")  # its reads beside Plugin's settings: its read and scan send requests
+    # what it needs of the machine (liminal_libs.needs, 1.103.0): the internet for its fetching alone, a part
+    NEEDS = (*getattr(IntegratorPlugin, "NEEDS", ()),
+             ("internet", "yes", "part", "its fetching: what it fetched stays readable here"))
 
     feeds: tuple[Feed, ...] = ()
     policy: Policy = Policy()

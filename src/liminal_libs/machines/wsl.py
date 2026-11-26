@@ -550,6 +550,18 @@ class WslDistribution(MachinePlugin):
     HOOKS = (*MachinePlugin.HOOKS, "check", "update_packages", "terminal", "services", "pick_install", "uninstall",
              "start_install", "pause_install", "stop_install", "rename_install", HOLD, LET_GO, WSL_NETWORK)
     READ_HOOKS = ("check", "services", WSL_NETWORK)  # its reads beside MachinePlugin's: the rest change or start
+    # what every distribution needs of the machine (liminal_libs.needs, 1.103.0); each adds its architecture and its
+    # disk, held to its `architectures` and `space_gb`. WSL's own two features stay its setup's `wsl` step, which turns
+    # them on (the needs plan's feature rule)
+    NEEDS = (*getattr(MachinePlugin, "NEEDS", ()),
+             ("kernel", "windows", "required", "WSL is Windows' own"),
+             ("windows.build", f">= {MIN_BUILD}", "required", "the Windows build WSL 2 runs on (Windows 10 2004, "
+                                                              "every Windows 11)"),
+             ("virtualization", "extensions", "required", "WSL 2 runs in a light virtual machine"),
+             ("virtualization", "slat", "required", "WSL 2 runs in a light virtual machine"),
+             ("virtualization", "firmware", "required", "WSL 2 runs in a light virtual machine"),
+             ("internet", "yes", "part", "its install and its packages' updates"),
+             ("desktop", "yes", "part", "turning WSL on: Windows asks"))
     # 1.96.0: a container plugin holds a distribution up while a service runs in it, and lets it go (PLUGIN_ONLY);
     # any plugin reads WSL's one network (a firewall: a route's next hop); every change is the page's alone
     # (service-containers-networking §8.1, step 0: before, any plugin could ask uninstall with accept_risk set)
