@@ -326,3 +326,71 @@ def test_ripe_atlas_traceroutes_need_the_probes_and_place_routers_near_an_anchor
     refused = Downloads({at: urllib.error.HTTPError(at, 403, "Forbidden", {}, None)})
     with pytest.raises(InfrastructureError, match="it asks for credentials, and none is ever sent from here"):
         install(LATEST, folder, accept_licence=True, fetch=refused, clock=Clock())
+
+
+# -- item 32: the satellites' orbits, CelesTrak's ---------------------------------------------------------------------
+CELESTRAK = {"format": "omm-csv", "url": "https://celestrak.example/NORAD/elements/gp.php", "source": "CelesTrak",
+             "licence_name": "none stated by CelesTrak",
+             "licence": "CelesTrak states no licence for its orbits; it asks that they are fetched once an update.",
+             "credit": {"text": "CelesTrak (T.S. Kelso)", "url": "https://celestrak.example/"},
+             "retry": False, "every": 7200, "gzip": True}
+ONEWEB = {**CELESTRAK, "id": "celestrak-oneweb", "title": "Eutelsat OneWeb's orbits", "constellation": "oneweb",
+          "query": "GROUP=oneweb&FORMAT=csv", "size": 120_000}
+HUGHES = {**CELESTRAK, "id": "celestrak-hughesnet", "title": "HughesNet's satellites", "constellation": "hughesnet",
+          "queries": ["CATNR=38551&FORMAT=csv", "CATNR=41893&FORMAT=csv", "CATNR=57479&FORMAT=csv"], "size": 3000}
+HEAD = ("OBJECT_NAME,OBJECT_ID,EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,ARG_OF_PERICENTER,"
+        "MEAN_ANOMALY,EPHEMERIS_TYPE,CLASSIFICATION_TYPE,NORAD_CAT_ID,ELEMENT_SET_NO,REV_AT_EPOCH,BSTAR,"
+        "MEAN_MOTION_DOT,MEAN_MOTION_DDOT\n")
+
+
+def orbit(name: str, norad: int, motion: float = 13.1) -> str:
+    return f"{name},2019-010A,2026-11-25T12:00:00.000000,{motion},0.0002,87.9,100,90,270,0,U,{norad},999,1,0.0001,0,0\n"
+
+
+def test_celestraks_orbits_are_asked_gzipped_and_kept_in_the_orbits_table(tmp_path):
+    import gzip
+    import urllib.error
+    from liminal_libs.machines.infrastore import Store
+    folder = tmp_path / "layers"
+    at = DataSet.of(ONEWEB).address()
+    assert at == "https://celestrak.example/NORAD/elements/gp.php?GROUP=oneweb&FORMAT=csv"
+    answer = gzip.compress((HEAD + orbit("ONEWEB-0012", 44057) + orbit("ONEWEB-0013", 44058) + "SHORT,x\n").encode())
+    asked = Downloads({at: answer})
+    out = install(ONEWEB, folder, accept_licence=True, fetch=asked, clock=Clock(), wall=Clock(1_795_000_000.0))
+    assert out["ok"] is True and out["said"].startswith("installed Eutelsat OneWeb's orbits: 2 features")
+    assert asked.asked[0][2]["encodings"] == ("gzip",)
+    assert [(o["norad"], o["constellation"], o["name"]) for o in Store(folder).orbits()] == [
+        (44057, "oneweb", "ONEWEB-0012"), (44058, "oneweb", "ONEWEB-0013")]
+    # its Update waits two hours, as CelesTrak asks: not offered, and refused before anything is asked
+    index = Index(folder, [ONEWEB], clock=Clock(), wall=Clock(1_795_000_000.0 + 3600))
+    assert [f["id"] for f in index.forms()] == ["world-layer-remove-celestrak-oneweb"]
+    cell = index.table()["rows"][0][4]
+    assert cell["text"] == "Update later" and "can be updated from" in cell["sub"]
+    with pytest.raises(ValueError, match="no more often than every 2 hours"):
+        install(ONEWEB, folder, accept_licence=True, fetch=asked, clock=Clock(), wall=Clock(1_795_000_000.0 + 3600))
+    assert len(asked.asked) == 1
+    later = Index(folder, [ONEWEB], clock=Clock(), wall=Clock(1_795_000_000.0 + 7200))
+    assert [f["id"] for f in later.forms()] == ["world-layer-celestrak-oneweb", "world-layer-remove-celestrak-oneweb"]
+    # a failing answer is not asked again, and its words say why
+    busy = Downloads({at: urllib.error.HTTPError(at, 503, "Service Unavailable", {}, None)})
+    with pytest.raises(InfrastructureError, match="answered HTTP 503, so the download stopped there .* for 15 minutes"):
+        install(ONEWEB, folder, accept_licence=True, fetch=busy, clock=Clock(), wall=Clock(1_795_000_000.0 + 7200))
+    assert len(busy.asked) == 1
+
+
+def test_hughesnets_satellites_are_asked_one_number_a_request(tmp_path):
+    from liminal_libs.machines.infrastore import Store
+    hughes = DataSet.of(HUGHES)
+    urls = hughes.addresses()
+    assert [u.split("?")[1] for u in urls] == ["CATNR=38551&FORMAT=csv", "CATNR=41893&FORMAT=csv",
+                                               "CATNR=57479&FORMAT=csv"]
+    assert "in 3 requests, one after another" in infrastructure.form(hughes, tmp_path)["confirm"]["words"]
+    asked = Downloads({u: (HEAD + orbit(n, int(u.split("=")[1][:5]), 1.0027)).encode()
+                       for u, n in zip(urls, ("ECHOSTAR 17", "ECHOSTAR 19", "JUPITER 3"))})
+    install(HUGHES, tmp_path / "f", accept_licence=True, fetch=asked, clock=Clock())
+    assert [o["name"] for o in Store(tmp_path / "f").orbits("hughesnet")] == ["ECHOSTAR 17", "ECHOSTAR 19",
+                                                                              "JUPITER 3"]
+    for change, words in (({"constellation": ""}, "names no constellation"), ({"retry": "no"}, "retry is true"),
+                          ({"every": -1}, "every is the seconds"), ({"queries": ["a b"]}, "queries are 8 at most")):
+        with pytest.raises(ValueError, match=re.escape(words)):
+            DataSet.of({**HUGHES, **change})

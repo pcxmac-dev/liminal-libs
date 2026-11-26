@@ -107,10 +107,13 @@ LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
 FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub",
-           "atlas-probes", "atlas-latest")  # what an answer is read as
+           "atlas-probes", "atlas-latest", "omm-csv")  # what an answer is read as
 AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub", "atlas-probes",
-              "atlas-latest")  # whose query, where they have one, is sent as written
-AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes")  # read from the answer's bytes, not as JSON
+              "atlas-latest", "omm-csv")  # whose query, where they have one, is sent as written
+AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes", "omm-csv")  # read from the answer's bytes,
+# not as JSON
+QUERIES = 8  # queries an omm-csv set may ask, one request each (HughesNet's three satellites by their numbers)
+EVERY_MOST = 7 * 86400.0  # the longest a data set may ask its Update to wait
 MANY = ("mvt", "atlas-latest")  # the formats asked in several requests, one after another, on the one click
 ATLAS_BATCH = 300  # anchors' ids asked in one request of RIPE Atlas's latest results
 ATLAS_RESULTS = 2000  # results read of its answers, at most
@@ -168,7 +171,8 @@ ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked f
          "gml": "the file asked for", "ourairports": "the airports' file", "geonames": "the cities' file",
          "shapefile": "the file asked for", "mvt": "the map tiles asked for", "topohub": "the file asked for",
          "atlas-probes": "the file asked for",
-         "atlas-latest": "the measurement's newest results for the anchors' ids (nothing about this machine)"}
+         "atlas-latest": "the measurement's newest results for the anchors' ids (nothing about this machine)",
+         "omm-csv": "the satellites' group or numbers asked for"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -268,6 +272,14 @@ class DataSet:
     hosts: tuple = ()
     tiles: tuple = ()  # an mvt set's tiles, (z, x, y) each, asked one after another
     needs: str = ""  # another data set this one is read with, downloaded first (atlas-latest: the probes)
+    # item 32's: a busy or failing server asked once more or not (CelesTrak asks that it is not); the seconds its
+    # Update waits since the last download; whether the answer is asked gzipped; the satellites' constellation; the
+    # queries asked one after another (each its own request)
+    retry: bool = True
+    every: float = 0.0
+    gzip: bool = False
+    constellation: str = ""
+    queries: tuple = ()
 
     @classmethod
     def of(cls, said) -> "DataSet":
@@ -352,6 +364,8 @@ class DataSet:
             ids = sorted({int(i) for i in ids})
             return [f"{self.url}?{self.query + '&' if self.query else ''}probe_ids="
                     f"{','.join(str(i) for i in ids[at:at + ATLAS_BATCH])}" for at in range(0, len(ids), ATLAS_BATCH)]
+        if self.queries:
+            return [f"{self.url}?{q}" for q in self.queries]
         if self.format != "mvt":
             return [self.address()]
         return [self._tile(z, x, y) for z, x, y in self.tiles]
@@ -366,6 +380,8 @@ class DataSet:
         file's); a set of map tiles' first tile."""
         if self.format == "mvt":
             return self._tile(*self.tiles[0])
+        if self.queries:
+            return f"{self.url}?{self.queries[0]}"
         if self.format == "overpass":
             return f"{self.url}?data={quote(self.query, safe='')}"
         if self.format == "sparql":
@@ -429,6 +445,30 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         raise ValueError(f"the data set {ident} is read with RIPE Atlas's probes: it names the data set it needs")
     if needs:
         out["needs"] = needs
+    for key in ("retry", "gzip"):
+        value = said.get(key, key == "retry")
+        if not isinstance(value, bool):
+            raise ValueError(f"the data set {ident}'s {key} is true or false, not {world._shown(value)}")
+        out[key] = value
+    every = said.get("every", 0)
+    if isinstance(every, bool) or not isinstance(every, (int, float)) or not 0 <= every <= EVERY_MOST:
+        raise ValueError(f"the data set {ident}'s every is the seconds its Update waits, 0 to {EVERY_MOST:g}, not "
+                         f"{world._shown(every)}")
+    out["every"] = float(every)
+    constellation = said.get("constellation", "")
+    if not isinstance(constellation, str) or (constellation and not ID_FORM.fullmatch(constellation)):
+        raise ValueError(f"the data set {ident}'s constellation is a short id (starlink), not "
+                         f"{world._shown(constellation)}")
+    if form == "omm-csv" and not constellation:
+        raise ValueError(f"the data set {ident} is a file of orbits and names no constellation")
+    if constellation:
+        out["constellation"] = constellation
+    queries = said.get("queries", ())
+    if (not isinstance(queries, (list, tuple)) or len(queries) > QUERIES
+            or any(not isinstance(q, str) or not q or re.search(r"[\s#?]", q) or len(q) > MAX_QUERY for q in queries)):
+        raise ValueError(f"the data set {ident}'s queries are {QUERIES} at most, each sent as it is written")
+    if queries:
+        out["queries"] = tuple(queries)
     if form == "mvt":
         out["tiles"] = _tiles(ident, said)
         if not out.get("layer"):
@@ -1295,9 +1335,34 @@ def _atlas_latest(doc, kept: _Kept, host: str, free: bool) -> None:
     kept.counted = read
 
 
+def _omm_csv(doc, kept: _Kept, host: str, free: bool) -> None:
+    """Satellites' orbits as CelesTrak publishes them (1.104.0, item 32: its GP data as CSV, OMM's fields), one answer
+    or one a query, gzipped or not: each satellite a row of the database's orbits table, under its data set's
+    constellation. What does not read is counted; an answer that is no CSV of orbits is refused."""
+    from . import satellites
+    parts = doc if isinstance(doc, list) else [(0, doc)]
+    rows: dict[int, tuple] = {}
+    for _, raw in parts:
+        try:
+            found, left = satellites.omm_rows(_unpacked(raw, host))
+        except ValueError as e:
+            raise InfrastructureError(f"{host}'s answer is not the data asked for ({e})") from None
+        for _ in range(left):
+            kept.drop(OTHER)
+        for row in found:
+            norad = int(row["NORAD_CAT_ID"])
+            if norad in rows:
+                kept.drop(REPEATED)
+                continue
+            rows[norad] = (norad, kept.dataset.constellation, _name(row["OBJECT_NAME"]),
+                           satellites.epoch_of(row["EPOCH"]), row)
+    kept.extra["orbits"] = list(rows.values())
+    kept.counted = len(rows)
+
+
 _READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
             "geonames": _geonames, "shapefile": _shapefile, "mvt": _mvt, "topohub": _topohub,
-            "atlas-probes": _atlas_probes, "atlas-latest": _atlas_latest}
+            "atlas-probes": _atlas_probes, "atlas-latest": _atlas_latest, "omm-csv": _omm_csv}
 
 
 def _features(dataset: DataSet, doc, free: bool, probes=None) -> dict:
@@ -1444,6 +1509,10 @@ def _refusal(dataset: DataSet, e: BaseException, wait: float) -> str:
     """Why a fetch or a read failed, in words. `wait`: what its socket was given to wait, the data set's own or, nearer
     the deadline, what was left of the install's time."""
     host, code = dataset.host, getattr(e, "code", None)
+    if code is not None and not dataset.retry:  # 1.104.0: a source that asks not to be asked again at once
+        later = " Its maker asks that nothing is asked of it for 15 minutes after this." if code in (500, 503) else ""
+        return (f"{host} answered HTTP {code}, so the download stopped there and is not tried again by itself: "
+                f"nothing was installed, and what was installed before stays.{later}")
     if code in BUSY:
         return (f"{host} is busy (HTTP {code}): it was asked twice, {_apart()} apart. Nothing was installed, and what "
                 "was installed before stays. Try again later.")
@@ -1530,7 +1599,7 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
               say):
     """On the download's thread: the answer's bytes (_one), or (1.104.0) for a set of map tiles each tile's in turn,
     [(z, x, y, bytes)], a tile not there (HTTP 404) as no bytes, any other failure the whole install's."""
-    if dataset.format == "atlas-latest":
+    if dataset.format == "atlas-latest" or len(dataset.queries) > 1:
         return _batches(dataset, fetch, agent, cutoff, halt, deadline, took, clock, say)
     if dataset.format != "mvt":
         return _one(dataset, dataset.address(), fetch, agent, cutoff, halt, deadline, took, clock, say)
@@ -1551,10 +1620,12 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
 
 
 def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, took: str, clock, say) -> list:
-    """RIPE Atlas's latest results, a batch of anchors' ids a request (dataset.asked, set by the install from the
-    probes it needs), one after another: [(the batch's number, its bytes)]. A refusal that asks for credentials stops
-    it with nothing kept: no key is ever asked for or sent."""
-    asked, out = list(getattr(dataset, "asked", ()) or ()), []
+    """The answers of a data set asked in several requests, one after another: RIPE Atlas's latest results, a batch
+    of anchors' ids a request (dataset.asked, set by the install from the probes it needs), or an omm-csv set's queries
+    (HughesNet's satellites by their numbers): [(the request's number, its bytes)]. A refusal of RIPE Atlas that asks
+    for credentials stops it with nothing kept: no key is ever asked for or sent."""
+    asked = list(dataset.addresses() if dataset.queries else getattr(dataset, "asked", ()) or ())
+    out = []
     for i, address in enumerate(asked):
         if i:
             say(f"request {i + 1} of {len(asked)}")
@@ -1562,7 +1633,7 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
             raw = _one(dataset, address, fetch, agent, cutoff, halt, deadline, took, clock,
                        say if not i else (lambda _line: None), final=i == len(asked) - 1)
         except InfrastructureError as e:
-            if getattr(e, "code", None) in (401, 403):
+            if dataset.format == "atlas-latest" and getattr(e, "code", None) in (401, 403):
                 raise InfrastructureError(f"{dataset.host} refused the request: it asks for credentials, and none "
                                           "is ever sent from here. Nothing was installed.") from None
             raise
@@ -1591,7 +1662,8 @@ def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: thread
         wait = min(dataset.wait, left)
         try:
             stream = fetch(address, wait, agent=agent, what="a data set",
-                           **({"hosts": dataset.hosts} if dataset.hosts else {}))
+                           **({"hosts": dataset.hosts} if dataset.hosts else {}),
+                           **({"encodings": ("gzip",)} if dataset.gzip else {}))
         except Exception as e:  # noqa: BLE001 - urllib's HTTPError and URLError, a refused redirect, a stand-in's own
             world._close(e)  # an HTTP error carries its answer: let go unread
             if cutoff.why:
@@ -1599,7 +1671,7 @@ def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: thread
             code = getattr(e, "code", None)
             if code == 404 and missing_ok:
                 raise _Missing() from None
-            if code in BUSY and not again:
+            if code in BUSY and not again and dataset.retry:
                 until = clock() + RETRY_S
                 say(f"{host} is busy (HTTP {code}): it is asked once more in {world._seconds(RETRY_S)} s")
                 _pause(until, deadline, clock, cutoff, halt)
@@ -1718,6 +1790,9 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
         raise LicenceRefused(LICENCE_FIRST)
     agent = _agent(agent)
     dataset = _with_needs(dataset, target)
+    held = held_back(dataset, target, wall())
+    if held:
+        raise ValueError(held)
     if not _INSTALLING.acquire(blocking=False):
         raise ValueError(ALREADY)
     try:
@@ -1731,6 +1806,25 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
         with _STATE:
             _NOW["id"] = ""
         _INSTALLING.release()
+
+
+def held_back(dataset: DataSet, target, now: float, fetched: float | None = None) -> str:
+    """Why a data set's Update waits (1.104.0: CelesTrak's orbits, no more often than every 2 hours), in words; "" when
+    it does not. `fetched`: when it was last downloaded (read from the database when not given)."""
+    if not dataset.every:
+        return ""
+    if fetched is None:
+        from .infrastore import Store
+        try:
+            row = Store(target).sets().get(dataset.id)
+        except Exception:  # noqa: BLE001 - a database that cannot say: not held back
+            row = None
+        fetched = row["fetched"] if row else None
+    if fetched is None or now - fetched >= dataset.every:
+        return ""
+    return (f"{dataset.title} was downloaded at {world._iso(fetched)[11:16]} UTC, and its maker asks for it no more "
+            f"often than every {world._seconds(dataset.every / 3600)} hours: it can be updated from "
+            f"{world._iso(fetched + dataset.every)[11:16]} UTC")
 
 
 def _with_needs(dataset: DataSet, target: Path) -> DataSet:
@@ -2029,8 +2123,9 @@ class Index:
     database once, at the first look that finds it. A folder on another system's drive is never read: nothing counts
     as installed there. Thread-safe: the platform asks from a thread per request."""
 
-    def __init__(self, folder=None, datasets=(), clock=time.monotonic):
+    def __init__(self, folder=None, datasets=(), clock=time.monotonic, wall=time.time):
         self._given = None if folder is None else Path(folder)
+        self.wall = wall  # 1.104.0: the wall clock an Update held back (a data set's `every`) is measured on
         self.datasets = tuple(DataSet.of(d) for d in datasets)
         ids = [d.id for d in self.datasets]
         twice = sorted({i for i in ids if ids.count(i) > 1})
@@ -2241,6 +2336,13 @@ class Index:
             out["cut"] = True
         return out
 
+    def _held(self, dataset: DataSet) -> str:
+        """Why its Update waits (held_back), "" when it does not, from the look's facts."""
+        fact = self._look().get(dataset.id)
+        if not dataset.every or not fact or fact.get("problem"):
+            return ""
+        return held_back(dataset, self.folder, self.wall(), _seconds_of(fact.get("fetched")))
+
     def forms(self, can: bool = True) -> list[dict]:
         """The forms the table's buttons open: each data set's download (an update once it is installed) and, once
         installed, its removal. None when the page may not ask them (`can`), for a folder on another system's drive,
@@ -2253,6 +2355,10 @@ class Index:
             dataset = self.dataset(s["id"])
             if dataset.needs and dataset.needs not in installed:
                 continue  # 1.104.0: offered once the data set it is read with is here
+            if s["installed"] and self._held(dataset):
+                if s["installed"] or s["problem"]:
+                    out.append(remove_form(dataset, base))
+                continue  # 1.104.0: its Update waits as its maker asks
             out.append(form(dataset, base, update=s["installed"]))
             if s["installed"] or s["problem"]:
                 out.append(remove_form(dataset, base))
@@ -2281,6 +2387,9 @@ class Index:
             there = s["installed"] or bool(s["problem"])
             get = {"form": FORM + s["id"], "title": "Update…" if s["installed"] else "Download…"}
             needs = self.dataset(s["id"]).needs
+            held = self._held(self.dataset(s["id"])) if s["installed"] else ""
+            if held:
+                get = {"text": "Update later", "sub": held}
             if needs and not next((x["installed"] for x in self.sets() if x["id"] == needs), False):
                 get = {"text": "needs " + next((x["title"] for x in self.sets() if x["id"] == needs), needs)}
             rows.append([{"text": s["title"], "sub": s["about"]} if s["about"] else s["title"], s["source"],

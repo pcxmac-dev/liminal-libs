@@ -582,7 +582,7 @@ def _transport() -> tuple[type, type, type]:
 
 
 def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = USER_AGENT, what: str = "a GeoIP file",
-              hosts=()):
+              hosts=(), encodings=()):
     """The download's stream: an HTTP GET of `url`, https on every hop: a redirect is followed only to the same host over
     https (MAX_REDIRECTS at most, its body never read), and one anywhere else (http, ftp, another host) is refused before
     anything is asked of it (RedirectRefused); the address the answer came from is checked again. Each socket operation
@@ -594,7 +594,8 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = US
     library's own for a GeoIP file, a plugin's name and version for a data set it downloads
     (machines/infrastructure.py). `what`: what is downloaded, for the words of a refusal (a GeoIP file; a data set).
     `hosts` (1.101.0): the other hosts a redirect may go to, and the answer come from (a GeoIP source's storage, as its
-    plugin names them); none: the same host alone, as before."""
+    plugin names them); none: the same host alone, as before. `encodings` (1.104.0): what the request says it takes
+    (Accept-Encoding: gzip, as CelesTrak asks); the answer comes as it was sent, unpacked by its reader."""
     import urllib.request
 
     try:
@@ -606,7 +607,10 @@ def fetch_url(url: str, timeout: float = READ_S, *, handlers=(), agent: str = US
         raise ValueError(f"{what} is downloaded over https only")
     _, https, same_host = _transport()
     opener = urllib.request.build_opener(same_host(host, what, hosts), *(handlers or (https(),)))
-    request = urllib.request.Request(url, headers={"User-Agent": str(agent or USER_AGENT)})
+    headers = {"User-Agent": str(agent or USER_AGENT)}
+    if encodings:
+        headers["Accept-Encoding"] = ", ".join(e for e in encodings if e in ("gzip", "deflate", "br"))
+    request = urllib.request.Request(url, headers=headers)
     response = opener.open(request, timeout=timeout)  # noqa: S310 - the plugin's own https address, on the user's word
     try:
         _over_https(_answered_from(response, url), host, what, hosts)
