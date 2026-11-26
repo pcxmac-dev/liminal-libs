@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.102.0 (2026-11-26)
+
+Liminal's own `liminal` user and group on Linux, made, changed and removed from the Linux administration plugin's page
+or by one root command (Monday list item 19, part one, release one: "Accounts and elevation"; the linuxperm plan's
+revision 2 of 2026-11-24, with the user's fourteen answers of 2026-11-25). Release one is the accounts and the way root
+is had, nothing more: no grant, unit, package or capability is made, nothing runs as the user yet, and nothing is
+written under /usr/local. Additive: nothing renamed or removed, and the plugin API stays 2.4.
+
+- **`liminal_libs.linuxsys`, a plain package.** The standard library, its own modules and `proctree`, nothing more: no
+  plugin contract, no app's frame, no process ledger, no `machines/`. So the root command runs no frame as root.
+  tests/test_linuxsys_plain.py holds every module to that, by its imports and by what loading it brings in.
+  - `shared`: what it and `machines/linux.py` both use: sudo's words with sudo-rs's, ROOT_HEAD, the reader of sudo's
+    listing, the whole-text scrub of a password, and the cleaner of every word that goes into root's file or script.
+  - `kernel`: the Linux kernel, WSL and container facts, from files' texts and the environment alone, for this package
+    and the needs reader both.
+  - `facts`: PROBE, one POSIX sh read as the platform's user (it never runs sudo, but `sudo -V`), and SystemFacts.
+  - `plan`: a change as data, each step an Action its tool renders into sh; the one root script (the lock, the chain
+    check, the journal's folder, the guards, a begin and a done line around each step, a TERM trap that stops it
+    after its step), 96 KiB at most; `TOOLS`, every program a probe or a script runs, with its maker.
+  - `journal`: /var/lib/liminal-linux/MADE (0644 in a 0755 folder only root writes: the user's answer 3), a line
+    before each step and one after it, synced; `fold` reads what Liminal made back, a change stopped part way
+    included, so undo can always take it back.
+  - `elevation`: how root is had (root, sudo or sudo-rs, doas, su, run0 or pkexec only, none) and the sudo
+    conversation: the password written once, only after sudo's own marker, the pipe kept open until the script's
+    begin line, sudo killed at a second prompt so it never reads end of input there. No field for a system account.
+    doas and su say the one command (the user's answer 7: a terminal in the page comes later).
+  - `accounts`: the account tools (systemd-sysusers 255 or later on Debian and Ubuntu and every systemd system: the
+    user's answer 5; shadow; BusyBox; NixOS, refused with its configuration lines), and the plans of Make them...,
+    Add and Remove a member... and Remove them.... A group `liminal` found here is taken only as a system group of
+    persons' accounts, asked twice by name; Liminal's own WSL distributions' login user is adopted, never removed
+    (the user's answer 4); undo deletes what the journal says Liminal made and that still matches (the user's
+    answer 2), and refuses while a grant names `%liminal`.
+  - `system(runner, spawn)`, LinuxSystem: the facts kept 300 s, sudo's listing read at most once in 300 s (each read
+    may write a line in the system's log), the digest a form confirmed checked again, one sudo per confirmed click.
+  - `cli`, `__main__`: the root command, `python -I -B -m liminal_libs.linuxsys facts | check | plan | apply | member
+    | undo`, run once as root from a terminal. It asks nothing, writes nothing outside its plan, and runs the same
+    script as the page.
+  - `standin` and `recorded/`: a dozen recorded machines (the user's Ubuntu, with its person renamed, among them),
+    each with its SOURCE. The stand-in answers PROBE, plays a plan's Actions on a file tree with their tools' side
+    effects, and plays sudo's conversation over byte pipes. It runs nothing.
+- **`machines.linuxadmin.LinuxAdmin(Admin)`, the Linux standard interface.** admin-linux's next release is built on
+  it. `linux_facts` is a read any plugin may ask through the platform; `linux_apply`, `linux_member` and `linux_undo`
+  are asked only from its page (PAGE_ONLY_HOOKS, the user's answer 6), and the base holds them to that itself. Their
+  arguments are words: parts, a user's name, an action, the plan's sha256, an accept, the password. Where no password
+  is asked (the platform as root, a NOPASSWD rule for everything), every change is asked twice. A click gets one
+  second confirmation at most. Its page draws "How root is had" and "Liminal's user and group" first, with their
+  forms, and "This Linux" last. `app_stopping` makes every change refuse, ends a conversation before its script began,
+  and lets a script that began finish its step, waiting at most STEP_WAIT_S (5 s), inside the platform's
+  PLUGINS_DEADLINE_S.
+- **`machines/linux.py`**: what it shares with linuxsys moves into `linuxsys/shared.py` and is imported back under the
+  names it had, so the firewall's code reads it as before. sudo-rs's words join DENIED and PASSWORD_REFUSED. `_scrub`
+  replaces the whole text where the password is anywhere in it. Shell.run's own `sudo -S` road stays the firewall's
+  grant's until release two moves it onto the conversation.
+- Tests: tests/test_linuxsys_plain.py, _shared.py, _kernel.py, _facts.py, _plan.py, _standin.py, _elevation.py,
+  _accounts.py, _cli.py and _admin.py, on the recorded machines only (the user's answer 14). No test runs sudo, makes
+  an account or starts a process.
+
 ## 1.101.0 (2026-11-26)
 
 More GeoIP sources for the firewalls' World Wide Web tab, phase 1 (Monday list item 20; the user, 2026-11-19: "add a
