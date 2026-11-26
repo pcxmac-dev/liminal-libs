@@ -251,8 +251,10 @@ class Firewall(MachinePlugin):
     CANCEL_HOOKS = (netstat.GET_HOOK, GEOIP_GET_HOOK)
     # 1.101.0: what only a person at the platform's page may ask: the GeoIP sources' download, use and removal (each
     # refuses any other ask itself too: geosources.NotAsked); and the older installs, the GeoIP file's and the ASN
-    # file's, and a data set's download (the user's 11b: named by the base, so every firewall plugin has them so)
-    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK)
+    # file's, and a data set's download (the user's 11b: named by the base, so every firewall plugin has them so);
+    # 1.104.0: the sgp4 package's download and removal, code the plugin imports, the page's alone as well
+    PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK,
+                       netstat.SKY_GET_HOOK, netstat.SKY_REMOVE_HOOK)
     # 1.101.0: the GeoIP sources a subclass names (geosources.of's plain dicts, every host and licence its own): places
     # and networks chosen apart, the first the default; () keeps the GEOIP_URL and GEOIP_ASN_URL installs as before
     GEOIP_SOURCES: tuple = ()
@@ -1088,20 +1090,26 @@ class Firewall(MachinePlugin):
     def world_sky_get(self, accept_licence=False, log=None) -> dict:
         """The sgp4 package downloaded on the user's word (a job): its size and sha256 checked, each file against its
         RECORD, unpacked into the data folder's packages/ and imported from there alone (satellites.install_package).
-        world.LicenceRefused until its licence is accepted."""
+        world.LicenceRefused until its licence is accepted. Only a person signed in at the platform's page may ask it
+        (PAGE_ONLY_HOOKS, and geosources.NotAsked here to any other ask): it is code this plugin then imports."""
         from . import satellites
         sky = self._sky()
         if sky.package is None:
             raise ValueError("this plugin pins no sgp4 package")
+        if not self._at_the_page():
+            raise geosources.NotAsked()
         return satellites.install_package(sky.package, sky.data_dir, accept_licence=accept_licence, log=log,
                                           cancel=lambda: bool(getattr(log, "cancelled", False)))
 
     def world_sky_remove(self) -> dict:
-        """The sgp4 package's folder removed, confirmed on the page: the satellites are no longer placed."""
+        """The sgp4 package's folder removed, confirmed on the page: the satellites are no longer placed. The page's
+        alone, as its download is."""
         from . import satellites
         sky = self._sky()
         if sky.package is None:
             raise ValueError("this plugin pins no sgp4 package")
+        if not self._at_the_page():
+            raise geosources.NotAsked()
         out = satellites.remove_package(sky.package, sky.data_dir)
         sky.sky._package = None
         return out
