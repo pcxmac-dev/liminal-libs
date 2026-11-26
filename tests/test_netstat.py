@@ -1072,3 +1072,23 @@ def test_the_routes_the_hosts_database_keeps_are_handed_to_the_tabs_routes(tmp_p
     away.not_for_here = lambda: "for a Windows machine"
     assert away._stored_routes(["81.2.69.142"]) == {}
     fw.detach()
+
+
+def test_the_hosts_are_stamped_with_the_files_in_use_and_placed_again_once_they_change(tmp_path):
+    """1.102.0 (Monday list item 20): the stamp is the WorldView's (geosources.stamp), and replaced() forgets the one
+    kept, so a switch of source places the hosts again at the next ask rather than STAMP_S later."""
+    class Sourced(Globe):
+        mark = "#dbip:2026-11-01+ipinfo:2026-11-24"
+
+        def stamp(self, geoip=None):
+            return self.mark
+    globe = Sourced(tmp_path, Placing())
+    view = view_of()
+    view.page(globe)
+    assert view.book.stamp == Sourced.mark and view.book.unplaced(Sourced.mark) == 0
+    globe.mark = "#dbip:2026-11-01+none"
+    view.page(globe)
+    assert view.book.unplaced("#dbip:2026-11-01+none") > 0  # the stamp kept: not looked at again so soon
+    view.replaced()
+    view.page(globe)
+    assert view.book.stamp == "#dbip:2026-11-01+none" and view.book.unplaced("#dbip:2026-11-01+none") == 0

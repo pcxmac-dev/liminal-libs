@@ -131,6 +131,10 @@ TEXT = 128  # characters kept of a program, a host, a service, a name or a place
 PATH = 260  # characters kept of a program's path
 CODE = 8  # characters kept of a country's code (as geo.CODE)
 STAMP = 32  # characters kept of a GeoIP file's date
+# 1.102.0 (Monday list item 20): characters kept of a place's stamp, the GeoIP files it came from (machines/geosources:
+# the default source's date, as before, or #<places>:<date>+<networks>:<date>); a row is placed again whenever its stamp
+# is not the one of the files in use
+PLACE_STAMP = 64
 FOLDER_MODE, FILE_MODE = 0o700, 0o600  # off Windows: this account's alone
 NOT_NAMED = "?"  # the program of a connection whose program could not be read
 VARIABLE = "LIMINAL_HOSTS_RECORDING"  # the setting, kept through the login: one of MODES
@@ -198,7 +202,7 @@ _CONN_INSERT = (f"INSERT OR IGNORE INTO connections ({', '.join(CONNECTION_COLUM
 _CONN_TOUCH = ("UPDATE connections SET last = CASE WHEN ? IS NULL THEN last ELSE max(last, ?) END, "
                "seconds = seconds + ?, ended = coalesce(?, ended) WHERE cid = ?")
 _CONN_PLACE = ("UPDATE connections SET country = ?, code = ?, city = ?, lat = ?, lon = ?, asn = ?, org = ?, placed = ? "
-               "WHERE remote = ? AND network = 'internet' AND (placed IS NULL OR placed < ?)")
+               "WHERE remote = ? AND network = 'internet' AND (placed IS NULL OR placed <> ?)")
 _ROUTE_KEEP = "INSERT OR REPLACE INTO routes (remote, traced, reached, how, hops, way) VALUES (?, ?, ?, ?, ?, ?)"
 _TRACE_KEEP = "INSERT INTO traces (remote, traced, reached, how, hops, way) VALUES (?, ?, ?, ?, ?, ?)"  # 1.74.0
 _CONN_PRUNE = ("DELETE FROM connections WHERE cid IN (SELECT cid FROM connections WHERE ended IS NOT NULL ORDER BY "
@@ -209,6 +213,12 @@ _CONN_HOSTS_PLACE = ("UPDATE connections SET (country, code, city, lat, lon, asn
                      "hosts.placed IS NOT NULL ORDER BY hosts.placed DESC LIMIT 1) WHERE cid = ? AND placed IS NULL "
                      "AND EXISTS (SELECT 1 FROM hosts WHERE hosts.host = connections.remote AND hosts.placed IS NOT "
                      "NULL)")
+# 1.102.0: once the book knows the stamp of the files in use (place, unplaced), a new connection takes only a host's row
+# placed by them: "#..." and "2026-..." sort by their letters, not by their age
+_CONN_HOSTS_STAMPED = ("UPDATE connections SET (country, code, city, lat, lon, asn, org, placed) = (SELECT country, "
+                       "code, city, lat, lon, asn, org, placed FROM hosts WHERE hosts.host = connections.remote AND "
+                       "hosts.placed = ? LIMIT 1) WHERE cid = ? AND placed IS NULL AND EXISTS (SELECT 1 FROM hosts "
+                       "WHERE hosts.host = connections.remote AND hosts.placed = ?)")
 _KEY = "program = ? AND host = ? AND proto = ? AND port = ? AND direction = ?"  # a hosts row, by its key
 _INSERT = ("INSERT OR IGNORE INTO hosts (program, host, proto, port, direction, path, service, network, name, first, "
            "last, seconds, connections) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -555,6 +565,7 @@ class HostBook:
         self.cap = max(1, int(cap))
         self.clock = clock
         self.changes = 0
+        self.stamp: str | None = None  # 1.102.0: the stamp of the GeoIP files in use, once place or unplaced was asked
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._loaded = False  # whether what the file holds of the open connections and of itself is in memory
@@ -1091,7 +1102,11 @@ class HostBook:
             many = tallied
             for rec in born.values():
                 many += c.execute(_CONN_INSERT, rec).rowcount
-            c.executemany(_CONN_HOSTS_PLACE, [(rec[0],) for rec in born.values() if rec[15] == INTERNET])
+            new = [rec[0] for rec in born.values() if rec[15] == INTERNET]
+            if self.stamp is None:
+                c.executemany(_CONN_HOSTS_PLACE, [(cid,) for cid in new])
+            else:  # 1.102.0: a host's row placed by the files in use alone
+                c.executemany(_CONN_HOSTS_STAMPED, [(self.stamp, cid, self.stamp) for cid in new])
             for cid, (last, seconds, ended) in touched.items():
                 c.execute(_CONN_TOUCH, (last, last, seconds, ended, cid))
             c.executemany(_ROUTE_KEEP, list(routes.values()))
@@ -1169,7 +1184,8 @@ class HostBook:
         with self._lock:
             if not self._ready():
                 return 0
-            stamp, most = _clip(stamp, STAMP), _most(most)
+            stamp, most = _clip(stamp, PLACE_STAMP), _most(most)
+            self.stamp = stamp
             was_open = self._conn is not None
             try:
                 conn = self._file(make=False)
@@ -1177,7 +1193,7 @@ class HostBook:
                     return 0
                 rows = conn.execute(
                     "SELECT program, host, proto, port, direction FROM hosts WHERE network = ? AND (placed IS NULL OR "
-                    "placed < ?) ORDER BY last DESC, program, host, proto, port, direction LIMIT ?",
+                    "placed <> ?) ORDER BY last DESC, program, host, proto, port, direction LIMIT ?",
                     (INTERNET, stamp, most)).fetchall()
                 if not rows:
                     return 0
@@ -1416,8 +1432,40 @@ class HostBook:
     def unplaced(self, stamp) -> int:
         """How many of the internet's rows have no place looked up yet, or one from a GeoIP file older than `stamp`
         (the file's own date, as text): what `place` would take. The GeoIP file needs opening only when it is not 0."""
-        sql = "SELECT COUNT(*) FROM hosts WHERE network = ? AND (placed IS NULL OR placed < ?)"
-        return self._read(lambda conn: conn.execute(sql, (INTERNET, _clip(stamp, STAMP))).fetchone()[0], 0)
+        sql = "SELECT COUNT(*) FROM hosts WHERE network = ? AND (placed IS NULL OR placed <> ?)"
+        stamp = _clip(stamp, PLACE_STAMP)
+        self.stamp = stamp  # 1.102.0: what a new connection's place is taken from
+        return self._read(lambda conn: conn.execute(sql, (INTERNET, stamp)).fetchone()[0], 0)
+
+    def clear_places(self, role: str, pattern: str) -> int:
+        """1.102.0: the places a source gave in `role` taken out, where no file in use can place them: rows whose
+        stamp is LIKE `pattern` (geosources.cleared) lose country, code, city, lat and lon (places) or asn and org
+        (networks), in hosts and connections both, and are placed again at the next ask. How many hosts rows."""
+        columns = ("country = NULL, code = NULL, city = NULL, lat = NULL, lon = NULL" if role == "places" else
+                   "asn = NULL, org = NULL")
+        with self._lock:
+            if not self._ready():
+                return 0
+            was_open = self._conn is not None
+            try:
+                conn = self._file(make=False)
+                if conn is None:
+                    return 0
+                counted = []
+
+                def write(c: sqlite3.Connection) -> None:
+                    counted.append(c.execute(f"UPDATE hosts SET {columns}, placed = NULL WHERE placed LIKE ?",
+                                             (pattern,)).rowcount)
+                    c.execute(f"UPDATE connections SET {columns}, placed = NULL WHERE placed LIKE ?", (pattern,))
+                self._transaction(conn, write)
+            except (sqlite3.Error, OSError) as e:
+                self._failed("written", e)
+                return 0
+            finally:
+                if not was_open:
+                    self._close()
+            self.changes += 1
+            return counted[0] if counted else 0
 
     def connections(self, *, program=None, proto="", port=0, direction="", since=None,
                     limit: int = 200) -> list[dict]:

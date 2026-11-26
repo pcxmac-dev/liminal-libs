@@ -1028,6 +1028,12 @@ class NetstatView:
             self._made = made
         return made
 
+    def replaced(self) -> None:
+        """1.102.0: the GeoIP files in use changed (a use, an install, a removal, an expiry): the stamp kept is
+        forgotten, so the hosts are placed again at the next ask, not up to STAMP_S later."""
+        with self._lock:
+            self._stamp = None
+
     def _place(self, world, geoip=None) -> None:
         """The internet's hosts with no place yet (or one from an older GeoIP file) looked up in the GeoIP file on this
         machine and kept: the file is opened only when a host needs a place, or STAMP_S after it was last looked at,
@@ -1042,8 +1048,9 @@ class NetstatView:
         geoip = geoip if geoip is not None else world.geoip()  # one the caller has open already
         if geoip is None:
             return
+        stamped = getattr(world, "stamp", None)  # 1.102.0: the stamp of the files in use (geosources.stamp)
         try:
-            date = str((geoip.describe() or {}).get("date") or "")
+            date = str(stamped(geoip) if callable(stamped) else (geoip.describe() or {}).get("date") or "")
         except Exception:  # noqa: BLE001 - a file that cannot say its date: placed as of none
             date = ""
         with self._lock:

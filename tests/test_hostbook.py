@@ -293,7 +293,8 @@ def test_texts_are_cut_to_128_characters_and_a_path_to_260(db):
     assert (len(h["program"]), len(h["path"]), len(h["service"]), len(h["name"])) == (128, 260, 128, 128)
     assert b.place(atlas({WEB: geo.Place("G" * 50, "C" * 500, "T" * 500, 1.0, 2.0, 7, "O" * 500)}), "9" * 100) == 1
     h = one(b)
-    assert [len(h[k]) for k in ("country", "code", "city", "org", "placed")] == [128, 8, 128, 128, 32]
+    # 1.102.0: a place's stamp keeps PLACE_STAMP (64) characters: #<places>:<date>+<networks>:<date>
+    assert [len(h[k]) for k in ("country", "code", "city", "org", "placed")] == [128, 8, 128, 128, 64]
 
 
 def test_a_connection_is_known_again_by_its_key_on_each_system(db):
@@ -874,7 +875,8 @@ def test_place_looks_up_only_the_rows_not_looked_up_yet_or_looked_up_in_an_older
     assert [rows[WEB2][k] for k in ("country", "code", "lat", "lon", "placed")] == ["", "", None, None, NOVEMBER]
     assert rows[PRINTER]["placed"] == ""  # never looked up
     # looked up in this file: none is asked again, though two of them have no point (the file is not even opened)
-    assert b.unplaced(NOVEMBER) == 0 and b.place(lookup, NOVEMBER) == 0 and b.unplaced(OCTOBER) == 0
+    # (1.102.0: any other file's stamp, an older one too, places them again: a switch back is a switch)
+    assert b.unplaced(NOVEMBER) == 0 and b.place(lookup, NOVEMBER) == 0 and b.unplaced(OCTOBER) == 3
     assert asked == [WEB2, SHELL, WEB] and b.changes == before + 1
     # a newer file: asked again, the last seen first, `most` at a time; a mapping answers as a Place does
     assert b.unplaced(DECEMBER) == 3
@@ -1777,3 +1779,72 @@ def test_a_hosts_kept_routes_are_handed_back_the_checks_others_first_the_drawn_o
     assert got["81.2.69.160"] == [{"traced": T0 + 2, "reached": False, "how": "icmp", "hops": []}]
     assert b.routes_of([]) == {} and HostBook(db.parent / "none.db").routes_of([WEB]) == {}  # no file: none made
     assert not (db.parent / "none.db").exists()
+
+
+# -- 1.102.0 (Monday list item 20): the stamps of the GeoIP sources' files ------------------------------------------------
+def test_a_switch_of_source_either_way_places_the_hosts_again_and_the_defaults_stamps_stay(db):
+    from liminal_libs.machines import geosources
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.flush()
+    default = geosources.stamp(("dbip", NOVEMBER), ("dbip", NOVEMBER), "dbip")
+    assert default == NOVEMBER  # the stamp rows already carry: none placed again
+    asked: list = []
+    assert b.place(atlas({WEB: LONDON}, asked), default) == 1 and b.unplaced(default) == 0
+    other = geosources.stamp(("dbip", NOVEMBER), ("ipinfo", "2026-11-24"), "dbip")
+    assert b.unplaced(other) == 1 and b.place(atlas({WEB: NUREMBERG}, asked), other) == 1
+    (h,) = b.hosts()
+    assert (h["placed"], h["asn"]) == (other, 64500) and b.unplaced(other) == 0
+    assert b.unplaced(default) == 1  # and back: placed again
+    assert b.place(atlas({WEB: LONDON}, asked), default) == 1 and b.hosts()[0]["placed"] == NOVEMBER
+
+
+def test_a_new_connection_takes_its_hosts_place_from_the_files_in_use_alone(db, monkeypatch):
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.flush()
+    stamp = "#dbip:2026-11-01+ipinfo:2026-11-24"
+    b.place(atlas({WEB: NUREMBERG}), stamp)
+    # a second row of the same host, placed by an older file, whose stamp sorts after "#..."
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO hosts (program, host, proto, port, direction, network, first, last, seconds, "
+                 "connections, country, placed) VALUES ('other.exe', ?, 'tcp', 443, 'out', 'internet', ?, ?, 0, 1, "
+                 "'Elsewhere', '2026-12-01')", (WEB, T0, T0))
+    conn.commit()
+    conn.close()
+    win(b, T0 + 60, row(started=T0 + 50, local_port=51500))  # a new connection of WEB
+    b.flush()
+    newest = max(b.connections(), key=lambda c: c["first"])
+    assert newest["country"] == "Germany"  # not "Elsewhere", the greatest string
+
+
+def test_clearing_by_role_takes_one_sources_places_out_of_both_tables(db):
+    from liminal_libs.machines import geosources
+    b = HostBook(db)
+    win(b, T0, row(started=T0), row(WEB2, started=T0, local_port=51001))
+    b.flush()
+    b.place(atlas({WEB: NUREMBERG, WEB2: NUREMBERG}), "#dbip:2026-11-01+ipinfo:2026-11-24")
+    assert b.clear_places("networks", geosources.cleared("networks", "ipinfo")) == 2
+    rows = b.hosts()
+    assert {(h["asn"], h["org"], h["country"], h["placed"]) for h in rows} == {(None, "", "Germany", "")}
+    assert all(c["asn"] is None for c in b.connections())
+    assert b.unplaced("#dbip:2026-11-01+none") == 2
+    b.place(atlas({WEB: NUREMBERG}), "#maker:2026-11-24+none")
+    assert b.clear_places("places", geosources.cleared("places", "maker")) == 2  # both looked up in it
+    cleared = {h["host"]: h for h in b.hosts()}[WEB]
+    assert (cleared["country"], cleared["lat"], cleared["placed"]) == ("", None, "")
+    assert b.clear_places("places", geosources.cleared("places", "nobody")) == 0
+
+
+def test_an_older_librarys_statement_takes_the_sources_rows_as_older(db):
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.flush()
+    b.place(atlas({WEB: NUREMBERG}), "#maker:2026-11-24+none")
+    conn = sqlite3.connect(db)
+    try:  # what 1.101.0 and before ask: placed < the DB-IP file's date
+        (n,) = conn.execute("SELECT COUNT(*) FROM hosts WHERE network = 'internet' AND (placed IS NULL OR placed < ?)",
+                            (NOVEMBER,)).fetchone()
+    finally:
+        conn.close()
+    assert n == 1  # placed again by an older library, from DB-IP
