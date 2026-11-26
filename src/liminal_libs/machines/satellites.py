@@ -452,7 +452,8 @@ class SkyView:
             mine = [o for o in kept if o["constellation"] == d.constellation]
             out.append({"id": d.constellation, "title": d.title, "slot": SLOTS[i % len(SLOTS)], "count": len(mine),
                         "epoch": world_iso(max((o["epoch"] for o in mine), default=0)) if mine else "",
-                        "beams": {str(norad): list(ids) for norad, ids in d.beams}})
+                        "beams": {str(norad): list(ids) for norad, ids in d.beams},
+                        "credit": dict(d.credit)})  # the review: drawn on the globe while its footprints are
         return {"hook": SKY_HOOK, "every": SKY_ASK_S, "needs": "" if ok else why, "constellations": out}
 
     def read(self, t=None, elevation: float = ELEVATION) -> dict:

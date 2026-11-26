@@ -1699,6 +1699,12 @@ def test_the_sky_is_drawn_as_one_merged_area_a_constellation_with_its_faint_band
     clip = paint.index("o.arc(g.cx, g.cy, g.r, 0, TAU);\n        o.clip();")
     assert clip < paint.index("o.stroke(lands);") < stroke and clip < paint.index("o.stroke(cap);")
     assert fill < paint.index("o.restore();  // the disk's clip off") < paint.index("c.drawImage(own, 0, 0);")
+    # the review: the orbits' credit (CelesTrak's) kept from the spec and drawn while its footprints are, the credits
+    # made again when the places come
+    assert "beams, credit: creditOf(c.credit) });" in _body(js, "function skyOf(s) {")
+    credits = _body(js, "function renderAttribution() {")
+    assert "if (s && s.n && k.credit) list.push(k.credit);" in credits
+    assert "sky = skyPlaces(answer); tickSky(); renderAttribution(); changed();" in _body(js, "function askSky() {")
     ask = _body(js, "function askSky() {")
     assert "if (!data.sky || data.sky.needs || !skyLoad || Date.now() - skyAsked < data.sky.every * 1000) return;" in ask
     assert "fetch(" not in _body(js, "function skyLayer(g, fr, ratio, W, H) {") and "fetch(" not in ask

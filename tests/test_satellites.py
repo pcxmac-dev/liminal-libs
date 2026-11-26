@@ -194,6 +194,8 @@ def test_the_sky_says_its_constellations_and_needs_the_package_until_it_is_here(
     spec = view.spec()
     assert spec["hook"] == "world_sky" and spec["every"] == 60.0 and spec["needs"] == S.NEEDS_PACKAGE
     assert [(c["id"], c["slot"], c["count"]) for c in spec["constellations"]] == [("starlink", 1, 2), ("hughesnet", 2, 1)]
+    # the review: each constellation carries its orbits' credit, drawn on the globe while its footprints are
+    assert [c["credit"] for c in spec["constellations"]] == [{"text": "CelesTrak", "url": ""}] * 2
     assert view.read() == {"needs": S.NEEDS_PACKAGE, "constellations": []}
     assert view.row()[3:] == ["not downloaded", {"form": "world-sky-package", "title": "Download…"}, ""]
     (form,) = view.forms()

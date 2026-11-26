@@ -927,7 +927,7 @@
         }
       }
       list.push({ id, title: text(c.title, 80) || id, slot: slot >= 1 && slot <= 3 ? slot : (list.length % 3) + 1,
-        count: Math.max(0, num(c.count) ?? 0), beams });
+        count: Math.max(0, num(c.count) ?? 0), beams, credit: creditOf(c.credit) });
     }
     const every = num(s.every);
     return list.length ? { hook: text(s.hook, 40), needs: text(s.needs, 200), constellations: list,
@@ -1572,7 +1572,7 @@
       skyAsked = Date.now();
       let asked = null;
       try { asked = Promise.resolve(skyLoad(Date.now() / 1000)); } catch (e) { asked = Promise.reject(e); }
-      asked.then((answer) => { if (!destroyed) { sky = skyPlaces(answer); tickSky(); changed(); } }, () => {});
+      asked.then((answer) => { if (!destroyed) { sky = skyPlaces(answer); tickSky(); renderAttribution(); changed(); } }, () => {});
     }
     function tickSky() {
       clearTimeout(skyTimer);
@@ -2450,6 +2450,10 @@
       const list = data.attribution ? [data.attribution] : [], kept = new Map();
       for (const { l, geo } of shownLayers()) list.push(...l.credits, ...geo.credits.filter(Boolean));
       if (coastCredited) list.push(COAST_CREDIT);  // GSHHG's coasts, while their tiles are drawn
+      for (const k of data.sky && sky ? data.sky.constellations : []) {  // the orbits' source, while its footprints are
+        const s = sky.byId.get(k.id);
+        if (s && s.n && k.credit) list.push(k.credit);
+      }
       for (const a of list) {
         const key = `${a.url}\n${a.text}`;
         if (kept.has(key)) continue;
