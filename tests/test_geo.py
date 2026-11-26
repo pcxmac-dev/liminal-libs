@@ -951,3 +951,145 @@ def test_a_records_network_is_read_under_the_names_files_use():
     assert geo._network({"asn": "AS4837", "as_org": "China Unicom"}) == (4837, "China Unicom")
     for bad in (True, 0, -5, 1 << 32, "ASX", "12.5", "AS²", "٣", None, [1], {"n": 1}):
         assert geo._network({"autonomous_system_number": bad}) == (None, None)
+
+
+# -- 1.102.0 (Monday list item 20): more GeoIP sources -----------------------------------------------------------------
+IPINFO = [("1.1.1.0/24", {"asn": "AS13335", "as_name": "Cloudflare, Inc.", "as_domain": "cloudflare.com",
+                          "country": "Australia", "country_code": "AU", "continent": "Oceania", "continent_code": "OC"}),
+          ("81.2.69.0/24", {"asn": "AS20712", "as_name": "Andrews & Arnold Ltd", "country_code": "GB"})]
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_packing_is_insisted_on_when_a_source_names_one(tmp_path):
+    folder = tmp_path / "geoip"
+    plain, packed = mmdb(PLACES), gzip.compress(mmdb(PLACES))
+    with pytest.raises(GeoError, match="is gzipped"):
+        install_mmdb(packed, folder, "a", packing="mmdb")
+    with pytest.raises(GeoError, match="not gzipped"):
+        install_mmdb(plain, folder, "a", packing="mmdb.gz")
+    with pytest.raises(ValueError, match="packing"):
+        install_mmdb(plain, folder, "a", packing="tar.gz")
+    assert not list(folder.glob("*.mmdb"))
+    assert install_mmdb(plain, folder, "a", packing="mmdb").name == "a.mmdb"
+    assert install_mmdb(packed, folder, "b", packing="mmdb.gz").name == "b.mmdb"
+    assert install_mmdb(packed, folder, "c").name == "c.mmdb"  # auto: either, as before
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_file_from_a_fixed_address_is_named_from_its_build_date(tmp_path):
+    folder = tmp_path / "geoip" / "ipinfo" / "asn"
+    named = []
+
+    def name_of(built):
+        named.append(built)
+        return "ipinfo-lite-" + datetime.fromtimestamp(built, timezone.utc).strftime("%Y-%m-%d")
+
+    path = install_mmdb(mmdb(IPINFO, built=NOVEMBER), folder, "download", packing="mmdb", name_of=name_of)
+    assert path.name == "ipinfo-lite-2026-11-01.mmdb" and named == [NOVEMBER]
+    assert [p.name for p in folder.iterdir()] == [path.name]  # never "download" nor "ipinfo_lite"
+    with pytest.raises(GeoError):  # named only after the check: a broken file is never asked its name
+        install_mmdb(b"no GeoIP file", folder, "download", packing="mmdb", name_of=name_of)
+    assert named == [NOVEMBER] and [p.name for p in folder.iterdir()] == [path.name]
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_sha256_that_does_not_match_installs_nothing(tmp_path):
+    import hashlib
+    folder = tmp_path / "geoip"
+    old = install_mmdb(mmdb(PLACES, built=OCTOBER), folder, "old")
+    data = mmdb(PLACES, built=NOVEMBER)
+    with pytest.raises(GeoError, match="SHA-256"):
+        install_mmdb(data, folder, "new", sha256=hashlib.sha256(b"other bytes").hexdigest())
+    assert [p.name for p in folder.iterdir()] == [old.name]  # the current copy kept, the temporary file gone
+    with pytest.raises(ValueError, match="64 hex"):
+        install_mmdb(data, folder, "new", sha256="abc")
+    packed = gzip.compress(data)
+    new = install_mmdb(packed, folder, "new", sha256=hashlib.sha256(packed).hexdigest().upper())  # as downloaded
+    assert [p.name for p in folder.iterdir()] == [new.name]
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_sources_folders_never_prune_each_other_and_notes_go_with_their_file(tmp_path):
+    base = tmp_path / "geoip"
+    dbip = install_mmdb(mmdb(PLACES), base, "dbip-city-lite-2026-11")
+    dbip_asn = install_mmdb(mmdb(ASNS, kind="DBIP-ASN-Lite"), geo.asn_folder(base), "dbip-asn-lite-2026-11")
+    other = base / "ipinfo" / "asn"
+    first = install_mmdb(mmdb(IPINFO, built=OCTOBER), other, "ipinfo-lite-2026-10-01")
+    first.with_suffix(geo.NOTES).write_text("{}", encoding="utf-8")
+    second = install_mmdb(mmdb(IPINFO, built=NOVEMBER), other, "ipinfo-lite-2026-11-01")
+    assert sorted(p.name for p in other.iterdir()) == [second.name]  # the older copy and its notes pruned
+    assert dbip.exists() and dbip_asn.exists()  # another source's folder untouched
+    second.with_suffix(geo.NOTES).write_text("{}", encoding="utf-8")
+    held = geo.newest(other)
+    assert held.lookup("1.1.1.1").asn == 13335
+    assert geo.remove(second) is True
+    assert not other.exists() or not list(other.iterdir())  # the file and its notes
+    assert held.lookup("1.1.1.2") is None and held.describe()["open"] is False  # closed for good
+    assert held.usable_now() is False
+    assert geo.remove(second) is True  # gone already: nothing to do
+    assert dbip.exists() and dbip_asn.exists()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_removal_windows_refuses_is_said(tmp_path, monkeypatch):
+    folder = tmp_path / "geoip"
+    path = install_mmdb(mmdb(PLACES), folder, "x")
+    monkeypatch.setattr(geo, "_remove", lambda p: False)
+    assert geo.remove(path) is False and path.exists()
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_find_takes_the_networks_file_to_read_beside(tmp_path):
+    base = tmp_path / "geoip"
+    install_mmdb(mmdb(PLACES), base, "dbip-city-lite-2026-11")
+    install_mmdb(mmdb(ASNS, kind="DBIP-ASN-Lite"), geo.asn_folder(base), "dbip-asn-lite-2026-11")
+    install_mmdb(mmdb(IPINFO), base / "ipinfo" / "asn", "ipinfo-lite-2026-11-01")
+    with GeoIP.find(base) as beside:  # as before: the folder's own asn/
+        assert beside.asn.describe()["file"] == "dbip-asn-lite-2026-11.mmdb"
+    with GeoIP.find(base, asn=None) as alone:
+        assert alone.asn is None and alone.lookup("81.2.69.142").asn is None
+    networks = geo.newest(base / "ipinfo" / "asn")
+    with GeoIP.find(base, asn=networks) as chosen:
+        london = chosen.lookup("81.2.69.142")
+        assert (london.city, london.asn, london.org) == ("London", 20712, "Andrews & Arnold Ltd")
+        assert chosen.describe()["asn"]["file"] == "ipinfo-lite-2026-11-01.mmdb"
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_ipinfo_lite_records_read_as_networks(tmp_path):
+    path = install_mmdb(mmdb(IPINFO, kind="ipinfo lite"), tmp_path / "n", "ipinfo-lite-2026-11-01", packing="mmdb")
+    with GeoIP(path) as g:
+        cf = g.lookup("1.1.1.1")
+        assert (cf.asn, cf.org, cf.lat, cf.city) == (13335, "Cloudflare, Inc.", None, None)
+
+
+@needs_reader
+@pytest.mark.usefixtures("no_outside")
+def test_a_file_too_old_is_passed_over_everywhere(tmp_path, monkeypatch):
+    now = [5000.0]
+    monkeypatch.setattr(geo, "_clock", lambda: now[0], raising=False)
+    base = tmp_path / "geoip"
+    old = install_mmdb(mmdb(PLACES, built=OCTOBER), base, "old")
+    install_mmdb(mmdb(ASNS, built=OCTOBER, kind="DBIP-ASN-Lite"), geo.asn_folder(base), "old-asn")
+    young = lambda path, built: built >= NOVEMBER  # noqa: E731
+    assert GeoIP.find(base, usable=young) is None
+    assert geo.find_asn(base, usable=young) is None and geo.newest(base, usable=young) is None
+    assert GeoIP.find(base, usable=lambda p, b: 1 / 0) is None  # a test that fails: not read
+    with GeoIP.find(base, usable=lambda p, b: True) as g:
+        assert g.usable_now()
+    held = GeoIP(old, usable=young)
+    assert held.usable_now() is False  # asked with the open file's build time alone
+    open_now = GeoIP(old)
+    install_mmdb(mmdb(PLACES, built=OCTOBER), base, "older")  # lets both go; the folder's newest is too old for one
+    now[0] += geo.REOPEN_S + 1
+    assert held.lookup("1.1.1.1") is None and held.describe()["open"] is False  # never reopened
+    assert open_now.lookup("1.1.1.1").city == "Sydney"  # with no test, as before
+    held.close()
+    open_now.close()
