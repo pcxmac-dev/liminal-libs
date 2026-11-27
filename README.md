@@ -39,7 +39,10 @@ mediates the local AI agents' connections on the platform's own port). What they
 command (`machines/hub.py`). Who may ask a hook is a plugin's word too (1.66.0): `PLUGIN_ONLY_HOOKS`, asked only by
 another plugin, and `PAGE_ONLY_HOOKS`, asked only from its page (`apps/asking.py` says who asks; INTEGRATION.md says
 the rest). From 1.99.0 the model servers' and the harnesses' bases say theirs: an install, a start, a stop, a key, a
-window opened and every other change is asked only from the page, and their reads by anyone.
+window opened and every other change is asked only from the page, and their reads by anyone. From 1.107.0 every hook
+is closed by default (the user, 2026-11-26: "Yes, closed by default"): one a plugin declares for no one is its page's
+alone, a read is opened by `READ_HOOKS` and an ask between plugins by `SERVICE_HOOKS` (`internal.audience`,
+`conformance.warnings`; INTEGRATION.md).
 
 An app behind a front (1.98.0). Every app answers 127.0.0.1 alone, and whatever hands requests on to its port (a
 reverse proxy beside it, its TLS end) connects from there as a program of the machine does. It must set

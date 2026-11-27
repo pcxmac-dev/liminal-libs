@@ -381,6 +381,7 @@ def test_another_services_a_model_servers_a_programs_and_windows_reserved_ports_
     class Models(MachinePlugin):
         name, title, about, api, order = "ollama", "Ollama", "a stand-in model server", "2.2", 995
         HOOKS = (*MachinePlugin.HOOKS, "serving")
+        READ_HOOKS = SERVICE_HOOKS = ("serving",)  # as ModelServer declares it (closed by default, 1.107.0)
 
         def serving(self, name=""):
             return {"plugin": "ollama", "title": "Ollama", "instances": [{"name": "main", "port": 11434, "local": True}]}

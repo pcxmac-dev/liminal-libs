@@ -16,7 +16,15 @@ The context variable keeps an async task's ask its own; the mark keeps every oth
 handed an asker has none, on every Python the project runs.
 
 An unset asker is neither the page nor a plugin. A gated hook asked with none is refused, in words (`refusal`,
-`check`). A hook in neither word is never refused here, so a plugin that declares neither word is asked as before.
+`check`).
+
+Closed by default (1.107.0; the user, 2026-11-26: "Yes, closed by default"): a hook a plugin answers and declares for
+no one is its page's alone, exactly as if PAGE_ONLY_HOOKS named it (internal.closed, internal.page_alone). It declares
+a hook a read anyone here may ask (READ_HOOKS, or a tab of its own), or one other plugins ask through the app
+(SERVICE_HOOKS); those are never refused here, as before. So a plugin written before this still has its page, which
+asks as the page; another plugin's ask, and an ask that names no one, of a hook it never declared is refused in words
+that say how it is declared. The contract itself holds an ask by name to the default too (Plugin.ask: `check_closed`),
+so an app that asks a plugin without this module's `check` cannot leave it open.
 
 Plain: the standard library and liminal_libs.internal, which is plain too."""
 from __future__ import annotations
@@ -31,6 +39,9 @@ from .. import internal
 
 PAGE = "page"  # the asker of a request from the app's page, and of a job that request started
 _NOW = object()  # refusal's and check's default: the asker of this moment
+# how a hook left undeclared is declared, said in its refusal (the closed default, 1.107.0)
+UNDECLARED = ("A read anyone on this machine may ask is named in its READ_HOOKS, one other plugins ask through the "
+              "app in its SERVICE_HOOKS.")
 _HELD: contextvars.ContextVar[tuple[str | None, object] | None] = contextvars.ContextVar("liminal_asker", default=None)
 _THREAD = threading.local()  # each thread's own mark (`_mark`)
 
@@ -99,12 +110,16 @@ def _name(plugin) -> str:
 
 def refusal(plugin, hook: str, who=_NOW) -> str:
     """Why `who` may not ask `plugin`'s `hook`, in words; "" when it may. `who` is the asker of this moment unless
-    given. A hook in neither word is never refused. One in PLUGIN_ONLY_HOOKS takes another plugin's ask alone: never
-    the page's, its own plugin's or no one's. One in PAGE_ONLY_HOOKS takes the page's alone. One in both takes no
-    one's. When either word cannot be read, every hook of that plugin is refused (internal.problems says why)."""
+    given. One in PLUGIN_ONLY_HOOKS takes another plugin's ask alone: never the page's, its own plugin's or no
+    one's. One in PAGE_ONLY_HOOKS takes the page's alone. One in both takes no one's. A hook it declares a read
+    (READ_HOOKS, a tab of its own), a service (SERVICE_HOOKS) or its route's (RPC_HOOK) is never refused. Any other
+    hook it answers is closed by default (1.107.0): the page's alone, as one in PAGE_ONLY_HOOKS, in words that say it
+    was never declared. When a word cannot be read, every hook of that plugin is refused (internal.problems says
+    why)."""
     who = asker() if who is _NOW else who
     try:
-        by_plugins, by_page = internal.plugin_only(plugin), internal.page_only(plugin)
+        by_plugins, by_page = internal.plugin_only(plugin), internal.page_alone(plugin)
+        default = hook in by_page and hook in internal.closed(plugin)
     except ValueError as e:
         return f"{_name(plugin)}: who may ask its hooks cannot be read ({e}), so it is asked nothing"
     plugins_only, page_only = hook in by_plugins, hook in by_page
@@ -118,6 +133,9 @@ def refusal(plugin, hook: str, who=_NOW) -> str:
     if page_only:
         if who == PAGE:
             return ""
+        if default:
+            asked = nobody if who is None else f"{who} asked it."
+            return f"{said} is asked only from its page: {name} declares it for no one else. {UNDECLARED} {asked}"
         if who is None:
             return f"{said} is asked only from its page. {nobody}"
         return f"{said} is asked only from its page, never by another plugin: {who} asked it."
@@ -128,6 +146,22 @@ def refusal(plugin, hook: str, who=_NOW) -> str:
     if who == name:
         return f"{said} is asked only by another plugin, not by {name} itself."
     return ""
+
+
+def check_closed(plugin, hook: str, who=_NOW) -> None:
+    """The closed default alone, held by the contract itself (Plugin.ask): an AskRefused when `hook` is one `plugin`
+    answers and declares for no one (internal.closed) and `who` (the asker of this moment unless given) is not the
+    page, or when its words cannot be read; nothing otherwise. What its words do declare (PLUGIN_ONLY_HOOKS,
+    PAGE_ONLY_HOOKS) is the app's to hold, with `check`, as before."""
+    who = asker() if who is _NOW else who
+    if who == PAGE:
+        return
+    try:
+        left = hook in internal.closed(plugin)
+    except ValueError:
+        left = True
+    if left:
+        raise AskRefused(refusal(plugin, hook, who), plugin=_name(plugin), hook=hook, asker=who)
 
 
 def check(plugin, hook: str, who=_NOW) -> None:

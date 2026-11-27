@@ -573,6 +573,9 @@ class AiPlugin(MachinePlugin):
     # What it says of the interface it shares (the contract's words of liminal-libs 1.63.0, read by name by the Internal
     # API tab; nothing reads them before it): its reads beside its bases'
     READ_HOOKS = ("refresh",)
+    # (its install and its removal are named page-only by ModelServer and Harness, not here: a ProtocolPlugin's HOOKS
+    # leave both out, and a word may name only a hook among its HOOKS. Left undeclared they are the page's alone all
+    # the same: closed by default, 1.107.0)
     # The hooks that run its software from its folder (a model server's start, a harness's open). Each one a class
     # defines and lists in its HOOKS is held to `starting` when the class is made: refused while an install or an
     # uninstall is under way, and holding both off while it runs. A plugin adds its own: (*Base.START_HOOKS, "serve").

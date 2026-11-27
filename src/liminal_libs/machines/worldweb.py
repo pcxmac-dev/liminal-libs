@@ -106,7 +106,11 @@ class WorldWideWeb(MachinePlugin):
     # the GeoIP sources' download, use and removal, the older installs, a data set's download (the user's 11b), and
     # (1.104.0) the sgp4 package's download and removal, code the plugin imports
     PAGE_ONLY_HOOKS = (GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK, GEOIP_HOOK, ASN_HOOK, netstat.GET_HOOK,
-                       netstat.SKY_GET_HOOK, netstat.SKY_REMOVE_HOOK)
+                       netstat.SKY_GET_HOOK, netstat.SKY_REMOVE_HOOK,
+                       # 1.107.0, closed by default: the rest of what this base answers for its page, said in so many
+                       # words: the traffic watched, the globe's own choices, a data set removed
+                       WATCH_HOOK, netstat.SHOW_HOOK, netstat.DIRECTION_HOOK, netstat.WITHIN_HOOK, netstat.PICK_HOOK,
+                       netstat.REMOVE_HOOK)
     GEOIP_SOURCES: tuple = ()
     INFRASTRUCTURE: tuple = ()
     # 1.104.0 (Monday list item 32): the sgp4 package the satellites are placed with, as the plugin pins it ({version,

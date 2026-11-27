@@ -255,6 +255,11 @@ class Firewall(MachinePlugin):
     # the changes among them only another plugin may ask, never a page
     SERVICE_HOOKS = SERVICES
     PLUGIN_ONLY_HOOKS = SERVICE_CHANGES
+    # 1.107.0, closed by default: every change this base answers for its page, said in so many words (a hook left
+    # undeclared is the page's alone all the same: internal.closed): a rule made or removed, the groups' moves and
+    # labels, the hosts database's recording and its rows forgotten
+    PAGE_ONLY_HOOKS = ("allow", "remove", "move_rules", "new_label", "rename_label", "remove_label",
+                       netstat.RECORDING_HOOK, netstat.FORGET_HOOK)
     STEPS = STEPS
     ICON = "shield"
     GROUPS_VARIABLE = ""  # where the user's labels and moves are kept through the login: "" for <NAME>_GROUPS

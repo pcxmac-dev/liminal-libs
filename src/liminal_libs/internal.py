@@ -28,8 +28,17 @@ KEEPS, INTERNAL_NOTES; JOB_HOOKS, CANCEL_HOOKS and TABS as before), read by name
 one that says nothing has both tabs all the same, each hook of its own listed as a change until it says it only reads.
 Two more say who may ask a hook (2026-11-18, for the MCP plugin): PLUGIN_ONLY_HOOKS, asked only by another plugin
 through its app, never by a page or a program; and PAGE_ONLY_HOOKS, asked only from its page, never by another plugin.
-Plugin declares neither: a plugin that says neither has none (`plugin_only`, `page_only`), and apps.asking holds an
-ask to them. `problems(plugin)` is what a plugin's own test holds it to. `reads_of` is what an app asks as reads (the
+Plugin declares neither, and apps.asking holds an ask to them.
+
+Closed by default (1.107.0; the user, 2026-11-26: "Yes, closed by default"). Every hook has one audience (`audience`):
+"read", anyone on this machine (READ_HOOKS, and its own tabs' hooks: a tab is asked as a read); "plugin", other plugins
+through its app, and its page (SERVICE_HOOKS, PLUGIN_ONLY_HOOKS for them alone); "page", a person at its page alone
+(PAGE_ONLY_HOOKS); "route", the one hook its RPC_HOOK names. A hook it answers and declares in none of them is
+page-only: `closed(plugin)` lists them, `page_alone(plugin)` holds them beside the declared ones for a gate
+(`page_only` stays what the plugin says, as its own tests read it), and `undeclared(plugin)` is what a plugin's own
+test asserts is empty (conformance.warnings says it in words). The words already declared keep their meaning.
+
+`problems(plugin)` is what a plugin's own test holds it to. `reads_of` is what an app asks as reads (the
 platform's log), and `answers`, `kind_of` and `tabs_key` what the frame reads of a plugin for its own parts
 (App.askable, App.plugin_internal), each as the plugin declares it. `answered_by` is the contract's own rule
 (Plugin.gives asks it): whose code answers a hook.
@@ -74,6 +83,17 @@ KINDS = ("read", "tab", "change", "job", "service", "own")  # a hook's kind (the
 USERS = ("both", "plugins", "app", "named", "")  # who uses a hook here (the first that holds)
 PLUGIN_ONLY = "PLUGIN_ONLY_HOOKS"  # its hooks only another plugin asks, through its app: never a page or a program
 PAGE_ONLY = "PAGE_ONLY_HOOKS"  # its hooks only its page asks: never another plugin
+RPC = "RPC_HOOK"  # the one hook its app's route hands an agent's requests to (machines/protocol.py): the route's alone
+# Who may ask a hook (1.107.0, the closed default; the user, 2026-11-26: "Yes, closed by default"), `audience`'s words:
+READ, PLUGIN, PAGE, ROUTE = "read", "plugin", "page", "route"
+AUDIENCES = (READ, PLUGIN, PAGE, ROUTE)
+AUDIENCE_WORDS = ("READ_HOOKS", "SERVICE_HOOKS", PLUGIN_ONLY, PAGE_ONLY)  # the words that declare a hook's audience
+# The contract's own hooks an app runs through a route or code of its own and never asks by name (its scan, its setup,
+# a command): page-only by the closed default like any other, and no plugin is asked to declare them (`undeclared`)
+CONTRACT_RUN = ("scan", "setup", "run")
+# and each kind's own, called by its app's code (App.CALLS) and never asked by name: a database's connection and its
+# making, a publisher's read
+KIND_RUN = {"database": ("open", "make", "own_port"), "publisher": ("read",)}
 DECLARED = ("READ_HOOKS", "SERVICE_HOOKS", "JOB_HOOKS", "CANCEL_HOOKS", PLUGIN_ONLY,
             PAGE_ONLY)  # the declarations made of hooks' names
 CONSTANTS = ("SECTION", "ICON", "STEPS", "JOB_HOOKS")  # the class constants an app reads, given by value (`declares`)
@@ -465,8 +485,76 @@ def plugin_only(plugin) -> tuple[str, ...]:
 
 def page_only(plugin) -> tuple[str, ...]:
     """The hooks a plugin says only its page asks (PAGE_ONLY_HOOKS, as declared() reads it): never another plugin. ()
-    when it says none. A ValueError when the word cannot be read, or is not a tuple of str (as plugin_only)."""
+    when it says none. A ValueError when the word cannot be read, or is not a tuple of str (as plugin_only). What a
+    gate holds to the page is `page_alone`: these, and the hooks closed by default."""
     return _gated(plugin, PAGE_ONLY)
+
+
+def page_alone(plugin) -> tuple[str, ...]:
+    """The hooks only a plugin's page asks, never another plugin or a program, as a gate holds them (1.107.0): those
+    it says (`page_only`), then, closed by default, every hook it answers that it declares for no one (`closed`). A
+    ValueError when a word cannot be read, or is not a tuple of str: a gate that asks it refuses."""
+    said = page_only(plugin)
+    return (*said, *(n for n in closed(plugin) if n not in said))
+
+
+def rpc_of(plugin) -> str:
+    """The hook a plugin's RPC_HOOK names, its app's route's alone; "" for none, or a word that is no hook's name."""
+    hook = _try(lambda: getattr(plugin, RPC, ""), "")
+    return hook if isinstance(hook, str) and hook.isidentifier() else ""
+
+
+def closed(plugin) -> tuple[str, ...]:
+    """The hooks a plugin answers and declares for no one, in its HOOKS' order: page-only by the closed default
+    (1.107.0; the user, 2026-11-26: "Yes, closed by default"). A hook is declared by READ_HOOKS (anyone here may ask
+    it), SERVICE_HOOKS (other plugins ask it through the app), PLUGIN_ONLY_HOOKS, PAGE_ONLY_HOOKS, a tab of its own
+    TABS (asked as a read) or its RPC_HOOK (its route's alone). The contract's own scan, setup and run are among them
+    when it answers them (CONTRACT_RUN). A ValueError when one of the words cannot be read, or is not a tuple of str:
+    a gate that asks it refuses rather than lets through. Nothing of the plugin is called."""
+    said: set[str] = {rpc_of(plugin)}
+    for word in AUDIENCE_WORDS:
+        said.update(_gated(plugin, word))
+    said.update(t["hook"] for t in _tabs(plugin))
+    return tuple(n for n in _hooks(plugin) if n not in said and answered_by(plugin, n))
+
+
+def undeclared(plugin) -> tuple[str, ...]:
+    """The hooks a plugin leaves undeclared, for its own test to assert there are none (`internal.undeclared(MACHINE)
+    == ()`; conformance.warnings says each in words): `closed`, less the contract's own scan, setup and run
+    (CONTRACT_RUN) and its kind's own (KIND_RUN): an app runs those by a route or code of its own, never by name, and
+    no plugin is asked to declare them. () when its words cannot be read (problems() says that)."""
+    run = (*CONTRACT_RUN, *KIND_RUN.get(kind_of(plugin), ()))
+    return tuple(n for n in _try(lambda: closed(plugin), ()) if n not in run)
+
+
+def audience(plugin, hook: str) -> str:
+    """Who may ask a plugin's hook by name, one of AUDIENCES, the first that holds: "page" (PAGE_ONLY_HOOKS: a person
+    at its page alone), "plugin" (PLUGIN_ONLY_HOOKS: other plugins alone), "route" (its RPC_HOOK), "read" (READ_HOOKS,
+    or a tab of its own: anyone on this machine), "plugin" (SERVICE_HOOKS: other plugins through its app, and its
+    page), else "page": closed by default. A ValueError when a word cannot be read (as `closed`)."""
+    words = {word: _gated(plugin, word) for word in AUDIENCE_WORDS}
+    if hook in words[PAGE_ONLY]:
+        return PAGE
+    if hook in words[PLUGIN_ONLY]:
+        return PLUGIN
+    if hook == rpc_of(plugin):
+        return ROUTE
+    if hook in words["READ_HOOKS"] or any(t["hook"] == hook for t in _tabs(plugin)):
+        return READ
+    return PLUGIN if hook in words["SERVICE_HOOKS"] else PAGE
+
+
+def audiences(plugin) -> dict[str, dict]:
+    """Each hook a plugin answers, in its HOOKS' order: {"audience": one of AUDIENCES, "declared": whether it says so
+    itself (False: page-only by the closed default), "only": whether a word narrows it to that audience alone
+    (PLUGIN_ONLY_HOOKS, PAGE_ONLY_HOOKS)}. A survey's and a page's reading; {} when its words cannot be read."""
+    def read() -> dict[str, dict]:
+        left = set(closed(plugin))
+        only = {*_gated(plugin, PLUGIN_ONLY), *_gated(plugin, PAGE_ONLY)}
+        return {n: {"audience": audience(plugin, n), "declared": n not in left, "only": n in only}
+                for n in _hooks(plugin) if answered_by(plugin, n)}
+
+    return _try(read, {})
 
 
 def _hooks(plugin) -> list[str]:

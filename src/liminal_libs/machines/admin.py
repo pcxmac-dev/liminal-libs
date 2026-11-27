@@ -290,6 +290,8 @@ class Admin(MachinePlugin):
 
     HOOKS = (*MachinePlugin.HOOKS, "service", "startup", "register", "unregister", "processes")  # what the platform may ask by name
     READ_HOOKS = ("processes",)  # its reads beside MachinePlugin's (Plugin.READ_HOOKS): the rest change what runs
+    # 1.107.0, closed by default: its changes are its page's alone, said by the base (both admin plugins said so)
+    PAGE_ONLY_HOOKS = ("service", "startup", "register", "unregister")
     STEPS = STEPS
     ICON = "wrench"
     SERVICES: tuple = ()  # (name, title, what of the framework uses it, may the setup start it)

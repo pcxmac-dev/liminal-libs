@@ -331,7 +331,9 @@ def test_the_older_installs_and_a_data_sets_download_are_the_pages_alone_in_the_
     assert {"world_geoip", "world_asn", "world_layer_get", "world_geoip_get", "world_geoip_use",
             "world_geoip_remove"} <= set(internal.page_only(plain))
     assert internal.problems(plain) == [] and internal.problems(Sourced(None, None)) == []
-    assert internal.problems(FakeFirewall()) == [] and not set(internal.page_only(FakeFirewall()))
+    # (1.107.0: a firewall names its own changes page-only; none of the World Wide Web tab's is its)
+    assert internal.problems(FakeFirewall()) == []
+    assert not [h for h in internal.page_only(FakeFirewall()) if h.startswith("world")]
 
 
 class Layered(Sourced):

@@ -214,6 +214,17 @@ listed as a change.
   (`PAGE_ONLY_HOOKS = ("pull", "delete_model")`). What the login says is that a browser is signed in to it, and a
   local login signs `secret` and `default` in with no password: the word does not stop a program on this machine
   that signs itself in.
+- **Closed by default** (1.107.0; the user, 2026-11-26: "Yes, closed by default"): a hook a plugin answers and names
+  in none of `READ_HOOKS`, `SERVICE_HOOKS`, `PLUGIN_ONLY_HOOKS`, `PAGE_ONLY_HOOKS`, a tab of its `TABS` or its
+  `RPC_HOOK` is its page's alone, exactly as if `PAGE_ONLY_HOOKS` named it: another plugin's ask (403), an app's own
+  ask that names no one, and `plugin.ask(...)` outside a page's route are refused, in words that say how it is
+  declared; over HTTP liminal-platform 0.42.0 asks its login for every hook but a declared read. So a plugin says
+  what it opens: a read anyone on this machine may ask in `READ_HOOKS`, a hook other plugins ask in `SERVICE_HOOKS`.
+  `JOB_HOOKS` and `CANCEL_HOOKS` say how a hook is run, not who may ask it. The contract's own `scan`, `setup` and
+  `run`, a database's `open`, `make` and `own_port` and a publisher's `read` are closed too and need no word: an app
+  runs them by a route or code of its own. `internal.audience(plugin, hook)` says a hook's audience ("read",
+  "plugin", "page", "route"), `internal.undeclared(plugin)` what is left to the default, and
+  `conformance.warnings(plugin)` the same in words: a plugin's own test asserts it is `[]`.
 
 Who asks is handed over in so many words (1.66.0, `liminal_libs.apps.asking`), never taken from what a thread
 inherits: an app's route for its page sets the page (`asking(PAGE)`), `App.ask` sets the plugin that asks for that

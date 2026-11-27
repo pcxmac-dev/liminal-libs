@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.107.0 (2026-11-26)
+
+Closed by default (the user, 2026-11-26: "Yes, closed by default"). The security sweep of 2026-11-26 found that a
+plugin's change hooks were open to any program on the machine asking the platform over HTTP, and to every other
+plugin, unless the plugin had named them in `PAGE_ONLY_HOOKS`: a hook nobody thought about was everybody's. Now a
+hook a plugin answers and declares for no one is its page's alone. Nothing is added to the plugin contract (the
+plugin API stays 2.4): the words there were say a hook's audience, and they keep their meaning.
+
+- **A hook's audience** (`internal.audience(plugin, hook)`, `internal.audiences(plugin)`): "read", anyone on this
+  machine (`READ_HOOKS`, and a tab of its own `TABS`: a tab is asked as a read); "plugin", other plugins through the
+  app, and its page (`SERVICE_HOOKS`; `PLUGIN_ONLY_HOOKS` for them alone); "page", a person at its page alone
+  (`PAGE_ONLY_HOOKS`); "route", the one hook its `RPC_HOOK` names. Anything else it answers is "page": closed by
+  default. `JOB_HOOKS` and `CANCEL_HOOKS` say how a hook is run, not who may ask it.
+- **The gate.** `internal.closed(plugin)` lists the hooks left to the default, and `internal.page_alone(plugin)`
+  holds them beside the declared ones for a gate (`page_only` stays what the plugin says: plugins' own tests read
+  it). `apps.asking` (`refusal`, `check`, and with them `App.ask` and the platform's ask) refuses them to another
+  plugin, to the plugin itself and to an ask that names no one, in words that say the hook was never declared and
+  how it is declared. The contract's own ask by name holds the default too (`Plugin.ask`, `asking.check_closed`):
+  an app that asks a plugin by name without `asking.check` cannot leave such a hook open. Code that calls the
+  method itself asks nothing by name, as before (a command line, an app's own calls: `App.CALLS`). Over HTTP the
+  platform asks its login whether a person is at the page from liminal-platform 0.42.0 (`internal.audience`); an
+  older platform asks it for `PAGE_ONLY_HOOKS` alone, so the two land together.
+- **A plugin written before this** is not broken silently: its page asks as the page and works as it did. What
+  changes for it: another plugin's ask of a hook it never declared, an app's own ask by name outside a page's
+  route, and a test that asks one with `plugin.ask(...)` are refused, in words. It declares a read anyone may ask
+  in `READ_HOOKS`, a hook other plugins ask in `SERVICE_HOOKS`, and may say `PAGE_ONLY_HOOKS` in so many words.
+- **Conformance.** `conformance.warnings(plugin)`: each hook left undeclared, in words (`internal.undeclared`: the
+  closed hooks less the contract's own, which an app runs by a route or code of its own and never by name: `scan`,
+  `setup`, `run`, a database's `open`, `make` and `own_port`, a publisher's `read`). A warning is no problem:
+  `problems` and `assert_conforms` are unchanged. A plugin's own test asserts
+  `conformance.warnings(MACHINE) == []`.
+- **The library's bases declare their own.** `Firewall` names its changes page-only (a rule made or removed, the
+  groups' moves and labels, the hosts database's recording and forgetting), `WorldWideWeb` the rest of its own (the
+  traffic watched, the globe's choices, a data set removed), `Admin` its four (`service`, `startup`, `register`,
+  `unregister`): the plugins had said nearly all of them themselves. `AiPlugin`'s `install` and `uninstall`
+  stay named by `ModelServer` and `Harness` (a `ProtocolPlugin`'s HOOKS leave both out). The asks between plugins
+  that worked before work still: the service interface (`service_plan`, `service_apply` and the rest of
+  `ContainerHost.SERVICE_HOOKS`), the firewalls' `network_plan` and `NetworkHost.SERVICE_HOOKS`, a model server's
+  `serving` and `models_of`, what the World Wide Web plugin asks of a firewall and a firewall's `places` of it, the
+  MCP plugin's client hooks, WSL's `hold` and `let_go`; the Databases section calls
+  its plugins' methods and asks nothing by name.
+- **`POST /api/codebase/fetch`** (the same sweep): the frame let any program on the machine have git ask every
+  repository's remote. It is a person's at the page alone now, as a hook only its page asks: refused (401) when the
+  app's login says no one is shown to be there (`App.present` False), asked when it says so or when the app holds
+  no login.
+- **Tests.** `tests/test_closed_default.py`, each gate failing a test when it is taken out; the frame's route in
+  `tests/test_codebase.py`. `tests/test_fetch_cache.py`'s busy-ledger test named its other holder `linux::Ubuntu`,
+  the reader's own name inside a WSL distribution called Ubuntu; it is a name no machine has now. Stand-in plugins
+  in the older tests declare the hooks they meant anyone to ask.
+
+With liminal-platform 0.42.0 the login is asked over HTTP for every hook but a declared read (a service asked by
+name there is a person's too). Fifteen plugins' own tests ask an undeclared hook by name and fail on this library
+until the plugin declares it (61 hooks): the survey of every plugin's hooks under the default, with the word proposed
+for each, is the notes folder's `closed-default-survey-2026-11-26.md`.
+
 ## 1.106.1 (2026-11-26)
 
 The firewall's Networks tab: every button is a form the page draws and confirms (found at the first live install of a

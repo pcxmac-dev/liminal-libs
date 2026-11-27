@@ -110,6 +110,24 @@ def problems(p: object) -> list[str]:
     return out
 
 
+def warnings(p: object) -> list[str]:
+    """What a plugin leaves to a default, in words, each naming it; empty when it leaves nothing. A warning is no
+    problem: `problems` and `assert_conforms` never fail on one. A plugin's own test holds it to none
+    (`conformance.warnings(MACHINE) == []`).
+
+    1.107.0, closed by default (the user, 2026-11-26: "Yes, closed by default"): each hook it answers and declares for
+    no one (liminal_libs.internal.undeclared). Such a hook is asked only from its page, whoever was meant to ask it:
+    another plugin's ask, an app's own and a program's are refused."""
+    if not isinstance(p, Plugin):
+        return []
+    from ..internal import undeclared
+
+    tag = p.name if isinstance(p.name, str) and p.name else type(p).__name__
+    return [f"{tag}: hook {hook!r} declares no audience, so it is asked only from its page (closed by default): name "
+            "it in READ_HOOKS (a read anyone on this machine may ask), SERVICE_HOOKS (other plugins ask it through "
+            "the app) or PAGE_ONLY_HOOKS (its page alone)" for hook in undeclared(p)]
+
+
 def _apis(tag: str, p: Plugin) -> list[str]:
     """What it attaches to (plugin API 2.2, sources/apis.py): sound declarations whatever its version; declared at all
     only by a plugin written for 2.2, and by every such plugin (the user, 2026-11-11: "each plugin should reflect the

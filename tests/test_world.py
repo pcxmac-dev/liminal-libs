@@ -275,7 +275,12 @@ def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
     assert WorldWideWeb.CANCEL_HOOKS == ("world_layer_get", "world_geoip_get") and WorldWideWeb.INFRASTRUCTURE == ()
     assert WorldWideWeb.PAGE_ONLY_HOOKS == ("world_geoip_get", "world_geoip_use", "world_geoip_remove",  # 1.101.0
                                             "world_geoip", "world_asn", "world_layer_get",  # the user's 11b
-                                            "world_sky_get", "world_sky_remove")  # 1.104.0's review: the sgp4 package's
+                                            "world_sky_get", "world_sky_remove",  # 1.104.0's review: the sgp4 package's
+                                            # 1.107.0, closed by default: the rest the base answers for its page
+                                            "world_watching", "world_show", "world_direction", "world_within",
+                                            "world_pick", "world_layer_remove")
+    assert Firewall.PAGE_ONLY_HOOKS == ("allow", "remove", "move_rules", "new_label", "rename_label", "remove_label",
+                                        "hosts_recording", "hosts_forget")  # 1.107.0: the firewall's own changes
     assert WorldWideWeb.GEOIP_SOURCES == ()
     assert not {"world", "world_geoip", "world_show", "world_layer"} & set(FakeFirewall().interface()["hooks"])
     assert (WorldWideWeb.GEOIP_URL, WorldWideWeb.GEOIP_LICENCE, WorldWideWeb.ATTRIBUTION,

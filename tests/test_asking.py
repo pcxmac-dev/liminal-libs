@@ -60,6 +60,8 @@ class Gated(MachinePlugin):
 
     name, title = "gated", "Gated"
     HOOKS = (*MachinePlugin.HOOKS, "decide", "mint", "plain", "start")
+    READ_HOOKS = ("plain",)  # 1.107.0, closed by default: what anyone may ask is said to be so
+    SERVICE_HOOKS = ("start",)  # and what another plugin asks
     PAGE_ONLY_HOOKS = ("decide",)
     PLUGIN_ONLY_HOOKS = ("mint",)
 
@@ -107,6 +109,7 @@ class Open(MachinePlugin):
 
     name, title = "open", "Open"
     HOOKS = (*MachinePlugin.HOOKS, "look")
+    READ_HOOKS = ("look",)  # 1.107.0, closed by default: a read anyone may ask, said to be one
 
     def look(self):
         """What it holds, and who asked."""

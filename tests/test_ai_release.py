@@ -115,6 +115,7 @@ class Server(MachinePlugin):
 
     name, title = "llamacpp", "llama.cpp"
     HOOKS = (*MachinePlugin.HOOKS, "serving")
+    READ_HOOKS = SERVICE_HOOKS = ("serving",)  # as ModelServer declares it (closed by default, 1.107.0)
 
     def serving(self, name=""):
         """What it serves, as machines/modelserver.py says it."""

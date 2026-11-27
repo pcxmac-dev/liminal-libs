@@ -351,9 +351,18 @@ class Plugin:
         """One of this plugin's hooks called by name (the app's `ask`; across the pipe once the
         plugin is resident): only a hook `interface` lists; LookupError for any other name. Asked
         before an app attached it, it answers as it always did (its `login` None: a plugin's own code
-        tells "no login" by it); the login it has then is held_login()'s."""
+        tells "no login" by it); the login it has then is held_login()'s.
+
+        Closed by default (1.107.0; the user, 2026-11-26: "Yes, closed by default"): a hook this plugin
+        declares for no one (READ_HOOKS, SERVICE_HOOKS, PLUGIN_ONLY_HOOKS, PAGE_ONLY_HOOKS, a tab, its
+        RPC_HOOK: liminal_libs.internal.closed) is asked by name only as its page (apps.asking: the
+        asker an app's route for its page hands over); any other ask of it is an asking.AskRefused, in
+        words that say how it is declared. Code that calls the method itself asks nothing by name."""
         if hook not in self.interface()["hooks"]:
             raise LookupError(f"{self.name or type(self).__name__} offers no {hook!r}")
+        from ..apps import asking  # when asked: apps imports this module
+
+        asking.check_closed(self, hook)
         given = self.__dict__.get(hook) if hook in self.__dict__ else getattr(self, hook)
         return given(*args, **kwargs)
 

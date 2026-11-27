@@ -90,6 +90,7 @@ class Tool(AiPlugin):
     GROUP = "harness"
     LIBS_FLOOR = "1.62.0"
     apis = (CARD,)
+    PAGE_ONLY_HOOKS = ("install", "uninstall")  # as ModelServer and Harness say theirs (closed by default, 1.107.0)
 
     def __init__(self, outside=None):
         super().__init__(outside)
@@ -147,6 +148,7 @@ class Starts(Tool):
     waits for `go` (it is under way meanwhile), one named "fails" raises."""
 
     HOOKS = (*Tool.HOOKS, "start", "open")
+    PAGE_ONLY_HOOKS = ("start", "open")
 
     def __init__(self, outside=None):
         super().__init__(outside)
@@ -992,6 +994,7 @@ def test_too_old_with_a_stand_in_version(tool, monkeypatch, version, old):
 def test_a_subclasses_own_hooks_refuse_with_a_library_too_old(tmp_path, monkeypatch):
     class Puller(Tool):
         HOOKS = (*Tool.HOOKS, "pull")
+        PAGE_ONLY_HOOKS = ("pull",)
 
         def pull(self, model, log=None):
             return {"said": f"{model} pulled", "ok": True}
