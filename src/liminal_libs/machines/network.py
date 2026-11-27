@@ -21,13 +21,24 @@ doesn't change so more traffic over this and that, the brighter it gets, lets ke
   it (how often traffic goes there: 1.70.0). The page gets the edges as runs of one weight each, the heaviest kept
   first, MAX_RUNS runs and MAX_POINTS points at most: globe["heat"] = [{"points": [[lat, lon], ...], "w"}],
   globe["heat_by"] ("connections"), globe["waiting"] (the legs not known on the lines: [{"from", "to", "why", "km"}],
-  WAITING at most) and each placed origin's "tail": the last TAIL_KM of its way along the lines, from the junction
-  nearest it back along the way, where its light travels into it (none where its last leg waits).
+  WAITING at most) and each placed origin's "links" (1.106.0, below).
 - 1.104.0 (Monday list item 24): fibre on land is a line layer too, and the major roads and railways are stand-ins for
   fibre where none is mapped (STAND_INS). A way is searched by its weighed km, a stand-in's edge STAND_IN_COST times
   its own, so a way on cables, backbones, fibre or telecom lines wins where one is near enough; its detour is still
   measured in km. A leg found along stand-ins alone is said so (STAND_IN_WORDS, in the composite's legs), and so is a
   run of heat on them alone (its "stand_in": true).
+- 1.106.0 (Monday list item 27; the user, 2026-11-22: "the straightlines are meaningless, they need to show the cities
+  that the lines go to, the hubs, the fiber bones, etc."). The lights: only on the short link from the network's end
+  into a host, each origin's "links" ([[from, to], ...], each [lat, lon], towards home): from the place to the
+  junction its way along the lines ends at, where it is reached on them, and from the junction its way begins at to
+  home, each only when it is at most LINK_KM; a longer one is not drawn (the place, or home, shows its dot), and a
+  place its way does not reach on the lines has no link. It replaces 1.70.0's "tail" (a light along the last 250 km
+  of the lines). The hubs: the places of the installed infrastructure a route passes (HUB_LAYERS: the landing
+  stations, exchange points, data centres, backbones' points of presence and cities its lines run within HUB_KM of),
+  globe["hubs"] = [{"id", "lat", "lon", "kind", "what", "name", "sub", "w", "routes"}] (the routes' connections
+  through each, and how many routes; MAX_HUBS, the busiest kept) and each origin's "hubs" (their ids in its way's
+  order, ROUTE_HUBS at most). Each stretch's hubs are read by the cells its line crosses (Index.points), never a
+  layer whole, and kept with the graph and the hub layers' versions (MAX_HUB_EDGES).
 - Nothing runs when unused: the graph is built when a page asks for the heat and its layers' versions changed, held
   until they change again or the plugin is detached (Network.clear); no thread, no timer, nothing read but the files."""
 from __future__ import annotations
@@ -53,8 +64,16 @@ SNAP_KM = 150.0  # a leg's end is snapped to a junction this near, at most
 DETOUR = 2.5  # a leg follows the network when its way there is no longer than this times its great circle
 CITY_KM = 30.0  # a leg shorter than this is within one city: it needs no line
 WAITING = 200  # legs waiting for a line, listed at most (1.70.0)
-TAIL_KM = 250.0  # a place's light travels this much of its way at most, into it (1.70.0)
-TAIL_POINTS = 256  # and through so many points at most
+LINK_KM = 150.0  # 1.106.0: the short link from the network's end into a host is lit only this long at most (the user's)
+HUB_LAYERS = {  # 1.106.0: the infrastructure's places a route is named by where it passes them, and what each one is
+    "landings": "a cable landing station", "exchanges": "an exchange point", "datacentres": "a data centre",
+    "pops": "a backbone's point of presence", "modelcities": "a backbone model's city", "cities": "a city"}
+HUB_KM = 10.0  # a route passes a hub where its lines run this near it (at a vertex of theirs)
+EDGE_HUBS = 3  # of each kind, the nearest so many to one stretch of the lines (a city's data centres are many)
+ROUTE_HUBS = 32  # hubs a route names at most, in its order (as many as its hops: routes.py's MAX_VIA)
+MAX_HUBS = 400  # hubs on a page at most, the busiest kept
+MAX_HUB_EDGES = 16384  # stretches whose hubs are kept, the least recently asked let go first
+HUB_READ = 20_000  # points read for one page's new stretches at most
 MAX_EXPAND = 50_000  # junctions a way's search looks on from, at most: past this, the leg waits
 MAX_WAYS = 4096  # ways kept, the least recently asked let go first
 MAX_SNAPS = 4096  # snaps kept, likewise
@@ -482,19 +501,80 @@ def _name(o) -> str:
     return ""
 
 
-def _tail(graph: Graph, steps) -> list[tuple[float, float]]:
-    """The last TAIL_KM of a way along the lines, from its last junction back along it (TAIL_POINTS points at most):
-    where a place's light travels, into it."""
-    points: list[tuple[float, float]] = []
-    gone = 0.0
-    for edge, start in reversed(steps):
-        for p in graph.line(edge, start)[::-1][1 if points else 0:]:
-            if points:
-                gone += km(points[-1], p)
-            points.append(p)
-            if gone >= TAIL_KM or len(points) >= TAIL_POINTS:
-                return points
-    return points
+def _spot(p) -> list[float]:
+    return [round(p[0], 5), round(p[1], 5)]
+
+
+def _cells_near(lat: np.ndarray, lon: np.ndarray, within: float) -> set[int]:
+    """The 1-degree cells (infrastore.cell_of's numbering) of everything within `within` km of the points (lat, lon):
+    each point's own and those its box's corners fall in (the box is far smaller than a cell, so they are all)."""
+    dlat = within / KM_PER_DEGREE
+    dlon = dlat / np.maximum(np.cos(np.radians(np.minimum(89.0, np.abs(lat) + dlat))), 0.01)
+    found: set[int] = set()
+    for a in (-1, 0, 1):
+        for b in (-1, 0, 1):
+            y = np.clip(lat + a * dlat, -90.0, 90.0)
+            x = (lon + b * dlon + 180.0) % 360.0 - 180.0
+            row = np.clip(np.floor(y) + 90, 0, 179).astype(np.int64)
+            col = np.clip(np.floor(x) + 180, 0, 359).astype(np.int64)
+            found.update((row * 360 + col).tolist())
+    return found
+
+
+def _hub_id(layer: str, lat: float, lon: float) -> str:
+    return f"{layer}:{lat:.3f},{lon:.3f}"
+
+
+def _read_hubs(graph: Graph, index, layers, edges) -> dict[int, list]:
+    """The hubs of edges (Network.hubs' shape), read now: the points of `layers` in the cells within HUB_KM of the
+    edges' lines (one read, HUB_READ points at most), each kept for an edge whose line runs within HUB_KM of it."""
+    lines, cells, every = {}, {}, set()
+    for e in edges:
+        pts = graph.line(e, graph.eu[e])
+        lat, lon = np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+        lines[e] = (lat, lon)
+        cells[e] = _cells_near(lat, lon, HUB_KM)
+        every |= cells[e]
+    try:
+        found = index.points(list(layers), every, HUB_READ) if every else []
+    except Exception:  # noqa: BLE001 - a database that does not read: no hubs named this time
+        found = []
+    by_cell: dict[int, list] = {}
+    for item in found:
+        try:
+            layer, lon, lat, name, sub = item
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            continue
+        if layer in HUB_LAYERS and -90 <= lat <= 90 and -180 <= lon <= 180:
+            cell = min(179, max(0, math.floor(lat) + 90)) * 360 + min(359, max(0, math.floor(lon) + 180))
+            by_cell.setdefault(cell, []).append((layer, lat, lon, str(name or "")[:80], str(sub or "")[:80]))
+    out: dict[int, list] = {}
+    for e, (lat, lon) in lines.items():
+        near = [h for c in cells[e] for h in by_cell.get(c, ())]
+        if not near:
+            out[e] = []
+            continue
+        hl, hn = np.array([h[1] for h in near]), np.array([h[2] for h in near])
+        far, at = np.empty(len(near)), np.empty(len(near), dtype=np.int64)
+        step = max(1, PAIRS // max(1, len(lat)))  # hubs weighed against the line's points at once, within PAIRS
+        for i in range(0, len(near), step):
+            d = _km(hl[i:i + step, None], hn[i:i + step, None], lat[None, :], lon[None, :])
+            far[i:i + step], at[i:i + step] = d.min(axis=1), d.argmin(axis=1)
+        kinds: dict[str, list] = {}
+        for k in np.flatnonzero(far <= HUB_KM).tolist():
+            kinds.setdefault(near[k][0], []).append((not near[k][3], float(far[k]), k))  # the named first
+        chosen, ids = [], set()
+        for items in kinds.values():
+            for _, _, k in sorted(items)[:EDGE_HUBS]:
+                layer, hlat, hlon, name, sub = near[k]
+                ident = _hub_id(layer, hlat, hlon)
+                if ident not in ids:
+                    ids.add(ident)
+                    chosen.append((int(at[k]) / max(1, len(lat) - 1), (ident, layer, hlat, hlon, name, sub)))
+        chosen.sort(key=lambda x: (x[0], x[1][0]))
+        out[e] = chosen
+    return out
 
 
 class Network:
@@ -507,10 +587,14 @@ class Network:
         self._graph: Graph | None = None
         self.built = 0  # graphs made
         self.legs: dict[str, tuple[str, str]] = {}  # 1.71.0: the last page's legs, {key: (what, why)}
+        self._hub_key: tuple | None = None  # 1.106.0: the graph and the hub layers' versions the kept hubs are of
+        self._hub_edges: OrderedDict = OrderedDict()  # each stretch's hubs, {edge: [(along, hub), ...]}
+        self.hubs_read = 0  # 1.106.0: reads of hubs made
 
     def clear(self) -> None:
         with self._lock:
             self._key, self._graph = None, None
+            self._hub_key, self._hub_edges = None, OrderedDict()
 
     def graph(self, index) -> Graph | None:
         """The graph of the line layers `index` (an infrastructure.Index) has installed, as made for their versions;
@@ -601,9 +685,43 @@ class Network:
             return None, f"no way along the lines within {DETOUR:g} times its distance"
         return (a, b, found[1], graph.stand_in(e for e, _ in found[1])), ""
 
+    def hubs(self, graph: Graph, index, edges) -> dict[int, list]:
+        """Each edge's hubs (1.106.0): {edge: [(where along its line from its first junction, 0 to 1, (id, layer, lat,
+        lon, name, sub)), ...]} in that order, EDGE_HUBS of each kind at most, the nearest its line, the named first.
+        The edges not kept are read (_read_hubs) by the cells their lines cross; none without a hub layer installed,
+        or of an index that cannot read points by cells. Kept with the graph and the hub layers' versions."""
+        try:
+            listed = index.layers() if index is not None else []
+        except Exception:  # noqa: BLE001 - a folder that cannot be read: no hubs
+            listed = []
+        kinds = [x for x in listed if isinstance(x, Mapping) and x.get("id") in HUB_LAYERS and x.get("kind") == "points"]
+        if not kinds or not callable(getattr(index, "points", None)):
+            return {}
+        key = (graph, tuple((str(x["id"]), str(x.get("version") or "")) for x in kinds))
+        out: dict[int, list] = {}
+        with self._lock:
+            if self._hub_key != key:
+                self._hub_key, self._hub_edges = key, OrderedDict()
+            for e in edges:
+                if e in self._hub_edges:
+                    self._hub_edges.move_to_end(e)
+                    out[e] = self._hub_edges[e]
+        new = [e for e in edges if e not in out]
+        if new:
+            found = _read_hubs(graph, index, [x["id"] for x in kinds], new)
+            with self._lock:
+                self.hubs_read += 1
+                if self._hub_key == key:
+                    self._hub_edges.update(found)
+                    while len(self._hub_edges) > MAX_HUB_EDGES:
+                        self._hub_edges.popitem(last=False)
+            out.update(found)
+        return out
+
     def onto(self, globe: dict, index) -> dict:
-        """The heat of the routes on a page's globe (the module's docstring): its "heat", "heat_by", "waiting" and each
-        placed origin's "tail" set; the globe given back. The origins' `via` (Routes.onto) are read, never changed.
+        """The heat of the routes on a page's globe (the module's docstring): its "heat", "heat_by", "waiting" and
+        "hubs", and each placed origin's "links" and "hubs" set (1.106.0); the globe given back. The origins' `via`
+        (Routes.onto) are read, never changed.
 
         1.70.0 (the user, 2026-11-22: "the vector should literally follow a detailed route based on geographic data,
         if it is unknown, any segment with in the route, then lets keep that in a queue of places/segments to lookup";
@@ -618,12 +736,14 @@ class Network:
         edges: dict[int, float] = {}
         waiting: dict[tuple, dict] = {}
         legs: dict[str, tuple[str, str]] = {}
+        walked: list[tuple[dict, float, list]] = []  # 1.106.0: each origin, its weight and its way's steps in order
         for o in places if home is not None else ():
             w = _number(o.get("count"))
             hops = [(p, _name(v)) for v in (o.get("via") or ()) if isinstance(v, Mapping)
                     for p in (_point(v),) if p is not None]
             stops = [(home, str(home_name or "this machine")), *hops, (_point(o), _name(o))]
-            mine, steps_last = set(), None
+            mine, order, links = set(), [], []
+            begun, end = False, None  # 1.106.0: whether its home side is told; the junction its way on the lines ends at
             for (s, sn), (e, en) in zip(stops, stops[1:]):
                 on, why = self.leg(graph, s, e, (sn, en))
                 if why or on is not None:  # 1.71.0: for the composite database's queue (a city's leg is none)
@@ -631,18 +751,28 @@ class Network:
                     legs[f"{s[0]:.3f},{s[1]:.3f}>{e[0]:.3f},{e[1]:.3f}"] = (what, why)
                 if on is None:
                     if why:  # a leg within one city needs no line: the way before it still leads into the place
-                        steps_last = None
+                        begun, end = True, None  # one waiting: the way does not reach on through it
                         if len(waiting) < WAITING:
                             waiting.setdefault((sn, en, why), {"from": sn, "to": en, "why": why, "km": round(km(s, e))})
                     continue
+                if not begun:  # 1.106.0: its first leg on the lines, from home's side: home's short link into them
+                    begun, j = True, graph.place(on[0][0])
+                    if km(j, home) <= LINK_KM:
+                        links.append([_spot(j), _spot(home)])
                 mine.update(edge for edge, _ in on[2])
-                steps_last = on[2]
-            o.pop("last", None)
-            tail = _tail(graph, steps_last) if steps_last else []
-            if len(tail) >= 2:
-                o["tail"] = [[round(lat, 5), round(lon, 5)] for lat, lon in tail]
+                order.extend(on[2])
+                end = on[1][0]
+            for gone in ("last", "tail"):  # 1.106.0: an older release's light ways, never sent again
+                o.pop(gone, None)
+            if end is not None:  # 1.106.0: reached along the lines: its short link from the network's end into it
+                j = graph.place(end)
+                if km(_point(o), j) <= LINK_KM:
+                    links.insert(0, [_spot(_point(o)), _spot(j)])
+            if links:
+                o["links"] = links
             else:
-                o.pop("tail", None)
+                o.pop("links", None)
+            walked.append((o, w, order))
             for edge in mine:
                 edges[edge] = edges.get(edge, 0) + w
         runs = graph.runs_of(edges) if graph is not None and edges else []
@@ -657,5 +787,39 @@ class Network:
                          **({"stand_in": True} if graph.stands and graph.stand_in(mine) else {})})
             total += len(points)
         globe["heat"], globe["heat_by"], globe["waiting"] = heat, "connections", list(waiting.values())
+        globe["hubs"] = self._named(graph, index, edges, walked)
         self.legs = legs
         return globe
+
+    def _named(self, graph: Graph | None, index, edges: Mapping, walked) -> list[dict]:
+        """The hubs the routes pass (1.106.0): each origin's "hubs" set (their ids in its way's order, ROUTE_HUBS at
+        most, those on the page alone), and the page's list, the busiest MAX_HUBS: each hub's connections through it
+        (each route's once) and how many routes pass it."""
+        found = self.hubs(graph, index, list(edges)) if graph is not None and edges else {}
+        through: dict[str, list] = {}  # id -> [hub, connections, routes]
+        named: list[tuple[dict, list[str]]] = []
+        for o, w, order in walked:
+            mine: list[str] = []
+            seen: set[str] = set()
+            for edge, at in order:
+                hs = found.get(edge, ())
+                for _, hub in (hs if at == graph.eu[edge] else reversed(hs)):
+                    if hub[0] in seen:  # a route passes a hub once, however often its way goes by it
+                        continue
+                    seen.add(hub[0])
+                    mine.append(hub[0])
+                    entry = through.setdefault(hub[0], [hub, 0, 0])
+                    entry[1] += w
+                    entry[2] += 1
+            named.append((o, mine))
+        kept = sorted(through.values(), key=lambda x: (-x[1], x[0][0]))[:MAX_HUBS]
+        ids = {hub[0] for hub, _, _ in kept}
+        for o, mine in named:
+            mine = [h for h in mine if h in ids][:ROUTE_HUBS]
+            if mine:
+                o["hubs"] = mine
+            else:
+                o.pop("hubs", None)
+        return [{"id": ident, "lat": round(lat, 5), "lon": round(lon, 5), "kind": layer, "what": HUB_LAYERS[layer],
+                 "name": name, "sub": sub, "w": w, "routes": n}
+                for (ident, layer, lat, lon, name, sub), w, n in kept]

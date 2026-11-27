@@ -594,8 +594,9 @@ class Routes:
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
         connections open now (`addresses`, their order kept). 1.69.0: then the routes' heat on the network of the
         line layers `index` (the plugin's infrastructure.Index) has installed (network.Network.onto: globe["heat"],
-        "heat_by", "waiting", each place's "tail"); a heat that fails is left out. 1.70.0: never a straight line; the
-        legs not known on the lines are tabled after the routes, with why (WAITING_TITLE, WAITING_ROWS at most)."""
+        "heat_by", "waiting", "hubs", each place's "links" and "hubs": 1.106.0); a heat that fails is left out. 1.70.0:
+        never a straight line; the legs not known on the lines are tabled after the routes, with why (WAITING_TITLE,
+        WAITING_ROWS at most)."""
         globe = page.get("globe") if isinstance(page.get("globe"), dict) else None
         home_place = (globe or {}).get("home") or {}
         self._index = index  # 1.73.0: for the names' lists

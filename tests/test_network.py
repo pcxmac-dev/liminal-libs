@@ -90,14 +90,15 @@ def test_a_leg_follows_the_network_within_its_detour_and_waits_past_it(monkeypat
     assert page["heat"] == [] and page["heat_by"] == "connections"
     assert page["waiting"] == [{"from": "this machine", "to": "p", "km": 1112,
                                 "why": "no way along the lines within 2.5 times its distance"}]
-    assert "tail" not in page["origins"][0]
+    assert "links" not in page["origins"][0]  # 1.106.0: not reached on the lines: its dot, and no light
     monkeypatch.setattr(network, "DETOUR", 3.5)
     page = Network().onto(globe([{"id": "p", "lat": 0, "lon": 10, "count": 3}]), index)
     (heat,) = page["heat"]  # the three lines, one weight: one run
     assert ends(heat) == {(0, 0), (0, 10)} and [10, 5] in heat["points"] and len(heat["points"]) == 61
     assert heat["w"] == 3 and page["waiting"] == []
-    # its light's way: the last 250 km of the lines into it, from the junction nearest it back along them
-    assert page["origins"][0]["tail"] == [[0, 10], [0.5, 10], [1, 10], [1.5, 10], [2, 10], [2.5, 10]]
+    # 1.106.0: its lights only on the short links from the network's ends into it and into home, towards home (here
+    # both ends are on the lines' own ends); never along the lines (1.70.0's tail is gone)
+    assert page["origins"][0]["links"] == [[[0, 10], [0, 10]], [[0, 0], [0, 0]]] and "tail" not in page["origins"][0]
 
 
 def test_an_end_beyond_the_snap_waits_and_a_leg_within_one_city_needs_no_line():
@@ -107,7 +108,7 @@ def test_an_end_beyond_the_snap_waits_and_a_leg_within_one_city_needs_no_line():
     page = Network().onto(globe([far, near]), index)
     assert page["heat"] == []
     assert page["waiting"] == [{"from": "this machine", "to": "f", "why": "no line within 150 km of f", "km": 786}]
-    assert "tail" not in far and "tail" not in near
+    assert "links" not in far and "links" not in near
 
 
 T = [run((0, 0), (0, 10)), run((0, 10), (0, 20)), run((0, 10), (2, 10), 4)]  # east, on east, and a branch north
@@ -185,7 +186,7 @@ def test_lines_that_do_not_read_are_passed_over():
     assert Network().graph(index) is None
 
 
-def test_the_routes_page_gets_the_heat_each_places_tail_and_the_legs_waiting():
+def test_the_routes_page_gets_the_heat_each_places_links_and_the_legs_waiting():
     target = "81.2.69.142"
 
     def tracer(address):
@@ -201,7 +202,9 @@ def test_the_routes_page_gets_the_heat_each_places_tail_and_the_legs_waiting():
     page = {"globe": {"home": {"lat": 0, "lon": 0}, "origins": [{"id": "h", "lat": 0, "lon": 20, "count": 4}]}}
     r.onto(page, Geo(), [target], index=Index({"cables": T}))
     g = page["globe"]
-    assert g["origins"][0]["via"][0]["label"] == "Hop" and g["origins"][0]["tail"][:2] == [[0, 20], [0, 19.5]]
+    assert g["origins"][0]["via"][0]["label"] == "Hop" and g["origins"][0]["links"] == [[[0, 20], [0, 20]],
+                                                                                         [[0, 0], [0, 0]]]
+    assert g["hubs"] == []  # 1.106.0: a stand-in that reads no points by cells names no hub
     assert g["heat_by"] == "connections" and [h["w"] for h in g["heat"]] == [4]
     assert ends(g["heat"][0]) == {(0, 0), (0, 20)}
     assert [t["title"] for t in page["tables"]] == ["Routes", "Routes, hop by hop", "Legs waiting for a line"]

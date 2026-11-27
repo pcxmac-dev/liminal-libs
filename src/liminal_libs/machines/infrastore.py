@@ -37,6 +37,7 @@ COARSE = 0.25  # degrees between a coarse line's kept vertices (the whole globe'
 SAMPLE = 0.5  # degrees between the points a long segment's cells are found at
 CELLS = 360 * 180
 TIMEOUT_S = 10.0  # how long a write waits for another's lock
+CHUNK = 500  # cells asked in one query of points (1.106.0): within the oldest SQLite's 999 parameters
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -445,6 +446,33 @@ class Store:
                 return {sid: out[sid] for sid in sets if sid in out}
             return out
         return self._read(work) or {}
+
+    def points(self, layers: Mapping, cells, most: int) -> list[tuple[str, float, float, str, str]]:
+        """The points of some layers in some cells (1.106.0, Monday list item 27: the hubs a route passes): `layers`
+        {layer: the ids of the sets feeding it}, `cells` 1-degree cells (cell_of); as (layer, lon, lat, name, sub),
+        `most` at most, in the features' order. Read through the cells' index alone, CHUNK cells a query: no layer is
+        read whole, and a point is in one cell, so none comes twice."""
+        cells = sorted({int(c) for c in cells if 0 <= int(c) < CELLS})
+        pairs = [(str(layer), str(sid)) for layer, sids in layers.items() for sid in sids]
+        if not cells or not pairs or most <= 0:
+            return []
+
+        def work(con):
+            out: list = []
+            fed = " OR ".join("(f.layer = ? AND f.set_id = ?)" for _ in pairs)
+            for at in range(0, len(cells), CHUNK):
+                chunk = cells[at:at + CHUNK]
+                sql = ("SELECT f.layer, f.name, f.sub, f.xy FROM cells c JOIN features f ON f.id = c.feature WHERE "
+                       f"c.cell IN ({', '.join('?' * len(chunk))}) AND f.kind = {POINT} AND ({fed}) ORDER BY f.id")
+                for layer, name, sub, blob in con.execute(sql, [*chunk, *(v for p in pairs for v in p)]):
+                    xy = _ints(blob)
+                    if len(xy) < 2:
+                        continue
+                    out.append((layer, xy[0] / infra.SCALE, xy[1] / infra.SCALE, name, sub))
+                    if len(out) >= most:
+                        return out
+            return out
+        return self._read(work) or []
 
     def orbits(self, constellation: str | None = None) -> list[dict]:
         """The satellites' elements kept (item 32): [{"norad", "set", "constellation", "name", "epoch", "omm"}]."""

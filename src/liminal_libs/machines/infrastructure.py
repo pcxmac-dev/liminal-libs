@@ -2547,6 +2547,22 @@ class Index:
             out["cut"] = True
         return out
 
+    def points(self, layers, cells, most: int = MAX_POINTS) -> list[tuple[str, float, float, str, str]]:
+        """The points of `layers` (their ids) in `cells` (1-degree cells, infrastore.cell_of), from the data sets
+        drawn in each (as layer() draws them): [(layer, lon, lat, name, sub)], `most` at most (1.106.0, Monday list
+        item 27: the hubs a route passes). Read now by the cells alone and not kept; none for a layer not installed, a
+        database that does not read, or a folder on another system's drive."""
+        files = self._look()
+        feeding = {layer: [d.id for d, _, _ in self._feeding(layer, files)[0]]
+                   for layer in layers if isinstance(layer, str)}
+        feeding = {layer: ids for layer, ids in feeding.items() if ids}
+        if not feeding:
+            return []
+        try:
+            return self.store().points(feeding, cells, most)
+        except Exception:  # noqa: BLE001 - gone or changed since the look: no hubs named this time
+            return []
+
     def _held(self, dataset: DataSet) -> str:
         """Why its download or its Update waits (held_back), "" when it does not, from the look's facts."""
         fact = self._look().get(dataset.id)
