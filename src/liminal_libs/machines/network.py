@@ -507,18 +507,25 @@ def _spot(p) -> list[float]:
 
 def _cells_near(lat: np.ndarray, lon: np.ndarray, within: float) -> set[int]:
     """The 1-degree cells (infrastore.cell_of's numbering) of everything within `within` km of the points (lat, lon):
-    each point's own and those its box's corners fall in (the box is far smaller than a cell, so they are all)."""
+    every cell of each point's box, its rows and its columns between the corners' (the review of 1.106.0: near the
+    poles a box is wider than a cell, and its corners alone pass over the columns between), every column where the box
+    reaches a pole."""
+    lat, lon = np.asarray(lat, dtype=float), np.asarray(lon, dtype=float)
     dlat = within / KM_PER_DEGREE
-    dlon = dlat / np.maximum(np.cos(np.radians(np.minimum(89.0, np.abs(lat) + dlat))), 0.01)
-    found: set[int] = set()
-    for a in (-1, 0, 1):
-        for b in (-1, 0, 1):
-            y = np.clip(lat + a * dlat, -90.0, 90.0)
-            x = (lon + b * dlon + 180.0) % 360.0 - 180.0
-            row = np.clip(np.floor(y) + 90, 0, 179).astype(np.int64)
-            col = np.clip(np.floor(x) + 180, 0, 359).astype(np.int64)
-            found.update((row * 360 + col).tolist())
-    return found
+    polar = np.abs(lat) + dlat >= 90.0
+    dlon = dlat / np.maximum(np.cos(np.radians(np.minimum(89.999, np.abs(lat) + dlat))), 1e-6)
+    r0 = np.clip(np.floor(lat - dlat) + 90, 0, 179).astype(np.int64)
+    r1 = np.clip(np.floor(lat + dlat) + 90, 0, 179).astype(np.int64)
+    wide = polar | (dlon >= 180.0)
+    c0 = np.where(wide, -180, np.floor(lon - dlon)).astype(np.int64)  # columns as whole degrees, before wrapping
+    cols = np.where(wide, 360, np.floor(lon + dlon).astype(np.int64) - c0 + 1).clip(1, 360)
+    rows = r1 - r0 + 1
+    each = rows * cols
+    at = np.repeat(np.arange(len(lat)), each)
+    k = np.arange(int(each.sum())) - np.repeat(np.cumsum(each) - each, each)  # each cell's number within its box
+    row = r0[at] + k // cols[at]
+    col = (c0[at] + k % cols[at] + 180) % 360
+    return set((row * 360 + col).tolist())
 
 
 def _hub_id(layer: str, lat: float, lon: float) -> str:

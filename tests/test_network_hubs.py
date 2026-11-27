@@ -324,3 +324,18 @@ def test_hubs_asked_on_a_graph_made_before_neither_read_nor_change_those_kept():
     kept, reads = dict(net._hub_edges), net.hubs_read
     net.hubs(before, index, edges)  # a page that was asked across the change
     assert net.hubs_read == reads + 1 and dict(net._hub_edges) == kept
+
+
+def test_the_cells_near_a_line_are_every_cell_of_its_points_boxes():
+    """The review of 1.106.0: near the poles a point's box is wider than a cell, and its corners alone passed over the
+    columns between them; where the box reaches a pole, every column is near."""
+    from liminal_libs.machines.network import _cells_near
+    import numpy as np
+
+    near = _cells_near(np.array([85.0]), np.array([0.0]), network.HUB_KM)  # the box: about 1.05 degrees either way
+    assert {cell_of(-1.5, 85.0), cell_of(-0.5, 85.0), cell_of(0.5, 85.0), cell_of(1.5, 85.0)} <= near
+    assert near == {cell_of(lon + 0.5, lat + 0.5) for lon in range(-2, 2) for lat in (84, 85)}  # 4 columns, 2 rows
+    pole = _cells_near(np.array([89.95]), np.array([0.0]), network.HUB_KM)  # the box reaches the pole
+    assert pole == {cell_of(lon + 0.5, 89.5) for lon in range(-180, 180)}
+    assert _cells_near(np.array([0.0]), np.array([179.99]), 10) >= {cell_of(179.5, 0), cell_of(-179.5, 0)}  # wrapped
+    assert _cells_near(np.array([0.5]), np.array([0.5]), 10) == {cell_of(0.5, 0.5)}  # within one cell: that one
