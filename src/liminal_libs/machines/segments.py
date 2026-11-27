@@ -1230,8 +1230,9 @@ class NetworkHost(MachinePlugin):
             seg_rows.append([a.stack, a.sid, a.plugin, a.prefix, ", ".join(f"{p} {x}" for p, x in a.addresses.items())
                              or a.assigns, route, proxies, a.state])
         waiting = [[p.title, p.owner, p.words[:300],
-                    {"form": "net-approve", "title": "Approve…", "values": {"plan": p.plan, "label": p.title}},
-                    {"hook": DECLINE, "args": [p.plan], "title": "Decline"}] for p in self._net.plans.waiting()
+                    {"form": "net-approve", "title": "Approve…", "values": {"plan": p.plan}},
+                    {"form": "net-decline", "title": "Decline…", "values": {"plan": p.plan}}]
+                   for p in self._net.plans.waiting()
                    if not p.approved]
         plugins = []
         try:
@@ -1245,11 +1246,11 @@ class NetworkHost(MachinePlugin):
                 continue
             on = name in grants
             plugins.append([name, "may ask for networks" if on else "may not ask",
-                            {"hook": NET_REVOKE if on else NET_GRANT, "args": [name],
+                            {"form": "net-revoke" if on else "net-grant", "values": {"plugin": name},
                              "title": "Stop letting it…" if on else "Let it…"}])
         records = self.name_records("inside")
         leases = self.leases()["leases"]
-        gone = [[a.sid, a.prefix, a.segment, {"hook": FORGET_RECORDS, "args": [a.sid], "title": "Forget…"}]
+        gone = [[a.sid, a.prefix, a.segment, {"form": "net-forget", "title": "Forget…", "values": {"segment": a.sid}}]
                 for a in allocations if a.state == "gone"]
         try:
             left = self.leftovers()["leftovers"]
@@ -1283,16 +1284,46 @@ class NetworkHost(MachinePlugin):
             {"title": "Leftovers", "note": "what Liminal made here that no service it keeps accounts for",
              "columns": [{"title": "What"}, {"title": ""}],
              "rows": [[m.get("words") or m.get("id"), {"form": "net-leftover", "title": "Remove…",
-                                                        "values": {"id": m.get("id"), "label": m.get("words")}}]
+                                                        "values": {"id": m.get("id")}}]
                       for m in left], "empty": "None."},
         ]
+        # 1.106.1: every button of the tab opens a form (the page draws a cell that names one, and asks you to
+        # confirm), and a form's fields are its hook's arguments, in its order, nothing else: a field shown only for
+        # its words was sent as an argument (Approve…'s and Remove…'s label), and a cell naming a hook was never drawn
+        # (Let it…, Stop letting it…, Forget…, Decline: found at the first live install, 2026-11-26)
         forms = [
             {"id": "net-approve", "hook": APPROVE, "title": "Approve a network plan",
-             "fields": [{"name": "plan", "label": "Plan", "type": "fixed"}, {"name": "label", "label": "What", "type": "fixed"},
-                        {"name": "accept_lan", "type": "accept", "title": "Open it to your network?", "yes": "Open it",
-                         "words": "Its ports are reached from your local subnet, on the Private and Domain profiles."}],
-             "confirm": {"title": "Approve {label}?", "words": "Carried out by its container plugin's work.",
-                         "yes": "Approve it"}},
+             "fields": [{"name": "plan", "label": "Plan", "type": "fixed"},
+                        {"name": ACCEPT_LAN, "type": "accept", "title": "Open it to your network?", "yes": "Open it",
+                         "words": "Its ports are reached from your local subnet, on the Private and Domain profiles."},
+                        {"name": ACCEPT_SHARED, "type": "accept", "title": "Share WSL's one network?", "yes": "Share it",
+                         "words": "Another distribution runs an engine in WSL's one network: its containers and "
+                                  "these reach each other."},
+                        {"name": ACCEPT_WAN, "type": "accept", "title": "Open it to the internet?", "yes": "Open it",
+                         "words": "Its ports are reached from outside your network."}],
+             "confirm": {"title": "Approve this network plan?",
+                         "words": "The plan of the row you pressed, in its Words: carried out by its container "
+                                  "plugin's work.", "yes": "Approve it"}},
+            {"id": "net-decline", "hook": DECLINE, "title": "Decline a network plan",
+             "fields": [{"name": "plan", "label": "Plan", "type": "fixed"}],
+             "confirm": {"title": "Decline this network plan?",
+                         "words": "Nothing is done; the plan is forgotten and the subnet it held is freed.",
+                         "yes": "Decline"}},
+            {"id": "net-grant", "hook": NET_GRANT, "title": "Let a container plugin ask for networks",
+             "fields": [{"name": "plugin", "label": "Plugin", "type": "fixed"}],
+             "confirm": {"title": "Let {plugin} ask for networks?",
+                         "words": "Kept through your login until you stop letting it. Each network it asks for is "
+                                  "still a plan you approve.", "yes": "Let it"}},
+            {"id": "net-revoke", "hook": NET_REVOKE, "title": "Stop letting a container plugin ask for networks",
+             "fields": [{"name": "plugin", "label": "Plugin", "type": "fixed"}],
+             "confirm": {"title": "Stop letting {plugin} ask for networks?",
+                         "words": "Its services' networks stay as they are; it is given no new one.",
+                         "yes": "Stop letting it"}},
+            {"id": "net-forget", "hook": FORGET_RECORDS, "title": "Forget a gone segment",
+             "fields": [{"name": "segment", "label": "Service", "type": "fixed"}],
+             "confirm": {"title": "Forget {segment}'s records?",
+                         "words": "Its records marked gone are cleared and its withdrawn segment's subnet is freed.",
+                         "yes": "Forget", "danger": True}},
             {"id": "net-domain", "hook": SET_DOMAIN, "title": "The domain of its names",
              "fields": [{"name": "domain", "label": "Domain", "type": "text", "required": True,
                          "placeholder": "home.arpa"}],
@@ -1300,8 +1331,9 @@ class NetworkHost(MachinePlugin):
                          "words": "Kept through the platform's login. home.arpa is never asked of public servers; "
                                   "never .local (mDNS's).", "yes": "Set it"}},
             {"id": "net-leftover", "hook": REMOVE_LEFTOVER, "title": "Take a leftover away",
-             "fields": [{"name": "id", "label": "Id", "type": "fixed"}, {"name": "label", "label": "What", "type": "fixed"}],
-             "confirm": {"title": "Take this away?", "words": "{label}", "yes": "Take it away", "danger": True}},
+             "fields": [{"name": "id", "label": "What", "type": "fixed"}],
+             "confirm": {"title": "Take this away?", "words": "The leftover of the row you pressed: {id}",
+                         "yes": "Take it away", "danger": True}},
         ]
         return {"title": "Networks", "note": "routes, names and DHCP records of the container plugins' segments",
                 "tables": tables, "forms": forms,

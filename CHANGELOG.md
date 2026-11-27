@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.106.1 (2026-11-26)
+
+The firewall's Networks tab: every button is a form the page draws and confirms (found at the first live install of a
+service: the Windows firewall's "Let it…" for Docker was never drawn, so no install could be planned).
+
+- "Let it…", "Stop letting it…", "Forget…" and "Decline…" were cells naming a hook, which the platform's page never
+  draws in a table; they are forms now (net-grant, net-revoke, net-forget, net-decline), each asking you to confirm,
+  as Docker's own grant does.
+- "Approve…" and the leftovers' "Remove…" sent a field shown only for its words (the label) as their hook's second
+  argument: approve_plan took it for accept_lan, remove_leftover refused it. A form's fields are its hook's arguments
+  alone; Approve… also lists accept_shared and accept_wan, each asked only when its plan needs it.
+- A test holds every button of the tab, in each of its states, to that: a form the tab lists, a hook the page may ask,
+  fields that are the hook's parameters in order.
+
 ## 1.106.0 (2026-11-26)
 
 The routes on real infrastructure, their cities and hubs named (Monday list item 27; the user, 2026-11-22, on the

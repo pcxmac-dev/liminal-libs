@@ -170,6 +170,56 @@ def test_repoint_makes_every_stale_route_again_in_one_elevation(tmp_path):
     assert "172.31.9.9 (current)" in seg["rows"][0][5]
 
 
+def _buttons(tab):
+    for t in tab["tables"]:
+        for row in t["rows"]:
+            for cell in row:
+                if isinstance(cell, dict) and ("form" in cell or "hook" in cell):
+                    yield t["title"], cell
+    for a in tab.get("actions") or ():
+        if "form" in a:
+            yield "actions", a
+
+
+def test_every_button_of_the_networks_tab_opens_a_form_whose_fields_are_its_hooks_arguments(tmp_path):
+    """1.106.1 (the first live install, 2026-11-26: the firewall's Let it… was never drawn, so Docker could not be
+    let to ask for networks): the page draws a table's cell only when it names one of the tab's forms, and sends a
+    form's fields, in order, as its hook's arguments. So every button of every state of the tab names a form the tab
+    lists; that form's hook is one the page may ask; its fields are that hook's own parameters, in its order; and each
+    value a button fills in is one of those fields."""
+    import inspect
+
+    w = world(tmp_path)
+    seen = set()
+
+    def check():
+        tab = w.firewall.container_networks()
+        forms = {f["id"]: f for f in tab["forms"]}
+        for where, cell in _buttons(tab):
+            assert "form" in cell, f"{where}: a cell naming a hook is never drawn: {cell}"
+            f = forms[cell["form"]]
+            assert f["hook"] in w.firewall.HOOKS
+            params = [p for p in inspect.signature(getattr(w.firewall, f["hook"])).parameters]
+            names = [x["name"] for x in f["fields"]]
+            assert names == params[:len(names)], f"{f['id']}: {names} are not {f['hook']}'s {params}"
+            assert set(cell.get("values") or {}) <= set(names)
+            seen.add(f["id"])
+
+    check()  # nothing installed: a container plugin not let yet, the domain
+    assert "net-grant" in seen and "net-domain" in seen
+    w.page("standin-firewall", "grant_network", "standin-host")
+    check()
+    assert "net-revoke" in seen
+    w.installed()
+    check()
+    w.page("standin-firewall", "withdraw", "jenkins/ci")
+    check()
+    assert "net-forget" in seen
+    w.firewall.made = [{"id": "route-10.99.0.0/24", "words": "a route to 10.99.0.0/24", "detail": {}}]
+    check()
+    assert "net-leftover" in seen
+
+
 def test_withdraw_takes_the_route_and_proxy_away_and_keeps_the_records_gone(tmp_path):
     w = world(tmp_path)
     w.installed()
