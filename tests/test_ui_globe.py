@@ -1640,6 +1640,9 @@ def test_the_routers_places_the_routes_bend_at_are_drawn_named_and_told_on_hover
     assert places.index("for (const h of data.hops) {") < places.index("for (const o of data.origins) {")  # under them
     labels = _body(js, "function drawLabels(c, g, shown) {")
     assert "HOP_NAMES.find(([upto]) => zoom < upto)[1]" in labels and "put(text(hopName(h), 32)" in labels
+    # the review of 1.106.0: only the names placed count against the budget
+    assert "if (put(text(hopName(h), 32), p.x, p.y, 4, false)) left--;" in labels
+    assert "return true;" in labels and "return false;" in labels
     assert labels.index("put(text(nameOf(o), 40)") < labels.index("put(text(hopName(h), 32)")  # places named first
     hit = _body(js, "function hitAt(clientX, clientY, by) {")
     assert "if (!best && data.heat) {" in hit and "best = { h }; bestD = d;" in hit
@@ -1820,6 +1823,7 @@ def test_the_hubs_the_routes_pass_are_drawn_larger_and_brighter_by_their_traffic
     assert labels.index("put(text(hopName(h), 32)") < labels.index("put(text(u.name, 32)")  # the routers' first
     assert "left = HUB_NAMES.find(([upto]) => zoom < upto)[1];" in labels
     assert "if (!u.name || layerNames(u.kind)) continue;" in labels
+    assert "if (put(text(u.name, 32), p.x, p.y, 5, false)) left--;" in labels  # the review: placed names alone
     assert "const layerNames = (id) => data.layers.some((l) => l.id === id && isOn(l) && zoom >= l.namesFrom);" in js
     legend = _body(js, "function renderLegend() {")
     assert "'Hubs on the routes, larger and brighter with the connections through them'" in legend

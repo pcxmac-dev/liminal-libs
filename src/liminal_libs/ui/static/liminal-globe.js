@@ -2143,8 +2143,9 @@
           boxes.push(box);
           c.lineWidth = 3; c.strokeStyle = css(colours.surface, 0.85); c.strokeText(words, lx, ly);
           c.fillStyle = css(colours.text, strong ? 1 : 0.85); c.fillText(words, lx, ly);
-          return;
+          return true;
         }
+        return false;  // no room beside it: not named (the review of 1.106.0: and not counted)
       };
       const home = data.home ? project(data.home.lon, data.home.lat, g) : null;
       if (home && home.visible) {
@@ -2159,8 +2160,7 @@
           if (left <= 0) break;
           const p = project(h.lon, h.lat, g);
           if (!p.visible || p.depth <= 0.12) continue;
-          put(text(hopName(h), 32), p.x, p.y, 4, false);
-          left--;
+          if (put(text(hopName(h), 32), p.x, p.y, 4, false)) left--;  // a name with no room counts nothing
         }
         // 1.106.0: then the hubs the routes pass, the busiest first, by name (one with none is told on hover alone),
         // fewer than the routers' places; one its own layer names now is left to it, so no name is drawn twice
@@ -2170,8 +2170,7 @@
           if (!u.name || layerNames(u.kind)) continue;
           const p = project(u.lon, u.lat, g);
           if (!p.visible || p.depth <= 0.12) continue;
-          put(text(u.name, 32), p.x, p.y, 5, false);
-          left--;
+          if (put(text(u.name, 32), p.x, p.y, 5, false)) left--;  // home's crowded metro uses up nothing
         }
       }
       nameLayers(c, g, boxes, shown);
