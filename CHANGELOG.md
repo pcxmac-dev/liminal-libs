@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.110.1 (provisional, 2026-11-27)
+
+Two findings of the complete review (Monday list item 14) that 1.110.0's fix of the instances' pool left, each fixed
+with a test that fails without it. Nothing changes for the plugins: the plugin API stays as it was.
+
+- **A MongoDB instance's client in use** (stores.py, storage/documents.py): 1.110.0's cap closes no connection a call
+  holds, but a MongoDocuments on an instance the user added kept its database for good and took no hold, so the cap
+  could close its client under a call, and every call after was refused ("Cannot use MongoClient after close"). Each
+  call now takes the database from a session (`MongoDocuments(db, kind, session=)`; `every` holds it until its cursor
+  is read to its end) and keeps none between calls; the session counts the call in the client (`_Held.users`), and
+  the cap closes no client a call is counted in. PyMongo's client is thread-safe and pools its own connections, so the
+  calls share it rather than wait for one another. A MongoDocuments given a database works as before.
+- **The MongoDB server here's client** (stores.py): MongoDB's own instance (`mongodb:local`, the server here) is given
+  through this process's own client (mongo.client), which no caller closes. A pick never names it (`canonical` makes
+  it the bare engine), but `named_backend` asked for it pooled it with that client's close, so the cap or
+  `close_instances` closed the process's own client, and every MongoDB call of the process after was refused. Its
+  pooled connection now closes nothing: the pool lets it go and the client stays open.
+
 ## 1.110.0 (provisional, 2026-11-27)
 
 Thirteen P3 findings of the complete review (Monday list item 14), the builder's share, each fixed with a test that
