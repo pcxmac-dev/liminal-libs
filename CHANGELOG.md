@@ -51,6 +51,31 @@ server's page draws as before; the platform's page shows the new layers once the
   on their places, the lowest zoom first and then the nearest the middle, never one over another nor at the rim,
   `MAP_LABELS` 60 at most, under every mark and line, the first label layer in capitals.
 
+The independent review's findings, each with a test that fails without its fix:
+
+- **A region's XML** (`_osm_piece`) is read by expat's own handlers, no tree: of a way only its tags and its points are
+  held until it ends, `WAY_POINTS` (2,000, OpenStreetMap's own limit) at most (a longer way is left out, counted) and
+  `PIECE_POINTS` (2,000,000) in a piece (more refuses the answer). It is read as UTF-8 whatever it declares, and a
+  document type or an entity declared is refused by the parser itself (a UTF-16 answer passed the byte check before).
+  A piece is half-open, its last row and column closed, so a way on an edge two pieces share is kept once.
+- **The limit across pieces**: each piece (and each batch of a set asked in several requests) is asked with what is
+  left of its set's limit, so it is cut off as it passes it, never read whole first; the form of a region says that a
+  dense city may be larger and is refused past its limit, nothing kept.
+- **The pieces where the region is**: `DataSet.placed` counts them at its place (a degree of longitude narrows toward
+  the poles: 16 at the equator, 168 at 85 degrees for 20 km) and refuses more than `REGION_PIECES`; the download looks
+  again before it asks anything.
+- **The store**: the zoom column is added in one transaction, the file's version read again inside it and the column
+  added only where it is not there yet (a file left half done is finished); `Store.put` makes each row as it writes
+  it, never every row of a region's first.
+- **liminal_libs.shapefile**: a record's check unpacks no coordinate (its flag was overwritten by the points' count);
+  more records than the most are refused from the .dbf's header, before any row is made.
+- **The regions**: world_region is declared page-only (as 1.107.0's closed default would make it, its refusal now in
+  the declaration's words); home's place is not added as a region, and a Remove… forgets every region added at its
+  place, whichever row it was. `pack()` reads lines that carry their zoom.
+- **The globe**: a layer's credits only while it draws a feature at this zoom; the layers' names kept off the map's own
+  names; a ranked layer's bands either side of this zoom's kept, so a step back and forth over a band's edge asks
+  nothing again (the routes session's ask).
+
 ## 1.107.0 (2026-11-26)
 
 Closed by default (the user, 2026-11-26: "Yes, closed by default"). The security sweep of 2026-11-26 found that a
