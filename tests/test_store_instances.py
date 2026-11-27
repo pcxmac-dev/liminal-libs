@@ -192,19 +192,24 @@ class MongoDatabase:
 
 
 class MongoStandIn(DatabasePlugin):
-    """MongoDB's, for instances the user added: `open` gives the instance's database through a new client each time,
-    closed by whoever asked, as the real plugin's."""
+    """MongoDB's, as the real plugin's: `open` gives an instance the user added through a new client each time, closed
+    by whoever asked, and its own instance (`here`, the server here) through the process's own client (`own`, as
+    mongo.client gives it), which no caller closes."""
 
     name, title, ENGINE, api = "mongodb", "MongoDB", "mongodb", "2.3"
     options = (variable_of("mongodb"),)
     METHODS = ("tcp",)
     HOLDS = ("documents",)
     SERVER = True
+    here: tuple = ()
+    own = None
 
     def builtin(self, data_dir):
-        return ()
+        return self.here
 
     def open(self, instance, part="", read_only=True, data_dir=None):
+        if instance.builtin:
+            return MongoDatabase(self.own, self)
         client = SimpleNamespace(closed=False)
         client.close = lambda: setattr(client, "closed", True)
         self.clients.append(client)
@@ -509,6 +514,32 @@ def test_a_mongodb_client_a_call_is_using_is_never_closed_by_the_pools_cap(world
     assert docs.count() == 3 and len(plugin.clients) == 2 and not plugin.clients[1].closed  # the next call: another
     stores.close_instances()
     assert all(c.closed for c in plugin.clients)
+
+
+def test_the_server_heres_own_client_is_never_closed_by_the_pool(world):
+    """1.110.1 (item 14): the MongoDB server here, the engine's own instance (`mongodb:local`), is given through this
+    process's own client (mongo.client). A pick never names it (canonical: the bare engine), but named_backend asked
+    for it kept it in the pool with that client's close: past the cap, or at close_instances, the process's own client
+    was closed, and every MongoDB call of the process after it refused. The pool lets it go and leaves it open."""
+    w = world
+    plugin = MongoStandIn()
+    plugin.attach(SimpleNamespace(db_path=w.main), w.login)
+    own = SimpleNamespace(closed=False)
+    own.close = lambda: setattr(own, "closed", True)
+    here = Instance("local", "The server here", where="127.0.0.1", method="tcp", port=27017, database="liminal",
+                    holds=("documents",))
+    plugin.__dict__.update(clients=[], during=None, own=own, here=(here,),
+                           docs=[{"source": "massive", "id": str(i), "published_ms": i} for i in (1, 2, 3)])
+    w.plugins["mongodb"] = plugin
+    docs = stores.named_backend("mongodb:local", NEWS, w.folder)
+    assert docs.count() == 3
+    for k in range(stores.POOL_MOST):  # eight other connections: the server here's is the oldest no call uses
+        stores._held(("other", k), lambda: stores._Held(k, lambda: None))
+    assert ("mongodb", "local") not in [key[:2] for key in stores._pool]  # let go past the cap ...
+    assert not own.closed  # ... and the process's own client left open
+    assert docs.count() == 3  # (taken again: the same client)
+    stores.close_instances()
+    assert not own.closed and plugin.clients == []  # never closed, and no client of its own made for it
 
 
 @pytest.mark.parametrize("dialect", ["postgres", "mariadb", "sqlite"])

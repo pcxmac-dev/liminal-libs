@@ -463,7 +463,12 @@ def named_backend(store_name: str, kind: documents.Kind, data_dir: Path | None =
         def opener() -> _Held:
             db = plugin.open(inst, "", read_only=False, data_dir=folder)
             client = getattr(db, "client", None)
-            return _Held(db, client.close if client is not None else (lambda: None))
+            # 1.110.1 (item 14): the server here (the engine's own instance) is given through this process's own client
+            # (mongo.client, the plugin's `open` says so): kept in the pool, it is never closed by it, neither past the
+            # cap nor by close_instances, or every MongoDB call of the process after would be refused
+            if client is None or inst.builtin:
+                return _Held(db, lambda: None)
+            return _Held(db, client.close)
 
         @contextmanager
         def shared():
