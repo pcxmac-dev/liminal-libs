@@ -1147,6 +1147,7 @@ class NetstatView:
             date = ""
         with self._lock:
             self._stamp = (now, date)
+        book.in_use(date)  # 1.110.0: the book's own word, not a read's (HostBook.unplaced no longer sets it)
         if book.unplaced(date):
             known = getattr(geoip, "known", None)  # 1.105.0: places another plugin looked up, for those hosts alone
             book.place(geoip.lookup, date, **({"only": known} if known is not None else {}))

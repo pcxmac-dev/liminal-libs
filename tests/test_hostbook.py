@@ -1818,6 +1818,23 @@ def test_a_new_connection_takes_its_hosts_place_from_the_files_in_use_alone(db, 
     assert newest["country"] == "Germany"  # not "Elsewhere", the greatest string
 
 
+def test_a_read_of_what_is_unplaced_changes_nothing_of_what_new_connections_are_placed_from(db):
+    """1.110.0 (item 14, libs-world P3-3): hosts_found("unplaced") is a read any attached plugin may ask, with a stamp
+    of its own or none: the book's stamp is the owner's (place, in_use), so new connections still take their place."""
+    b = HostBook(db)
+    win(b, T0, row(started=T0))
+    b.flush()
+    stamp = "#dbip:2026-11-01+ipinfo:2026-11-24"
+    assert b.place(atlas({WEB: NUREMBERG}), stamp) == 1
+    assert b.unplaced("") == 1 and b.unplaced("2025-01-01") == 1  # an older plugin's stamp, or none
+    win(b, T0 + 60, row(started=T0), row(started=T0 + 50, local_port=51500))  # a new connection of WEB
+    b.flush()
+    newest = max(b.connections(), key=lambda c: c["first"])
+    assert newest["country"] == "Germany" and b.stamp == stamp
+    b.in_use("2026-12-01")  # the owner's word, when nothing needed placing
+    assert b.stamp == "2026-12-01"
+
+
 def test_clearing_by_role_takes_one_sources_places_out_of_both_tables(db):
     from liminal_libs.machines import geosources
     b = HostBook(db)

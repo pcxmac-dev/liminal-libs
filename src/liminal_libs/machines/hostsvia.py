@@ -106,6 +106,11 @@ class HostsVia:
         got = self._found("unplaced", 0, stamp=str(stamp or ""))
         return got if isinstance(got, int) and not isinstance(got, bool) else 0
 
+    def in_use(self, stamp) -> None:
+        """1.110.0 (item 14): nothing asked. The firewall's book takes the stamp from the places it is handed
+        (hosts_keep_places), never from a read; with every row placed as of `stamp`, its rows of a host agree."""
+        return None
+
     def place(self, lookup, stamp, most: int = hostbook.PLACE_ROWS, only=None) -> int:
         """The hosts the firewall names for `stamp` looked up with `lookup` here, and handed to it to keep."""
         hosts = self._found("unplaced_hosts", [], stamp=str(stamp or ""), most=most)

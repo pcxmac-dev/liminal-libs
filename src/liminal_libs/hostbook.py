@@ -565,7 +565,9 @@ class HostBook:
         self.cap = max(1, int(cap))
         self.clock = clock
         self.changes = 0
-        self.stamp: str | None = None  # 1.101.0: the stamp of the GeoIP files in use, once place or unplaced was asked
+        # 1.101.0: the stamp of the GeoIP files in use, once the owner placed rows or said it (place, in_use); 1.110.0:
+        # never set by a read (unplaced), which any attached plugin may ask with a stamp of its own
+        self.stamp: str | None = None
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._loaded = False  # whether what the file holds of the open connections and of itself is in memory
@@ -1437,9 +1439,14 @@ class HostBook:
         """How many of the internet's rows have no place looked up yet, or one from a GeoIP file older than `stamp`
         (the file's own date, as text): what `place` would take. The GeoIP file needs opening only when it is not 0."""
         sql = "SELECT COUNT(*) FROM hosts WHERE network = ? AND (placed IS NULL OR placed <> ?)"
-        stamp = _clip(stamp, PLACE_STAMP)
-        self.stamp = stamp  # 1.101.0: what a new connection's place is taken from
+        stamp = _clip(stamp, PLACE_STAMP)  # 1.110.0 (item 14): a read alone; what places come from is in_use's
         return self._read(lambda conn: conn.execute(sql, (INTERNET, stamp)).fetchone()[0], 0)
+
+    def in_use(self, stamp) -> None:
+        """1.110.0 (item 14): the stamp of the GeoIP files the book's owner places from (a new connection takes only a
+        host's row placed by them), said by the owner when nothing needs placing; `place` says it too."""
+        with self._lock:
+            self.stamp = _clip(stamp, PLACE_STAMP)
 
     def unplaced_hosts(self, stamp, most: int = PLACE_ROWS) -> list[str]:
         """1.105.0: the hosts `place(lookup, stamp, most)` would look up, each once, in the order it takes them: the
