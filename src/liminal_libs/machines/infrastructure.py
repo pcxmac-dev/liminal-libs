@@ -1968,12 +1968,12 @@ def pack(dataset, features, fetched) -> dict:
         lines = list(got.get("lines") or ())
         if lines:
             xy, offsets = array(_I32), array(_U32, [0])
-            for vertices, _ in lines:
+            for vertices, *_ in lines:  # the review of 1.108.0: a line may carry its zoom, third
                 for lon, lat in vertices:
                     xy.extend((round(lon * SCALE), round(lat * SCALE)))
                 offsets.append(len(xy) // 2)
             entry["lines"] = {"n": len(lines), "offsets": _packed(offsets), "xy": _packed(xy),
-                              "names": [_name(name) for _, name in lines]}
+                              "names": [_name(line[1]) for line in lines]}
         if entry:
             layers[layer] = entry
             count += len(points) + len(lines)

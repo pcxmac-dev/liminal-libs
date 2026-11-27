@@ -377,3 +377,10 @@ def test_a_way_on_the_edge_two_pieces_share_is_kept_once(tmp_path):
     out = install(home, tmp_path, accept_licence=True, fetch=Downloads(answers), clock=Clock())
     assert out["file"]["layers"] == {"streets": 2}  # each once: neither left out, neither twice
     assert sorted(Store(tmp_path).layer("streets")[home.id]["lines"]["names"]) == ["on it", "the far corner"]
+
+
+def test_a_files_json_is_packed_from_lines_that_carry_their_zoom():
+    """Item 14: pack() reads a line's vertices and its name whatever follows them."""
+    got = infrastructure.pack(STREETS, {"layers": {"streets": {"points": [], "lines": [
+        ([(2.3, 48.8), (2.4, 48.9)], "A", 64.0), ([(2.5, 48.8), (2.6, 48.9)], "B")]}}}, 1.0)
+    assert got["layers"]["streets"]["lines"]["names"] == ["A", "B"] and got["features"] == 2
