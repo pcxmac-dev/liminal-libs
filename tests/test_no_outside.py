@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import sys
 import threading
 
 import pytest
@@ -93,6 +94,23 @@ def test_a_process_started_under_popen_by_fork_or_by_exec_is_refused_too(no_outs
             reach()
     assert len(no_outside) == len(reaches)
     no_outside.clear()
+
+
+def test_a_class_made_of_popen_under_the_guard_is_made_and_refused_only_when_it_starts(no_outside):
+    """1.109.0 (item 14; CI, windows-latest 3.12): asyncio's first import makes `class Popen(subprocess.Popen)`; under
+    a stand-in that was a function that import failed half way and asyncio stayed broken for every later test. The
+    stand-in is a class now, and asyncio and unittest.mock are imported before any guard."""
+    stood_in("subprocess.Popen")
+
+    class Late(subprocess.Popen):  # as asyncio.windows_utils makes one, under the guard
+        pass
+    with pytest.raises(Reached):
+        Late([NOWHERE])
+    with pytest.raises(Reached):
+        subprocess.Popen([NOWHERE])
+    assert len(no_outside) == 2 and all(r.startswith("subprocess.Popen") for r in no_outside)
+    no_outside.clear()
+    assert {"asyncio", "asyncio.base_events", "unittest.mock"} <= set(sys.modules)
 
 
 def test_a_connection_a_listener_or_a_lookup_for_real_is_refused(no_outside):

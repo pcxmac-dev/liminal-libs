@@ -46,6 +46,7 @@ from liminal_libs.machines.infrastructure import (INDEX_S, INSTALL_S, LAYERS, RE
                                                   InfrastructureError, form, install, pack, parse, remove, remove_form)
 from liminal_libs.machines.world import LicenceRefused, RedirectRefused, WorldView
 
+from conftest import as_class
 from test_geo import NOVEMBER, city, mmdb, needs_reader
 
 pytestmark = pytest.mark.usefixtures("no_outside")  # the library's shared guard (tests/conftest.py), as well as ours
@@ -543,7 +544,7 @@ def _nothing_real(monkeypatch, tmp_path):
         def refuse(*args, **kwargs):
             reached.append(name)
             raise AssertionError(f"a test reached the real {name}")
-        return refuse
+        return as_class(refuse) if name == "Popen" else refuse  # 1.109.0: a class may still be made of it
     for module, name in ((subprocess, "Popen"), (urllib.request, "urlopen"), (world, "fetch_url"),
                          (socket, "create_connection"), (capture, "load_pcap"), (netpath, "lan_address"),
                          (world, "route_address"), (dns, "query")):
@@ -569,6 +570,13 @@ def refused(dataset, folder, answer, **more) -> str:
     with pytest.raises(InfrastructureError) as said:
         install(dataset, folder, accept_licence=True, fetch=Downloads({AT[dataset["id"]]: answer}), **more)
     return str(said.value)
+
+def test_a_class_can_still_be_made_of_popen_under_this_files_stand_ins():
+    """1.109.0 (item 14; CI, windows-latest 3.12): a module imported under them may subclass Popen, as asyncio does."""
+    class Late(subprocess.Popen):
+        pass
+    assert issubclass(Late, subprocess.Popen) and Late.__mro__[1] is subprocess.Popen
+
 
 
 # -- a plugin's dict as a data set -------------------------------------------------------------------------------------

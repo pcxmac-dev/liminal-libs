@@ -211,7 +211,7 @@ def test_a_region_is_its_templates_round_a_place_asked_in_pieces():
         template.placed(95, 0)
 
 
-def test_a_regions_pieces_are_each_read_as_they_come_and_a_way_across_two_kept_once(tmp_path):
+def test_a_regions_pieces_are_each_read_as_they_come_and_a_way_across_two_kept_once(tmp_path, monkeypatch):
     home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")
     pieces, order = home.pieces(), []
     first, second = pieces[0], pieces[1]  # side by side, west to east
@@ -231,8 +231,10 @@ def test_a_regions_pieces_are_each_read_as_they_come_and_a_way_across_two_kept_o
             order.append(("asked", len(order)))
             return super().__call__(url, timeout, **said)
     asked = Asked(answers)
-    import unittest.mock
-    with unittest.mock.patch.object(infrastructure, "_osm_piece", piece):
+    # 1.109.0: monkeypatch, undone after the test; Python 3.12's `import unittest.mock` here imported asyncio for the
+    # first time under the stand-ins and broke it for every later test (CI, windows-latest 3.12)
+    with monkeypatch.context() as patched:
+        patched.setattr(infrastructure, "_osm_piece", piece)
         out = install(home, tmp_path, accept_licence=True, fetch=asked, clock=Clock())
     assert [what for what, _ in order] == ["asked", "read"] * 6  # each piece read before the next is asked
     assert out["ok"] is True and out["file"]["layers"] == {"streets": 2}  # each way once

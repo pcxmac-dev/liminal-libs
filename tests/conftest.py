@@ -80,6 +80,12 @@ try:
     import requests  # noqa: F401 - imported before any guard: urllib3's own check binds a socket when first imported
 except ImportError:  # (not every test run has it)
     pass
+# 1.109.0: imported before any guard too. asyncio's first import makes `class Popen(subprocess.Popen)`
+# (asyncio.windows_utils): under a stand-in that is a function it fails half way (TypeError) and leaves the
+# interpreter's asyncio broken for every later test ("name 'base_events' is not defined"); Python 3.12's
+# unittest.mock imports asyncio, so a test's own `import unittest.mock` did that on CI (item 14)
+import asyncio  # noqa: F401,E402
+import unittest.mock  # noqa: F401,E402
 
 # (what holds the names, the words a reach is said by, the names)
 STOOD_IN = [
@@ -106,6 +112,15 @@ class Reached(BaseException):
     """A test reached for real what it must stand in for."""
 
 
+def as_class(refusing, name: str = "Popen") -> type:
+    """A stand-in for a class (subprocess.Popen), itself a class (1.109.0): a module imported under the guard may
+    subclass it (asyncio.windows_utils' `class Popen(subprocess.Popen)`), which a function refuses half way through
+    the import; what makes one, or one of its subclasses, is refused as the function refuses it."""
+    def __new__(cls, *args, **kwargs):
+        return refusing(*args, **kwargs)
+    return type(name, (), {"__new__": __new__, "__doc__": "The guard's stand-in: what makes one is refused."})
+
+
 @pytest.fixture
 def no_outside(monkeypatch):
     reached: list[str] = []
@@ -114,7 +129,7 @@ def no_outside(monkeypatch):
         def stand_in(*args, **kwargs):
             reached.append(f"{what} {args[:2]!r}"[:300])
             raise Reached(f"the test reached {what} for real: give the code a stand-in")
-        return stand_in
+        return as_class(stand_in) if what == "subprocess.Popen" else stand_in
 
     for owner, said, names in STOOD_IN:
         for name in names:
