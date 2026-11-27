@@ -586,7 +586,10 @@ def test_the_layers_are_asked_of_the_page_and_their_switches_kept_in_this_browse
     assert "chosen = recall(storeName);" in update  # drawn again under another key: the switches kept there
     assert "const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);" in js
     render = _body(js, "function render(now) {")
-    assert "askLayer(l, load, byArea ? { zoom: 1 } : undefined);" in render
+    # 1.107.0: each layer's asks made by asksOf (its whole copy and its area's), each asked as it says
+    assert "for (const a of asksOf(l, byArea)) if (a) askLayer(a, load, a.more);" in render
+    assert "return [{ id: l.id, key: l.key, more: byArea ? { zoom: 1 } : undefined }," in _body(
+        js, "function asksOf(l, byArea) {")
     ask = _body(js, "function askLayer(l, load, more) {")
     assert ("try { asked = Promise.resolve(more ? load(l.id, more) : load(l.id)); } catch (e) { asked = "
             "Promise.reject(e); }") in ask
@@ -636,7 +639,7 @@ def test_a_layers_switch_turns_it_on_and_off_every_time(js):
     assert "layersShown = null;" in switch and "renderWords();" in switch and "changed();" in switch
     layers = _body(js, "function renderLayers() {")
     assert "it.b.type = 'button';" in layers and "it.b.addEventListener('click', () => switchLayer(l.id));" in layers
-    assert "on = isOn(l);" in layers and "attr(it.b, 'aria-pressed', String(on));" in layers
+    assert "const e = entryOf(l), on = isOn(l)" in layers and "attr(it.b, 'aria-pressed', String(on));" in layers
     assert '.lg-layer[aria-pressed="false"]{opacity:.55}' in js  # a layer switched off reads as off
 
 
@@ -664,10 +667,10 @@ def test_nothing_is_fetched_but_the_map(js):
 
 
 def test_the_layers_are_bounded(js):
-    """At most MAX_LAYERS 16 layers listed (1.104.0: 13 and more to come) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
+    """At most MAX_LAYERS 24 layers listed (1.104.0: 13 and more to come; 1.107.0: 24) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
     machines/infrastructure.py keeps at most), 16 parts an answer, 12 names on the map at once; no DOM node a feature
     (they are thousands: the plugin's own tables count them)."""
-    for line in ("const MAX_LAYERS = 16;", "const MAX_LAYER_POINTS = 20000;", "const MAX_LAYER_VERTICES = 400000;",
+    for line in ("const MAX_LAYERS = 24;", "const MAX_LAYER_POINTS = 20000;", "const MAX_LAYER_VERTICES = 400000;",
                  "const MAX_PARTS = 16;", "const LAYER_NAMES = 12;", "const NAME = 80;", "const LINE_CELL = 8;",
                  f"const CELL = {CELL};"):
         assert f"  {line}  // " in js, line
@@ -878,7 +881,8 @@ def test_the_few_are_painted_over_the_many(js):
     paint = _body(js, "function paintLayers(c, g, fr, list) {")
     most = "const most = (kind) => list.filter(({ geo }) => geo[kind]).sort((a, b) => b.geo[kind].n - a.geo[kind].n);"
     assert most in paint
-    assert paint.index("of most('lines')) paintLines(") < paint.index("of most('points')) paintPoints(")
+    assert paint.index("of most('lines')) paintLines(") < paint.index(
+        "of most('points')) if (l.mark !== 'label') paintPoints(")
 
 
 def test_the_tabs_globe_line_names_what_the_script_reads(js):
@@ -1679,13 +1683,17 @@ def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
     render = _body(js, "function render(now) {")
     # the review: by area only with a loader that takes the area (its second argument); today's platform loader takes
     # the id alone and answers the whole layer, which would be fetched again for every new area
-    assert "const byArea = data.layerArea && typeof load === 'function' && load.length >= 2;" in render
+    assert "const byArea = byAreaNow();" in render  # 1.107.0: the same words, named
+    assert "const byAreaNow = () => !!(data.layerArea && typeof load === 'function' && load.length >= 2);" in js
     assert "if (!byArea && areaKey) { areaKey = ''; area = null; layersShown = null; pruneLayers(); }" in render
     assert "if (byArea && !glide) {" in render and "data.layerArea && !glide" not in render
     assert "if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }" in render
-    assert "if (areaKey) askLayer(areaLayer(l), load, { area, zoom });" in render
+    asks = _body(js, "function asksOf(l, byArea) {")  # 1.107.0: the asks made by asksOf, the area's as before
+    assert "areaKey ? { ...areaLayer(l), more: { area, zoom } } : null];" in asks
     shown = _body(js, "function shownLayers() {")
-    assert "const e = near && near.state === 'ready' ? near : isOn(l) ? layerData.get(l.key) : null;" in shown
+    assert "const e = isOn(l) ? entryOf(l) : null;" in shown
+    assert "return n && n.state === 'ready' ? n : whole ? layerData.get(whole.key) : n;" in _body(
+        js, "function entryOf(l) {")
     assert "layerArea: s.layer_area === true," in _body(js, "function normal(spec) {")
     box = _body(js, "function areaOf(g) {")
     assert "if (s <= -90 || n >= 90 || across >= 180) return [-180, s, 180, n];" in box
@@ -1861,3 +1869,38 @@ def test_a_hub_is_hovered_and_picked_and_a_route_picked_tells_its_way_and_its_hu
     assert "const u = data.heat ? data.hubs.find((x) => x.id === pick.hub.id) : null;" in update
     assert "pick = { ...pick, hub: u };" in update
     assert "pick.hub ? `hub ${pick.hub.id}`" in _body(js, "function placesLayer(g, ratio, W, H) {")
+
+
+def test_the_maps_layers_are_drawn_from_their_zoom_each_feature_from_its_own_and_names_as_lettering(js):
+    """1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x"): a layer's `from` read
+    (1, the start, when it says none) and nothing asked or drawn below it, its button saying from when; a ranked
+    layer's features' zooms read and a feature drawn only from its own, asked by the zoom's band (its whole copy at
+    BAND_MOST at most, its area's at AREA_ZOOM at least, the whole copy not at all for one drawn only past AREA_ZOOM);
+    the area asked smaller nearer in; a label layer's names the map's own lettering, under every mark, MAP_LABELS at
+    most, never one over another. Its working is checked on stand-ins in headless Edge (the scratch check page)."""
+    assert "  const MAP_LABELS = 60;  // " in js and "  const BAND_MOST = 4;  // " in js
+    assert "  const AREA_TILES = [[32, AREA_TILE], [256, 2], [Infinity, 0.5]];" in js
+    assert "label: 'points'" in js.split("const MARKS = ", 1)[1].split("\n", 1)[0]
+    layers = _body(js, "function layersOf(list) {")
+    assert "from: drawn != null && drawn >= 1 ? Math.min(drawn, MAX_ZOOM) : 1, ranked: l.ranked === true," in layers
+    prep = _body(js, "function prepareLayer(answer) {")
+    assert "pz.push(zooms ? Math.max(0, num(zooms[i]) ?? 0) : 0);" in prep
+    assert "lz.push(zooms ? Math.max(0, num(zooms[j]) ?? 0) : 0);" in prep
+    asks = _body(js, "function asksOf(l, byArea) {")
+    assert "if (zoom < l.from) return [null, null];" in asks
+    assert "const whole = byArea && l.from >= AREA_ZOOM ? null" in asks
+    assert "more: { area, zoom: Math.max(AREA_ZOOM, b) }" in asks
+    assert "const BAND_OF = (z) => 2 ** Math.floor(Math.log2(clamp(z, 1, MAX_ZOOM)));" in js
+    render = _body(js, "function render(now) {")
+    assert "if (stage !== stageKey) { stageKey = stage; layersShown = null; pruneLayers(); }" in render
+    assert "if (L.zooms && L.zooms[j] > zoom) continue;" in _body(js, "function paintLines(c, g, fr, l, geo, names) {")
+    assert "if (P.zooms && P.zooms[i] > zoom) continue;" in _body(js, "function paintPoints(c, g, fr, l, geo, names) {")
+    labels = _body(js, "function paintLabels(c, g, fr, list) {")
+    assert "want.sort((a, b) => a[0] - b[0] || a[1] - b[1]);" in labels  # the most important, then the middle's
+    assert "if (placed.some((o) => box.x < o.x + o.w && o.x < box.x + w && box.y < o.y + o.h && o.y < box.y + h)) continue;" in labels
+    assert "if (left <= 0) break;" in labels
+    paint = _body(js, "function paintLayers(c, g, fr, list) {")
+    assert paint.index("paintLabels(") < paint.index("paintLines(")  # under every line and mark
+    assert "early ? `from ${l.from}×`" in _body(js, "function renderLayers() {")
+    box = _body(js, "function areaOf(g) {")
+    assert "const T = AREA_TILES.find(([upto]) => zoom < upto)[1];" in box
