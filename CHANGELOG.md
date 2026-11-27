@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.108.0 (2026-11-26, provisional)
+## 1.108.0 (2026-11-26)
 
 Street maps on the globe (Monday list item 25; the user, 2026-11-20: "lets include streetmaps in to the globe as well
 just need to show major roads, and buildings"; 2026-11-22: "the street maps should account for all states/counties/
