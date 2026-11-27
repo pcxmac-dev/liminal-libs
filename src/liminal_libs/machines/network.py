@@ -596,7 +596,8 @@ class Network:
         self._graph: Graph | None = None
         self.built = 0  # graphs made
         self.legs: dict[str, tuple[str, str]] = {}  # 1.71.0: the last page's legs, {key: (what, why)}
-        self._hub_key: tuple | None = None  # 1.106.0: the graph and the hub layers' versions the kept hubs are of
+        self._hub_key: tuple | None = None  # 1.106.0: the graph's making (built) and the hub layers' versions the
+        # kept hubs are of (the review: never the graph itself, which would be held alive after it is made again)
         self._hub_edges: OrderedDict = OrderedDict()  # each stretch's hubs, {edge: [(along, hub), ...]}
         self.hubs_read = 0  # 1.106.0: reads of hubs made
 
@@ -634,6 +635,7 @@ class Network:
                             continue
             self._graph, self._key = Graph.of(parts) if parts else None, key
             self.built += 1
+            self._hub_key, self._hub_edges = None, OrderedDict()  # the hubs kept were of the graph made before
             return self._graph
 
     @staticmethod
@@ -706,12 +708,14 @@ class Network:
         kinds = [x for x in listed if isinstance(x, Mapping) and x.get("id") in HUB_LAYERS and x.get("kind") == "points"]
         if not kinds or not callable(getattr(index, "points", None)):
             return {}
-        key = (graph, tuple((str(x["id"]), str(x.get("version") or "")) for x in kinds))
+        versions = tuple((str(x["id"]), str(x.get("version") or "")) for x in kinds)
         out: dict[int, list] = {}
         with self._lock:
-            if self._hub_key != key:
+            # the graph this network made last, by its making; any other (made again since) keeps nothing
+            key = (self.built, versions) if graph is self._graph else None
+            if key is not None and self._hub_key != key:
                 self._hub_key, self._hub_edges = key, OrderedDict()
-            for e in edges:
+            for e in edges if key is not None else ():
                 if e in self._hub_edges:
                     self._hub_edges.move_to_end(e)
                     out[e] = self._hub_edges[e]
@@ -720,7 +724,7 @@ class Network:
             found, whole = _read_hubs(graph, index, [x["id"] for x in kinds], new)
             with self._lock:
                 self.hubs_read += 1
-                if self._hub_key == key:  # those a cut read may have missed hubs of are read again next time
+                if key is not None and self._hub_key == key:  # those a cut read may have missed are read again
                     self._hub_edges.update((e, hs) for e, hs in found.items() if e in whole)
                     while len(self._hub_edges) > MAX_HUB_EDGES:
                         self._hub_edges.popitem(last=False)

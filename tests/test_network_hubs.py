@@ -292,3 +292,35 @@ def test_the_index_answers_none_where_its_database_does_not_read(tmp_path, monke
     monkeypatch.setattr(Store, "points", locked)
     assert index.points(["landings"], {cell_of(2.5, 0.05)}) is None
     assert index.points(["exchanges"], {cell_of(2.5, 0.05)}) == ([], None)  # none installed: no points, read whole
+
+
+def test_the_kept_hubs_let_the_old_graph_go_when_it_is_made_again_or_goes():
+    """The review of 1.106.0: the hubs' key held the graph they were read on, so an old graph (some 40 MB for a layer
+    of 400,000 points) lived on after the lines changed. Now they are keyed on the graph's making and let go with it."""
+    import gc
+    import weakref
+
+    index, net = Index({"cables": E}, HUBS), Network()
+    net.onto(globe(places()), index)
+    old = weakref.ref(net._graph)
+    assert net._hub_edges and net._hub_key[0] == net.built
+    index.version = 2  # a line layer downloaded again: a new graph
+    net.graph(index)
+    gc.collect()
+    assert old() is None and net._hub_key is None and not net._hub_edges
+    net.onto(globe(places()), index)
+    assert net._hub_edges
+    index.given = {}  # the line layers removed: no graph
+    net.onto(globe(places()), index)
+    assert net._graph is None and net._hub_key is None and not net._hub_edges
+
+
+def test_hubs_asked_on_a_graph_made_before_neither_read_nor_change_those_kept():
+    index, net = Index({"cables": E}, HUBS), Network()
+    net.onto(globe(places()), index)
+    before, edges = net._graph, list(net._hub_edges)
+    index.version = 2
+    net.onto(globe(places()), index)  # a new graph, its hubs kept
+    kept, reads = dict(net._hub_edges), net.hubs_read
+    net.hubs(before, index, edges)  # a page that was asked across the change
+    assert net.hubs_read == reads + 1 and dict(net._hub_edges) == kept
