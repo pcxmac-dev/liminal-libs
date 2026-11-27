@@ -135,7 +135,9 @@ class Platform(App):
         """Every plugin of the kinds it takes that the registry loaded, attached here with this app's login unless
         another app holds it; the names attached (one attached here already is not attached again). One whose
         required needs this machine does not meet is not attached (liminal_libs.needs, 1.103.0; item 38: a plugin
-        whose needs are unmet is never started)."""
+        whose needs are unmet is never started). 1.110.0 (item 14): one whose needs are unmet only for the moment (a
+        Windows feature off, no internet now) is attached, held and asked nothing until they are met, as the needs
+        plan shows it (red, not gone): attached once, it is there when the condition changes."""
         finders, out = _finders(), []
         for kind in self._kinds:
             for p in finders[kind]().values():
@@ -152,12 +154,14 @@ class Platform(App):
     attach_needs = attach_kinds  # the old name (1.90.0-1.102.0), kept for one release
 
     def _unmet_here(self, plugin) -> bool:
-        """Whether a required need of the plugin is unmet here (App.needs_of's judgement); False where it cannot tell."""
+        """Whether a required need of the plugin is unmet by this machine (App.needs_of's judgement): not one unmet only
+        for the moment (its sort "moment", 1.110.0); False where it cannot tell."""
         judge = getattr(self, "needs_of", None)
         if not callable(judge):
             return False
         try:
-            return judge(plugin).get("met") is False
+            answer = judge(plugin)
+            return answer.get("met") is False and answer.get("sort") != "moment"
         except Exception:  # noqa: BLE001 - a judgement that fails hides nothing (the user's answer 10)
             return False
 

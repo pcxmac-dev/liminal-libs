@@ -174,6 +174,17 @@ def test_a_plugin_whose_needs_are_unmet_here_is_not_attached(found, monkeypatch)
     assert app.attach_kinds() == ["postgres"]
 
 
+def test_a_plugin_whose_needs_are_unmet_only_for_the_moment_is_attached(found, monkeypatch):
+    """1.110.0 (item 14, libs-apps P3-3): a required need unmet now (a Windows feature off: sort "moment") shows the
+    plugin red in the needs plan, not gone: it is attached (held, asked nothing until met), so it is there once the
+    feature is on; one this machine can never meet (sort "machine") still is not."""
+    app = made(type("Judging", (Platform,), {"NAME": "judging", "PLATFORM_KINDS": ("database",)}), found)
+    sorts = {"postgres": "moment", "sqlite": "machine"}
+    monkeypatch.setattr(app, "needs_of", lambda p: {"met": False, "sort": sorts[p.name],
+                                                    "why": "Microsoft-Hyper-V is off"}, raising=False)
+    assert app.attach_kinds() == ["postgres"]
+
+
 def test_the_integrator_still_attaches_the_database_plugins_and_the_platforms_attach_does_not(found):
     # (the old path: the integrator holds them until it inherits the platform, step 4)
     holder = SimpleNamespace(attached=[], attach=lambda p: holder.attached.append(p.name))
