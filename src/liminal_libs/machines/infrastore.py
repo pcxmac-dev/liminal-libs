@@ -167,6 +167,17 @@ def _ranges(area: tuple[float, float, float, float]) -> list[tuple[int, int]]:
     return [(r * 360 + c0, r * 360 + c1) for r in rows for c0, c1 in cols]
 
 
+def points_sql(cells: int, pairs: int) -> str:
+    """Store.points' query for `cells` cells and `pairs` (layer, set) pairs: (cell, layer, name, sub, xy) of the points
+    in them, by cell, LIMIT its last parameter. The review of 1.106.0: it starts from the cells (CROSS JOIN keeps them
+    the outer loop, read by their key) and finds each feature by its id; a plain JOIN let SQLite start from
+    features_by_layer instead, visiting every feature of the feeding sets for each chunk of cells."""
+    fed = " OR ".join("(f.layer = ? AND f.set_id = ?)" for _ in range(pairs))
+    return ("SELECT c.cell, f.layer, f.name, f.sub, f.xy FROM cells c CROSS JOIN features f ON f.id = c.feature "
+            f"WHERE c.cell IN ({', '.join('?' * cells)}) AND f.kind = {POINT} AND ({fed}) "
+            "ORDER BY c.cell, c.feature LIMIT ?")
+
+
 class Store:
     """The database of a plugin's infrastructure, in `folder` (the data folder's infrastructure/ when not given)."""
 
@@ -450,8 +461,8 @@ class Store:
     def points(self, layers: Mapping, cells, most: int) -> list[tuple[str, float, float, str, str]]:
         """The points of some layers in some cells (1.106.0, Monday list item 27: the hubs a route passes): `layers`
         {layer: the ids of the sets feeding it}, `cells` 1-degree cells (cell_of); as (layer, lon, lat, name, sub),
-        `most` at most, in the features' order. Read through the cells' index alone, CHUNK cells a query: no layer is
-        read whole, and a point is in one cell, so none comes twice."""
+        `most` at most, by cell and then in the features' order. Read through the cells' index alone, CHUNK cells a
+        query (points_sql): no layer is read whole, and a point is in one cell, so none comes twice."""
         cells = sorted({int(c) for c in cells if 0 <= int(c) < CELLS})
         pairs = [(str(layer), str(sid)) for layer, sids in layers.items() for sid in sids]
         if not cells or not pairs or most <= 0:
@@ -459,12 +470,11 @@ class Store:
 
         def work(con):
             out: list = []
-            fed = " OR ".join("(f.layer = ? AND f.set_id = ?)" for _ in pairs)
             for at in range(0, len(cells), CHUNK):
                 chunk = cells[at:at + CHUNK]
-                sql = ("SELECT f.layer, f.name, f.sub, f.xy FROM cells c JOIN features f ON f.id = c.feature WHERE "
-                       f"c.cell IN ({', '.join('?' * len(chunk))}) AND f.kind = {POINT} AND ({fed}) ORDER BY f.id")
-                for layer, name, sub, blob in con.execute(sql, [*chunk, *(v for p in pairs for v in p)]):
+                rows = con.execute(points_sql(len(chunk), len(pairs)),
+                                   [*chunk, *(v for p in pairs for v in p), most - len(out)])
+                for _, layer, name, sub, blob in rows:
                     xy = _ints(blob)
                     if len(xy) < 2:
                         continue

@@ -202,3 +202,26 @@ def test_a_route_over_a_kept_database_names_its_hubs(tmp_path):
     page = Network().onto(globe([o]), index)
     assert [h["name"] for h in page["hubs"]] == ["Alpha", "Beside"] and o["hubs"] == [h["id"] for h in page["hubs"]]
     assert page["heat"][0]["w"] == 4
+
+
+def test_the_points_query_starts_from_the_cells_and_finds_each_feature_by_its_id(tmp_path):
+    """The review of 1.106.0: Store.points' query is planned from the cells' key, each feature found by its id (never
+    by features_by_layer, which visits every feature of the feeding sets for each chunk of cells), in the cells' order
+    (no sort of its own), and limited."""
+    import sqlite3
+
+    from liminal_libs.machines import infrastore
+    kept(tmp_path)
+    con = sqlite3.connect(tmp_path / infrastore.FILE)
+    try:
+        for pairs in (1, 3):
+            sql = infrastore.points_sql(500, pairs)
+            plan = [row[-1] for row in con.execute("EXPLAIN QUERY PLAN " + sql,
+                                                   [*range(500), *(["landings", SET["id"]] * pairs), 10])]
+            assert "features_by_layer" not in " ".join(plan), plan
+            (c,) = [i for i, p in enumerate(plan) if p.startswith("SEARCH c USING PRIMARY KEY (cell=?)")]
+            (f,) = [i for i, p in enumerate(plan) if p.startswith("SEARCH f USING INTEGER PRIMARY KEY (rowid=?)")]
+            assert c < f and not any("TEMP B-TREE" in p for p in plan), plan
+            assert sql.endswith("LIMIT ?")
+    finally:
+        con.close()
