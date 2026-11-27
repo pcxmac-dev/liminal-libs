@@ -512,6 +512,12 @@ class DataSet:
         la, lo = round(lat * 100), round(lon * 100)
         code = f"{'n' if la >= 0 else 's'}{abs(la):04d}{'e' if lo >= 0 else 'w'}{abs(lo):05d}"
         name = _name(label) or f"{la / 100:.2f}, {lo / 100:.2f}"
+        # the review of 1.108.0: a degree of longitude narrows toward the poles, so a region there takes more pieces
+        # (20 km in pieces of 0.05 degrees: 16 at the equator, 84 at 80 degrees, 168 at 85): counted where it is
+        many = len(_region_pieces(*self.region, la / 100, lo / 100))
+        if many > REGION_PIECES:
+            raise ValueError(f"a region {self.region[0]:g} km across round {name} is asked in {many} pieces, more than "
+                             f"the {REGION_PIECES} a region may be: a place this near a pole is too wide in longitude")
         return replace(self, id=f"{self.id}-{code}", title=f"{self.title} round {name}"[:2 * NAME],
                        place=(la / 100, lo / 100, name))
 
@@ -697,7 +703,7 @@ def _area_keys(ident: str, form: str, said: Mapping, out: Mapping) -> dict:
             raise ValueError(f"the data set {ident} is asked round a place: its query holds {{bbox}}, where each "
                              "piece's box goes")
         found["region"] = (float(km), float(side))
-        many = len(_pieces_at_equator(found["region"]))
+        many = len(_pieces_at_equator(found["region"]))  # the fewest it is ever asked in (placed() counts each)
         if many > REGION_PIECES:
             raise ValueError(f"the data set {ident}'s region is asked in {many} pieces, more than {REGION_PIECES}")
     return found
@@ -2199,6 +2205,9 @@ def _region(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, 
     and what is kept of them (_Kept, its lines packed). Its answers in all are its limit at most, as one answer's."""
     kept, pieces, box, outside = _Kept(dataset), dataset.pieces(), dataset.box(), set()
     addresses, total, ways = dataset.addresses(), 0, 0
+    if len(addresses) > REGION_PIECES:  # the review of 1.108.0: placed() refuses it; looked at again before asking
+        raise InfrastructureError(f"its region is asked in {len(addresses)} pieces, more than {REGION_PIECES}: "
+                                  "nothing was asked")
     for i, (address, piece) in enumerate(zip(addresses, pieces)):
         if i:
             say(f"piece {i + 1} of {len(addresses)}: {world._plural(ways, 'way')} read so far")

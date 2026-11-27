@@ -350,6 +350,21 @@ def test_a_regions_limit_is_held_across_its_pieces_as_each_is_read(tmp_path, mon
     assert endless.given <= 5_000 + 1000  # what was left of the limit, and the read that passed it
 
 
+def test_a_region_too_near_a_pole_for_its_pieces_is_refused_where_it_is_placed(tmp_path, monkeypatch):
+    """Item 4: the pieces counted where the region is (the equator has the fewest), when it is placed and again before
+    its download asks anything."""
+    template = DataSet.of({**STREETS, "region": {"km": 20, "piece": 0.05}})
+    assert len(template.placed(0, 10).pieces()) == 16 and len(template.placed(60, 10).pieces()) == 32
+    with pytest.raises(ValueError, match="asked in 168 pieces, more than the 100 a region may be"):
+        template.placed(85, 10)
+    home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")  # 6 pieces
+    monkeypatch.setattr(infrastructure, "REGION_PIECES", 5)
+    asked = Downloads({})
+    with pytest.raises(InfrastructureError, match="asked in 6 pieces, more than 5: nothing was asked"):
+        install(home, tmp_path, accept_licence=True, fetch=asked, clock=Clock())
+    assert asked.asked == []
+
+
 def test_a_way_on_the_edge_two_pieces_share_is_kept_once(tmp_path):
     """Item 13: a piece is half-open (its north and east edges the next one's), its last row and column closed."""
     home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")
