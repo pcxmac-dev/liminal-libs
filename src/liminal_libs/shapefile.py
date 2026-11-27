@@ -65,6 +65,57 @@ def _members(z: zipfile.ZipFile, stem: str | None) -> dict[str, zipfile.ZipInfo]
     return found
 
 
+class _Held(io.RawIOBase):
+    """1.110.0 (item 14): a read-only file over bytes held already (the download's bytearray): what is read of it is
+    copied, never the whole answer (io.BytesIO copies a bytearray, and bytes() of one did)."""
+
+    def __init__(self, data):
+        super().__init__()
+        self._view = memoryview(data).cast("B")
+        self._at = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._at
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        base = (0, self._at, len(self._view))[whence]
+        self._at = max(0, base + offset)
+        return self._at
+
+    def readinto(self, buffer) -> int:
+        n = max(0, min(len(buffer), len(self._view) - self._at))
+        buffer[:n] = self._view[self._at:self._at + n]
+        self._at += n
+        return n
+
+    def read(self, size: int | None = -1) -> bytes:
+        end = len(self._view) if size is None or size < 0 else min(len(self._view), self._at + size)
+        out = bytes(self._view[self._at:end]) if end > self._at else b""
+        self._at = max(self._at, end)
+        return out
+
+    def close(self) -> None:
+        if not self.closed:
+            self._view.release()
+        super().close()
+
+
+def _opened(zip_bytes) -> tuple[_Held, zipfile.ZipFile]:
+    """The zip over `zip_bytes` as it is held (_Held); ShapefileError for one that is none."""
+    held = _Held(zip_bytes)
+    try:
+        return held, zipfile.ZipFile(held)
+    except zipfile.BadZipFile:
+        held.close()
+        raise ShapefileError("it is no zip") from None
+
+
 def _read(z: zipfile.ZipFile, info: zipfile.ZipInfo, most: int) -> bytes:
     if info.file_size > most:
         raise ShapefileError(f"{posixpath.basename(info.filename)} is {info.file_size:,} bytes, more than the "
@@ -239,11 +290,8 @@ def read(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = S
     any case); all when None. ShapefileError, in words, for a zip that is none, a shapefile not in WGS 84's longitude
     and latitude, and for anything that does not fit (see the module's words). Everything is checked before the first
     shape is yielded."""
-    try:
-        z = zipfile.ZipFile(io.BytesIO(bytes(zip_bytes)))
-    except zipfile.BadZipFile:
-        raise ShapefileError("it is no zip") from None
-    with z:
+    held, z = _opened(zip_bytes)
+    with held, z:
         members = _members(z, stem)
         try:
             prj = _read(z, members[".prj"], 64 << 10).decode("latin-1")
@@ -280,11 +328,8 @@ def records(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int 
     is not read at all (Natural Earth's states and provinces: some 60 MB of polygons not needed for their names), but
     its .prj is: ShapefileError, in words, for what read() refuses of the zip, its coordinate system and its .dbf, and
     for more than `most_records` rows."""
-    try:
-        z = zipfile.ZipFile(io.BytesIO(bytes(zip_bytes)))
-    except zipfile.BadZipFile:
-        raise ShapefileError("it is no zip") from None
-    with z:
+    held, z = _opened(zip_bytes)
+    with held, z:
         members = _members(z, stem)
         try:
             _geographic(_read(z, members[".prj"], 64 << 10).decode("latin-1"))

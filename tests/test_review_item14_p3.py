@@ -148,3 +148,29 @@ def test_an_answer_the_locked_database_could_not_keep_is_logged_and_still_stops_
     later = Clock(T0 + 7200 + 900)
     install(REFRESHED, folder, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=later)
     assert infrastructure._unkept(folder) == {}  # downloaded: what failed before is past
+
+
+# -- libs-world P3-6: a shapefile read copies what it reads of the download, never the whole answer -------------------
+
+def test_a_shapefile_read_does_not_copy_the_download_it_is_given(tmp_path):
+    import os
+    import tracemalloc
+    from liminal_libs import shapefile
+    import shapes as S
+    from test_shapefile import FIELDS
+    big = os.urandom(4 << 20)  # a member not asked for: the bulk of the answer, as the roads' are of North America's
+    answer = bytearray(S.zipped(shp_bytes=S.shp([(3, [[(10.0, 50.0), (10.5, 50.2)]])]),
+                                dbf_bytes=S.dbf(FIELDS, [["A 8", "Major Highway", 3, "T", "20120101"]]),
+                                more={"readme.bin": big}))
+    del big
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        got = list(shapefile.read(answer))
+        rows = shapefile.records(answer)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert [g.record["name"] for g in got] == ["A 8"] and [r["name"] for r in rows] == ["A 8"]
+    assert peak < len(answer) // 4, f"{peak:,} bytes at peak for an answer of {len(answer):,}"
+    answer.append(0)  # the answer is let go of: no view of it is held after the read
