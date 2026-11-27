@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.106.0 (2026-11-26; provisional: numbered again at landing, should another release take 1.106.0 first)
+## 1.106.0 (2026-11-26)
 
 The routes on real infrastructure, their cities and hubs named (Monday list item 27; the user, 2026-11-22, on the
 routes' heat map: "this clearly shows vectors direct to different places, what i need is real maps of infrastructure
