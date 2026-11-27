@@ -372,9 +372,24 @@
     if (twice.length) tags.push(['asked twice: ' + twice.join(', '), 'in-twice']);
     if (h.pluginOnly === true) tags.push(['asked only by other plugins', 'in-only']);
     if (h.pageOnly === true) tags.push(['asked only from its page', 'in-only']);
+    const audience = audienceTag(h);
+    if (audience) tags.push(audience);
     if (c.pageAsks.has(h.name)) tags.push(['its page asks it', '']);
     if (h.property) tags.push(['a property', '']);
     return tags.map(([w, cls]) => `<span class="in-tag${esc(cls ? ' ' + cls : '')}">${esc(w)}</span>`).join('');
+  }
+  // who may ask a hook it answers (internal.py's `audience`, liminal-libs 1.107.0: closed by default), where neither
+  // word above has said it: anyone here (a read it declares, a tab's page), other plugins and its page (a service),
+  // its page alone because it declares the hook for no one, or its route alone. Nothing from an older library
+  function audienceTag(h) {
+    if (h.pluginOnly === true || h.pageOnly === true || !text(h.answered)) return null;
+    switch (h.audience) {
+      case 'read': return ['asked by anyone here', 'in-read'];
+      case 'plugin': return ['asked by other plugins and its page', ''];
+      case 'page': return h.declared === false ? ['asked only from its page: declared for no one', 'in-only'] : null;
+      case 'route': return ['asked only through its route', ''];
+      default: return null;
+    }
   }
   // "tab World Wide Web, every 2 s" for a tab's hook
   function tabWords(h, c) {
@@ -394,6 +409,12 @@
       const pageLines = ['asked by name: from its page alone, never by another plugin'];
       if (by.length) pageLines.push('other plugins here say they ask it, and are refused: ' + and(by));
       return pageLines.map((w) => `<span class="in-who">${esc(w)}</span>`).join('');
+    }
+    // closed by default (1.107.0): a hook it declares for no one is asked from its page alone all the same
+    if (h.audience === 'page' && h.declared === false && h.users === 'named') {
+      const closedLines = ['asked by name: from its page alone, as it declares the hook for no one'];
+      if (by.length) closedLines.push('other plugins here say they ask it, and are refused: ' + and(by));
+      return closedLines.map((w) => `<span class="in-who">${esc(w)}</span>`).join('');
     }
     const app = 'used by ' + c.app + "'s code" + (how ? ': ' + how : '');
     const plugins = 'for other plugins: ' + (by.length ? and(by) : 'none known here');

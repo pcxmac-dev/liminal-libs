@@ -328,6 +328,39 @@ def test_a_job_started_from_the_page_asks_an_undeclared_hook_in_its_own_thread_a
     assert set(got) == {"refused"} and got["refused"].asker is None
 
 
+# -- the Internal API tab says each hook's audience ---------------------------------------------------------------------
+def test_each_hook_of_the_internal_api_says_who_may_ask_it():
+    import json
+    from pathlib import Path
+
+    got = internal.internal_of(Mixed())
+    assert json.loads(json.dumps(got)) == got
+    by = {h["name"]: (h["audience"], h["declared"]) for h in got["hooks"]}
+    assert by == {"present": ("read", True), "status": ("read", True), "setup": ("page", False), "run": ("", True),
+                  "instances": ("", True), "scan": ("", True), "settings": ("", True), "look": ("read", True),
+                  "serve": ("plugin", True), "mint": ("plugin", True), "decide": ("page", True),
+                  "page_of": ("read", True), "rpc": ("route", True), "change": ("page", False),
+                  "fetch": ("page", False)}
+    old = {h["name"]: (h["audience"], h["declared"], h["pageOnly"]) for h in internal.internal_of(Old())["hooks"]}
+    assert old["apply"] == ("page", False, False) and old["view"] == ("page", False, False)  # no word said: the default
+    # the page draws it by the same names, beside the two words it drew before
+    js = (Path(internal.__file__).parent / "ui" / "static" / "internal.js").read_text(encoding="utf-8")
+    tag = js[js.index("  function audienceTag(h) {"):js.index('  // "tab World Wide Web')]
+    for line in ("if (h.pluginOnly === true || h.pageOnly === true || !text(h.answered)) return null;",
+                 "case 'read': return ['asked by anyone here', 'in-read'];",
+                 "case 'plugin': return ['asked by other plugins and its page', ''];",
+                 "case 'page': return h.declared === false ? ['asked only from its page: declared for no one', "
+                 "'in-only'] : null;",
+                 "case 'route': return ['asked only through its route', ''];"):
+        assert line in tag, line
+    tags = js[js.index("  function tagsHtml(h, c) {"):js.index("  function audienceTag(h) {")]
+    assert "const audience = audienceTag(h);\r\n    if (audience) tags.push(audience);".replace("\r\n", "\n") in tags.replace("\r\n", "\n")
+    who = js[js.index("  function whoHtml(h, c) {"):js.index("  function answeredWords(h) {")]
+    assert "if (h.audience === 'page' && h.declared === false && h.users === 'named') {" in who
+    assert "const closedLines = ['asked by name: from its page alone, as it declares the hook for no one'];" in who
+    assert who.index("h.declared === false && h.users === 'named'") < who.index("const app = 'used by '")
+
+
 # -- conformance's warning list --------------------------------------------------------------------------------------
 def test_conformance_lists_the_hooks_left_undeclared_as_warnings_and_none_for_a_plugin_that_declares_them():
     assert conformance.warnings(Mixed()) == [

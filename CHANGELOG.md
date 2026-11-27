@@ -41,6 +41,11 @@ plugin API stays 2.4): the words there were say a hook's audience, and they keep
   `serving` and `models_of`, what the World Wide Web plugin asks of a firewall and a firewall's `places` of it, the
   MCP plugin's client hooks, WSL's `hold` and `let_go`; the Databases section calls
   its plugins' methods and asks nothing by name.
+- **The Internal API tab says each hook's audience.** `internal_of`'s hook rows carry `audience` ("read", "plugin",
+  "page", "route"; "" for a hook left to the contract) and `declared` (False: page-only by the default), and
+  `internal.js` draws it beside the two words it drew before: asked by anyone here, by other plugins and its page,
+  only through its route, or "asked only from its page: declared for no one". A hook left undeclared no longer
+  reads as one "its page, a client or another plugin" may ask. Additive: an older page ignores the two keys.
 - **`POST /api/codebase/fetch`** (the same sweep): the frame let any program on the machine have git ask every
   repository's remote. It is a person's at the page alone now, as a hook only its page asks: refused (401) when the
   app's login says no one is shown to be there (`App.present` False), asked when it says so or when the app holds

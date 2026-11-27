@@ -780,6 +780,7 @@ def _hook_row(plugin, name: str, layer: str, ctx: types.SimpleNamespace) -> dict
     users = ("both" if service and by_app else "plugins" if service else "app" if by_app else "named" if askable
              else "")
     plugin_alone, page_alone = name in ctx.plugin_only, name in ctx.page_only
+    said = ctx.audiences.get(name) or {}  # who may ask it (1.107.0): nothing for a hook it does not answer
     if plugin_alone and users in ("named", ""):  # only other plugins ask it, whether or not it says it is a service
         users = "plugins"
     return {"name": name, "args": args, "line": line_of(doc), "doc": doc_of(doc), "layer": layer, "answered": answered,
@@ -787,7 +788,7 @@ def _hook_row(plugin, name: str, layer: str, ctx: types.SimpleNamespace) -> dict
             "twice": [p for p in params if p.startswith("accept_")], "tab": tab["id"] if tab else "",
             "every": tab["every"] if tab else None, "how": ctx.how.get(name, ""), "users": users, "askable": askable,
             "askedBy": list(ctx.asked_by.get(name, ())), "property": _is_property(value), "pluginOnly": plugin_alone,
-            "pageOnly": page_alone}
+            "pageOnly": page_alone, "audience": said.get("audience", ""), "declared": said.get("declared", True)}
 
 
 def _also_row(plugin, name: str, how: str) -> dict | None:
@@ -858,7 +859,7 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
          "builtOn": {class, module, line}, "chain": [{class, module, line}, ...], "sitsOn": [api names],
          "standard": [{class, module, hooks: [names]}, ...], "calls": {plugins, clients, jobs, terms},
          "hooks": [{name, args, line, doc, layer, answered, kind, reads, job, cancels, twice, tab, every, how, users,
-                    askable, askedBy, property, pluginOnly, pageOnly}, ...],
+                    askable, askedBy, property, pluginOnly, pageOnly, audience, declared}, ...],
          "counts": {hooks, answered, standard, own, left, kinds: {read, tab, change, job, service, own}},
          "left": [names], "also": [{name, args, line, doc, how, property}], "attributes": [names], "declares": {...},
          "tabs": [{id, title, hook, every}], "settings": [{variable, pair, label, secret, hint}], "options": [names],
@@ -879,7 +880,10 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
     service the app's code or a tab uses too), "plugins" (a service), "app" (`calls` or a tab), "named" (`askable`), ""
     (nothing here uses it). `counts.kinds` counts the hooks it answers. `pluginOnly` and `pageOnly` say whether the
     hook is among its PLUGIN_ONLY_HOOKS or its PAGE_ONLY_HOOKS; a hook only other plugins ask is used by "plugins"
-    where it would be "named" or "". Nothing of the plugin is called or evaluated."""
+    where it would be "named" or "". `audience` (1.107.0) is who may ask a hook it answers, as `audience()` says it:
+    "read" (anyone on this machine), "plugin" (other plugins, and its page unless `pluginOnly`), "page" (its page
+    alone) or "route"; "" for a hook left to the contract, or when its words cannot be read. `declared` is False for
+    a hook it declares for no one, page-only by the closed default. Nothing of the plugin is called or evaluated."""
     out: dict = {"v": VERSION, "of": "plugin", "name": "", "title": "", "kind": "", "system": "", "pluginApi": "",
                  "builtOn": {"class": "", "module": "", "line": ""}, "chain": [], "sitsOn": [], "standard": [],
                  "calls": {}, "hooks": [], "counts": {"hooks": 0, "answered": 0, "standard": 0, "own": 0, "left": 0,
@@ -909,6 +913,7 @@ def internal_of(plugin, *, reads=(), calls=None, askable=None, tabs=None, known=
         cancels=set(_try(lambda: declared(plugin, "CANCEL_HOOKS"), ())),
         plugin_only=set(_try(lambda: declared(plugin, PLUGIN_ONLY), ())),
         page_only=set(_try(lambda: declared(plugin, PAGE_ONLY), ())),
+        audiences=audiences(plugin),
         tab_of={t["hook"]: t for t in reversed(out["tabs"])},
         reads=set(_try(lambda: reads_of(plugin, reads, tabs), ())), how=_try(lambda: _calls(calls), {}),
         askable=None if askable is None else set(_try(lambda: _strs(askable), [])),
