@@ -380,6 +380,80 @@ def test_the_ledger_file_is_written_whole_and_drops_the_rows_of_processes_gone(t
     assert ledger.rows() == []
 
 
+def _row(pid: int = 7101) -> Row:
+    return Row(pid=pid, started=5, owner="demo", owner_pid=ME, owner_started=1, kind="t", command=["x"])
+
+
+def test_a_ledger_whose_folder_cannot_be_made_lets_its_thread_lock_go(tmp_path):
+    """1.109.0 (item 14, libs-apps P2-1): the folder was made outside any try while the thread lock was held, so a
+    failure left it held and every later spawn and end_owned of the process waited on it for good."""
+    (tmp_path / "afile").write_text("not a folder")
+    ledger = lifecycle.Ledger(tmp_path / "afile" / "processes" / "here.json", FakeTable())
+    with pytest.raises(OSError):
+        ledger.add(_row())
+    done, got = threading.Event(), []
+
+    def again():
+        try:
+            ledger.add(_row())
+        except OSError as e:
+            got.append(e)
+        finally:
+            done.set()
+    threading.Thread(target=again, daemon=True).start()
+    assert done.wait(10), "the second add waited on the thread lock the first left held"
+    assert len(got) == 1 and ledger._lock.acquire(blocking=False)
+    ledger._lock.release()
+
+
+def test_a_lock_file_is_taken_only_from_a_holder_gone_and_a_hold_removes_only_its_own(tmp_path):
+    """1.109.0 (item 14): the lock file names its holder; a second process waits while that one runs, however long
+    past LOCK_WAIT_S (a starved core), takes it at once from one gone, and from an older library's file that names
+    none after LOCK_WAIT_S; a hold's end never removes a lock another took meanwhile. By order: a stand-in clock."""
+    path = tmp_path / "processes" / "here.json"
+    lock = path.with_name("here.json.lock")
+    table = FakeTable([Proc(ME, 1, "x", "me", 5)])
+    first = lifecycle.Ledger(path, table)
+    held = first._held()
+    held.__enter__()
+    assert lock.read_text().startswith(f"{ME} 5 ")
+    clock, waits, let_go = FakeClock(), [], []
+
+    def sleep(seconds):  # the first lets go only once 10 s have passed, five times the old steal's wait
+        waits.append(lock.read_text() if lock.exists() else None)
+        clock.sleep(seconds)
+        if clock.now - 1000.0 >= 5 * lifecycle.LOCK_WAIT_S and not let_go:
+            let_go.append(held.__exit__(None, None, None))
+    second = lifecycle.Ledger(path, table, clock=clock, sleep=sleep)
+    second.add(_row())
+    assert clock.now - 1000.0 >= 5 * lifecycle.LOCK_WAIT_S and all(w.startswith(f"{ME} 5 ") for w in waits)
+    assert not lock.exists() and [r.pid for r in second._read()] == [7101]
+    # a holder gone (no such process, or another one under its id now): taken at once
+    for words in ("424242 7 1-2", f"{ME} 6 1-2"):
+        lock.write_text(words)
+        waits.clear()
+        second.forget(7101)
+        assert waits == [] and not lock.exists()
+    # an older library's empty lock file: taken once LOCK_WAIT_S has passed
+    lock.write_text("")
+    start = clock.now
+    second.rows()
+    assert clock.now - start > lifecycle.LOCK_WAIT_S and not lock.exists()
+    # the first holds; a process whose table says it is gone takes the lock; the first's end leaves that one's
+    held = first._held()
+    held.__enter__()
+    other = lifecycle.Ledger(path, FakeTable(), clock=clock, sleep=clock.sleep)
+    theirs = other._held()
+    theirs.__enter__()
+    taken = lock.read_text()
+    assert not taken.startswith(f"{ME} 5 ")
+    held.__exit__(None, None, None)
+    assert lock.read_text() == taken
+    theirs.__exit__(None, None, None)
+    assert not lock.exists()
+
+
+
 def test_spawn_writes_its_row_and_ties_the_child_to_its_owner(monkeypatch):
     class Child:
         pid, _handle = 8001, 77

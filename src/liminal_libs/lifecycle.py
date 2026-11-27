@@ -58,6 +58,9 @@ PROOF_WORDS = b"liminal-signal 1"
 STEP_S = 0.1  # between two looks at processes that are ending
 LEDGER_VAR = "LIMINAL_PROCESS_LEDGER"  # the ledger's file, named outright (a test's)
 LOCK_WAIT_S = 2.0  # the ledger's lock file is waited for this long, then taken as left by a process that ended
+# 1.109.0: a lock file naming its holder is taken only once that process is gone, or once it has held it this long
+# (a hold is one read and one write of a small file: two minutes is a holder that will not let go)
+LOCK_HELD_MOST_S = 120.0
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
 JOB_KILL_ON_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 JOB_BREAKAWAY_OK = 0x0800  # JOB_OBJECT_LIMIT_BREAKAWAY_OK: a child started detached (a host) may leave the job
@@ -592,14 +595,33 @@ def ledger_path() -> Path:
     return layout.data_dir() / "processes" / f"{safe}.json"
 
 
+def _said(lock: Path) -> str | None:
+    """A ledger's lock file's words (its holder), None when it cannot be read (gone meanwhile)."""
+    try:
+        return lock.read_text(encoding="utf-8", errors="replace")[:200]
+    except OSError:
+        return None
+
+
+def _unlink_if(lock: Path, said: str | None) -> None:
+    """The lock file removed while it still says `said` (a hold's own, or the one found left): never one that another
+    hold wrote meanwhile. One that could not be read is removed as it is."""
+    if said is not None and _said(lock) not in (said, None):
+        return
+    lock.unlink(missing_ok=True)
+
+
 class Ledger:
     """The ledger's file: read, written whole (a temporary file put in place), one process at a time (a lock file
     beside it). A row whose process is gone, or whose id is another process's now, is dropped when read."""
 
-    def __init__(self, path: Path | None = None, table=None):
+    def __init__(self, path: Path | None = None, table=None, clock: Callable[[], float] | None = None,
+                 sleep: Callable[[float], None] | None = None):
         self._path = Path(path) if path is not None else None
         self.table = table or OsTable()
         self._lock = threading.Lock()
+        self._clock = clock or time.monotonic  # 1.109.0: the lock file's wait, a test's own clock
+        self._sleep = sleep or time.sleep
 
     @property
     def path(self) -> Path:
@@ -626,34 +648,80 @@ class Ledger:
         os.replace(tmp, path)
 
     def _held(self):
+        """The ledger held: this process's threads one at a time (a thread lock), and processes one at a time (a lock
+        file beside it, naming its holder: its process id and start time, and a mark of this hold). 1.109.0 (item 14):
+        whatever fails while the hold is taken (the folder cannot be made, the data folder cannot be said) lets the
+        thread lock go, where until then every later spawn and end_owned of the process waited on it for good; a lock
+        file is taken from its holder only once that process is gone (one whose holder it does not name, an older
+        library's, once it has stayed LOCK_WAIT_S), not after LOCK_WAIT_S while its holder still works under load;
+        and a hold ends by removing its own lock file only, never one another process took meanwhile."""
         ledger = self
 
         class Held:
+            lock: Path | None = None
+            mark = ""
+
             def __enter__(self):
                 ledger._lock.acquire()
-                self.lock = ledger.path.with_name(ledger.path.name + ".lock")
+                try:
+                    return self._take()
+                except BaseException:
+                    ledger._lock.release()
+                    raise
+
+            def _take(self):
+                path = ledger.path
+                self.lock = path.with_name(path.name + ".lock")
                 self.lock.parent.mkdir(parents=True, exist_ok=True)
-                end = time.monotonic() + LOCK_WAIT_S
+                me = os.getpid()
+                self.mark = f"{me} {ledger.table.started(me)} {threading.get_ident()}-{time.time_ns()}"
+                seen, since = None, ledger._clock()
                 while True:
                     try:
-                        os.close(os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-                        return self
+                        fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                     except FileExistsError:
-                        if time.monotonic() > end:  # left by a process that ended while it held it
-                            self.lock.unlink(missing_ok=True)
-                            end = time.monotonic() + LOCK_WAIT_S
-                        time.sleep(0.02)
+                        said = _said(self.lock)
+                        if said != seen:  # another holder, or its words just written: its wait starts again
+                            seen, since = said, ledger._clock()
+                        if ledger._holder_gone(said, ledger._clock() - since):
+                            _unlink_if(self.lock, said)
+                            continue
+                        ledger._sleep(0.02)
+                        continue
                     except OSError:
-                        return self  # a folder that takes no lock file: one process's writes at a time all the same
+                        self.lock = None  # a folder that takes no lock file: one process's writes at a time all the same
+                        return self
+                    try:
+                        os.write(fd, self.mark.encode())
+                    finally:
+                        os.close(fd)
+                    return self
 
             def __exit__(self, *exc):
                 try:
-                    self.lock.unlink(missing_ok=True)
+                    if self.lock is not None:
+                        _unlink_if(self.lock, self.mark)
                 finally:
                     ledger._lock.release()
                 return False
 
         return Held()
+
+    def _holder_gone(self, said: str | None, waited: float) -> bool:
+        """Whether the lock file's holder (its words, `said`, unchanged for `waited` seconds) is gone: the process it
+        names no longer runs, or another one runs under its id; one that names none (an older library's empty file,
+        or words not yet written) once LOCK_WAIT_S has passed."""
+        parts = (said or "").split()
+        try:
+            pid = int(parts[0])
+            started = None if parts[1] == "None" else int(parts[1])
+        except (IndexError, ValueError):
+            return waited > LOCK_WAIT_S
+        if waited > LOCK_HELD_MOST_S:  # a holder that runs on but never let go: no spawn waits on it for good
+            return True
+        if not self.table.alive(pid):
+            return True
+        return started is not None and self.table.started(pid) not in (None, started)
 
     def _live(self, rows: list[Row]) -> list[Row]:
         return [r for r in rows if r.started is not None and self.table.alive(r.pid) and self.table.started(r.pid) == r.started]
