@@ -2500,6 +2500,7 @@ def _with_needs(dataset: DataSet, target: Path) -> DataSet:
     if not ids:
         raise ValueError(f"{dataset.title} asks for {_atlas_whose(dataset)}' results, and the data set "
                          f"{dataset.needs} holds none")
+    dataset = replace(dataset)  # 1.110.0: a copy for this install alone, never the Index's own (it held every probe)
     object.__setattr__(dataset, "asked", tuple(dataset.addresses(ids)))
     object.__setattr__(dataset, "probes_by_id", {p["id"]: p for p in probes})
     return dataset
