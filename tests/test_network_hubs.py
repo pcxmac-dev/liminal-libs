@@ -160,7 +160,12 @@ def test_the_hubs_are_bounded_on_the_page_and_on_each_route(monkeypatch):
     monkeypatch.setattr(network, "ROUTE_HUBS", 2)
     east, branch = places()
     page = Network().onto(globe([east, branch]), index)
-    assert east["hubs"] == [ALPHA, DELTA] and len(page["hubs"]) == 8  # the page still has every hub passed
+    # the review: both ends kept (the home end alone lost the far end's landings and the city it goes to)
+    assert east["hubs"] == [ALPHA, BETA] and len(page["hubs"]) == 8  # the page still has every hub passed
+    monkeypatch.setattr(network, "ROUTE_HUBS", 3)
+    east, branch = places()
+    Network().onto(globe([east, branch]), index)
+    assert east["hubs"] == [ALPHA, ETA, BETA]  # then a landing before an exchange point or a city
 
 
 def test_no_hubs_without_a_hub_layer_or_an_index_that_reads_points():
@@ -339,3 +344,20 @@ def test_the_cells_near_a_line_are_every_cell_of_its_points_boxes():
     assert pole == {cell_of(lon + 0.5, 89.5) for lon in range(-180, 180)}
     assert _cells_near(np.array([0.0]), np.array([179.99]), 10) >= {cell_of(179.5, 0), cell_of(-179.5, 0)}  # wrapped
     assert _cells_near(np.array([0.5]), np.array([0.5]), 10) == {cell_of(0.5, 0.5)}  # within one cell: that one
+
+
+def test_a_long_routes_hubs_keep_both_ends_then_rank_then_spread_evenly(monkeypatch):
+    from liminal_libs.machines.network import _route_hubs
+    monkeypatch.setattr(network, "ROUTE_HUBS", 10)
+    ids = [f"c{i}" for i in range(20)]
+    assert _route_hubs(ids, lambda h: "cities") == ["c0", "c1", "c2", "c3", "c7", "c13", "c16", "c17", "c18", "c19"]
+    kinds = {"c10": "landings", "c5": "datacentres"}
+    monkeypatch.setattr(network, "ROUTE_HUBS", 9)  # one place left after the ends: the landing first
+    assert _route_hubs(ids, lambda h: kinds.get(h, "cities")) == [*(f"c{i}" for i in range(4)), "c10",
+                                                                    *(f"c{i}" for i in range(16, 20))]
+    monkeypatch.setattr(network, "ROUTE_HUBS", 10)  # two: the landing, then the data centre
+    assert _route_hubs(ids, lambda h: kinds.get(h, "cities"))[4:6] == ["c5", "c10"]
+    monkeypatch.setattr(network, "ROUTE_HUBS", 32)
+    assert _route_hubs(ids, lambda h: "cities") == ids  # within its bound: as it is
+    monkeypatch.setattr(network, "ROUTE_HUBS", 1)
+    assert _route_hubs(ids, lambda h: "cities") == ["c10"]  # one: from the middle (no end is half of one)

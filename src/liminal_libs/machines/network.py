@@ -71,6 +71,10 @@ HUB_LAYERS = {  # 1.106.0: the infrastructure's places a route is named by where
 HUB_KM = 10.0  # a route passes a hub where its lines run this near it (at a vertex of theirs)
 EDGE_HUBS = 3  # of each kind, the nearest so many to one stretch of the lines (a city's data centres are many)
 ROUTE_HUBS = 32  # hubs a route names at most, in its order (as many as its hops: routes.py's MAX_VIA)
+# the review of 1.106.0: past ROUTE_HUBS, so many at each end of its way are kept (the far end's landings and the
+# destination's city too), then the kinds in this order, each evenly along its way
+HUB_ENDS = 4
+HUB_RANK = ("landings", "exchanges", "pops", "modelcities", "datacentres", "cities")
 MAX_HUBS = 400  # hubs on a page at most, the busiest kept
 MAX_HUB_EDGES = 16384  # stretches whose hubs are kept, the least recently asked let go first
 HUB_READ = 20_000  # points read for one page's new stretches at most
@@ -532,6 +536,27 @@ def _hub_id(layer: str, lat: float, lon: float) -> str:
     return f"{layer}:{lat:.3f},{lon:.3f}"
 
 
+def _route_hubs(ids: list[str], kind_of) -> list[str]:
+    """A route's hubs (ids in its way's order) cut to ROUTE_HUBS, its order kept: HUB_ENDS at each end of its way
+    (half ROUTE_HUBS at most each), then the kinds in HUB_RANK's order (`kind_of`: a hub's layer), a kind with more
+    than the room left taken evenly along the way. The review of 1.106.0: the first ROUTE_HUBS kept the home end
+    alone, and a long route lost its far end's landings and the city it goes to."""
+    most = ROUTE_HUBS
+    if len(ids) <= most:
+        return list(ids)
+    end = min(HUB_ENDS, most // 2)
+    keep = set(range(end)) | set(range(len(ids) - end, len(ids)))
+    for layer in HUB_RANK:
+        room = most - len(keep)
+        if room <= 0:
+            break
+        group = [i for i, h in enumerate(ids) if i not in keep and kind_of(h) == layer]
+        if len(group) > room:  # evenly: the middle of each of `room` equal parts of them
+            group = [group[(2 * j + 1) * len(group) // (2 * room)] for j in range(room)]
+        keep.update(group)
+    return [ids[i] for i in sorted(keep)][:most]
+
+
 def _read_hubs(graph: Graph, index, layers, edges) -> tuple[dict[int, list], set[int]]:
     """The hubs of edges (Network.hubs' shape), read now: the points of `layers` in the cells within HUB_KM of the
     edges' lines (one read, HUB_READ points at most), each kept for an edge whose line runs within HUB_KM of it; and
@@ -835,7 +860,7 @@ class Network:
         kept = sorted(through.values(), key=lambda x: (-x[1], x[0][0]))[:MAX_HUBS]
         ids = {hub[0] for hub, _, _ in kept}
         for o, mine in named:
-            mine = [h for h in mine if h in ids][:ROUTE_HUBS]
+            mine = _route_hubs([h for h in mine if h in ids], lambda h: through[h][0][1])
             if mine:
                 o["hubs"] = mine
             else:
