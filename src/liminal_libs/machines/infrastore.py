@@ -79,6 +79,56 @@ SET_COLUMNS = ("id", "title", "source", "url", "licence_name", "licence", "accep
                "fetched", "features", "dropped", "bytes", "stand_in", "version")
 
 
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """1.108.0 (the review): a file of user_version 1 gains each feature's zoom in one transaction, its version read
+    again inside it (another process may have done it meanwhile) and the column added only where it is not there yet,
+    so a file left half done (the column added, the version not) is finished, and one that fails is left as it was."""
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        if con.execute("PRAGMA user_version").fetchone()[0] == 1:
+            if "zoom" not in {row[1] for row in con.execute("PRAGMA table_info(features)")}:
+                con.execute("ALTER TABLE features ADD COLUMN zoom REAL NOT NULL DEFAULT 0")
+            con.execute(f"PRAGMA user_version = {USER_VERSION}")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    con.execute("COMMIT")
+
+
+def _rows(layers: Mapping):
+    """1.108.0 (the review): the features' rows, one at a time as they are written: (layer, kind, name, sub, box,
+    count, xy, coarse, cells, zoom). A line's spots are made from it alone and let go with it."""
+    known = {name for name, *_ in infra.LAYERS}
+    for layer, got in layers.items():
+        if layer not in known or not isinstance(got, Mapping):
+            continue
+        for point in got.get("points") or ():
+            x, y = round(point[0] * infra.SCALE), round(point[1] * infra.SCALE)
+            yield (layer, 0, infra._name(point[2]) if len(point) > 2 else "",
+                   infra._name(point[3]) if len(point) > 3 else "", (x, y, x, y), 1, _blob((x, y)), None,
+                   {cell_of(point[0], point[1])}, _zoom(point[4] if len(point) > 4 else 0))
+        for line in got.get("lines") or ():
+            vertices, name = line[0], line[1]
+            zoom = _zoom(line[2] if len(line) > 2 else 0)
+            ints = getattr(vertices, "ints", None)  # 1.108.0: a line kept packed (infrastructure.Packed)
+            spots = (list(zip(ints[0::2], ints[1::2])) if ints is not None
+                     else [(round(lon * infra.SCALE), round(lat * infra.SCALE)) for lon, lat in vertices])
+            for at in range(0, max(1, len(spots) - 1), PIECE - 1):
+                piece = spots[at:at + PIECE]
+                if len(piece) < 2:
+                    break
+                xs, ys = [p[0] for p in piece], [p[1] for p in piece]
+                coarse = _thin(piece, round(COARSE * infra.SCALE))
+                # the review: a line's first piece is its line (kind LINE), each further one a piece (PIECE_KIND)
+                # whose count leaves out the vertex it shares with the one before, so the line's vertices are
+                # counted as they were kept, once each
+                first = at == 0
+                yield (layer, LINE if first else PIECE_KIND, infra._name(name), "",
+                       (min(xs), min(ys), max(xs), max(ys)), len(piece) if first else len(piece) - 1,
+                       _blob(v for p in piece for v in p), _blob(v for p in coarse for v in p),
+                       _cells([(x / infra.SCALE, y / infra.SCALE) for x, y in piece]), zoom)
+
 class StoreError(Exception):
     """The database could not be read or written: what was kept before stays."""
 
@@ -239,8 +289,7 @@ class Store:
                     con.execute(ANSWERS)
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
                 elif had == 1:  # 1.108.0: an older file gains each feature's zoom, 0 (always) for what it holds
-                    con.execute("ALTER TABLE features ADD COLUMN zoom REAL NOT NULL DEFAULT 0")
-                    con.execute(f"PRAGMA user_version = {USER_VERSION}")
+                    _migrate(con)
         except BaseException:
             con.close()
             raise
@@ -291,37 +340,10 @@ class Store:
         dataset = infra.DataSet.of(dataset)
         layers = features.get("layers") if isinstance(features, Mapping) else None
         layers = layers if isinstance(layers, Mapping) else {}
-        known = {name for name, *_ in infra.LAYERS}
-        rows = []  # (layer, kind, name, sub, box, count, xy, coarse, cells, zoom)
-        for layer, got in layers.items():
-            if layer not in known or not isinstance(got, Mapping):
-                continue
-            for point in got.get("points") or ():
-                x, y = round(point[0] * infra.SCALE), round(point[1] * infra.SCALE)
-                rows.append((layer, 0, infra._name(point[2]) if len(point) > 2 else "",
-                             infra._name(point[3]) if len(point) > 3 else "", (x, y, x, y), 1, _blob((x, y)), None,
-                             {cell_of(point[0], point[1])}, _zoom(point[4] if len(point) > 4 else 0)))
-            for line in got.get("lines") or ():
-                vertices, name = line[0], line[1]
-                zoom = _zoom(line[2] if len(line) > 2 else 0)
-                ints = getattr(vertices, "ints", None)  # 1.108.0: a line kept packed (infrastructure.Packed)
-                spots = (list(zip(ints[0::2], ints[1::2])) if ints is not None
-                         else [(round(lon * infra.SCALE), round(lat * infra.SCALE)) for lon, lat in vertices])
-                for at in range(0, max(1, len(spots) - 1), PIECE - 1):
-                    piece = spots[at:at + PIECE]
-                    if len(piece) < 2:
-                        break
-                    xs, ys = [p[0] for p in piece], [p[1] for p in piece]
-                    coarse = _thin(piece, round(COARSE * infra.SCALE))
-                    # the review: a line's first piece is its line (kind LINE), each further one a piece (PIECE_KIND)
-                    # whose count leaves out the vertex it shares with the one before, so the line's vertices are
-                    # counted as they were kept, once each
-                    first = at == 0
-                    rows.append((layer, LINE if first else PIECE_KIND, infra._name(name), "",
-                                 (min(xs), min(ys), max(xs), max(ys)), len(piece) if first else len(piece) - 1,
-                                 _blob(v for p in piece for v in p), _blob(v for p in coarse for v in p),
-                                 _cells([(x / infra.SCALE, y / infra.SCALE) for x, y in piece]), zoom))
-        count = int(features.get("features") or len(rows)) if isinstance(features, Mapping) else len(rows)
+        # the review of 1.108.0: the rows are made as they are written (_rows), one line's at a time, never every
+        # row of a region's at once
+        given = features.get("features") if isinstance(features, Mapping) else None
+        count = int(given) if given else sum(1 for _ in _rows(layers))
         dropped = features.get("dropped") if isinstance(features, Mapping) else 0
         dropped = sum(int(n) for n in dropped.values()) if isinstance(dropped, Mapping) else int(dropped or 0)
         version = _version(dataset.id, fetched, count)
@@ -335,7 +357,7 @@ class Store:
                         (dataset.id, dataset.title, dataset.source, dataset.url, dataset.licence_name, dataset.licence,
                          float(accepted), dataset.credit["text"], dataset.credit["url"], float(fetched), count,
                          dropped, int(size), int(dataset.stand_in), version))
-            for layer, kind, name, sub, (w, s, e, n), many, xy, coarse, cells, zoom in rows:
+            for layer, kind, name, sub, (w, s, e, n), many, xy, coarse, cells, zoom in _rows(layers):
                 cur = con.execute("INSERT INTO features (set_id, layer, kind, name, sub, w, s, e, n, count, xy, coarse,"
                                   " zoom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                   (dataset.id, layer, kind, name, sub, w, s, e, n, many, xy, coarse, zoom))

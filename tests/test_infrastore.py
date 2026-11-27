@@ -178,3 +178,38 @@ def test_a_file_before_the_zooms_is_read_as_it_was_and_gains_them_at_its_first_w
         assert con.execute("SELECT zoom FROM features WHERE name = 'kept'").fetchone()[0] == 0
     con.close()
     assert store.layer("towns", upto=32)["geonames-places"]["points"]["zooms"] == [32]
+
+
+
+def test_a_file_left_half_way_through_gaining_the_zooms_is_finished_at_its_next_write(tmp_path):
+    """The review of 1.108.0 (item 5): the column added and the version not (a write that stopped between them): the
+    next write finishes it, in one transaction, the column not added twice."""
+    with sqlite3.connect(tmp_path / infrastore.FILE) as con:
+        con.executescript(infrastore.SCHEMA)  # the zoom column there already
+        con.execute(infrastore.ANSWERS)
+        con.execute("PRAGMA user_version = 1")
+    con.close()
+    store = Store(tmp_path)
+    store.put(TOWNS, features(points=[(2.35, 48.86, "Paris", "FR", 32)], layer="towns"), fetched=2.0)
+    with sqlite3.connect(tmp_path / infrastore.FILE) as con:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    con.close()
+    assert store.layer("towns", upto=32)["geonames-places"]["points"]["zooms"] == [32]
+
+
+def test_a_put_makes_each_row_as_it_writes_it_never_every_row_at_once(tmp_path):
+    """The review of 1.108.0 (item 15): a region's buildings are some hundreds of thousands of lines; what a put holds
+    is one line's rows at a time, not every row's blob, box and cells first."""
+    import tracemalloc
+    lines = [([(2.0 + i * 1e-4, 48.0), (2.0 + i * 1e-4, 48.0001), (2.0001 + i * 1e-4, 48.0001)], "", 64.0)
+             for i in range(20_000)]
+    got = features(lines)
+    store = Store(tmp_path)
+    tracemalloc.start()
+    try:
+        store.put(SET, got, fetched=1.0)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 << 20, peak  # every row first: some 15 MB
+    assert store.counts("ne-roads")["roads"]["lines"] == 20_000
