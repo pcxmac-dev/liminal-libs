@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.110.0 (provisional, 2026-11-27)
+
+Thirteen P3 findings of the complete review (Monday list item 14), the builder's share, each fixed with a test that
+fails without it. Nothing changes for the plugins: the plugin API stays as it was.
+
+- **The globe's data sets** (machines/infrastructure.py, infrastore.py, hostbook.py, netstat.py, hostsvia.py,
+  shapefile.py):
+  - an atlas-latest install sets its probes on a copy of the data set, no longer on the one the Index holds for the
+    plugin's life (every probe stayed reachable from it);
+  - the orbits are kept by set and number (`PRIMARY KEY (set_id, norad)`, infrastore `USER_VERSION` 3, an older file
+    keyed again in its migration's one transaction): one set's download no longer takes another's satellite, nor its
+    removal deletes it; `Store.orbits` reads one row a satellite and constellation, the newest epoch's;
+  - `HostBook.unplaced` is a read alone: a plugin's ask with an old or empty stamp no longer changes what new
+    connections are placed from; the owner says its stamp (`place`, the new `in_use`);
+  - a download asked while a set refreshes by itself is refused naming that refresh (`BY_ITSELF`), and the table's
+    Here and note say it (`install(by_itself=True)`, NetstatView's refresh);
+  - an answer that is not OK the database could not keep (its lock held past `TIMEOUT_S` by a long region write) is
+    said in the log and held in the process until the set is downloaded, so the set is not refreshed again at every
+    look and its pause holds;
+  - a shapefile is read over a view of the download's bytes (`_Held`): the whole answer is no longer copied once more.
+- **The platform's plugins** (apps/platform.py): `attach_kinds` attaches a plugin whose needs are unmet only for the
+  moment (a Windows feature off, no internet now); one this machine can never meet is still left out.
+- **The machine's facts** (facts.py): a Network List Manager that hangs holds one COM thread, not one more each read;
+  an nmcli that did not answer in time is killed, then reaped and its pipe closed (`REAP_S`, 2 s).
+- **liminal-stop --kill** (stop.py, lifecycle.py `inside_jobs`, `IN_STARTERS_JOB`): the job of a starter a data
+  holder could not leave (its breakaway refused) is left, so the holder is never forced.
+- **Hosts** (host.py): a connection accepted holds a host until its hello is read, so a host whose last client has
+  just let it go does not end under one attaching; a client met by a host that closed the pipe as it ended asks once
+  more with its start.
+- **The instances' pool** (stores.py): past `POOL_MOST` the oldest connection no call is using is closed, never one a
+  call holds; a call that waited for one closed meanwhile takes another.
+- **MongoDB** (mongo.py): `ask_shutdown` says "asked" only when a server took the command, not when nothing answered.
+
 ## 1.109.0 (provisional, 2026-11-27)
 
 Six findings of the complete review (Monday list item 14) and a test that failed on CI, each fixed with a test that
