@@ -1236,10 +1236,15 @@ def test_a_ledger_write_the_database_is_busy_for_is_tried_again_and_the_pull_say
     assert "recording rows file 1 of pull" in row["note"]
 
 
+ELSEWHERE = "elsewhere::no machine of this name"  # an instance no machine has: no system is "elsewhere", no name has spaces
+
+
 def test_a_ledger_busy_through_every_try_says_which_write_and_what_else_was_at_work(store, monkeypatch):
-    other = claims.Claims.open(store.path, me="linux::Ubuntu", pid=4242, started=1, alive=lambda *_: True)
+    # a holder no machine is: the reader's own name (claims.instance: inside a WSL distribution called Ubuntu,
+    # linux::Ubuntu) would make this holder the reader itself, which is never listed as something else at work
+    other = claims.Claims.open(store.path, me=ELSEWHERE, pid=4242, started=1, alive=lambda *_: True)
     try:
-        other.take(f"{claims.PROCESS}linux::Ubuntu:4242", what="the auditors' sweep")
+        other.take(f"{claims.PROCESS}{ELSEWHERE}:4242", what="the auditors' sweep")
         other.take(claims.feed_key("massive"), what="a feed's run")
         calls = _busy_for(store, "_pull_file", 99, monkeypatch)
         with pytest.raises(StopRun) as stopped:
@@ -1250,7 +1255,7 @@ def test_a_ledger_busy_through_every_try_says_which_write_and_what_else_was_at_w
     assert len(calls) == pulls.LEDGER_TRIES and stopped.value.strike is False and _stored(store) == []
     assert "recording rows file 1 of pull" in said and f"after {pulls.LEDGER_TRIES} tries" in said
     assert "database is locked" in said
-    assert "at work on the database then: linux::Ubuntu process 4242 (the auditors' sweep) holding feed:massive" in said
+    assert f"at work on the database then: {ELSEWHERE} process 4242 (the auditors' sweep) holding feed:massive" in said
 
 
 def test_a_try_that_left_its_transaction_open_is_rolled_back_before_the_next(store, monkeypatch):
