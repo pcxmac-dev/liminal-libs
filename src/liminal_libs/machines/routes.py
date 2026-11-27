@@ -594,6 +594,7 @@ class Routes:
         (`via`: the route with the most of them, where several end there), and the table of the routes of the
         connections open now (`addresses`, their order kept). 1.69.0: then the routes' heat on the network of the
         line layers `index` (the plugin's infrastructure.Index) has installed (network.Network.onto: globe["heat"],
+        an empty one where it fails, never a straight line,
         "heat_by", "waiting", "hubs", each place's "links" and "hubs": 1.106.0); a heat that fails is left out. 1.70.0:
         never a straight line; the legs not known on the lines are tabled after the routes, with why (WAITING_TITLE,
         WAITING_ROWS at most)."""
@@ -653,8 +654,13 @@ class Routes:
                         origin["via"] = way
             try:
                 self.network.onto(globe, index)
-            except Exception:  # noqa: BLE001 - the heat never costs the tab its page: the routes drawn as before
-                globe.pop("heat", None)
+            except Exception:  # noqa: BLE001 - the heat never costs the tab its page
+                # 1.106.0 (Monday list item 27: "the straightlines are meaningless"): an empty heat, not none, so the
+                # globe draws no route this time rather than the straight lines it draws a page without one
+                globe["heat"], globe["heat_by"], globe["hubs"] = [], "connections", []
+                for origin in globe["origins"]:
+                    if isinstance(origin, dict):
+                        origin.pop("links", None)
         try:  # 1.72.0: every router of the routes kept looked up, its name and network (the lookups' own thread)
             self.lookups.want([*(h.address for _, route in kept.values() for h in route.hops
                                  if h.address and h.address != route.target),
@@ -689,7 +695,13 @@ class Routes:
                 "place is where the GeoIP file puts its address, often its network's home rather than the router. "
                 "Each leg follows the cables, backbones and lines on land installed below where its way along them "
                 f"is at most {network_module.DETOUR:g} times its straight distance; else it is not drawn, and waits "
-                "(the next table). A route's colour runs from violet to red with how often traffic goes over it.")
+                "(the next table). A route's colour runs from violet to red with how often traffic goes over it. "
+                "Off the lines only a short link is drawn, lit, from where they end into a place or into this "
+                f"machine, at most {network_module.LINK_KM:g} km; a place they do not reach shows its dot alone. The "
+                "hubs a route passes (cable landing stations, exchange points, data centres, backbones' cities and "
+                f"cities within {network_module.HUB_KM:g} km of its lines, from the data sets installed below) are "
+                "named on the globe, larger and brighter with the traffic through them, and a place picked tells "
+                "its way and its hubs.")
         table = {"title": TITLE, "note": note, "empty": ("No route traced yet." if wanted else
                                                          "No connection to the internet is open."),
                  "columns": [{"title": "To"}, {"title": "Hops"}, {"title": "The way, from here"},

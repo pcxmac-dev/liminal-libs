@@ -346,3 +346,15 @@ def test_a_firewall_that_refuses_its_rules_is_not_asked_again_at_once(monkeypatc
         web._rules_onto(page)
         assert page["tables"][0]["details"][0]["sections"][-1]["title"] == "Counted"
     assert len(calls) == 1
+
+
+def test_the_globe_always_has_a_heat_so_it_never_draws_a_straight_line(monkeypatch):
+    """1.106.0 (Monday list item 27): the tab's globe has a heat on every page, an empty one where the routes failed:
+    the globe draws a page without one with straight lines (an older server's), which the user does not want."""
+    wall = Wall()
+    app, web = framed(wall)
+    page = page_ask(app, "www", "world")
+    assert page["globe"]["heat"] == [] and page["globe"]["heat_by"] == "connections"  # nothing traced: no line
+    monkeypatch.setattr(routes_module.Routes, "onto", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stand-in")))
+    page = page_ask(app, "www", "world")
+    assert page["globe"]["heat"] == [] and page["globe"]["heat_by"] == "connections"

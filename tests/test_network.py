@@ -209,6 +209,7 @@ def test_the_routes_page_gets_the_heat_each_places_links_and_the_legs_waiting():
     assert ends(g["heat"][0]) == {(0, 0), (0, 20)}
     assert [t["title"] for t in page["tables"]] == ["Routes", "Routes, hop by hop", "Legs waiting for a line"]
     assert "times its straight distance" in page["tables"][0]["note"] and page["tables"][-1]["rows"] == []
+    assert "at most 150 km" in page["tables"][0]["note"] and "within 10 km of its lines" in page["tables"][0]["note"]
     r.close()
     assert r.network._graph is None
 
@@ -216,3 +217,30 @@ def test_the_routes_page_gets_the_heat_each_places_links_and_the_legs_waiting():
 class Place:
     def __init__(self, lat, lon, label=""):
         self.lat, self.lon, self.label = lat, lon, label
+
+
+def test_a_heat_that_fails_leaves_an_empty_heat_never_none(monkeypatch):
+    """1.106.0 (Monday list item 27: "the straightlines are meaningless"): a page without a heat is drawn with straight
+    lines (an older server's), so a heat that fails leaves an empty one, no hubs and no links: no route drawn."""
+    target = "81.2.69.142"
+
+    def tracer(address):
+        return netpath.Trace(address, (netpath.Hop(1, "62.0.0.1", 1.0), netpath.Hop(2, target, 2.0)), True, "stand-in")
+
+    class Geo:
+        def lookup(self, address):
+            return {"62.0.0.1": Place(0, 10, "Hop"), target: Place(0, 20, "Host")}.get(address)
+    r = Routes(tracer=tracer, start=lambda work: None)
+    r.want([target])
+    while r.step():
+        pass
+
+    def broken(globe, index):
+        globe["origins"][0]["links"] = [[[0, 20], [0, 20]]]  # half way when it failed
+        raise RuntimeError("a stand-in's failure")
+    monkeypatch.setattr(r.network, "onto", broken)
+    page = {"globe": {"home": {"lat": 0, "lon": 0}, "origins": [{"id": "h", "lat": 0, "lon": 20, "count": 4}]}}
+    r.onto(page, Geo(), [target], index=Index({"cables": T}))
+    g = page["globe"]
+    assert (g["heat"], g["heat_by"], g["hubs"]) == ([], "connections", []) and "links" not in g["origins"][0]
+    r.close()

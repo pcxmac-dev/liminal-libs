@@ -825,6 +825,11 @@ class WorldWideWeb(MachinePlugin):
             pass
         finally:
             view.rest()
+        globe = page.get("globe") if isinstance(page, dict) else None
+        if isinstance(globe, dict):  # 1.106.0 (item 27): a heat always, an empty one where the routes failed, so the
+            # globe draws no route then, never the straight lines it draws a page without one
+            globe.setdefault("heat", [])
+            globe.setdefault("heat_by", "connections")
         try:  # 1.74.0: the switch of the traffic's watching, its table and its form (kept through a login: with one)
             if getattr(self, "login", None) is not None:
                 table, form = self._watch_table()
