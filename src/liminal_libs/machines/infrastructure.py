@@ -210,6 +210,9 @@ FORM, REMOVE_FORM = "world-layer-", "world-layer-remove-"  # a data set's forms'
 ACCEPT = world.ACCEPT_LICENCE  # the argument that, exactly true, makes the download (the page's second confirmation)
 USER_AGENT = "liminal-libs (infrastructure data sets)"  # a download's, when its caller names none
 ALREADY = "a data set is being downloaded already: wait for it to finish"
+# 1.110.0 (item 14): a download the user did not start, said as one: which set, and that it refreshes by itself
+BY_ITSELF = ("{title} is being downloaded again by itself (its refresh, as its maker allows): wait for it to finish, "
+             "then ask again")
 CANCELLED = "cancelled: nothing was installed"
 ID_FORM = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # a data set's id: its file's name and its forms' ids
 # a User-Agent: a product's name and its version (and a word or two in brackets), words one space apart; AGENT at most
@@ -261,7 +264,9 @@ _U32 = next((c for c in "IL" if array(c).itemsize == 4), "I")
 _INSTALLING = threading.Lock()  # one download at a time in this process, whichever data set
 _FILES = threading.Lock()  # held while a kept file is read and while one is put in place or removed
 _STATE = threading.Lock()  # guards _NOW
-_NOW = {"id": "", "changes": 0}  # the data set being downloaded; how often a file was put in place or removed here
+# the data set being downloaded (1.110.0: its title, and whether it refreshes by itself); how often a file was put in
+# place or removed here
+_NOW = {"id": "", "title": "", "by_itself": False, "changes": 0}
 
 
 class InfrastructureError(Exception):
@@ -2018,6 +2023,13 @@ def _under_way() -> str:
         return _NOW["id"]
 
 
+def _by_itself() -> str:
+    """1.110.0 (item 14): the title of the data set being downloaded again by itself (a refresh no one clicked), ""
+    when none is or the download under way is the user's."""
+    with _STATE:
+        return _NOW["title"] if _NOW["id"] and _NOW["by_itself"] else ""
+
+
 def _changes() -> int:
     with _STATE:
         return _NOW["changes"]
@@ -2369,7 +2381,7 @@ def _left_out(dropped: Mapping) -> str:
 
 
 def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None, cancel=None, agent="",
-            clock=time.monotonic, wall=time.time, accepted=None) -> dict:
+            clock=time.monotonic, wall=time.time, accepted=None, by_itself=False) -> dict:
     """A data set downloaded and put in place, on the user's word (the plugin's world_layer_get, run as a job): what
     was installed, in words, for the page.
 
@@ -2390,7 +2402,8 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     InfrastructureError, in words, when nothing was installed: the older file stays as it was. `log`: each step said to
     it (the platform's job panel). `accepted` (1.101.0): asked with nothing, once the refusals passed and the download
     is this one's, before anything is fetched or said (the plugin keeps the licence's acceptance there): what it raises
-    ends the install, nothing fetched."""
+    ends the install, nothing fetched. `by_itself` (1.110.0): a refresh no one clicked (NetstatView.refresh): while it
+    runs, a download the user asks is refused naming it (BY_ITSELF), and the table says so."""
     dataset = DataSet.of(dataset)
     target = _resolved(folder)
     elsewhere = foreign(target)
@@ -2407,12 +2420,13 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     if held:
         raise ValueError(held)
     if not _INSTALLING.acquire(blocking=False):
-        raise ValueError(ALREADY)
+        running = _by_itself()
+        raise ValueError(BY_ITSELF.format(title=running) if running else ALREADY)
     try:
         if accepted is not None:
             accepted()
         with _STATE:
-            _NOW["id"] = dataset.id
+            _NOW.update(id=dataset.id, title=dataset.title, by_itself=bool(by_itself))
         try:
             return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall,
                             float(wall()))
@@ -2422,7 +2436,7 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
             raise
     finally:
         with _STATE:
-            _NOW["id"] = ""
+            _NOW.update(id="", title="", by_itself=False)
         _INSTALLING.release()
 
 
@@ -3278,10 +3292,11 @@ class Index:
         button is drawn."""
         elsewhere = self.elsewhere()
         offer = bool(can) and not elsewhere and not installing()
+        refreshing = _by_itself()
         rows = []
         for s in self.sets():
             if s["downloading"]:
-                here = "being downloaded"
+                here = "being downloaded again by itself" if refreshing else "being downloaded"
             elif elsewhere:
                 here = "not from here"
             elif s["problem"]:
@@ -3327,6 +3342,9 @@ class Index:
                      f"they are ({', '.join(older)}); Remove… deletes a data set's with it.")
         if elsewhere:
             note += f" {elsewhere}. Each system's platform downloads its own."
+        elif refreshing:  # 1.110.0 (item 14): no panel shows a refresh no one clicked
+            note += (f" {refreshing} is being downloaded again by itself, as its maker allows: the buttons come back "
+                     "when it ends.")
         elif installing():
             note += " A data set is being downloaded: its progress shows in the panel."
         return {"title": TITLE, "note": note,

@@ -80,3 +80,39 @@ def test_a_file_whose_orbits_are_kept_by_number_alone_is_keyed_by_set_at_its_nex
         assert sorted(con.execute("SELECT set_id, norad FROM orbits")) == [("celestrak-group", 44057),
                                                                            ("celestrak-one", 44057)]
     con.close()
+
+
+# -- libs-world P3-4: a refresh no one clicked is named when it holds the user's Download back --------------------------
+
+def test_a_download_asked_while_a_set_refreshes_by_itself_is_refused_naming_the_refresh(tmp_path):
+    import io
+    import threading
+    from liminal_libs.machines.infrastructure import Index
+    from liminal_libs.machines.netstat import NetstatView
+    from test_infrastructure_globe import ONEWEB
+    from test_infrastructure_refresh import AT, REFRESHED, T0, answer
+    folder = tmp_path / "layers"
+    install(REFRESHED, folder, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=Clock(T0))
+    gate, entered = threading.Event(), threading.Event()
+
+    def slow(url, timeout, **said):
+        entered.set()
+        gate.wait(10)
+        return io.BytesIO(answer())
+    wall = Clock(T0 + 7200)
+    index = Index(folder, [REFRESHED, PROBES], clock=Clock(), wall=wall)
+    view = NetstatView("fw", reader=lambda: {}, names={}, fetch=slow, agent="fw 1.0", index=index, wall=wall)
+    try:
+        assert view.refresh() == "celestrak-oneweb" and entered.wait(5)
+        with pytest.raises(ValueError, match=r"^Eutelsat OneWeb's orbits is being downloaded again by itself \(its "
+                                             r"refresh, as its maker allows\): wait for it to finish, then ask again$"):
+            install(PROBES, folder, accept_licence=True, fetch=Downloads({}), clock=Clock())
+        table = index.table()
+        assert [row[3] for row in table["rows"]][0] == "being downloaded again by itself"
+        assert table["note"].endswith("Eutelsat OneWeb's orbits is being downloaded again by itself, as its maker "
+                                      "allows: the buttons come back when it ends.")
+    finally:
+        gate.set()
+        view._refreshing.join(10)
+        view.close()
+    assert ONEWEB["title"] == "Eutelsat OneWeb's orbits" and infrastructure._by_itself() == ""

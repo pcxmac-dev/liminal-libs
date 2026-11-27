@@ -1349,7 +1349,7 @@ class NetstatView:
     def _refresh_one(self, dataset) -> None:
         try:  # the licence's words are the ones the user accepted for its first download (Index.refresh_due)
             infrastructure.install(dataset, self.index.folder, accept_licence=True, fetch=self._fetch,
-                                   cancel=lambda: self.closed, agent=self.agent)
+                                   cancel=lambda: self.closed, agent=self.agent, by_itself=True)
         except Exception:  # noqa: BLE001 - a refusal is kept (infrastructure.install) and said on the tab
             pass
 
