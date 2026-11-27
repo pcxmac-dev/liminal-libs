@@ -589,7 +589,7 @@ def test_the_layers_are_asked_of_the_page_and_their_switches_kept_in_this_browse
     # 1.108.0: each layer's asks made by asksOf (its whole copy and its area's), each asked as it says
     assert "for (const a of asksOf(l, byArea)) if (a) askLayer(a, load, a.more);" in render
     assert "return [{ id: l.id, key: l.key, more: byArea ? { zoom: 1 } : undefined }," in _body(
-        js, "function asksOf(l, byArea) {")
+        js, "function asksOf(l, byArea, at = zoom) {")
     ask = _body(js, "function askLayer(l, load, more) {")
     assert ("try { asked = Promise.resolve(more ? load(l.id, more) : load(l.id)); } catch (e) { asked = "
             "Promise.reject(e); }") in ask
@@ -1688,7 +1688,8 @@ def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
     assert "if (!byArea && areaKey) { areaKey = ''; area = null; layersShown = null; pruneLayers(); }" in render
     assert "if (byArea && !glide) {" in render and "data.layerArea && !glide" not in render
     assert "if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }" in render
-    asks = _body(js, "function asksOf(l, byArea) {")  # 1.108.0: the asks made by asksOf, the area's as before
+    # 1.108.0: the asks made by asksOf, the area's as before
+    asks = _body(js, "function asksOf(l, byArea, at = zoom) {")
     assert "areaKey ? { ...areaLayer(l), more: { area, zoom } } : null];" in asks
     shown = _body(js, "function shownLayers() {")
     assert "const e = isOn(l) ? entryOf(l) : null;" in shown
@@ -1886,7 +1887,7 @@ def test_the_maps_layers_are_drawn_from_their_zoom_each_feature_from_its_own_and
     prep = _body(js, "function prepareLayer(answer) {")
     assert "pz.push(zooms ? Math.max(0, num(zooms[i]) ?? 0) : 0);" in prep
     assert "lz.push(zooms ? Math.max(0, num(zooms[j]) ?? 0) : 0);" in prep
-    asks = _body(js, "function asksOf(l, byArea) {")
+    asks = _body(js, "function asksOf(l, byArea, at = zoom) {")
     assert "if (zoom < l.from) return [null, null];" in asks
     assert "const whole = byArea && l.from >= AREA_ZOOM ? null" in asks
     assert "more: { area, zoom: Math.max(AREA_ZOOM, b) }" in asks
@@ -1904,3 +1905,21 @@ def test_the_maps_layers_are_drawn_from_their_zoom_each_feature_from_its_own_and
     assert "early ? `from ${l.from}×`" in _body(js, "function renderLayers() {")
     box = _body(js, "function areaOf(g) {")
     assert "const T = AREA_TILES.find(([upto]) => zoom < upto)[1];" in box
+
+
+def test_the_maps_credits_names_and_bands_as_the_review_of_1_108_0_asked(js):
+    """The review of 1.108.0: a layer's credits only while it draws a feature at this zoom (OpenStreetMap's not while a
+    region's roads are all drawn from nearer in), looked at again as the zoom changes; the layers' names kept off the
+    map's own names' boxes; a ranked layer's band either side of this zoom's kept (the routes session's ask: 63x to
+    65x and back asks nothing again). Their working is checked on stand-ins in headless Edge (the scratch check
+    page)."""
+    credits = _body(js, "function renderAttribution() {")
+    assert "if (drawsNow(geo)) list.push(...l.credits, ...geo.credits.filter(Boolean));" in credits
+    assert "&& (!P.zooms || P.zooms.some((z) => z <= zoom)));" in js
+    assert "if (creditedNow() !== layersCredited) renderAttribution();" in _body(js, "function render(now) {")
+    assert "labelBoxes = paintLabels(c, g, fr, list.filter(" in _body(js, "function paintLayers(c, g, fr, list) {")
+    assert "return placed;" in _body(js, "function paintLabels(c, g, fr, list) {")
+    assert "boxes.push(...labelBoxes);" in _body(js, "function nameLayers(c, g, boxes, shown) {")
+    assert "labelBoxes = [];" in _body(js, "function forgetMarks() {")
+    keys = js.split("layerKeys: () =>", 1)[1].split("layerArrived", 1)[0]
+    assert "[zoom, ...(l.ranked ? [zoom / 2, zoom * 2] : [])]" in keys and "asksOf(l, byAreaNow(), z)" in keys

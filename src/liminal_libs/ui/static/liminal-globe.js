@@ -1202,6 +1202,7 @@
     // line's words while the pointer is on it, the names to draw with the places', and a count of the paints.
     let grid = { cols: 1, rows: 1 }, markCells = new Map(), lineCells = [], lineHits = new Map();
     let infraNames = [], infraStamp = 0;
+    let labelBoxes = [];  // the review of 1.108.0: where the map's own names were lettered, kept off by the layers' names
     let coastCredited = false;  // GSHHG's coasts are drawn now: its credit is listed with the others
     let visible = !('IntersectionObserver' in window);
     let seen = root.isConnected;  // on the page once: after that, a globe that left it is destroyed with the next draw
@@ -1616,7 +1617,8 @@
     // 1.108.0: what a layer asks now, [whole, near] (either null): none below the zoom it is drawn from; a ranked one
     // by its band too (the whole copy at BAND_MOST at most, the area's at AREA_ZOOM at least), and its whole copy not
     // at all where it is drawn only from past AREA_ZOOM (its area's covers it)
-    function asksOf(l, byArea) {
+    function asksOf(l, byArea, at = zoom) {
+      const zoom = at;  // the review of 1.108.0: asked of another zoom too (layerKeys: the bands either side)
       if (zoom < l.from) return [null, null];
       if (!l.ranked) {
         return [{ id: l.id, key: l.key, more: byArea ? { zoom: 1 } : undefined },
@@ -1656,6 +1658,7 @@
       lineCells = [];
       lineHits = new Map();
       infraNames = [];
+      labelBoxes = [];
       infraStamp++;
       if (pick && pick.f) { pick = null; anchor = ''; tip.hidden = true; }
     }
@@ -1840,7 +1843,7 @@
       const names = [];
       const most = (kind) => list.filter(({ geo }) => geo[kind]).sort((a, b) => b.geo[kind].n - a.geo[kind].n);
       // 1.108.0: the map's own names first, under every mark and line (a label layer is names alone)
-      paintLabels(c, g, fr, list.filter(({ l, geo }) => l.mark === 'label' && geo.points));
+      labelBoxes = paintLabels(c, g, fr, list.filter(({ l, geo }) => l.mark === 'label' && geo.points));
       for (const { l, geo } of most('lines')) paintLines(c, g, fr, l, geo, names);
       for (const { l, geo } of most('points')) if (l.mark !== 'label') paintPoints(c, g, fr, l, geo, names);
       infraNames = names.sort((a, b) => a.d - b.d);  // the nearest the middle of the view first
@@ -1987,7 +1990,7 @@
         }
       });
       c.textAlign = 'start'; c.textBaseline = 'alphabetic';
-      return placed.length;
+      return placed;
     }
     // How near a point is to line `j` of a layer as it is drawn now, and the point of the line nearest it.
     function nearLine(L, j, x, y, g, fr) {
@@ -2289,6 +2292,7 @@
     // middle of the view first, LAYER_NAMES at most.
     function nameLayers(c, g, boxes, shown) {
       if (!infraNames.length) return;
+      boxes.push(...labelBoxes);  // the review of 1.108.0: never over the map's own names
       for (const [o, p] of shown) {
         const r = dotRadius(o.count) + 2;
         boxes.push({ x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r });
@@ -2344,6 +2348,7 @@
       // 1.108.0: a band or a layer's `from` crossed: what is drawn and kept is worked out again (none while it glides)
       const stage = glide ? stageKey : `${BAND_OF(zoom)}|${data.layers.filter((l) => zoom >= l.from).length}`;
       if (stage !== stageKey) { stageKey = stage; layersShown = null; pruneLayers(); }
+      if (creditedNow() !== layersCredited) renderAttribution();  // a layer's credit while it draws, as the coasts'
       for (const l of data.layers) {
         if (!isOn(l)) continue;
         for (const a of asksOf(l, byArea)) if (a) askLayer(a, load, a.more);
@@ -2766,9 +2771,17 @@
     // and kept while it is listed, and the nodes of the credits gone are taken out before the others are put in order
     // (arrange), so a keyboard's focus on a link, or a click, stays through an update.
     let credits = new Map();  // a credit (its address and its words) -> its node
+    // the review of 1.108.0: whether a layer's geometry draws a feature at this zoom (one of no zooms: any feature)
+    const drawsNow = (geo) => [geo.points, geo.lines].some((P) => P && P.n > 0
+      && (!P.zooms || P.zooms.some((z) => z <= zoom)));
+    const creditedNow = () => shownLayers().filter(({ geo }) => drawsNow(geo)).map(({ l }) => l.key).join('\n');
+    let layersCredited = '';
     function renderAttribution() {
       const list = data.attribution ? [data.attribution] : [], kept = new Map();
-      for (const { l, geo } of shownLayers()) list.push(...l.credits, ...geo.credits.filter(Boolean));
+      layersCredited = creditedNow();
+      for (const { l, geo } of shownLayers()) {
+        if (drawsNow(geo)) list.push(...l.credits, ...geo.credits.filter(Boolean));  // only while it draws one
+      }
       if (coastCredited) list.push(COAST_CREDIT);  // GSHHG's coasts, while their tiles are drawn
       for (const k of data.sky && sky ? data.sky.constellations : []) {  // the orbits' source, while its footprints are
         const s = sky.byId.get(k.id);
@@ -3255,8 +3268,10 @@
     const self = {
       handle, root, update, destroy,
       mapArrived() { changed(); },
-      layerKeys: () => (destroyed ? [] : data.layers.flatMap((l) => asksOf(l, byAreaNow()).filter(Boolean)
-        .map((a) => a.key))),
+      // the review of 1.108.0 (the routes session's ask): a ranked layer's band either side of this zoom's kept too, so
+      // a step back and forth over a band's edge (63x, 65x) asks nothing again
+      layerKeys: () => (destroyed ? [] : data.layers.flatMap((l) => [zoom, ...(l.ranked ? [zoom / 2, zoom * 2] : [])]
+        .flatMap((z) => asksOf(l, byAreaNow(), z)).filter(Boolean).map((a) => a.key))),
       layerArrived() { layersShown = null; renderWords(); changed(); },  // a layer came, or not: its button says so
       left: () => seen && !root.isConnected,
       destroyed: () => destroyed,
