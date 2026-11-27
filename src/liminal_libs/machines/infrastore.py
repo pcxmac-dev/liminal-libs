@@ -12,7 +12,12 @@ downloads (infrastructure.install) and read by area, so the globe asks for what 
   alone after one (CelesTrak's), kept until it is downloaded again (infrastructure.held_back and refresh_due read it).
 - A set is written in one transaction, its older rows replaced: a write that fails leaves the older copy as it was.
 - The file is opened only while a write or a read is made, and closed after each (it can be removed right after, on
-  Windows too); no thread, no timer. Thread-safe."""
+  Windows too); no thread, no timer. Thread-safe.
+- 1.107.0 (Monday list item 25, street maps on the globe): each feature's `zoom`, the globe's zoom it is drawn (a name
+  placed) from, 0 for always (every feature before it); a read with `upto` leaves out those drawn only from further
+  in, and an area's read keeps only the features whose box meets it, so an area smaller than a cell (a street's at
+  1024x) reads what it shows. A file of USER_VERSION 1 gains the column at its first write, and is read as before
+  until then (every feature's zoom 0)."""
 from __future__ import annotations
 
 import base64
@@ -30,7 +35,7 @@ from pathlib import Path
 from . import infrastructure as infra
 
 FILE = "infrastructure.db"
-USER_VERSION = 1
+USER_VERSION = 2  # 1.107.0: features.zoom
 PIECE = 256  # vertices a line's piece holds at most: a cell's read then reads little more than it shows
 POINT, LINE, PIECE_KIND = 0, 1, 2  # a feature's kind: a point, a line (its first piece), a line's further piece
 COARSE = 0.25  # degrees between a coarse line's kept vertices (the whole globe's view)
@@ -38,6 +43,7 @@ SAMPLE = 0.5  # degrees between the points a long segment's cells are found at
 CELLS = 360 * 180
 TIMEOUT_S = 10.0  # how long a write waits for another's lock
 CHUNK = 500  # cells asked in one query of points (1.106.0): within the oldest SQLite's 999 parameters
+MAX_ZOOM = 1024.0  # 1.107.0: the globe's furthest zoom, the most a feature's own may be
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -50,7 +56,7 @@ CREATE TABLE IF NOT EXISTS features (
   id INTEGER PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
   layer TEXT NOT NULL, kind INTEGER NOT NULL, name TEXT NOT NULL, sub TEXT NOT NULL,
   w INTEGER NOT NULL, s INTEGER NOT NULL, e INTEGER NOT NULL, n INTEGER NOT NULL,
-  count INTEGER NOT NULL, xy BLOB NOT NULL, coarse BLOB);
+  count INTEGER NOT NULL, xy BLOB NOT NULL, coarse BLOB, zoom REAL NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS features_by_layer ON features (layer, set_id);
 CREATE TABLE IF NOT EXISTS cells (
   cell INTEGER NOT NULL, feature INTEGER NOT NULL REFERENCES features(id) ON DELETE CASCADE,
@@ -144,6 +150,20 @@ def _version(ident: str, fetched: float, count: int) -> str:
     return hashlib.sha1(said.encode("utf-8")).hexdigest()[:12]
 
 
+def _zoom(value) -> float:
+    """A feature's zoom as it is kept (1.107.0): the globe's zoom it is drawn from, 0 (always) to MAX_ZOOM; 0 for what
+    is no number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value == value:
+        return 0.0
+    return float(min(MAX_ZOOM, max(0.0, value)))
+
+
+def _shown_zoom(value) -> float | int:
+    """A zoom as an answer says it: a whole number as one, else to two decimals."""
+    v = round(float(value or 0), 2)
+    return int(v) if v == int(v) else v
+
+
 def area_of(area) -> tuple[float, float, float, float] | None:
     """An area (west, south, east, north) in degrees as numbers on the globe, west greater than east across the
     antimeridian; None for none. ValueError for one that is not."""
@@ -213,9 +233,13 @@ class Store:
             con.execute("PRAGMA foreign_keys = ON")
             if write:
                 con.execute("PRAGMA journal_mode = WAL")
-                if con.execute("PRAGMA user_version").fetchone()[0] == 0:
+                had = con.execute("PRAGMA user_version").fetchone()[0]
+                if had == 0:
                     con.executescript(SCHEMA)
                     con.execute(ANSWERS)
+                    con.execute(f"PRAGMA user_version = {USER_VERSION}")
+                elif had == 1:  # 1.107.0: an older file gains each feature's zoom, 0 (always) for what it holds
+                    con.execute("ALTER TABLE features ADD COLUMN zoom REAL NOT NULL DEFAULT 0")
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
         except BaseException:
             con.close()
@@ -268,7 +292,7 @@ class Store:
         layers = features.get("layers") if isinstance(features, Mapping) else None
         layers = layers if isinstance(layers, Mapping) else {}
         known = {name for name, *_ in infra.LAYERS}
-        rows = []  # (layer, kind, name, sub, box, count, xy, coarse, cells)
+        rows = []  # (layer, kind, name, sub, box, count, xy, coarse, cells, zoom)
         for layer, got in layers.items():
             if layer not in known or not isinstance(got, Mapping):
                 continue
@@ -276,9 +300,13 @@ class Store:
                 x, y = round(point[0] * infra.SCALE), round(point[1] * infra.SCALE)
                 rows.append((layer, 0, infra._name(point[2]) if len(point) > 2 else "",
                              infra._name(point[3]) if len(point) > 3 else "", (x, y, x, y), 1, _blob((x, y)), None,
-                             {cell_of(point[0], point[1])}))
-            for vertices, name in got.get("lines") or ():
-                spots = [(round(lon * infra.SCALE), round(lat * infra.SCALE)) for lon, lat in vertices]
+                             {cell_of(point[0], point[1])}, _zoom(point[4] if len(point) > 4 else 0)))
+            for line in got.get("lines") or ():
+                vertices, name = line[0], line[1]
+                zoom = _zoom(line[2] if len(line) > 2 else 0)
+                ints = getattr(vertices, "ints", None)  # 1.107.0: a line kept packed (infrastructure.Packed)
+                spots = (list(zip(ints[0::2], ints[1::2])) if ints is not None
+                         else [(round(lon * infra.SCALE), round(lat * infra.SCALE)) for lon, lat in vertices])
                 for at in range(0, max(1, len(spots) - 1), PIECE - 1):
                     piece = spots[at:at + PIECE]
                     if len(piece) < 2:
@@ -292,7 +320,7 @@ class Store:
                     rows.append((layer, LINE if first else PIECE_KIND, infra._name(name), "",
                                  (min(xs), min(ys), max(xs), max(ys)), len(piece) if first else len(piece) - 1,
                                  _blob(v for p in piece for v in p), _blob(v for p in coarse for v in p),
-                                 _cells([(x / infra.SCALE, y / infra.SCALE) for x, y in piece])))
+                                 _cells([(x / infra.SCALE, y / infra.SCALE) for x, y in piece]), zoom))
         count = int(features.get("features") or len(rows)) if isinstance(features, Mapping) else len(rows)
         dropped = features.get("dropped") if isinstance(features, Mapping) else 0
         dropped = sum(int(n) for n in dropped.values()) if isinstance(dropped, Mapping) else int(dropped or 0)
@@ -307,10 +335,10 @@ class Store:
                         (dataset.id, dataset.title, dataset.source, dataset.url, dataset.licence_name, dataset.licence,
                          float(accepted), dataset.credit["text"], dataset.credit["url"], float(fetched), count,
                          dropped, int(size), int(dataset.stand_in), version))
-            for layer, kind, name, sub, (w, s, e, n), many, xy, coarse, cells in rows:
-                cur = con.execute("INSERT INTO features (set_id, layer, kind, name, sub, w, s, e, n, count, xy, coarse)"
-                                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                  (dataset.id, layer, kind, name, sub, w, s, e, n, many, xy, coarse))
+            for layer, kind, name, sub, (w, s, e, n), many, xy, coarse, cells, zoom in rows:
+                cur = con.execute("INSERT INTO features (set_id, layer, kind, name, sub, w, s, e, n, count, xy, coarse,"
+                                  " zoom) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                  (dataset.id, layer, kind, name, sub, w, s, e, n, many, xy, coarse, zoom))
                 con.executemany("INSERT OR IGNORE INTO cells (cell, feature) VALUES (?, ?)",
                                 [(c, cur.lastrowid) for c in cells])
             con.executemany("INSERT OR REPLACE INTO orbits (norad, set_id, constellation, name, epoch, omm) VALUES "
@@ -399,21 +427,32 @@ class Store:
         found = self._read(work) or {}
         return found.get(set_id, {}) if set_id is not None else found
 
-    def layer(self, layer_id: str, sets=None, area=None, coarse: bool = False) -> dict:
+    def layer(self, layer_id: str, sets=None, area=None, coarse: bool = False, upto: float | None = None) -> dict:
         """One layer's features as the page draws them, by set, in `sets`' order (each set's id; all when None):
         {set_id: {"points"?: {"n", "xy", "names", "subs"}, "lines"?: {"n", "offsets", "xy", "names"}, "cut": bool}},
         `xy` and `offsets` packed as infrastructure.pack packs them. `area` (west, south, east, north; across the
         antimeridian when west is greater): only the features crossing its cells; `coarse`: the lines' coarse copies.
-        At most infrastructure.MAX_POINTS points and MAX_VERTICES vertices in all ("cut" says where more were)."""
+        At most infrastructure.MAX_POINTS points and MAX_VERTICES vertices in all ("cut" says where more were).
+        1.107.0: `upto` (the globe's zoom): only the features drawn from that zoom or nearer out, the nearest out first
+        (a read that is cut keeps the names placed first); an area's features those whose box meets it, not only those
+        in its cells; each feature's zoom said ("zooms") where one is above 0."""
         box = area_of(area)
 
         def work(con):
+            zoomed = con.execute("PRAGMA user_version").fetchone()[0] >= 2  # a file before 1.107.0 has none
             conditions, args = ["f.layer = ?"], [layer_id]
             if box is not None:
                 ranges = _ranges(box)
                 conditions.append("f.id IN (SELECT feature FROM cells WHERE "
                                   + " OR ".join("cell BETWEEN ? AND ?" for _ in ranges) + ")")
                 args += [v for r in ranges for v in r]
+                w, s, e, n = (round(v * infra.SCALE) for v in box)
+                conditions.append("f.n >= ? AND f.s <= ?" + (" AND f.e >= ? AND f.w <= ?" if w <= e
+                                                              else " AND (f.e >= ? OR f.w <= ?)"))
+                args += [s, n, w, e]
+            if upto is not None and zoomed:
+                conditions.append("f.zoom <= ?")
+                args.append(float(upto))
             if sets is not None:
                 ids = list(sets)
                 if not ids:
@@ -421,38 +460,44 @@ class Store:
                 conditions.append(f"f.set_id IN ({', '.join('?' * len(ids))})")
                 args += ids
             sql = ("SELECT f.set_id, f.kind, f.name, f.sub, f.count, "
-                   + ("COALESCE(f.coarse, f.xy)" if coarse else "f.xy")
-                   + " FROM features f WHERE " + " AND ".join(conditions) + " ORDER BY f.set_id, f.id")
+                   + ("COALESCE(f.coarse, f.xy)" if coarse else "f.xy") + (", f.zoom" if zoomed else ", 0")
+                   + " FROM features f WHERE " + " AND ".join(conditions)
+                   + (" ORDER BY f.set_id, f.zoom, f.id" if upto is not None and zoomed
+                      else " ORDER BY f.set_id, f.id"))
             out: dict = {}
             points = vertices = 0
-            for sid, kind, name, sub, count, blob in con.execute(sql, args):
+            for sid, kind, name, sub, count, blob, zoom in con.execute(sql, args):
                 part = out.setdefault(sid, {"cut": False, "_p": [], "_l": []})
                 if kind == 0:
                     if points >= infra.MAX_POINTS:
                         part["cut"] = True
                         continue
                     points += 1
-                    part["_p"].append((blob, name, sub))
+                    part["_p"].append((blob, name, sub, zoom))
                 else:  # a piece's vertex shared with the one before is not counted again (its count leaves it out)
                     n = min(int(count), len(blob) // 8)
                     if vertices + n > infra.MAX_VERTICES:
                         part["cut"] = True
                         continue
                     vertices += n
-                    part["_l"].append((blob, name))
+                    part["_l"].append((blob, name, zoom))
             for sid, part in out.items():
                 ps, ls = part.pop("_p"), part.pop("_l")
                 if ps:
-                    part["points"] = {"n": len(ps), "xy": base64.b64encode(b"".join(b for b, _, _ in ps)).decode(),
-                                      "names": [n for _, n, _ in ps], "subs": [s for _, _, s in ps]}
+                    part["points"] = {"n": len(ps), "xy": base64.b64encode(b"".join(p[0] for p in ps)).decode(),
+                                      "names": [p[1] for p in ps], "subs": [p[2] for p in ps]}
+                    if any(p[3] for p in ps):  # 1.107.0: the zoom each is drawn from
+                        part["points"]["zooms"] = [_shown_zoom(p[3]) for p in ps]
                 if ls:
                     offsets, at = array(infra._U32, [0]), 0
-                    for b, _ in ls:
+                    for b, _, _ in ls:
                         at += len(b) // 8
                         offsets.append(at)
                     part["lines"] = {"n": len(ls), "offsets": infra._packed(offsets),
-                                     "xy": base64.b64encode(b"".join(b for b, _ in ls)).decode(),
-                                     "names": [n for _, n in ls]}
+                                     "xy": base64.b64encode(b"".join(b for b, _, _ in ls)).decode(),
+                                     "names": [n for _, n, _ in ls]}
+                    if any(z for _, _, z in ls):
+                        part["lines"]["zooms"] = [_shown_zoom(z) for _, _, z in ls]
             if sets is not None:
                 return {sid: out[sid] for sid in sets if sid in out}
             return out

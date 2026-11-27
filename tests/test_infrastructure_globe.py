@@ -48,7 +48,7 @@ def test_the_new_keys_of_a_data_set_are_read_and_what_is_wrong_is_said():
     for change, words in (({"layer": "motorways"}, "layer is one of the globe's"),
                           ({"layer": ""}, "is a shapefile and names no layer"),
                           ({"stand_in": "yes"}, "stand_in is true or false"),
-                          ({"step": 0}, "step is a number of degrees from 0.001 to 1"),
+                          ({"step": 0}, "step is a number of degrees from 1e-05 to 1"),
                           ({"step": True}, "step is a number of degrees"),
                           ({"hosts": ["cdn ne"]}, "hosts are the names a redirect may go to"),
                           ({"hosts": "cdn.ne.example"}, "hosts are the names"),

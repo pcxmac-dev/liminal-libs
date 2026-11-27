@@ -30,7 +30,17 @@ major internet infrastructure, (as many as possible) datacenter locations.").
 - Index says what is installed (the data sets, the layers they feed, the table the page draws) and reads no geometry
   to look: the database's sets and counts, read again only when it changed. layer() reads a layer's geometry when the
   globe asks for it, whole or by area, and keeps none.
-- Nothing runs when unused: no thread, no timer, no file left open."""
+- Nothing runs when unused: no thread, no timer, no file left open.
+- 1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x" and "Your area only"):
+  the world's countries and states named from the start and the states' boundaries drawn (Natural Earth, public
+  domain: a shapefile's records read alone for the names at the label points they hold, `label`), its counties named
+  from 16x and its cities and towns from 32x (GeoNames' cities500 and its second-order divisions, two files of one data
+  set, `also`: a county named at the middle of its towns), and the major roads and buildings from 64x, of a region
+  round the home place alone and of each region added on the page (OpenStreetMap through the Overpass API, `region`:
+  the region's box asked a piece at a time, each piece's XML read as it streams in and let go). Each feature keeps the
+  zoom it is drawn from (its name's rank, its town's people, its road's class, its building's size): a layer of them
+  (RANKED) is read by area and zoom alone, BY_AREA ones are never capped in all (only what one read answers is), and
+  their lines are kept packed (Packed) while a download is read."""
 from __future__ import annotations
 
 import base64
@@ -38,6 +48,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import posixpath
 import re
@@ -49,7 +60,7 @@ import time
 import zlib
 from array import array
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, urlsplit
 
@@ -109,15 +120,51 @@ LAYERS = (  # id, title, kind, mark, the themes' series slot, on at first, names
     ("models", "Backbone model (TopoHub)", "lines", "line", 6, False, 5.0),
     ("modelcities", "Backbone model's cities (TopoHub; no licence stated for its data)", "points", "circle", 6, False,
      5.0),
-    ("probes", "RIPE Atlas probes and anchors", "points", "circle", 5, False, 6.0))
+    ("probes", "RIPE Atlas probes and anchors", "points", "circle", 5, False, 6.0),
+    # 1.107.0 (Monday list item 25: the user, 2026-11-26, "From 64x"): the map's names and boundaries, drawn from the
+    # zoom LAYER_FROM says, each name from its own (RANKED): a "label" is a name alone, no mark under it
+    ("countrynames", "Countries' names", "points", "label", 4, True, 1.0),
+    ("states", "States' and provinces' boundaries", "lines", "dash", 5, True, 0.0),
+    ("statenames", "States' and provinces' names", "points", "label", 5, True, 1.0),
+    ("counties", "Counties' names", "points", "label", 6, True, 16.0),
+    ("countylines", "Counties' boundaries (your regions)", "lines", "dash", 6, True, 0.0),
+    ("towns", "Cities and towns", "points", "circle", 4, True, 32.0),
+    ("streets", "Major roads (your regions)", "lines", "line", 5, True, 128.0),
+    ("buildings", "Buildings (your regions)", "lines", "line", 7, True, 0.0))
 LINE_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "lines")
+# 1.107.0: the zoom a layer is drawn from (none said: from the start), the layers whose features each say the zoom
+# they are drawn from, and those never read whole nor capped in all (what one read answers is: MAX_POINTS points and
+# MAX_VERTICES vertices), a download of one keeping MAX_AREA_POINTS points and MAX_AREA_VERTICES vertices at most
+LAYER_FROM = {"counties": 16.0, "countylines": 16.0, "towns": 32.0, "streets": 64.0, "buildings": 64.0}
+RANKED = ("countrynames", "statenames", "counties", "countylines", "towns", "streets", "buildings")
+BY_AREA = ("states", "counties", "countylines", "towns", "streets", "buildings")
+MAX_AREA_POINTS = 400_000  # GeoNames' cities500: some 185,000 places
+MAX_AREA_VERTICES = 8_000_000  # 64 MB packed: a region's buildings, the states' boundaries
+# the globe's 1x as a web map's zoom (a globe 520 px high), and how many of a web map's zooms before its maker says a
+# name of a rank is placed (none is ever drawn over another): a name of rank r is placed from 2^(r - both)
+WEB_ZOOM, LABEL_EARLY = 2.67, 1.0
+# a town's zoom by its people (the most first: GeoNames' population), a road's by its class (OpenStreetMap's highway,
+# its _link the same), a building's from where it spans BUILDING_PX pixels (a 24 m pixel at 1024x), never before 64x
+TOWN_ZOOMS = ((100_000, 32.0), (10_000, 64.0), (1_000, 128.0), (0, 256.0))
+ROAD_ZOOMS = {"motorway": 64.0, "trunk": 64.0, "primary": 64.0, "secondary": 64.0, "tertiary": 128.0}
+BUILDING_PX, PIXEL_M = 1.5, 24.0 * 1024
+COUNTY_ZOOM = 16.0
+# OpenStreetMap's admin_level of a county (the United States' counties, Germany's Kreise, France's départements)
+COUNTY_LEVEL = "6"
+REGION_KM = (2.0, 100.0)  # a region's width, from and to (the user's choice: one round home, others added)
+REGION_PIECE = (0.01, 0.25)  # degrees: a region's box is asked in pieces of this side at most
+REGION_PIECES = 100  # pieces a region is asked in, at most
+REGION_ID = re.compile(r"(.+)-([ns])(\d{4,5})([ew])(\d{5})")  # a region's id: its template's, then its place
+XML_FEED = 64 << 10  # bytes of an XML answer handed to its parser at a time
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
 FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub",
-           "atlas-probes", "atlas-latest", "omm-csv")  # what an answer is read as
+           "atlas-probes", "atlas-latest", "omm-csv",
+           "geonames-places", "osm-xml")  # what an answer is read as (1.107.0: the last two)
 AS_WRITTEN = ("geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub", "atlas-probes",
-              "atlas-latest", "omm-csv")  # whose query, where they have one, is sent as written
-AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes", "omm-csv")  # read from the answer's bytes,
+              "atlas-latest", "omm-csv", "geonames-places")  # whose query, where they have one, is sent as written
+AS_BYTES = ("gml", "ourairports", "geonames", "shapefile", "atlas-probes", "omm-csv", "geonames-places",
+            "osm-xml")  # read from the answer's bytes,
 # not as JSON
 QUERIES = 8  # queries an omm-csv set may ask, one request each (HughesNet's three satellites by their numbers)
 EVERY_MOST = 7 * 86400.0  # the longest a data set may ask its Update to wait
@@ -127,7 +174,8 @@ EVERY_MOST = 7 * 86400.0  # the longest a data set may ask its Update to wait
 REFRESH_LEAST = 3600.0
 PAUSE_MOST = 86400.0
 PAUSE_CODES = (500, 503)
-MANY = ("mvt", "atlas-latest")  # the formats asked in several requests, one after another, on the one click
+MANY = ("mvt", "atlas-latest", "geonames-places", "osm-xml")  # the formats asked in several requests, one after
+# another, on the one click
 ATLAS_BATCH = 300  # probes' ids asked in one request of RIPE Atlas's latest results
 ATLAS_RESULTS = 20_000  # results read of its answers, at most (1.104.0: every connected probe's, some 12,000)
 ATLAS_ASKS = ("anchors", "probes")  # whose results an atlas-latest set asks: the connected anchors', or every
@@ -136,7 +184,7 @@ ATLAS_FAMILIES = (4, 6)  # its measurement's IP version: a probe asked has a net
 ATLAS_HOPS = 64  # hops read of a result, at most
 NEAR_MS = 1.0  # a router this near a probe (its least RTT) is claimed at the probe's place
 KM_PER_MS = 100.0  # how far light goes in fibre in a millisecond, there and back halved below
-STEPS = (0.001, 1.0)  # the degrees a data set's `step` may be, from and to (1.104.0)
+STEPS = (0.00001, 1.0)  # the degrees a data set's `step` may be, from and to (1.104.0; 1.107.0: a metre, buildings)
 HOST_FORM = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 CHOICES = 32  # fields a data set's keep or drop names, and values a field, at most
 TILES_MOST = 128  # map tiles a data set of them asks for, at most, one after another (AfTerFibre's Africa, zoom 5: 56)
@@ -188,7 +236,9 @@ ASKED = {"overpass": "the tags asked for", "sparql": "the kinds of place asked f
          "shapefile": "the file asked for", "mvt": "the map tiles asked for", "topohub": "the file asked for",
          "atlas-probes": "the file asked for",
          "atlas-latest": "the measurement's newest results for the probes' ids (nothing about this machine)",
-         "omm-csv": "the satellites' group or numbers asked for"}
+         "omm-csv": "the satellites' group or numbers asked for",
+         "geonames-places": "the cities' file and the divisions' names",
+         "osm-xml": "the region's box and the kinds of way asked for (its place, never this machine's address)"}
 GZIP, TAR = b"\x1f\x8b", b"ustar"  # a gzip stream's first two bytes; a POSIX tar's magic, at its 257th byte
 # a map's file name as the Topology Zoo names a network's maps over the years: its name, its map's year and month
 # (Geant2012, Arpanet19706, Garr199901); a name without a year (PionierL3) is a network of its own
@@ -255,6 +305,20 @@ def _wfs_axes(ident: str, query: str) -> None:
                      f"{'none' if wrong is None else world._shown(wrong)}")
 
 
+def _region_pieces(km: float, side: float, lat: float, lon: float) -> list[tuple[float, float, float, float]]:
+    """1.107.0: the pieces a region `km` across round (lat, lon) is asked in, (south, west, north, east) each in
+    degrees, `side` degrees at most, south to north and west to east; its box stops short of the poles and of the
+    antimeridian (a region there is cut at it)."""
+    half_lat = km / 2 / 110.574
+    half_lon = km / 2 / (111.320 * max(0.05, math.cos(math.radians(lat))))
+    s, n = max(-89.9, lat - half_lat), min(89.9, lat + half_lat)
+    w, e = max(-179.99, lon - half_lon), min(179.99, lon + half_lon)
+    rows, cols = max(1, math.ceil((n - s) / side - 1e-9)), max(1, math.ceil((e - w) / side - 1e-9))
+    dy, dx = (n - s) / rows, (e - w) / cols
+    return [(round(s + i * dy, 5), round(w + j * dx, 5), round(s + (i + 1) * dy, 5), round(w + (j + 1) * dx, 5))
+            for i in range(rows) for j in range(cols)]
+
+
 @dataclass(frozen=True)
 class DataSet:
     """One data set a plugin names: what is asked (`url` and `query`, read as `format`), how large its answer is (`size`
@@ -302,6 +366,13 @@ class DataSet:
     most: int = 0  # the bytes its answers may be in all, where it raises its own limit (0: MAX_ANSWER, as every set's)
     refresh: bool = False  # downloaded again by itself every `every` while the tab is open, after the user's first yes
     pause: float = 0.0  # seconds nothing is asked of its host after a 500 or a 503 (CelesTrak's 15 minutes)
+    # 1.107.0 (Monday list item 25): a shapefile's names at its records' label points ((lon field, lat field, rank
+    # field), its shapes never read); the files asked after its own, beside it on its host (GeoNames' admin2Codes.txt);
+    # a set asked round a place, (its width in km, its pieces' side in degrees), and that place (lat, lon, label)
+    label: tuple = ()
+    also: tuple = ()
+    region: tuple = ()
+    place: tuple = ()
 
     @property
     def limit(self) -> int:
@@ -387,7 +458,13 @@ class DataSet:
 
     def addresses(self, ids=()) -> list[str]:
         """Every address asked, in order: the one address(), or (1.104.0) each of a set of map tiles', or of RIPE
-        Atlas's latest results one batch of ATLAS_BATCH anchors' `ids` a request."""
+        Atlas's latest results one batch of ATLAS_BATCH anchors' `ids` a request; (1.107.0) its own and then each of
+        `also` beside it, or a region's pieces round its place (none before it has one)."""
+        if self.region:
+            return [f"{self.url}?data={quote(self.query.replace('{bbox}', box), safe='')}" for box in self.boxes()]
+        if self.also:
+            folder = self.url.rsplit("/", 1)[0]
+            return [self.address(), *(f"{folder}/{name}" for name in self.also)]
         if self.format == "atlas-latest":
             ids = sorted({int(i) for i in ids})
             return [f"{self.url}?{self.query + '&' if self.query else ''}probe_ids="
@@ -397,6 +474,42 @@ class DataSet:
         if self.format != "mvt":
             return [self.address()]
         return [self._tile(z, x, y) for z, x, y in self.tiles]
+
+    def pieces(self) -> list[tuple[float, float, float, float]]:
+        """1.107.0: a region's box round its place as the pieces it is asked in, (south, west, north, east) each in
+        degrees, south to north and west to east; none before it has a place."""
+        if not self.region or not self.place:
+            return []
+        return _region_pieces(*self.region, float(self.place[0]), float(self.place[1]))
+
+    def boxes(self) -> list[str]:
+        """A region's pieces as Overpass's bbox ("south,west,north,east")."""
+        return [",".join(f"{v:g}" for v in box) for box in self.pieces()]
+
+    def box(self) -> tuple[float, float, float, float] | None:
+        """A region's whole box (south, west, north, east), None without a place."""
+        found = self.pieces()
+        if not found:
+            return None
+        return (min(b[0] for b in found), min(b[1] for b in found), max(b[2] for b in found),
+                max(b[3] for b in found))
+
+    def placed(self, lat: float, lon: float, label: str = "") -> "DataSet":
+        """1.107.0: a region's data set round a place (lat, lon in degrees, its place kept to 0.01 degree, some 1 km):
+        its id its template's and the place's (osm-streets-n4071w07401), its title naming the place. ValueError for a
+        set that is no region's, and for a place that is none."""
+        if not self.region:
+            raise ValueError(f"the data set {self.id} is asked of no region")
+        for v in (lat, lon):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                raise ValueError("a region's place is its latitude and longitude, in degrees")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("a region's place is on the globe: latitude -90 to 90, longitude -180 to 180")
+        la, lo = round(lat * 100), round(lon * 100)
+        code = f"{'n' if la >= 0 else 's'}{abs(la):04d}{'e' if lo >= 0 else 'w'}{abs(lo):05d}"
+        name = _name(label) or f"{la / 100:.2f}, {lo / 100:.2f}"
+        return replace(self, id=f"{self.id}-{code}", title=f"{self.title} round {name}"[:2 * NAME],
+                       place=(la / 100, lo / 100, name))
 
     def _tile(self, z: int, x: int, y: int) -> str:
         url = self.url.replace("{z}", str(z)).replace("{x}", str(x)).replace("{y}", str(y))
@@ -408,6 +521,9 @@ class DataSet:
         file's); a set of map tiles' first tile."""
         if self.format == "mvt":
             return self._tile(*self.tiles[0])
+        if self.region:  # 1.107.0: its first piece, or its address alone before it has a place
+            found = self.addresses()
+            return found[0] if found else self.url
         if self.queries:
             return f"{self.url}?{self.queries[0]}"
         if self.format == "overpass":
@@ -535,7 +651,57 @@ def _more(ident: str, form: str, said: Mapping) -> dict:
         out["tiles"] = _tiles(ident, said)
         if not out.get("layer"):
             raise ValueError(f"the data set {ident} is a set of map tiles and names no layer its lines go to")
+    out.update(_area_keys(ident, form, said, out))
     return out
+
+
+def _area_keys(ident: str, form: str, said: Mapping, out: Mapping) -> dict:
+    """1.107.0 (Monday list item 25): a data set's label, also and region, checked; ValueError, in words, for one that
+    is wrong."""
+    found: dict = {}
+    label = said.get("label")
+    if label is not None:
+        fields = [label.get(k) for k in ("lon", "lat", "rank")] if isinstance(label, Mapping) else None
+        if (form != "shapefile" or out.get("layer") not in POINT_LAYERS or fields is None
+                or any(not isinstance(f, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,11}", f) for f in fields[:2])
+                or (fields[2] is not None and (not isinstance(fields[2], str)
+                                               or not re.fullmatch(r"[A-Za-z0-9_]{1,11}", fields[2])))):
+            raise ValueError(f"the data set {ident}'s label is a shapefile's {{lon, lat, rank}}: its records' fields "
+                             "(rank optional) of a layer of points")
+        found["label"] = tuple(fields[:2]) + ((fields[2],) if fields[2] else ())
+    also = said.get("also", ())
+    if (not isinstance(also, (list, tuple)) or len(also) > 4
+            or any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", a) for a in also)):
+        raise ValueError(f"the data set {ident}'s also are the files beside its own on its host (4 at most, a name "
+                         "each), not " + world._shown(also))
+    if form == "geonames-places" and len(also) != 1:
+        raise ValueError(f"the data set {ident} is GeoNames' places and names its divisions' file (also: one name)")
+    if also:
+        found["also"] = tuple(also)
+    region = said.get("region")
+    if form == "osm-xml" and region is None:
+        raise ValueError(f"the data set {ident} is asked round a place and says no region (its km and its piece)")
+    if region is not None:
+        km = region.get("km") if isinstance(region, Mapping) else None
+        side = region.get("piece") if isinstance(region, Mapping) else None
+        if (form != "osm-xml" or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (km, side))
+                or not REGION_KM[0] <= km <= REGION_KM[1] or not REGION_PIECE[0] <= side <= REGION_PIECE[1]):
+            raise ValueError(f"the data set {ident}'s region is {{km: {REGION_KM[0]:g} to {REGION_KM[1]:g}, piece: "
+                             f"{REGION_PIECE[0]:g} to {REGION_PIECE[1]:g} degrees}} of an osm-xml set")
+        query = said.get("query", "")
+        if "{bbox}" not in query:
+            raise ValueError(f"the data set {ident} is asked round a place: its query holds {{bbox}}, where each "
+                             "piece's box goes")
+        found["region"] = (float(km), float(side))
+        many = len(_pieces_at_equator(found["region"]))
+        if many > REGION_PIECES:
+            raise ValueError(f"the data set {ident}'s region is asked in {many} pieces, more than {REGION_PIECES}")
+    return found
+
+
+def _pieces_at_equator(region: tuple) -> list:
+    """The pieces a region of that width and piece is asked in at the equator, where they are the most."""
+    return _region_pieces(*region, 0.0, 0.0)
 
 
 def _tiles(ident: str, said: Mapping) -> tuple:
@@ -656,9 +822,29 @@ def _thinned(vertices, step_deg: float = STEP) -> list[tuple[int, int]] | None:
     return out
 
 
+class Packed:
+    """1.107.0: a line's vertices as a download of a BY_AREA layer keeps them: `ints`, longitude and latitude in 1e-5
+    degrees one after the other (8 bytes a vertex, where a pair of floats in a tuple takes some 100), read as (lon, lat)
+    pairs in degrees."""
+    __slots__ = ("ints",)
+
+    def __init__(self, spots):
+        self.ints = array(_I32, (v for spot in spots for v in spot))
+
+    def __len__(self) -> int:
+        return len(self.ints) // 2
+
+    def __iter__(self):
+        ints = self.ints
+        for i in range(0, len(ints) - 1, 2):
+            yield ints[i] / SCALE, ints[i + 1] / SCALE
+
+
 class _Kept:
     """What a parse keeps, by layer, within its bounds: MAX_POINTS points and MAX_VERTICES vertices a layer, nothing
-    twice, nothing off the globe, no line under two points. What is left out is counted by why (`dropped`)."""
+    twice, nothing off the globe, no line under two points. What is left out is counted by why (`dropped`). 1.107.0: a
+    BY_AREA layer MAX_AREA_POINTS and MAX_AREA_VERTICES, its lines packed (Packed) and not looked at for repeats (a
+    region's way is kept once by its reader); each feature's zoom kept where one is given."""
 
     def __init__(self, dataset: "DataSet | None" = None):
         self.dataset = dataset  # 1.104.0: whose answer it is (its layer, its records kept, its step)
@@ -668,6 +854,7 @@ class _Kept:
         self.remarks: list[str] = []  # what the server remarked that is no error, said on
         self.extra: dict = {}  # 1.104.0: what a reader gives beside the layers (the composite's rows, the probes)
         self.counted: int | None = None  # and how many it read, where that is not its features (atlas-latest)
+        self.bytes = 0  # 1.107.0: what a region's pieces came to, read as they came
         self.probes: dict = {}  # the probes an atlas-latest answer is read with, by id
         self._seen: dict[str, set] = {}
         self._vertices: dict[str, int] = {}
@@ -675,7 +862,7 @@ class _Kept:
     def drop(self, why: str) -> None:
         self.dropped[why] = self.dropped.get(why, 0) + 1
 
-    def point(self, layer: str, lon, lat, name="", sub="") -> None:
+    def point(self, layer: str, lon, lat, name="", sub="", zoom=0) -> None:
         spot = _spot(lon, lat)
         if spot is None:
             return self.drop(OFF)
@@ -684,28 +871,32 @@ class _Kept:
         if (spot, name.casefold()) in seen:
             return self.drop(REPEATED)
         points = self.layers.setdefault(layer, {"points": [], "lines": []})["points"]
-        if len(points) >= MAX_POINTS:
+        if len(points) >= (MAX_AREA_POINTS if layer in BY_AREA else MAX_POINTS):
             return self.drop(OVER)
         seen.add((spot, name.casefold()))
-        points.append((spot[0] / SCALE, spot[1] / SCALE, name, "" if sub == name else sub))
+        kept = (spot[0] / SCALE, spot[1] / SCALE, name, "" if sub == name else sub)
+        points.append(kept + (float(zoom),) if zoom else kept)
 
-    def line(self, layer: str, vertices, name="") -> None:
+    def line(self, layer: str, vertices, name="", zoom=0) -> None:
         spots = _thinned(vertices, self.step)
         if spots is None:
             return self.drop(OFF)
         if len(spots) < 2:
             return self.drop(SHORT)
-        mark = hash(tuple(spots))
+        area = layer in BY_AREA
         seen = self._seen.setdefault(layer, set())
-        if mark in seen:
+        mark = None if area else hash(tuple(spots))
+        if mark is not None and mark in seen:
             return self.drop(REPEATED)
         used = self._vertices.get(layer, 0)
-        if used + len(spots) > MAX_VERTICES:
+        if used + len(spots) > (MAX_AREA_VERTICES if area else MAX_VERTICES):
             return self.drop(OVER)
-        seen.add(mark)
+        if mark is not None:
+            seen.add(mark)
         self._vertices[layer] = used + len(spots)
+        kept = (Packed(spots) if area else [(x / SCALE, y / SCALE) for x, y in spots], _name(name))
         self.layers.setdefault(layer, {"points": [], "lines": []})["lines"].append(
-            ([(x / SCALE, y / SCALE) for x, y in spots], _name(name)))
+            kept + (float(zoom),) if zoom else kept)
 
     def features(self) -> dict:
         layers = {layer: self.layers[layer] for layer, *_ in LAYERS
@@ -1167,6 +1358,8 @@ def _shapefile(doc, kept: _Kept, host: str, free: bool) -> None:
     dataset = kept.dataset
     if not isinstance(doc, (bytes, bytearray)):
         raise InfrastructureError(f"{host}'s answer is not the data asked for (it is no zipped shapefile)")
+    if dataset.label:
+        return _labels(doc, kept, host)
     try:
         shapes = shapefile.read(doc, dataset.member or None, most_bytes=shapefile.SHP_MOST * _scale(dataset),
                                 most_records=shapefile.RECORDS_MOST * _scale(dataset))
@@ -1191,6 +1384,225 @@ def _shapefile(doc, kept: _Kept, host: str, free: bool) -> None:
         else:
             for part in shape.parts:
                 kept.line(dataset.layer, part, name)
+
+
+def _rank_zoom(rank) -> float:
+    """1.107.0: the globe's zoom a name of a web map's rank (Natural Earth's MIN_LABEL: the web map's zoom it is placed
+    from) is placed from, 1 (the start) at the least: 2^(rank - WEB_ZOOM - LABEL_EARLY)."""
+    if isinstance(rank, bool) or not isinstance(rank, (int, float)) or rank != rank:
+        return 1.0
+    return float(min(1024.0, max(1.0, round(2 ** (rank - WEB_ZOOM - LABEL_EARLY), 2))))
+
+
+def _labels(doc, kept: _Kept, host: str) -> None:
+    """1.107.0 (Monday list item 25): a shapefile's names at the label points its records hold (Natural Earth's
+    countries' LABEL_X and LABEL_Y, its states' longitude and latitude), each from the zoom its rank says (_rank_zoom):
+    its .dbf alone is read (shapefile.records), never its shapes; its keep and drop applied, a record without a place
+    on the globe or a name left out."""
+    from .. import shapefile
+    dataset = kept.dataset
+    lon_field, lat_field, *rank = dataset.label
+    try:
+        rows = shapefile.records(doc, dataset.member or None, most_bytes=shapefile.SHP_MOST * _scale(dataset),
+                                 most_records=shapefile.RECORDS_MOST * _scale(dataset))
+    except shapefile.ShapefileError as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for ({e})") from None
+    if rows and not {lon_field.lower(), lat_field.lower()} <= {str(k).lower() for k in rows[0]}:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (its records hold no {lon_field} and "
+                                  f"{lat_field}, the label points its data set reads)")
+    for record in rows:
+        if not _chosen(dataset, record):
+            kept.drop(OTHER)
+            continue
+        low = {str(k).lower(): v for k, v in record.items()}
+        name = next((t for t in (_name(low.get(k)) for k in SHAPE_NAMES) if t), "")
+        if not name:
+            kept.drop(OTHER)
+            continue
+        zoom = _rank_zoom(low.get(rank[0].lower())) if rank else 1.0
+        kept.point(dataset.layer, low.get(lon_field.lower()), low.get(lat_field.lower()), name, "", zoom=zoom)
+
+
+def _town_zoom(people: int) -> float:
+    return next(z for least, z in TOWN_ZOOMS if people >= least)
+
+
+def _geonames_places(doc, kept: _Kept, host: str, free: bool) -> None:
+    """1.107.0 (Monday list item 25): GeoNames' cities500.zip and admin2Codes.txt, asked one after the other: each town
+    a point of "towns" from the zoom its people say (TOWN_ZOOMS), its sub "CC-A1 · people"; each second-order division
+    (a county) with a town named at the middle of its towns, a point of "counties" from COUNTY_ZOOM, its sub its
+    country's and first division's codes. The cities' text is read a line at a time from the zip, never whole; a
+    division with no town of the file is not placed (counted)."""
+    import zipfile
+    if not isinstance(doc, list) or len(doc) != 2:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (the cities' zip, the divisions' file)")
+    raw, codes = bytes(doc[0][1]), bytes(doc[1][1])
+    if free:
+        doc[:] = []
+    names: dict[str, str] = {}
+    for line in codes.decode("utf-8", "replace").splitlines():
+        f = line.split("\t")
+        if len(f) >= 3 and f[0].count(".") == 2:
+            names[f[0]] = f[1] or f[2]
+    del codes
+    middles: dict[str, list] = {}  # a division's code -> [x, y, z, towns]: the sum of its towns' unit vectors
+    found = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            texts = [i for i in z.infolist() if i.filename.endswith(".txt") and not i.is_dir()]
+            most = MAX_UNPACKED * _scale(kept.dataset)
+            if len(texts) != 1 or texts[0].file_size > most:
+                raise InfrastructureError(f"{host}'s answer is not the data asked for (one text file in a zip, "
+                                          f"{size_words(most)} at most)")
+            with z.open(texts[0]) as stream:
+                for line in io.TextIOWrapper(stream, encoding="utf-8", errors="replace", newline="\n"):
+                    f = line.rstrip("\n").split("\t")
+                    if len(f) < 15:
+                        kept.drop(OTHER)
+                        continue
+                    try:
+                        lat, lon, people = float(f[4]), float(f[5]), int(f[14] or 0)
+                    except ValueError:
+                        kept.drop(OFF)
+                        continue
+                    found.append((people, lon, lat, f[1] or f[2], f[8], f[10]))
+                    if f[11] and _spot(lon, lat) is not None:
+                        key = f"{f[8]}.{f[10]}.{f[11]}"
+                        a, b = math.radians(lat), math.radians(lon)
+                        m = middles.setdefault(key, [0.0, 0.0, 0.0, 0])
+                        m[0] += math.cos(a) * math.cos(b)
+                        m[1] += math.cos(a) * math.sin(b)
+                        m[2] += math.sin(a)
+                        m[3] += 1
+    except (zipfile.BadZipFile, zlib.error, EOFError, OSError) as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (no zip that reads: "
+                                  f"{' '.join(str(e).split())[:80]})") from None
+    del raw
+    found.sort(key=lambda c: -c[0])
+    for people, lon, lat, name, country, division in found:
+        where = f"{country}-{division}" if division else country
+        kept.point("towns", lon, lat, name, f"{where} · {people:,}", zoom=_town_zoom(people))
+    del found
+    for key, name in names.items():
+        m = middles.get(key)
+        if not m:
+            kept.drop(UNPLACED)
+            continue
+        x, y, zz = m[0] / m[3], m[1] / m[3], m[2] / m[3]
+        lat, lon = math.degrees(math.atan2(zz, math.hypot(x, y))), math.degrees(math.atan2(y, x))
+        country, first, _ = key.split(".")
+        kept.point("counties", round(lon, 5), round(lat, 5), name, f"{country}-{first}", zoom=COUNTY_ZOOM)
+
+
+def _way_zoom(tags: Mapping, box: tuple[float, float, float, float]) -> tuple[str, float]:
+    """1.107.0: an OpenStreetMap way's layer and the zoom it is drawn from, by its tags; ("", 0) for one of no kind
+    kept. A road by its class (ROAD_ZOOMS); a building from where it spans BUILDING_PX pixels, 64x at the soonest; a
+    county's boundary (admin_level COUNTY_LEVEL) from COUNTY_ZOOM."""
+    road = str(tags.get("highway") or "")
+    road = road[:-5] if road.endswith("_link") else road
+    if road in ROAD_ZOOMS:
+        return "streets", ROAD_ZOOMS[road]
+    if tags.get("building") not in (None, "", "no"):
+        w, s, e, n = box
+        span = max((e - w) * 111_320 * math.cos(math.radians((s + n) / 2)), (n - s) * 110_574, 1.0)
+        return "buildings", float(min(1024.0, max(LAYER_FROM["buildings"], round(BUILDING_PX * PIXEL_M / span, 2))))
+    if tags.get("boundary") == "administrative" and str(tags.get("admin_level") or "") == COUNTY_LEVEL:
+        return "countylines", COUNTY_ZOOM
+    return "", 0.0
+
+
+def _osm_piece(raw, kept: _Kept, host: str, piece=None, region=None, outside: set | None = None) -> int:
+    """1.107.0 (Monday list item 25): one piece of a region's Overpass answer in XML (out tags geom: each way's tags and
+    its points' places, no node's id), read as it streams through the parser XML_FEED bytes at a time, each way let go
+    once read: its roads, buildings and counties' boundaries kept (_way_zoom), named by their name (else their ref). A
+    way crossing several pieces is kept once: by the piece its first point is in (`piece`, south, west, north, east),
+    or where that is outside the region (`region`) by the first piece it comes in (its id in `outside`). A document
+    type or an entity declared, or a remark that is an error (the query did not finish), refuses the whole answer.
+    The ways read, kept or not."""
+    from xml.etree.ElementTree import ParseError, XMLPullParser
+    data = memoryview(raw)
+    if re.search(rb"<!(?:DOCTYPE|ENTITY)", data, re.IGNORECASE):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it declares a document type)")
+    parser = XMLPullParser(events=("start", "end"))
+    root, way, tags, points, ways = None, None, {}, [], 0
+
+    def inside(box, lon, lat) -> bool:
+        return box is not None and box[0] <= lat <= box[2] and box[1] <= lon <= box[3]
+    try:
+        for at in range(0, max(1, len(data)), XML_FEED):
+            parser.feed(bytes(data[at:at + XML_FEED]))
+            if at + XML_FEED >= len(data):
+                parser.close()
+            for event, e in parser.read_events():
+                if event == "start":
+                    if root is None:
+                        root = e
+                        if e.tag != "osm":
+                            raise InfrastructureError(f"{host}'s answer is not the data asked for (its root is "
+                                                      f"{_name(e.tag)[:20]}, not osm)")
+                    elif e.tag == "way":
+                        way, tags, points = e.get("id"), {}, []
+                    continue
+                if e.tag == "remark":
+                    words = _text(e.text)[:REMARK]
+                    if "error" in words.lower():
+                        raise InfrastructureError(f"{host} could not finish the query: {words}")
+                    if words:
+                        kept.remarks.append(f"{host} remarked: {words}")
+                elif e.tag == "nd" and way is not None:
+                    try:
+                        points.append((float(e.get("lon")), float(e.get("lat"))))
+                    except (TypeError, ValueError):
+                        points.append((None, None))
+                elif e.tag == "tag" and way is not None and len(tags) < GML_KEYS:
+                    tags.setdefault(str(e.get("k")), str(e.get("v") or ""))
+                elif e.tag == "way":
+                    ways += 1
+                    _osm_way(kept, way, tags, points, piece, region, outside, inside)
+                    way, tags, points = None, {}, []
+                    root.clear()  # what was read let go: the parser keeps nothing of it
+                elif e.tag in ("node", "relation", "area") and root is not None:
+                    root.clear()
+    except ParseError as e:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (its XML does not read: "
+                                  f"{' '.join(str(e).split())[:80]})") from None
+    if root is None:
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it is empty)")
+    return ways
+
+
+def _osm_way(kept: _Kept, ident, tags, points, piece, region, outside, inside) -> None:
+    if len(points) < 2 or any(p[0] is None for p in points):
+        return kept.drop(OFF if points else SHORT)
+    lon, lat = points[0]
+    if piece is not None and not inside(piece, lon, lat):  # another piece's: kept by the one its first point is in
+        if inside(region, lon, lat) or ident is None:
+            return None
+        if outside is not None:
+            if ident in outside:
+                return None
+            outside.add(ident)
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    layer, zoom = _way_zoom(tags, (min(xs), min(ys), max(xs), max(ys)))
+    if not layer:
+        return kept.drop(OTHER)
+    name = _name(tags.get("name")) or _name(tags.get("ref"))
+    kept.line(layer, points, name, zoom=zoom)
+
+
+def _osm_xml(doc, kept: _Kept, host: str, free: bool) -> None:
+    """1.107.0: a region's answers, piece by piece ([(the piece's number, its bytes)], or one answer's bytes): each read
+    by _osm_piece as the install does, the region's pieces telling which way each piece keeps."""
+    dataset = kept.dataset
+    answers = doc if isinstance(doc, list) else [(0, doc)]
+    pieces = dataset.pieces() if dataset is not None else []
+    box = dataset.box() if dataset is not None else None
+    outside: set = set()
+    for i, (number, raw) in enumerate(answers):
+        if free:
+            answers[i] = (number, b"")
+        piece = pieces[number] if 0 <= number < len(pieces) else None
+        _osm_piece(raw, kept, host, piece, box if piece is not None else None, outside)
 
 
 def _mvt(doc, kept: _Kept, host: str, free: bool) -> None:
@@ -1430,7 +1842,8 @@ def _omm_csv(doc, kept: _Kept, host: str, free: bool) -> None:
 
 _READERS = {"overpass": _overpass, "sparql": _sparql, "geojson": _geojson, "gml": _gml, "ourairports": _ourairports,
             "geonames": _geonames, "shapefile": _shapefile, "mvt": _mvt, "topohub": _topohub,
-            "atlas-probes": _atlas_probes, "atlas-latest": _atlas_latest, "omm-csv": _omm_csv}
+            "atlas-probes": _atlas_probes, "atlas-latest": _atlas_latest, "omm-csv": _omm_csv,
+            "geonames-places": _geonames_places, "osm-xml": _osm_xml}
 
 
 def _features(dataset: DataSet, doc, free: bool, probes=None) -> dict:
@@ -1683,7 +2096,9 @@ def _download(dataset: DataSet, fetch, agent: str, cutoff, halt: threading.Event
               say):
     """On the download's thread: the answer's bytes (_one), or (1.104.0) for a set of map tiles each tile's in turn,
     [(z, x, y, bytes)], a tile not there (HTTP 404) as no bytes, any other failure the whole install's."""
-    if dataset.format == "atlas-latest" or len(dataset.queries) > 1:
+    if dataset.region:  # 1.107.0: a region's pieces, each read as it comes and let go
+        return _region(dataset, fetch, agent, cutoff, halt, deadline, took, clock, say)
+    if dataset.format == "atlas-latest" or len(dataset.queries) > 1 or dataset.also:
         return _batches(dataset, fetch, agent, cutoff, halt, deadline, took, clock, say)
     if dataset.format != "mvt":
         return _one(dataset, dataset.address(), fetch, agent, cutoff, halt, deadline, took, clock, say)
@@ -1711,7 +2126,7 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
     of probes' ids a request (dataset.asked, set by the install from the probes it needs), or an omm-csv set's queries
     (HughesNet's satellites by their numbers): [(the request's number, its bytes)]. A refusal of RIPE Atlas that asks
     for credentials stops it with nothing kept: no key is ever asked for or sent."""
-    asked = list(dataset.addresses() if dataset.queries else getattr(dataset, "asked", ()) or ())
+    asked = list(dataset.addresses() if dataset.queries or dataset.also else getattr(dataset, "asked", ()) or ())
     out, total = [], 0
     for i, address in enumerate(asked):
         if i:
@@ -1732,6 +2147,31 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
         if not cutoff.why:
             cutoff.ended = True
     return out
+
+
+def _region(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, took: str, clock, say) -> "_Kept":
+    """1.107.0 (Monday list item 25): a region's pieces asked one after another on the download's thread, each one's
+    answer read (_osm_piece) as soon as it is in and let go before the next is asked: only one piece's bytes are held,
+    and what is kept of them (_Kept, its lines packed). Its answers in all are its limit at most, as one answer's."""
+    kept, pieces, box, outside = _Kept(dataset), dataset.pieces(), dataset.box(), set()
+    addresses, total, ways = dataset.addresses(), 0, 0
+    for i, (address, piece) in enumerate(zip(addresses, pieces)):
+        if i:
+            say(f"piece {i + 1} of {len(addresses)}: {world._plural(ways, 'way')} read so far")
+        raw = _one(dataset, address, fetch, agent, cutoff, halt, deadline, took, clock,
+                   say if not i else (lambda _line: None), final=i == len(addresses) - 1)
+        total += len(raw)
+        if total > dataset.limit:
+            raise InfrastructureError(_too_large(dataset, several=True))
+        ways += _osm_piece(raw, kept, dataset.host, piece, box, outside)
+        del raw
+    with cutoff.lock:
+        if not cutoff.why:
+            cutoff.ended = True
+    kept.bytes = total
+    kept.remarks.append(f"{world._plural(len(addresses), 'piece')} of the region asked: "
+                        f"{world._plural(ways, 'way')} read")
+    return kept
 
 
 class _Missing(Exception):
@@ -1879,6 +2319,9 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
     if accept_licence is not True:
         raise LicenceRefused(LICENCE_FIRST)
     agent = _agent(agent)
+    if dataset.region and not dataset.place:  # 1.107.0: a region's template is asked round no place
+        raise ValueError(f"{dataset.title} is asked round a place: its region names none yet (set your home place, or "
+                         "add a region)")
     dataset = _with_needs(dataset, target)
     held = held_back(dataset, target, wall())
     if held:
@@ -2043,12 +2486,18 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
         raise
     finally:
         halt.set()
-    size = sum(len(t[-1]) for t in data) if isinstance(data, list) else len(data)
-    say(f"{size_words(size)} downloaded: reading it")
-    doc = _decoded(dataset, data)
-    del data  # the answer's bytes are not held beside what is read of them
-    features = _features(dataset, doc, free=True, probes=getattr(dataset, "probes_by_id", None))
-    del doc
+    if isinstance(data, _Kept):  # 1.107.0: a region's, read as its pieces came
+        size = data.bytes
+        say(f"{size_words(size)} downloaded and read")
+        features = data.features()
+        del data
+    else:
+        size = sum(len(t[-1]) for t in data) if isinstance(data, list) else len(data)
+        say(f"{size_words(size)} downloaded: reading it")
+        doc = _decoded(dataset, data)
+        del data  # the answer's bytes are not held beside what is read of them
+        features = _features(dataset, doc, free=True, probes=getattr(dataset, "probes_by_id", None))
+        del doc
     for remark in features["remarks"]:
         say(remark)
     if not features["features"]:
@@ -2143,6 +2592,32 @@ def form(dataset, folder, update: bool = False) -> dict:
                               f"{ASKED[dataset.format]}: nothing about this machine or its traffic. Its licence, "
                               f"first: {dataset.licence} You are asked to accept it next."
                               f"{_refresh_words(dataset)}")}}
+
+
+REGION_FORM, REGION_HOOK = "world-region-", "world_region"  # 1.107.0: a region's form's id (its template's id after)
+REGION_NO_PLACE = ("its region is round your home place: set LIMINAL_HOME_PLACE in this plugin's settings or install a "
+                   "GeoIP file, or add a region")
+REGIONS_MOST = 8  # regions added on the page, at most
+
+
+def region_form(dataset) -> dict:
+    """1.107.0 (the user, 2026-11-26: "Your area only", other regions added from the page): the form adding a region of
+    a template, by its place (latitude, longitude and a name), asked of the plugin's world_region. Nothing is
+    downloaded: the region is a row of the table, its download its own click, its size and licence said then."""
+    dataset = DataSet.of(dataset)
+    km = dataset.region[0] if dataset.region else 0
+    return {"id": REGION_FORM + dataset.id, "hook": REGION_HOOK, "title": f"Add a region: {dataset.title}",
+            "fields": [{"name": "dataset", "type": "fixed", "value": dataset.id},
+                       {"name": "lat", "label": "Latitude (degrees, north +)", "type": "number", "min": -90,
+                        "max": 90},
+                       {"name": "lon", "label": "Longitude (degrees, east +)", "type": "number", "min": -180,
+                        "max": 180},
+                       {"name": "label", "label": "Its name (optional)", "type": "text", "value": ""}],
+            "confirm": {"title": "Add this region?", "yes": "Add it", "words": (
+                f"A region {km:g} km across round {{lat}}, {{lon}} is added to the Internet infrastructure table, its "
+                f"place kept to 0.01 degree through your login ({REGIONS_MOST} regions at most). Nothing is downloaded "
+                f"now: its Download… then says what is asked of {dataset.host}, how large it is and its licence "
+                f"({dataset.licence_name}), and asks it only on your click.")}}
 
 
 def _host_words(dataset: DataSet) -> str:
@@ -2334,11 +2809,17 @@ class Index:
     def __init__(self, folder=None, datasets=(), clock=time.monotonic, wall=time.time):
         self._given = None if folder is None else Path(folder)
         self.wall = wall  # 1.104.0: the wall clock an Update held back (a data set's `every`) is measured on
-        self.datasets = tuple(DataSet.of(d) for d in datasets)
-        ids = [d.id for d in self.datasets]
+        self._base = tuple(DataSet.of(d) for d in datasets)
+        ids = [d.id for d in self._base]
         twice = sorted({i for i in ids if ids.count(i) > 1})
         if twice:
             raise ValueError(f"two data sets share the id {twice[0]}: each has its own")
+        # 1.107.0 (Monday list item 25): a region's template is listed as its regions (home's, those added, those
+        # kept in the database), each a data set of its own (DataSet.placed)
+        self._home: tuple | None = None
+        self._added: tuple = ()
+        self._kept_ids: frozenset = frozenset()
+        self._sets = self._base
         self.clock = clock
         self._lock = threading.Lock()
         self._looked: float | None = None  # when the folder was last looked at (clock)
@@ -2350,6 +2831,65 @@ class Index:
     def folder(self) -> Path:
         """Where the files are: the folder given, else the data folder's infrastructure/."""
         return _resolved(self._given)
+
+    @property
+    def datasets(self) -> tuple:
+        """The data sets in the table's order: the plugin's, each region's template given as its regions (1.107.0)."""
+        return self._sets
+
+    def templates(self) -> list[DataSet]:
+        """1.107.0: the plugin's data sets asked round a place (their `region`)."""
+        return [d for d in self._base if d.region]
+
+    def place_regions(self, home=None, added=()) -> None:
+        """1.107.0 (the user, 2026-11-26: "Your area only"): the regions each template is asked round, home's first
+        (`home`: {lat, lon, label} as the globe draws it, None for none), then those added on the page (`added`:
+        (lat, lon, label) each), then any other kept in the database; the folder looked at again when they changed.
+        Nothing is downloaded: each is a row of the table, downloaded on its own click."""
+        place = None
+        if isinstance(home, Mapping):
+            try:
+                place = (float(home["lat"]), float(home["lon"]), _name(home.get("label")) or "home")
+            except (KeyError, TypeError, ValueError):
+                place = None
+        given = tuple(tuple(a)[:3] for a in added or () if isinstance(a, (list, tuple)) and len(a) >= 2)
+        with self._lock:
+            if place == self._home and given == self._added:
+                return
+            self._home, self._added = place, given
+            self._rebuild()
+            self._looked = None
+
+    def _rebuild(self) -> None:
+        """The data sets made again from the plugin's and the regions (under the lock)."""
+        out = []
+        for d in self._base:
+            if not d.region:
+                out.append(d)
+                continue
+            made: dict[str, DataSet] = {}
+            places = ([(self._home, "home")] if self._home else []) + [(a, "added") for a in self._added]
+            for (lat, lon, *label), why in places:
+                try:
+                    one = d.placed(lat, lon, label[0] if label else "")
+                except ValueError:
+                    continue
+                if one.id not in made:
+                    object.__setattr__(one, "why", why)
+                    made[one.id] = one
+            for ident in sorted(self._kept_ids):
+                found = REGION_ID.fullmatch(ident)
+                if found and found.group(1) == d.id and ident not in made:
+                    lat = int(found.group(3)) / 100 * (1 if found.group(2) == "n" else -1)
+                    lon = int(found.group(5)) / 100 * (1 if found.group(4) == "e" else -1)
+                    try:
+                        one = d.placed(lat, lon, "")
+                    except ValueError:
+                        continue
+                    object.__setattr__(one, "why", "kept")
+                    made[one.id] = one
+            out.extend(made.values() or [d])
+        self._sets = tuple(out)
 
     def elsewhere(self) -> str:
         """Why this folder's files are another system's, in words ("" when they are this one's): foreign()."""
@@ -2418,6 +2958,10 @@ class Index:
             store = self.store()
             try:
                 kept = store.sets()
+                ids = frozenset(i for i in kept if REGION_ID.fullmatch(i))
+                if ids != self._kept_ids and self.templates():  # 1.107.0: a region kept is listed, to draw or remove
+                    self._kept_ids = ids
+                    self._rebuild()
                 self._answers = store.answers() if any(d.refresh or d.pause for d in self.datasets) else {}
                 problems = self._import(store, kept)
                 if not problems and self._files and store.stamp() == getattr(self, "_stamp", None):
@@ -2457,6 +3001,9 @@ class Index:
             fact = files.get(dataset.id)
             count = fact["counts"].get(layer) if fact is not None and not fact["problem"] else None
             if not count or not (count["points"] or count["lines"]):
+                continue
+            if layer in BY_AREA:  # 1.107.0: never read whole, so never full: each read answers so much at most
+                drawn.append((dataset, fact, count))
                 continue
             if points + count["points"] > MAX_POINTS or vertices + count["vertices"] > MAX_VERTICES:
                 left.append((dataset, fact, count))
@@ -2508,6 +3055,10 @@ class Index:
                      "version": _version(drawn), "credits": credits, "note": note}
             if all(fact.get("stand_in") or d.stand_in for d, fact, _ in drawn):
                 entry["stand_in"] = True
+            if layer in LAYER_FROM:  # 1.107.0: drawn only from this zoom
+                entry["from"] = LAYER_FROM[layer]
+            if layer in RANKED:  # ... and each of its features from its own, asked by area and zoom
+                entry["ranked"] = True
             out.append(entry)
         return out
 
@@ -2519,7 +3070,8 @@ class Index:
         1.104.0: `area` (west, south, east, north in degrees; west greater than east across the antimeridian): only
         the features crossing it; `zoom` (the globe's): below COARSE_ZOOM the lines' coarse copies, whole. Neither
         given: the whole layer, every vertex (the network's graph is made of it). "cut": true where more was there
-        than an answer holds."""
+        than an answer holds. 1.107.0: with a `zoom`, only the features drawn from twice that zoom or nearer out (each
+        feature's zoom: RANKED layers'), the nearest out first; a ranked layer with none of them answers no parts."""
         from .infrastore import area_of
         box = area_of(area)
         if zoom is not None and (isinstance(zoom, bool) or not isinstance(zoom, (int, float)) or not zoom > 0):
@@ -2528,7 +3080,7 @@ class Index:
         coarse = zoom is not None and zoom < COARSE_ZOOM
         try:
             found = self.store().layer(layer_id, [d.id for d, _, _ in drawn], area=None if coarse else box,
-                                       coarse=coarse) if drawn else {}
+                                       coarse=coarse, upto=None if zoom is None else 2 * float(zoom)) if drawn else {}
         except Exception:  # noqa: BLE001 - gone or changed since the look: the next look says so
             found = {}
         parts, cut = [], False
@@ -2538,7 +3090,7 @@ class Index:
                 cut = cut or entry.get("cut", False)
                 parts.append({"set": dataset.id, "credit": dict(fact["credit"]),
                               **{part: entry[part] for part in ("points", "lines") if part in entry}})
-        if not parts and (box is None or coarse):
+        if not parts and (box is None or coarse) and not (drawn and zoom is not None and layer_id in RANKED):
             raise LookupError(f"no layer {world._shown(layer_id)} is installed here")
         out = {"id": layer_id, "version": _version(drawn), "parts": parts}
         if box is not None and not coarse:
@@ -2603,6 +3155,12 @@ class Index:
         return (f"refreshed by itself every {world._seconds(dataset.every / 3600)} hours while this tab is open: next "
                 f"due at {world._iso(max(due, self.wall()))[11:16]} UTC")
 
+    def region_forms(self, can: bool = True) -> list[dict]:
+        """1.107.0: each region template's form adding a region (region_form); none where the page may not ask."""
+        if not can or self.elsewhere():
+            return []
+        return [region_form(d) for d in self.templates()]
+
     def forms(self, can: bool = True) -> list[dict]:
         """The forms the table's buttons open: each data set's download (an update once it is installed) and, once
         installed, its removal. None when the page may not ask them (`can`), for a folder on another system's drive,
@@ -2615,6 +3173,10 @@ class Index:
             dataset = self.dataset(s["id"])
             if dataset.needs and dataset.needs not in installed:
                 continue  # 1.104.0: offered once the data set it is read with is here
+            if dataset.region and not dataset.place:
+                continue  # 1.107.0: a region's template, round no place yet: nothing to download
+            if getattr(dataset, "why", "") == "added" and not (s["installed"] or s["problem"]):
+                out.append(remove_form(dataset, base))  # 1.107.0: a region added, not downloaded: forgotten on Remove
             if self._held(dataset):
                 if s["installed"] or s["problem"]:
                     out.append(remove_form(dataset, base))
@@ -2654,9 +3216,17 @@ class Index:
                 get = {"text": "Update later" if s["installed"] else "Download later", "sub": held}
             if needs and not next((x["installed"] for x in self.sets() if x["id"] == needs), False):
                 get = {"text": "needs " + next((x["title"] for x in self.sets() if x["id"] == needs), needs)}
+            dataset = self.dataset(s["id"])
+            if dataset.region and not dataset.place:  # 1.107.0: a template round no place yet
+                get = {"text": "needs a place", "sub": REGION_NO_PLACE}
+            forget = getattr(dataset, "why", "") == "added"  # a region added: removed, or forgotten, on Remove…
             rows.append([{"text": s["title"], "sub": s["about"]} if s["about"] else s["title"], s["source"],
                          s["licence_name"], here, get if offer else "",
-                         {"form": REMOVE_FORM + s["id"], "title": "Remove…"} if offer and there else ""])
+                         {"form": REMOVE_FORM + s["id"], "title": "Remove…"} if offer and (there or forget) else ""])
+        for template in self.templates():  # 1.107.0: another region, added on its own click (nothing downloaded)
+            rows.append([{"text": f"Another region: {template.title}", "sub": "added to this table, then downloaded "
+                          "on its own Download…"}, template.source, template.licence_name, "",
+                         {"form": REGION_FORM + template.id, "title": "Add a region…"} if offer else "", ""])
         note = ("What the globe draws where the exchanges globe draws exchanges: exchange points, data centres, cable "
                 "landing stations, ground stations, submarine cables, backbones and their points of presence, and "
                 "telecom lines on land, as far as free-licensed data gives them. A data set is downloaded only on your "

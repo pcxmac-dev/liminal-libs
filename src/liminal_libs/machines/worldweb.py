@@ -19,7 +19,12 @@ a refusal. With none, the tab draws the traffic it captures alone and says why. 
 the GeoIP places of addresses, which a firewall's Netstat tab asks for its place column.
 
 No lock of this plugin is held while it asks another plugin, and no service hook of either asks back, so the two
-cannot wait on each other."""
+cannot wait on each other.
+
+1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "Your area only"): a region's data set
+(OpenStreetMap's roads and buildings) is asked round the globe's home and round each region added on the page
+(world_region: a place, kept through the plugin's login as LIMINAL_WWW_REGIONS, REGIONS_MOST at most), each region a
+row of the Internet infrastructure table downloaded on its own click; Remove… of a region added forgets it too."""
 from __future__ import annotations
 
 import ipaddress
@@ -40,7 +45,7 @@ from ..sources.keys import KeyVar
 from . import asks, geosources, netstat, routes as routes_module, world as world_module
 from .firewall import WATCH_FORM, WATCH_HOOK, WATCH_KEY, WATCH_READ_S, WATCH_VAR, WATCH_WORDS, geosources_pair
 from .hostsvia import HostsVia
-from .infrastructure import DataSet, Index
+from .infrastructure import REGION_HOOK, REGIONS_MOST, DataSet, Index
 from .netstat import NetstatView
 from .plugin import MachinePlugin
 from .world import (ASN_HOOK, GEOIP_GET_HOOK, GEOIP_HOOK, GEOIP_REMOVE_HOOK, GEOIP_USE_HOOK, HOME_KEY, HOME_PLACE_VAR,
@@ -56,6 +61,11 @@ RULES_SHOWN = 8  # rules told in a port's pick, at most (the count says how many
 PLACES_HOOK = "places"  # what it offers back
 PLACES_MOST = 2000  # addresses placed in one ask, at most
 FIREWALL_VAR = "LIMINAL_WWW_FIREWALL"
+# 1.107.0: the regions added on the page, "lat,lon,name;lat,lon,name" (a name holds no comma and no semicolon)
+REGIONS_VAR = "LIMINAL_WWW_REGIONS"
+REGIONS_KEY = KeyVar(REGIONS_VAR, label="The regions the globe's street maps are asked round", secret=False,
+                     hint="optional, kept by the World Wide Web tab's Add a region…: lat,lon,name;lat,lon,name (8 at "
+                          "most); round your home place without it")
 FIREWALL_KEY = KeyVar(FIREWALL_VAR, label="The firewall serving the World Wide Web tab", secret=False,
                       hint="optional: the name of the firewall plugin whose socket table and hosts database the tab "
                            "shows (firewall-windows, firewall-linux); nothing set, the first attached that answers")
@@ -83,7 +93,7 @@ class WorldWideWeb(MachinePlugin):
 
     HOOKS = (*MachinePlugin.HOOKS,
              WORLD_HOOK, GEOIP_HOOK, WATCH_HOOK, ASN_HOOK, GEOIP_GET_HOOK, GEOIP_USE_HOOK, GEOIP_REMOVE_HOOK,
-             *netstat.GLOBE_HOOKS, PLACES_HOOK)
+             *netstat.GLOBE_HOOKS, PLACES_HOOK, REGION_HOOK)
     # its reads: a layer's geometry, the satellites' places (1.104.0: world_sky) and the places it offers
     READ_HOOKS = (netstat.LAYER_HOOK, netstat.SKY_HOOK, PLACES_HOOK)
     SERVICE_HOOKS = (PLACES_HOOK,)  # a firewall's Netstat tab asks it for its place column
@@ -110,7 +120,8 @@ class WorldWideWeb(MachinePlugin):
                        # 1.107.0, closed by default: the rest of what this base answers for its page, said in so many
                        # words: the traffic watched, the globe's own choices, a data set removed
                        WATCH_HOOK, netstat.SHOW_HOOK, netstat.DIRECTION_HOOK, netstat.WITHIN_HOOK, netstat.PICK_HOOK,
-                       netstat.REMOVE_HOOK)
+                       netstat.REMOVE_HOOK,
+                       REGION_HOOK)  # 1.108.0: a region added round a place
     GEOIP_SOURCES: tuple = ()
     INFRASTRUCTURE: tuple = ()
     # 1.104.0 (Monday list item 32): the sgp4 package the satellites are placed with, as the plugin pins it ({version,
@@ -124,7 +135,7 @@ class WorldWideWeb(MachinePlugin):
     ATTRIBUTION: dict = {}
     PUBLIC_DNS: tuple = ()
     WORLD_TIMEOUT = TIMEOUT_S
-    keys = (HOME_KEY, WATCH_KEY, FIREWALL_KEY)
+    keys = (HOME_KEY, WATCH_KEY, FIREWALL_KEY, REGIONS_KEY)
 
     # -- the firewall serving it (asked through the platform, never imported) ----------------------------------------
     def firewall(self) -> str:
@@ -685,9 +696,81 @@ class WorldWideWeb(MachinePlugin):
         """A data set's file removed from this machine, confirmed on the page: the globe no longer draws its layers.
 
         ValueError on a machine the plugin is not for: the layers' folder is this system's, and its own plugin's
-        files are left as they are."""
+        files are left as they are. 1.107.0: a region added on the page is forgotten with it (its place taken out of
+        LIMINAL_WWW_REGIONS), downloaded or not."""
         self._only_here()
-        return self.netstat_view().drop(dataset)
+        view = self.netstat_view()
+        found = view.index.dataset(dataset)
+        out = view.drop(dataset)
+        if getattr(found, "why", "") == "added" and found.place:
+            place = (round(found.place[0], 2), round(found.place[1], 2))
+            left = [r for r in self.world_regions(fresh=True) if (round(r[0], 2), round(r[1], 2)) != place]
+            where = self._keep_regions(left)
+            out = {**out, "ok": True, "lines": [*out.get("lines", []), f"the region is forgotten: kept in {where}"]}
+        return out
+
+    # -- the regions the street maps are asked round (1.107.0) ---------------------------------------------------------
+    def world_regions(self, fresh: bool = False) -> list[tuple[float, float, str]]:
+        """The regions added on the page, as the login keeps them (REGIONS_VAR, read every SETTING_S at most):
+        (lat, lon, name) each, REGIONS_MOST at most; one that does not read is passed over."""
+        kept = self.__dict__.get("_regions")
+        if not fresh and kept is not None and time.monotonic() - kept[0] < SETTING_S:
+            return list(kept[1])
+        login = getattr(self, "login", None)
+        try:
+            raw = (login.variables([REGIONS_VAR]) or {}).get(REGIONS_VAR) if login is not None else None
+        except Exception:  # noqa: BLE001 - a login that cannot say: none added
+            raw = None
+        found = []
+        for part in str(raw or "").split(";"):
+            bits = [b.strip() for b in part.split(",")]
+            try:
+                lat, lon = float(bits[0]), float(bits[1])
+            except (IndexError, ValueError):
+                continue
+            if -90 <= lat <= 90 and -180 <= lon <= 180 and len(found) < REGIONS_MOST:
+                found.append((lat, lon, bits[2] if len(bits) > 2 else ""))
+        self.__dict__["_regions"] = (time.monotonic(), tuple(found))
+        return found
+
+    def _keep_regions(self, regions) -> str:
+        """The regions kept through the plugin's login (REGIONS_VAR): where, in words. ValueError, in words, without a
+        login or with one that keeps nothing."""
+        login = getattr(self, "login", None)
+        if login is None:
+            raise ValueError("no login to keep the regions through: sign in first")
+        words = ";".join(f"{lat:.2f},{lon:.2f},{' '.join(str(name).replace(',', ' ').replace(';', ' ').split())}"
+                         for lat, lon, name in regions)
+        try:
+            where = login.save(REGIONS_VAR, words)
+        except Exception as e:  # noqa: BLE001 - a login that keeps nothing: its own words
+            raise ValueError(f"the regions could not be kept: {e}") from None
+        self.__dict__.pop("_regions", None)
+        return str(where)
+
+    def world_region(self, dataset, lat, lon, label="") -> dict:
+        """A region added on the page (its form, Add a region…): a place the template `dataset`'s street maps are asked
+        round, kept through the login (REGIONS_VAR, to 0.01 degree, REGIONS_MOST at most). Nothing is downloaded: the
+        region is a row of the table, downloaded on its own click. ValueError, in words: a data set asked round no
+        region, a place that is none, one added already, too many, no login, a machine not for it."""
+        self._only_here()
+        template = next((d for d in self.netstat_view().index.templates() if d.id == dataset), None)
+        if template is None:
+            raise ValueError(f"{world_module._shown(dataset)} is no data set asked round a region")
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            raise ValueError("a region's place is its latitude and longitude, in degrees") from None
+        one = template.placed(lat, lon, str(label or ""))
+        regions = self.world_regions(fresh=True)
+        if any(template.placed(r[0], r[1]).id == one.id for r in regions):
+            raise ValueError(f"a region round {one.place[0]:.2f}, {one.place[1]:.2f} is added already")
+        if len(regions) >= REGIONS_MOST:
+            raise ValueError(f"{REGIONS_MOST} regions are added already, the most: remove one first")
+        where = self._keep_regions([*regions, one.place])
+        return {"said": f"added {one.title}", "ok": True,
+                "lines": [f"kept in {where}", "nothing was downloaded: its Download… in the Internet infrastructure "
+                          "table asks it, its size and its licence said first"]}
 
     # -- the satellites (1.104.0, moved here from the Firewall base with the tab) --------------------------------------
     def _sky(self):
@@ -908,6 +991,7 @@ class WorldWideWeb(MachinePlugin):
         view = NetstatView(self.name, reader=self._seen, book=HostsVia(self._ask, self.firewall),
                            login_of=lambda: getattr(self, "login", None), index=Index(datasets=sets), refused=refused,
                            agent=netstat.agent_of(self.name, self.version), records=False)
+        view.regions_added = self.world_regions  # 1.107.0: the regions added on the page
         return self.sky_onto(view)
 
     def sky_onto(self, view: NetstatView) -> NetstatView:
@@ -988,6 +1072,7 @@ class WorldWideWeb(MachinePlugin):
             view.forget_setting()
         self.__dict__.pop("_geoip_choice", None)
         self.__dict__.pop("_firewall_named", None)
+        self.__dict__.pop("_regions", None)  # 1.107.0
         if not self.not_for_here():
             self.world_watch_follow()
 

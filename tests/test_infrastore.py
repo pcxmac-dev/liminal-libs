@@ -111,3 +111,70 @@ def test_the_file_is_closed_after_each_call_and_another_systems_folder_refused(t
     assert not (tmp_path / "elsewhere").exists() and Store(tmp_path).exists() is False
     with pytest.raises(ValueError, match="an area is"):
         Store(tmp_path).layer("roads", area=(0, 0, 1))
+
+
+# -- 1.107.0 (Monday list item 25: street maps on the globe) -------------------------------------------------------------
+TOWNS = {**SET, "id": "geonames-places", "layer": "towns", "format": "geonames"}
+
+
+def test_each_feature_keeps_the_zoom_it_is_drawn_from_and_a_read_upto_a_zoom_leaves_the_nearer_out(tmp_path):
+    store = Store(tmp_path)
+    store.put(TOWNS, features(points=[(2.35, 48.86, "Paris", "FR", 32), (2.30, 48.80, "Montrouge", "FR", 128),
+                                      (2.40, 48.90, "Aubervilliers", "FR", 64), (2.2, 48.7, "old", "FR")],
+                              layer="towns"), fetched=1.0)
+    whole = store.layer("towns")["geonames-places"]["points"]
+    assert whole["names"] == ["Paris", "Montrouge", "Aubervilliers", "old"] and whole["zooms"] == [32, 128, 64, 0]
+    near = store.layer("towns", upto=64)["geonames-places"]["points"]
+    assert near["names"] == ["old", "Paris", "Aubervilliers"] and near["zooms"] == [0, 32, 64]  # the nearest out first
+    assert store.layer("towns", upto=16)["geonames-places"]["points"]["names"] == ["old"]
+    plain = store.layer("towns", upto=16)["geonames-places"]["points"]
+    assert "zooms" not in plain  # every one drawn always: none said
+    store.put(SET, features([([(0, 0), (1, 1)], "A 1", 64), ([(2, 2), (3, 3)], "A 2")]), fetched=2.0)
+    lines = store.layer("roads", upto=32)["ne-roads"]["lines"]
+    assert lines["names"] == ["A 2"] and "zooms" not in lines
+    assert store.layer("roads", upto=64)["ne-roads"]["lines"]["zooms"] == [0, 64]
+    assert infrastore._zoom(5000) == 1024.0 and infrastore._zoom(True) == 0.0 and infrastore._zoom(float("nan")) == 0
+
+
+def test_an_area_smaller_than_a_cell_reads_only_the_features_whose_box_meets_it(tmp_path):
+    store = Store(tmp_path)
+    store.put(SET, features([([(8.10, 50.10), (8.12, 50.11)], "here"), ([(8.80, 50.80), (8.82, 50.81)], "there"),
+                             ([(179.9, -17.0), (-179.9, -17.1)], "across")]), fetched=1.0)
+    assert store.layer("roads", area=(8.0, 50.0, 8.25, 50.25))["ne-roads"]["lines"]["names"] == ["here"]
+    assert store.layer("roads", area=(8.5, 50.5, 9.0, 51.0))["ne-roads"]["lines"]["names"] == ["there"]
+    assert store.layer("roads", area=(8.3, 50.3, 8.6, 50.6)) == {}  # the same cell, neither box in it
+    assert store.layer("roads", area=(179.8, -17.5, -179.8, -16.5))["ne-roads"]["lines"]["names"] == ["across"]
+
+
+def test_a_line_kept_packed_is_put_as_its_integers(tmp_path):
+    class Packed:  # what infrastructure keeps a long layer's lines as: 1e-5 degrees, longitude and latitude
+        ints = [810000, 5010000, 812000, 5011000]
+
+        def __iter__(self):
+            raise AssertionError("read as its integers, never as pairs of degrees")
+    store = Store(tmp_path)
+    out = store.put(SET, features([(Packed(), "packed", 64)]), fetched=1.0)
+    assert out["counts"]["roads"]["vertices"] == 2
+    assert xy(store.layer("roads")["ne-roads"]["lines"]) == [(8.1, 50.1), (8.12, 50.11)]
+
+
+def test_a_file_before_the_zooms_is_read_as_it_was_and_gains_them_at_its_first_write(tmp_path):
+    with sqlite3.connect(tmp_path / infrastore.FILE) as con:  # 1.106.0's file: no zoom column
+        con.executescript(infrastore.SCHEMA.replace(", zoom REAL NOT NULL DEFAULT 0", ""))
+        con.execute(infrastore.ANSWERS)
+        con.execute("PRAGMA user_version = 1")
+    con.close()
+    store = Store(tmp_path)
+    assert store.layer("roads", upto=1) == {}  # read with no zoom asked of it
+    with sqlite3.connect(tmp_path / infrastore.FILE) as con:
+        con.execute("INSERT INTO sets VALUES ('ne-roads','t','s','u','l','w',1,'c','',1,1,0,0,0,'v')")
+        con.execute("INSERT INTO features (set_id, layer, kind, name, sub, w, s, e, n, count, xy) VALUES "
+                    "('ne-roads','roads',1,'kept','',0,0,100000,100000,2,?)", (infrastore._blob((0, 0, 100000, 100000)),))
+    con.close()
+    assert store.layer("roads", upto=1)["ne-roads"]["lines"]["names"] == ["kept"]
+    store.put(TOWNS, features(points=[(2.35, 48.86, "Paris", "FR", 32)], layer="towns"), fetched=2.0)
+    with sqlite3.connect(tmp_path / infrastore.FILE) as con:
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("SELECT zoom FROM features WHERE name = 'kept'").fetchone()[0] == 0
+    con.close()
+    assert store.layer("towns", upto=32)["geonames-places"]["points"]["zooms"] == [32]

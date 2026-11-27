@@ -131,7 +131,8 @@ def test_it_declares_its_tab_its_asks_and_its_service_soundly():
     assert {row[1] for row in web.ASKS} >= {"netstat_seen", "hosts_found", "hosts_keep_route", "capture_unseen",
                                           "rules_covering"}
     assert all(row[0] == "" for row in web.ASKS)  # whichever firewall offers it
-    assert [k.name for k in web.keys] == [HOME_PLACE_VAR, firewall_module.WATCH_VAR, FIREWALL_VAR]
+    assert [k.name for k in web.keys] == [HOME_PLACE_VAR, firewall_module.WATCH_VAR, FIREWALL_VAR,
+                                          worldweb.REGIONS_VAR]  # 1.107.0: the regions added
 
 
 def test_the_firewall_serving_it_is_the_first_that_answers_and_another_after_a_refusal(monkeypatch):

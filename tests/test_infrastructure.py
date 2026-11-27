@@ -1578,13 +1578,18 @@ def test_the_index_says_what_is_installed_and_reads_no_geometry_to_look(tmp_path
         False, "dash", "square", "diamond")
     assert [x[0] for x in LAYERS] == ["exchanges", "datacentres", "landings", "stations", "pops", "cables",
                                       "backbones", "lines", "airports", "cities", "fibre", "roads", "railways",
-                                      "models", "modelcities", "probes"]
+                                      "models", "modelcities", "probes",
+                                      # 1.107.0 (Monday list item 25): the map's names, boundaries, towns and streets
+                                      "countrynames", "states", "statenames", "counties", "countylines", "towns",
+                                      "streets", "buildings"]
     # every layer the library has is one the shared globe lists (its MAX_LAYERS), each on a slot it draws (4 to 7)
     script = Path(infrastructure.__file__).parents[1] / "ui" / "static" / "liminal-globe.js"
     # 1.73.0: ten, the airports and the cities with them; 1.104.0: sixteen, the fibre, the roads and the railways too
     most = int(re.search(r"const MAX_LAYERS = (\d+);", script.read_text(encoding="utf-8")).group(1))
-    assert len(LAYERS) <= most == 16
-    assert {x[4] for x in LAYERS} <= {4, 5, 6, 7} and all(x[3] in ("circle", "square", "diamond", "line", "dash")
+    # 1.107.0: twenty-four, the map's names, boundaries, towns, streets and buildings too, a name alone a "label"
+    assert len(LAYERS) <= most == 24
+    assert {x[4] for x in LAYERS} <= {4, 5, 6, 7} and all(x[3] in ("circle", "square", "diamond", "line", "dash",
+                                                                   "label")
                                                           for x in LAYERS)
     assert json.loads(json.dumps(layers, allow_nan=False)) == layers and len(json.dumps(layers)) < 2000  # small
     sets = index.sets()
