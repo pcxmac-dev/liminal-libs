@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.106.0 (2026-11-26; provisional: numbered again at landing, should another release take 1.106.0 first)
+
+The routes on real infrastructure, their cities and hubs named (Monday list item 27; the user, 2026-11-22, on the
+routes' heat map: "this clearly shows vectors direct to different places, what i need is real maps of infrastructure
+lines, etc, the straightlines are meaningless, they need to show the cities that the lines go to, the hubs, the fiber
+bones, etc."). Its first part, no straight lines (only installed lines carry the heat; a leg not known on them waits),
+was 1.70.0's, and the roads and railways standing in for fibre 1.104.0's. Additive for the plugins: the plugin API stays
+2.4; the platform's page shows it once the platform is restarted (the globe's script keeps drawing an older server's
+page as before).
+
+- **The lights only on the short links** (machines/network.py): each origin's `links`, from the place to the junction its
+  way along the lines ends at, and from the junction its way begins at to home, each only when it is at most `LINK_KM`
+  (150 km, the user's); longer, it is not drawn and the place (or home) shows its dot. A place whose way does not reach
+  it on the lines (its last leg waits) has no link, nor home where the first leg waits. 1.70.0's `tail` (a light along
+  the last 250 km of the lines) goes. The globe strokes each link lit in the lights' glow, still or moving, and its
+  light travels it alone; the legend says so. An older server's page keeps its tail.
+- **Never a straight line, even when the routes fail**: a heat that fails is left empty (its hubs and links with it),
+  not removed, and the World Wide Web tab's globe always has one: the globe draws a page without a heat with straight
+  lines (an older server's, and the exchanges globe's), which this tab's must never do.
+- **The hubs each route passes** (machines/network.py `HUB_LAYERS`): the cable landing stations, exchange points, data
+  centres, backbones' points of presence, backbone models' cities and cities of the installed data sets that a route's
+  lines run within `HUB_KM` (10 km) of, at a vertex of theirs: `globe["hubs"]` ({id, lat, lon, kind, what, name, sub,
+  w, routes}: the connections through each, each route's once, and how many routes; `MAX_HUBS` 400, the busiest kept)
+  and each origin's `hubs` (their ids in its way's order, `ROUTE_HUBS` 32 at most). Of each kind, the `EDGE_HUBS` (3)
+  nearest a stretch of the lines are kept, the named first (a city's data centres are many). Each stretch's hubs are read
+  by the 1-degree cells within `HUB_KM` of its line (`Index.points`, `Store.points`: the cells' index, 500 cells a
+  query, `HUB_READ` points a page at most), never a layer whole, and kept with the graph and the hub layers' versions
+  (`MAX_HUB_EDGES`), so a page asked again reads nothing new.
+- **On the globe** (ui/static/liminal-globe.js): the hubs drawn under the routers' places with their layers' marks, and
+  both larger and brighter by the connections through them (a log scale up to the busiest); named after the routers'
+  places by the same placing (the busiest first, `HUB_NAMES` by zoom, never over another name; an unnamed one, and one
+  whose own layer names its marks at this zoom, left out). A hub is told on hover and picked whole (`globe:hub:<id>`:
+  what it is, the connections through it, its routes, the places it is on the way to); a place picked tells its way
+  (home, its routers' places, the place) and the hubs it passes, in order: told in the right-hand panel (side.js) as
+  every pick is. Checked in headless Edge over stand-ins: the names drawn, the links stroked lit, a hub hovered,
+  clicked, let go and gone after an update, an older page, no throw.
+- The Routes table's note says the short links and the hubs; docs/PAGES.md names a hub among a globe's picks.
+
 ## 1.105.0 (2026-11-26)
 
 The right-hand panel, and the page standard (Monday list item 31; the user, 2026-11-22: "the right hand menu holds the

@@ -47,8 +47,8 @@ of a group may have such a rule of its own (`only`).
   entry (External API, Internal API). The machine at the start.
 - `tab` (main, one, of `tool`): Main, External API, Internal API, or a plugin's own tab (World Wide Web, Netstat,
   Filter). Main at the start, and again when the tool changes.
-- `pick` (main, one or none, of `tab`): a row of the tab's tables, a place, a router or a feature on its globe, a part
-  of Connections, a database. A table row and a globe's item share the one pick.
+- `pick` (main, one or none, of `tab`): a row of the tab's tables, a place, a router, a hub or a feature on its globe,
+  a part of Connections, a database. A table row and a globe's item share the one pick.
 - The right-hand menu tells the `tool`, then the `pick`.
 - The controller: the platform's own icons, and the login's (the platform holds its login as an object).
 
