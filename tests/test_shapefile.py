@@ -97,9 +97,20 @@ def test_the_shapes_are_read_one_at_a_time_after_every_record_is_checked(monkeyp
     # 1.108.0 (Monday list item 25): the states' boundaries hold millions of points; none is read before it is asked
     read = []
     real = shapefile._parts
-    monkeypatch.setattr(shapefile, "_parts", lambda *a, **k: (read.append(k.get("points", True)), real(*a, **k))[1])
+    monkeypatch.setattr(shapefile, "_parts", lambda *a, **k: (read.append(k.get("read", True)), real(*a, **k))[1])
+    unpacked = []  # the review of 1.108.0: no coordinate unpacked while the records are checked
+
+    class Struct:
+        def __getattr__(self, name):
+            return getattr(struct, name)
+
+        def unpack_from(self, fmt, *args):
+            unpacked.append(fmt)
+            return struct.unpack_from(fmt, *args)
+    monkeypatch.setattr(shapefile, "struct", Struct())
     got = shapefile.read(roads())
     assert read == [False, False, False]  # the three records with parts checked, none of their points read
+    assert not [f for f in unpacked if f.endswith("d")]  # no coordinate (a double) unpacked yet
     first = next(got)
     assert first.kind == "line" and read[3:] == [True]  # the first shape's points read once it is asked for
     assert [g.kind for g in got] == ["point", "polygon"] and read[3:] == [True, True]  # the deleted one never read
@@ -117,5 +128,16 @@ def test_the_records_alone_are_read_without_the_shapes():
         shp_bytes=b"", dbf_bytes=S.dbf(FIELDS, []), prj=S.MERCATOR_PRJ)).value)
     with pytest.raises(ShapefileError, match="more than 1 records"):
         shapefile.records(roads(), most_records=1)
+
+
+def test_more_records_than_the_most_are_refused_before_any_row_is_made(monkeypatch):
+    # the review of 1.108.0: from the .dbf's header, by read() and by records() alike
+    made = []
+    real = shapefile._value
+    monkeypatch.setattr(shapefile, "_value", lambda *a: (made.append(a), real(*a))[1])
+    for reader in (shapefile.records, shapefile.read):
+        with pytest.raises(ShapefileError, match="more than 1 records"):
+            reader(roads(), most_records=1)
+    assert made == []
     with pytest.raises(ShapefileError, match="it is no zip"):
         shapefile.records(b"nothing")

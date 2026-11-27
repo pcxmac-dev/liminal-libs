@@ -115,12 +115,14 @@ def _value(kind: str, raw: bytes, encoding: str):
     return text
 
 
-def _records(dbf: bytes, encoding: str, fields) -> tuple[int, list]:
+def _records(dbf: bytes, encoding: str, fields, most_records: int | None = None) -> tuple[int, list]:
     """The .dbf's count and its rows: each a dict of the fields asked for (all when `fields` is None), or None for a
-    row marked deleted."""
+    row marked deleted. 1.108.0 (the review): more than `most_records` refused from its header, no row made."""
     if len(dbf) < 32:
         raise ShapefileError("its .dbf is cut short")
     count, head, size = struct.unpack_from("<IHH", dbf, 4)
+    if most_records is not None and count > most_records:
+        raise ShapefileError(f"it holds more than {most_records:,} records, the most a shapefile may")
     if head < 33 or size < 1 or head > len(dbf):
         raise ShapefileError("its .dbf's header does not read")
     columns, at, width = [], 32, 1
@@ -191,7 +193,7 @@ def _index(shp: bytes, most_records: int) -> list[tuple[int, int, int, int]]:
         if base == 1 and start + 20 > stop:
             raise ShapefileError(f"its record {number:,} is cut short")
         if base not in (NULL, 1):
-            _parts(shp, start, stop, number, multi=base == 8, points=False)
+            _parts(shp, start, stop, number, multi=base == 8, read=False)
         found.append((number, base, start, stop))
         at = stop
     if at != end:
@@ -199,9 +201,9 @@ def _index(shp: bytes, most_records: int) -> list[tuple[int, int, int, int]]:
     return found
 
 
-def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool, points: bool = True) -> list:
+def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool, read: bool = True) -> list:
     """A polyline's, a polygon's or a multipoint's parts, each its (x, y) pairs: their counts and offsets checked
-    (`points` false: checked alone, nothing read)."""
+    (`read` false: checked alone, no coordinate unpacked; the review of 1.108.0: it was overwritten by the count)."""
     at = start + 4 + 32  # the type, then the box
     if multi:
         if at + 4 > stop:
@@ -222,7 +224,7 @@ def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool, points: 
         raise ShapefileError(f"its record {number:,} says more points than it holds")
     if offsets[0] != 0 or any(b < a for a, b in zip(offsets, offsets[1:])) or offsets[-1] > points:
         raise ShapefileError(f"its record {number:,}'s parts begin past its points")
-    if not points:
+    if not points or not read:
         return []
     xy = struct.unpack_from(f"<{2 * points}d", shp, at)
     pairs = list(zip(xy[0::2], xy[1::2]))
@@ -251,7 +253,7 @@ def read(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = S
             dbf = _read(z, members[".dbf"], most_bytes)
         except (zipfile.BadZipFile, zlib.error, EOFError, OSError) as e:
             raise ShapefileError(f"its zip does not read: {' '.join(str(e).split())[:120]}") from None
-    count, rows = _records(dbf, encoding, fields)
+    count, rows = _records(dbf, encoding, fields, most_records)
     del dbf
     found = _index(shp, most_records)  # 1.108.0: every record checked, none of its points read yet
     if len(found) != count:
@@ -290,7 +292,5 @@ def records(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int 
             dbf = _read(z, members[".dbf"], most_bytes)
         except (zipfile.BadZipFile, zlib.error, EOFError, OSError) as e:
             raise ShapefileError(f"its zip does not read: {' '.join(str(e).split())[:120]}") from None
-    count, rows = _records(dbf, encoding, fields)
-    if count > most_records:
-        raise ShapefileError(f"it holds more than {most_records:,} records, the most a shapefile may")
+    _, rows = _records(dbf, encoding, fields, most_records)
     return [row for row in rows if row is not None]
