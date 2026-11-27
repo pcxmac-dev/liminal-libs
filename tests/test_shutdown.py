@@ -59,6 +59,67 @@ def test_a_hosts_last_client_that_lets_it_go_ends_it_at_once(tmp_path):
     assert h.idle_for() == 0.0 and h.check_idle(now=100.0) is True and h.reason == "its last client let it go"
 
 
+def test_a_client_attaching_as_the_last_one_lets_go_keeps_the_host(tmp_path):
+    """1.110.0 (item 14, libs-rest P3-1): the fetcher lets feed-x go and takes it again for its next job: the second
+    connection is accepted before the watch's look, in the same moment. It holds the host until its hello is read,
+    then it is attached; the host ends once that one lets it go. Ordered by events, never by time."""
+    h = a_host(tmp_path)
+    h._client(Conn({"attach": "feed-x", "pid": 1}, "detach"), 1)
+    hello, accepted, done = threading.Event(), threading.Event(), threading.Event()
+
+    class Arriving(Conn):  # its hello is read once the test says so
+        def poll(self, timeout=None):
+            if not hello.is_set():
+                assert hello.wait(10)
+            return super().poll(timeout)
+
+        def close(self):
+            done.set()
+
+    second = Arriving({"attach": "feed-x", "pid": 2}, "detach")
+
+    class Listening:  # the host's listener: the next job's connection, then nothing until the host stops
+        calls = 0
+
+        def accept(self):
+            Listening.calls += 1
+            if Listening.calls == 1:
+                return second
+            accepted.set()
+            assert h.stop.wait(10)
+            raise OSError("closed")
+
+    h._listener = Listening()
+    loop = threading.Thread(target=h._accept_loop, daemon=True)
+    loop.start()
+    try:
+        assert accepted.wait(10)  # accepted, its hello not read yet
+        assert h.check_idle(now=100.0) is False and not h.stop.is_set()
+        hello.set()
+        assert done.wait(10)
+        assert second.sent and second.sent[0]["ok"] is True  # attached, to a host that ran
+        assert h.check_idle(now=100.0) is True and h.reason == "its last client let it go"
+    finally:
+        hello.set()
+        h.stop.set()
+        loop.join(10)
+
+
+def test_a_client_whose_host_closed_the_pipe_as_it_ended_starts_a_new_one(tmp_path, monkeypatch):
+    """1.110.0 (item 14, libs-rest P3-1): the host answered, then ended before reading the hello (EOF): asked once more
+    with its start, a new host is started and attached to; with no start, nothing more is asked."""
+    ending = Conn(EOFError("ended"))
+    ending.poll = lambda timeout=None: True
+    fresh = Conn({"ok": True, "pid": 77})
+    reached, started = [ending, None, fresh], []
+    monkeypatch.setattr(host, "_connect", lambda name, db_path: reached.pop(0))
+    monkeypatch.setattr(host.time, "sleep", lambda s: None)
+    held = host.Attachment.to("feed-x", tmp_path / "liminal.db", start=lambda: started.append(1), log=lambda m: None)
+    assert held is not None and held.host_pid == 77 and started == [1] and reached == []
+    monkeypatch.setattr(host, "_connect", lambda name, db_path: Conn(EOFError("ended")))
+    assert host.Attachment.to("feed-x", tmp_path / "liminal.db", log=lambda m: None) is None
+
+
 def test_a_host_whose_last_clients_process_is_gone_waits_a_short_idle(tmp_path):
     h = a_host(tmp_path)
     h._client(Conn({"attach": "feed-x", "pid": 1}, EOFError("its process ended")), 1)

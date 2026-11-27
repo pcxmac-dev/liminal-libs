@@ -172,6 +172,7 @@ class Host:
         self._idle_since: float | None = None
         self._touched: float | None = None  # when a page last touched this host (touch)
         self._seq = 0
+        self._arriving: set[int] = set()  # 1.110.0: connections accepted whose hello is not read yet (_accepted)
         self.handle: Callable[[dict], object] | None = None  # answers a client's `ask` (a status, say)
         self._last_left = ""  # how the last client went (1.87.0): "detach" (it said so), "gone" (its process ended)
 
@@ -290,10 +291,17 @@ class Host:
                     return
                 time.sleep(0.1)
                 continue
-            with self._lock:
-                self._seq += 1
-                n = self._seq
+            n = self._accepted()
             threading.Thread(target=self._client, args=(conn, n), name=f"host-{self.name}-client-{n}", daemon=True).start()
+
+    def _accepted(self) -> int:
+        """1.110.0 (item 14, libs-rest P3-1): a connection accepted, its number; until its hello is read (or it says
+        nothing) it holds the host as a client does, so a host whose last client has just let it go does not end under
+        a client that is attaching (the fetcher letting a feed go and taking it again for its next job)."""
+        with self._lock:
+            self._seq += 1
+            self._arriving.add(self._seq)
+            return self._seq
 
     def _client(self, conn, n: int) -> None:
         pid, how = 0, "gone"
@@ -307,6 +315,7 @@ class Host:
             pid = int(hello.get("pid") or 0)
             with self._lock:
                 self.attached[n] = pid
+                self._arriving.discard(n)
                 self._ever = True
                 self._idle_since = None
             self.log(f"host {self.name}: client {pid} attached ({len(self.attached)} attached)")
@@ -325,6 +334,7 @@ class Host:
             return  # detached, or its process ended: the system closed its end
         finally:
             with self._lock:
+                self._arriving.discard(n)
                 gone = self.attached.pop(n, None) is not None
                 left = len(self.attached)
                 if gone:
@@ -361,7 +371,7 @@ class Host:
         now = time.monotonic() if now is None else now
         with self._lock:
             touched = self._touched is not None and now - self._touched < self.idle
-            attached, ever = len(self.attached) or touched, self._ever
+            attached, ever = len(self.attached) or len(self._arriving) or touched, self._ever
             if attached:
                 self._idle_since = None
                 return False
@@ -429,9 +439,12 @@ class Attachment:
 
     @classmethod
     def to(cls, name: str, db_path: Path, start: Callable[[], None] | None = None, wait: float = START_SECONDS,
-           log=print) -> "Attachment | None":
+           log=print, again: bool = True) -> "Attachment | None":
         """Attach to the host `name` of this database: the one answering, or else one started by
-        `start` (None: no host answers and none was started, or the started one never answered)."""
+        `start` (None: no host answers and none was started, or the started one never answered). 1.110.0 (item 14):
+        a host that answered and then closed the pipe before attaching (it was ending, its last client gone) is asked
+        once more with `start`, so a new one is started once the old has let go (`again`: whether that is still to
+        come)."""
         conn = _connect(name, db_path)
         if conn is None and start is not None:
             start()
@@ -449,8 +462,11 @@ class Attachment:
             if not (isinstance(answer, dict) and answer.get("ok")):
                 raise EOFError(f"refused: {answer}")
         except (EOFError, OSError) as e:
-            log(f"host {name}: could not attach ({e})")
             conn.close()
+            if again and start is not None:
+                log(f"host {name}: could not attach ({e}): it may be ending; asked once more")
+                return cls.to(name, db_path, start, wait, log, again=False)
+            log(f"host {name}: could not attach ({e})")
             return None
         return cls(name, db_path, conn, int(answer.get("pid") or 0))
 
