@@ -12,7 +12,8 @@
 // a double click (or two taps) back home. One 2D canvas, sharp at the screen's pixel ratio; no libraries.
 //
 //   const globe = LiminalGlobe.draw(el, spec, {theme, load, key})   el: the element it fills (drawn into again: it
-//   globe.update(spec)                                               is updated in place, its view kept)
+//   globe.update(spec, more)                                         is updated in place, its view kept; more:
+//                                                                    the draw's options again, 1.105.0)
 //   globe.destroy()
 //   spec: a tab page's "globe" (apps/tabs.py): {home: {lat, lon, label} | null, origins: [{id, lat, lon, label,
 //     country, city, asn, org, count, bytes, kind, ports, hosts, programs, seconds}], local: {count, bytes, hosts},
@@ -2981,7 +2982,9 @@
       }
     }
 
-    const handle = { update: (next) => update(next), destroy, describe: (key) => (destroyed ? null : describeKey(key)),
+    // 1.105.0: update(spec, more) takes the draw's options too (load, sky, theme, key, onPick), so a page may hand a
+    // new loader with the spec; given the spec alone, the globe keeps what it has
+    const handle = { update: (next, more) => update(next, more), destroy, describe: (key) => (destroyed ? null : describeKey(key)),
       unpick: () => { pinned = ''; } };  // 1.105.0: the page let the pick go itself (a row of its table picked instead)
     const self = {
       handle, root, update, destroy,
@@ -3074,10 +3077,11 @@
 
   const instances = new WeakMap();  // an element -> the globe drawn in it
 
-  // LiminalGlobe.draw(el, spec, {theme, load, key, onPick}) -> {update(spec), destroy(), describe(key), unpick()}. Drawn
-  // into the same element again, it is the same globe updated in place (its view, zoom and words kept), and the same
-  // handle comes back. onPick(spec) (1.105.0): what a click, a tap or Enter picked, as side.js tells it ({key, kind, title,
-  // sub, facts, lines}), or null when it is let go; describe(key) tells a pick anew from the spec drawn now.
+  // LiminalGlobe.draw(el, spec, {theme, load, sky, key, onPick}) -> {update(spec, more), destroy(), describe(key),
+  // unpick()}. Drawn into the same element again, it is the same globe updated in place (its view, zoom and words
+  // kept), and the same handle comes back. onPick(spec) (1.105.0): what a click, a tap or Enter picked, as side.js tells
+  // it ({key, kind, title, sub, facts, lines}), or null when it is let go; describe(key) tells a pick anew from the spec
+  // drawn now.
   function draw(el, spec, opts) {
     if (!el || el.nodeType !== 1) {
       throw new TypeError('LiminalGlobe.draw(el, spec, {theme, load, key}): el is the element to draw in');

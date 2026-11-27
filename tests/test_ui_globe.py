@@ -79,7 +79,8 @@ def test_one_global_draws_a_globe_and_hands_back_update_and_destroy(js):
     assert "throw new TypeError(" in draw  # no element, no globe
     assert "there.update(spec, opts || {});" in draw and "return there.handle;" in draw and "return g.handle;" in draw
     assert "if (g.left()) g.destroy();" in draw  # a globe whose element left the page goes with the next draw
-    assert "const handle = { update: (next) => update(next), destroy, describe: (key) =>" in js
+    # 1.105.0: the handle's update takes the draw's options too (the platform's loaders handed again with the spec)
+    assert "const handle = { update: (next, more) => update(next, more), destroy, describe: (key) =>" in js
     destroy = _body(js, "function destroy() {")
     for gone in ("cancelAnimationFrame(raf)", "seenBy.disconnect()", "sized.disconnect()", "themed.disconnect()",
                  "unlisten(motion, onMotion)", "unlisten(scheme, recolour)", "unlisten(dpr, onRatio)",
