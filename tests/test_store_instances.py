@@ -392,6 +392,28 @@ def test_connections_kept_are_capped_and_closed(world, monkeypatch):
     assert w.servers["docs"].opened[0].closed
 
 
+def test_a_connection_a_call_is_using_is_never_closed_by_the_pools_cap(monkeypatch):
+    """1.110.0 (item 14, libs-rest P3-3): past POOL_MOST the oldest connection no call holds is closed; the one a
+    call is using (its lock held) is kept, and a call that waited for one closed meanwhile takes another."""
+    from collections import OrderedDict
+
+    monkeypatch.setattr(stores, "_pool", OrderedDict())
+    closed: list = []
+
+    def opener(n):
+        return lambda: stores._Held(f"conn-{n}", lambda: closed.append(n))
+    busy = stores._held(("e", 0), opener(0))
+    assert busy.lock.acquire(blocking=False)  # a call inside its session, mid-statement
+    try:
+        for n in range(1, stores.POOL_MOST + 1):  # eight more: one past the cap
+            stores._held(("e", n), opener(n))
+        assert closed == [1] and not busy.closed and ("e", 0) in stores._pool
+    finally:
+        busy.lock.release()
+    stores.close_instances()
+    assert sorted(closed) == list(range(stores.POOL_MOST + 1))
+
+
 @pytest.mark.parametrize("dialect", ["postgres", "mariadb", "sqlite"])
 def test_sql_documents_answer_as_the_others_do(dialect):
     server = Server("postgres" if dialect == "sqlite" else dialect)

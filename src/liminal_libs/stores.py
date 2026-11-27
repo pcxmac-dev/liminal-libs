@@ -372,12 +372,15 @@ def instance_choices(dtype: str, data_dir: Path | None = None) -> list[dict]:
 
 
 class _Held:
-    """One connection to an instance, kept for this process: used by one call at a time (`lock`), closed by `close`."""
+    """One connection to an instance, kept for this process: used by one call at a time (`lock`), closed by `close`
+    (`closed` then: 1.110.0, a call that waited for it takes another)."""
 
     def __init__(self, value, close: Callable[[], None]):
         self.value, self._close, self.lock = value, close, threading.Lock()
+        self.closed = False
 
     def close(self) -> None:
+        self.closed = True
         try:
             self._close()
         except Exception:  # noqa: BLE001 - a connection gone already
@@ -400,9 +403,18 @@ def _held(key: tuple, opener: Callable[[], _Held]) -> _Held:
             made.close()
             return _pool[key]
         _pool[key] = made
+        # 1.110.0 (item 14, libs-rest P3-3): past POOL_MOST the oldest connection no call is using is closed, its
+        # lock taken first (never one a call holds: its statement would lose its connection); with every other one in
+        # use, the pool stays over its bound until a later call
         while len(_pool) > POOL_MOST:
-            _, oldest = _pool.popitem(last=False)
-            oldest.close()
+            idle = next((k for k, h in _pool.items() if h is not made and h.lock.acquire(blocking=False)), None)
+            if idle is None:
+                break
+            oldest = _pool.pop(idle)
+            try:
+                oldest.close()
+            finally:
+                oldest.lock.release()
         return made
 
 
@@ -458,13 +470,19 @@ def named_backend(store_name: str, kind: documents.Kind, data_dir: Path | None =
 
     @contextmanager
     def session():
-        held = _held(key, opener)
-        with held.lock:
-            try:
-                yield held.value
-            except Exception:
-                _drop(key, held)  # a connection that failed is not used again: the next call makes another
-                raise
+        while True:
+            held = _held(key, opener)
+            held.lock.acquire()
+            if not held.closed:  # 1.110.0: closed by the pool while this call waited for it: another is taken
+                break
+            held.lock.release()
+        try:
+            yield held.value
+        except Exception:
+            _drop(key, held)  # a connection that failed is not used again: the next call makes another
+            raise
+        finally:
+            held.lock.release()
 
     return documents.SqlDocuments(session, kind, engine, place=place)
 
