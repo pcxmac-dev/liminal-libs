@@ -278,7 +278,8 @@ def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
                                             "world_sky_get", "world_sky_remove",  # 1.104.0's review: the sgp4 package's
                                             # 1.107.0, closed by default: the rest the base answers for its page
                                             "world_watching", "world_show", "world_direction", "world_within",
-                                            "world_pick", "world_layer_remove")
+                                            "world_pick", "world_layer_remove",
+                                            "world_region")  # 1.108.0: a region added round a place
     assert Firewall.PAGE_ONLY_HOOKS == ("allow", "remove", "move_rules", "new_label", "rename_label", "remove_label",
                                         "hosts_recording", "hosts_forget")  # 1.107.0: the firewall's own changes
     assert WorldWideWeb.GEOIP_SOURCES == ()
@@ -287,7 +288,7 @@ def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
             WorldWideWeb.PUBLIC_DNS) == ("", "", {}, ())
     # the home on the globe and (1.74.0) when the traffic is watched, set on the plugin's page and kept through the
     # login; when the hosts are recorded is the firewall's (FakeFirewall's keys)
-    [home, watching, serving] = fw.keys
+    [home, watching, serving, regions] = fw.keys  # 1.107.0: the regions added
     [recording] = FakeFirewall().keys
     assert (home.name, home.secret, home.pair) == ("LIMINAL_HOME_PLACE", False, "liminal-home-place")
     assert (recording.name, recording.secret, recording.pair) == ("LIMINAL_HOSTS_RECORDING", False,
@@ -295,7 +296,8 @@ def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
     assert (watching.name, watching.secret, watching.pair) == ("LIMINAL_TRAFFIC_WATCHING", False,
                                                             "liminal-traffic-watching")
     assert serving.name == "LIMINAL_WWW_FIREWALL" and not serving.secret
-    assert all(k.hint.startswith("optional") for k in (home, recording, watching, serving))
+    assert regions.name == "LIMINAL_WWW_REGIONS" and not regions.secret
+    assert all(k.hint.startswith("optional") for k in (home, recording, watching, serving, regions))
     assert problems(fw) == [] and problems(FakeFirewall()) == []
     assert ACCEPT_LICENCE.isidentifier() and LicenceRefused.accept == ACCEPT_LICENCE and issubclass(LicenceRefused, ValueError)
 
