@@ -334,9 +334,10 @@ def port_of(cmdline: str) -> int:
 
 def ask_shutdown(on_port: int, pid: int | None = None) -> bool:
     """The server on 127.0.0.1:`on_port` asked to shut down (its own command; lifecycle's end of a mongod process),
-    only when it says it is process `pid` (when given). Whether it was asked. Its clients here let go."""
+    only when it says it is process `pid` (when given). Whether it was asked: 1.110.0 (item 14), False when nothing
+    answered there, with a `pid` or not. Its clients here let go."""
     try:
-        return _shutdown(on_port, pid) is not None or pid is None
+        return _asked_down(on_port, pid)[0]
     except Exception:  # noqa: BLE001 - nothing answers, another server, no pymongo: not asked
         return False
 
@@ -344,23 +345,36 @@ def ask_shutdown(on_port: int, pid: int | None = None) -> bool:
 def _shutdown(on_port: int | None = None, pid: int | None = None) -> int | None:
     """mongod asked to shut down (its own command), its clients here let go. Returns its process id as it said it
     (serverStatus), None when it could not be told; when `pid` is given and it says another, nothing is asked."""
-    from pymongo.errors import AutoReconnect, ConnectionFailure, PyMongoError
+    return _asked_down(on_port, pid)[1]
+
+
+def _asked_down(on_port: int | None = None, pid: int | None = None) -> tuple[bool, int | None]:
+    """_shutdown's ask: (whether the shutdown command reached a server, its process id as it said it or None). 1.110.0
+    (item 14): a server that never answered (ServerSelectionTimeoutError) is told apart from one that closed the
+    connection as it went (AutoReconnect, ConnectionFailure: asked)."""
+    from pymongo.errors import AutoReconnect, ConnectionFailure, PyMongoError, ServerSelectionTimeoutError
 
     from pymongo import MongoClient
 
     on_port = port() if on_port is None else on_port
     c = MongoClient(HOST, on_port, serverSelectionTimeoutMS=2000, directConnection=True)
-    said = None
+    said, sent, answers = None, False, True
     try:
         try:
             said = int(c.admin.command("serverStatus").get("pid") or 0) or None
+        except ServerSelectionTimeoutError:
+            answers = False  # nothing answers there: nothing is asked (its clients here are let go all the same)
         except (PyMongoError, TypeError, ValueError):
             said = None
         if pid is not None and said != pid:
-            return None  # another server answers there: not this process's to shut down
-        c.admin.command("shutdown")
+            return False, None  # another server answers there (or none): not this process's to shut down
+        if answers:
+            c.admin.command("shutdown")
+            sent = True
+    except ServerSelectionTimeoutError:
+        sent = False  # gone between the two asks: not asked
     except (AutoReconnect, ConnectionFailure):
-        pass  # it closes the connection as it goes
+        sent = True  # it closes the connection as it goes
     except PyMongoError:
         raise
     finally:
@@ -370,7 +384,7 @@ def _shutdown(on_port: int | None = None, pid: int | None = None) -> int | None:
     if old is not None:
         old.close()
     _alive[:] = [time.monotonic(), False]
-    return said
+    return sent, said
 
 
 def status(data_dir: Path) -> dict:

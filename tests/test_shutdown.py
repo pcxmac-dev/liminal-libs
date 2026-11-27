@@ -424,6 +424,41 @@ def test_the_keepers_look_is_keep_seconds_as_set_when_it_runs(monkeypatch):
     assert asked == [0.05]
 
 
+def test_mongo_ask_shutdown_says_asked_only_when_a_server_took_the_command(monkeypatch):
+    """1.110.0 (item 14, libs-rest P3-4): with no pid given, a port nothing answers on is "not asked" (its server
+    selection timed out, before and at the shutdown); a server that closes the connection as it goes was asked."""
+    import pymongo
+    from pymongo.errors import AutoReconnect, ServerSelectionTimeoutError
+
+    said = []
+
+    class Client:
+        answers, pid = False, 5150
+
+        def __init__(self, *a, **k):
+            self.admin = self
+
+        def command(self, name):
+            said.append(name)
+            if not Client.answers:
+                raise ServerSelectionTimeoutError("127.0.0.1:27999: connection refused")
+            if name == "serverStatus":
+                return {"pid": Client.pid}
+            raise AutoReconnect("connection closed")  # it shuts down as it answers
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pymongo, "MongoClient", Client)
+    assert mongo.ask_shutdown(27999) is False and "shutdown" not in said  # nothing answers: nothing asked
+    assert mongo.ask_shutdown(27999, pid=5150) is False
+    Client.answers = True
+    said.clear()
+    assert mongo.ask_shutdown(27999) is True and said == ["serverStatus", "shutdown"]
+    assert mongo.ask_shutdown(27999, pid=5150) is True and mongo.ask_shutdown(27999, pid=6) is False
+    assert mongo._shutdown(27999) == 5150  # stop()'s ask still answers the process id it said
+
+
 def test_mongo_stop_waits_for_the_servers_process_to_exit():
     # 1.88.4: its own shutdown, then a wait for its process (never a kill: test_clean_shutdowns has the one left)
     clock = FakeClock(0.0)
