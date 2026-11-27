@@ -272,13 +272,16 @@ class Auditor:
         or does not watch the symbol) stays queued for the next pass, its try counted against
         `queued`; QUEUE_MAX_AGE ends its tries a week after its last queuing. One the second feed had
         nothing for is a result (verdict no-data, saved) and leaves the queue (1.81.0; the review of
-        2026-11-21, Monday list item 4: every None left it, as if audited)."""
+        2026-11-21, Monday list item 4: every None left it, as if audited). 1.109.0 (item 14): such a try
+        puts the entry behind the ones this feed has not tried (store.audit_tried; the queue read as this
+        feed takes it): one it cannot serve (NotEntitled on its plan) no longer holds the head of the
+        queue, and every pass's tries, for the week until it expires."""
         source, store, me, feeds, now, rng = self.source, self.store, self.me, self.feeds, self.now, self.rng
         done = tried = 0
         start = source.requests_made
         spent = lambda: requests is not None and source.requests_made - start >= requests  # noqa: E731
         store.expire_audits(now - QUEUE_MAX_AGE)  # once, whatever this run audits (it was a row at a time, while done < queued)
-        for q in store.audit_queue(exclude_owner=me.name):
+        for q in store.audit_queue(exclude_owner=me.name, auditor=me.name):
             if tried >= queued or spent():
                 break
             w = self.mine.get(q["ticker"])
@@ -295,7 +298,8 @@ class Auditor:
             s0, s1 = spot(a, q["end_ms"], rng, q["timespan"])
             tried += 1
             if self.span(q["ticker"], q["timespan"], s0, s1, q["owner"], "after-download") is None:
-                continue  # it could not run: queued still, for the next pass
+                store.audit_tried(q["ticker"], q["timespan"], q["start_ms"], q["owner"], me.name)
+                continue  # it could not run: queued still, behind the others, for a later pass
             store.dequeue_audit(q["ticker"], q["timespan"], q["start_ms"], q["owner"], q["end_ms"])
             done += 1
         for _ in range(random_count):

@@ -323,6 +323,18 @@ CREATE TABLE IF NOT EXISTS audit_queue (
     queued_at TEXT    NOT NULL,
     PRIMARY KEY (ticker, timespan, start_ms, owner)
 );
+-- A queued audit an auditing feed tried and could not run (1.109.0, item 14: the feed refused it, NotEntitled on its
+-- plan, or did not answer): that feed takes it again only after the entries it has not tried, the oldest try first,
+-- so one it cannot serve no longer holds the head of the queue for a week. Gone with its entry.
+CREATE TABLE IF NOT EXISTS audit_tries (
+    ticker    TEXT    NOT NULL,
+    timespan  TEXT    NOT NULL,
+    start_ms  INTEGER NOT NULL,
+    owner     TEXT    NOT NULL,
+    auditor   TEXT    NOT NULL,
+    tried_at  TEXT    NOT NULL,
+    PRIMARY KEY (ticker, timespan, start_ms, owner, auditor)
+);
 
 -- File versions of the research datasets (datasets.py): when each was fetched, whether it is closed
 -- (final: never fetched again), its checksum, the time its source published it, where the copy is

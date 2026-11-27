@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from .common import _now
+import sqlite3
+
+from .common import _now, _now_precise
 
 
 class AuditStore:
@@ -91,13 +93,34 @@ class AuditStore:
             self.conn.execute("INSERT OR REPLACE INTO audit_queue VALUES (?, ?, ?, ?, ?, ?)",
                               (ticker.upper(), timespan, start_ms, end_ms, owner, _now()))
 
-    def audit_queue(self, exclude_owner: str | None = None) -> list[dict]:
-        sql = "SELECT ticker, timespan, start_ms, end_ms, owner, queued_at FROM audit_queue"
-        args: tuple = ()
-        if exclude_owner is not None:
-            sql, args = sql + " WHERE owner != ?", (exclude_owner,)
+    def audit_queue(self, exclude_owner: str | None = None, auditor: str | None = None) -> list[dict]:
+        """The queued audits, the oldest queuing first. With `auditor` (1.109.0, item 14), as that feed takes them:
+        those it has not tried first, then those it tried and could not run (audit_tried), the oldest try first,
+        each with its `tried_at` (None: not tried)."""
         cols = ("ticker", "timespan", "start_ms", "end_ms", "owner", "queued_at")
-        return [dict(zip(cols, r)) for r in self.conn.execute(sql + " ORDER BY queued_at", args)]
+        where, args = ("", ()) if exclude_owner is None else (" WHERE q.owner != ?", (exclude_owner,))
+        plain = f"SELECT {', '.join('q.' + c for c in cols)} FROM audit_queue q{where} ORDER BY q.queued_at"
+        if auditor is None:
+            return [dict(zip(cols, r)) for r in self.conn.execute(plain, args)]
+        sql = (f"SELECT {', '.join('q.' + c for c in cols)}, t.tried_at FROM audit_queue q LEFT JOIN audit_tries t "
+               "ON t.ticker=q.ticker AND t.timespan=q.timespan AND t.start_ms=q.start_ms AND t.owner=q.owner "
+               f"AND t.auditor=?{where} ORDER BY t.tried_at IS NOT NULL, t.tried_at, q.queued_at")
+        try:
+            rows = self.conn.execute(sql, (auditor, *args)).fetchall()
+        except sqlite3.OperationalError as e:  # a file without the table (another system's, behind): none tried
+            if "no such table" not in str(e):
+                raise
+            return [{**dict(zip(cols, r)), "tried_at": None} for r in self.conn.execute(plain, args)]
+        return [dict(zip((*cols, "tried_at"), r)) for r in rows]
+
+    def audit_tried(self, ticker: str, timespan: str, start_ms: int, owner: str, auditor: str) -> None:
+        """1.109.0 (item 14): a queued audit `auditor` could not run (its feed refused it, or did not answer) put
+        behind the ones it has not tried (audit_queue): it stays queued, for this feed's later passes and for the
+        other feeds, until it is audited or QUEUE_MAX_AGE ends it."""
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO audit_tries (ticker, timespan, start_ms, owner, auditor, tried_at) "
+                              "VALUES (?, ?, ?, ?, ?, ?)", (ticker.upper(), timespan, start_ms, owner, auditor,
+                                                            _now_precise()))
 
     def audit_queue_count(self) -> int:
         """Entries waiting in the audit queue (a count, not the rows)."""
@@ -106,8 +129,21 @@ class AuditStore:
     def expire_audits(self, before: datetime) -> int:
         """Drop queued audits older than `before` (one statement). Returns entries dropped."""
         with self.conn:
-            return self.conn.execute("DELETE FROM audit_queue WHERE queued_at < ?",
-                                     (before.astimezone(timezone.utc).isoformat(timespec="seconds"),)).rowcount
+            dropped = self.conn.execute("DELETE FROM audit_queue WHERE queued_at < ?",
+                                        (before.astimezone(timezone.utc).isoformat(timespec="seconds"),)).rowcount
+            self._tries_left(self.conn)
+            return dropped
+
+    @staticmethod
+    def _tries_left(conn) -> None:
+        """The tries of entries no longer queued forgotten (1.109.0; a file without the table has none)."""
+        try:
+            conn.execute("DELETE FROM audit_tries WHERE NOT EXISTS (SELECT 1 FROM audit_queue q WHERE "
+                         "q.ticker=audit_tries.ticker AND q.timespan=audit_tries.timespan AND "
+                         "q.start_ms=audit_tries.start_ms AND q.owner=audit_tries.owner)")
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
 
     def dequeue_audit(self, ticker: str, timespan: str, start_ms: int, owner: str, end_ms: int | None = None) -> None:
         """The entry audited taken off the queue. With `end_ms`, only while it is still the span that was audited:
@@ -118,3 +154,4 @@ class AuditStore:
             sql, args = sql + " AND end_ms=?", (*args, end_ms)
         with self.conn:
             self.conn.execute(sql, args)
+            self._tries_left(self.conn)

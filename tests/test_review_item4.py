@@ -116,6 +116,57 @@ def test_audit_span_returns_none_only_when_it_could_not_run_and_a_no_data_verdic
     assert got is not None and got["verdict"] == "no-data" and store.audits()[0]["verdict"] == "no-data"
 
 
+def test_entries_the_feed_cannot_serve_go_behind_the_others_and_the_rest_is_audited(store):
+    """Item 14 (1.109.0, libs-rest P2-4): the queue was read oldest first, and an entry the auditing feed cannot serve
+    (NotEntitled on its plan) stayed queued in its place: two such at its head took every pass's tries for the week
+    until they expired, and nothing behind them was audited. A try that could not run now puts the entry behind the
+    ones this feed has not tried; it stays queued, for this feed's later passes and for the other feeds."""
+    from liminal_libs.errors import NotEntitled
+
+    asked: list[str] = []
+
+    class Feed:  # the auditing feed: its plan covers CCC alone
+        name, requests_made = "fake", 0
+
+        @staticmethod
+        def serves(asset):
+            return True
+
+        def bar_pages(self, ticker, *a, **k):
+            asked.append(ticker)
+            self.requests_made += 1
+            if ticker != "CCC":
+                raise NotEntitled(403, f"{ticker} is not on your plan")
+            yield []
+    feeds = {"massive": FeedProfile("massive", PLAN, frozenset({"stock"}), 0, venues={"stock": "sip"}),
+             "fake": FeedProfile("fake", PLAN, frozenset({"stock"}), 1, venues={"stock": "sip"})}
+    store.watch("massive", ["AAA", "BBB", "CCC"], "minute")
+    store.watch("fake", ["AAA", "BBB", "CCC"], "minute")
+    a, b = ms(datetime(2026, 10, 13, tzinfo=ET)), ms(datetime(2026, 10, 14, tzinfo=ET))
+    for i, ticker in enumerate(("AAA", "BBB", "CCC")):  # queued in this order, the oldest first
+        store.queue_audit(ticker, "minute", a, b, "massive")
+        with store.conn:
+            store.conn.execute("UPDATE audit_queue SET queued_at=? WHERE ticker=?", (f"2026-10-21T1{i}:00:00+00:00",
+                                                                                   ticker))
+    feed = Feed()
+
+    def run():
+        return audit.Auditor(feed, store, feeds["fake"], feeds, NOW, log=QUIET, rng=random.Random(1)).run(
+            queued=2, random_count=0)
+    assert run() == 0 and asked == ["AAA", "BBB"]
+    # the third, behind them, first: audited (no data, a result); then the oldest try again
+    assert run() == 1 and asked == ["AAA", "BBB", "CCC", "AAA"]
+    assert [q["ticker"] for q in store.audit_queue()] == ["AAA", "BBB"]  # the two wait on, for the other feeds too
+    assert [(q["ticker"], q["tried_at"] is not None) for q in store.audit_queue(auditor="fake")] == [
+        ("BBB", True), ("AAA", True)]  # the oldest try first
+    assert [q["tried_at"] for q in store.audit_queue(auditor="alpaca")] == [None, None]  # another feed's turn
+    run()
+    assert asked[4:] == ["BBB", "AAA"]
+    store.dequeue_audit("AAA", "minute", a, "massive")
+    assert store.conn.execute("SELECT ticker FROM audit_tries").fetchall() == [("BBB",)]  # gone with its entry
+
+
+
 # -- 3: a feed's quality from every ticker judged ------------------------------------------------------------------------
 
 def _stats(close_bps, bars):
