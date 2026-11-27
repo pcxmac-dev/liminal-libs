@@ -1602,11 +1602,13 @@ def test_the_routes_are_a_heat_map_and_the_lights_travel_only_the_last_stretch(j
     assert "Math.ceil(d / fill)" in heat and "runs.sort((x, y) => x.w - y.w);" in heat  # filled in, the brightest last
     build = _body(js, "function buildRoutes() {")
     stretch = _body(build, "if (data.heat) {")
-    assert "o.tail.length >= 2 ? o.tail.map((p) => unit(p.lon, p.lat))" in stretch and "return;" in stretch
-    assert "const path = pts ? wayOf(pts) : null;" in stretch  # 1.70.0: along its tail, the lines' own way
+    # 1.106.0: its short links; an older server's page its tail (1.70.0), else its straight last stretch (1.69.0)
+    assert ": o.tail.length >= 2 ? [o.tail.map((p) => unit(p.lon, p.lat))]" in stretch and "return;" in stretch
+    assert "const path = wayOf(pts);" in stretch
     assert "hops: []" in stretch  # no hop dots: the network is the heat's
     draw = _body(js, "function drawRoutes(g, fr, now) {")
-    assert "for (const rt of routes) onScreen(rt, g, fr);\n        drawLights(picked, now);\n        return;" in draw
+    assert "for (const rt of routes) onScreen(rt, g, fr);\n        drawLinks(picked);" in draw
+    assert "drawLights(picked, now);\n        return;" in draw
     paint = _body(js, "function paintHeat(c, g, fr, h) {")
     assert "Math.log1p(h.most)" in paint and "(Math.log1p(r.w) / top) * (HEAT_STEPS - 1)" in paint
     # 1.70.0: violet (270 degrees) to red (0), the routes only, wider as it rises (the scale reads without colour too)
@@ -1762,3 +1764,90 @@ def test_a_second_pick_of_the_same_lets_it_go_as_a_table_rows_does(js):
     keys = _body(js, "else if (e.key === 'Enter' && pick) {")
     assert "if (pinned && keyOfPick(pick) === pinned) tellPick(null); else tellPick(pick);" in keys
     assert "setPick(null)" not in keys
+
+
+def test_a_routes_light_travels_only_its_short_links_lit_and_an_older_page_keeps_its_tail(js):
+    """1.106.0 (Monday list item 27; the user, 2026-11-22: "the straightlines are meaningless"): with the heat, a place's
+    `links` (machines/network.py: its short links from the network's ends into it and into home, LINK_KM at most) are
+    the only lines a route draws off the network: each a route of its own, stroked lit in the lights' glow, still or
+    moving, and travelled by its light; a link within a kilometre is not drawn. A page with no `links` (an older
+    server's) keeps 1.70.0's tail."""
+    from liminal_libs.machines import network
+    normal = _body(js, "function normal(spec) {")
+    assert "links: Array.isArray(o.links) ? o.links.slice(0, 2).map(linkOf).filter(Boolean) : null," in normal
+    link = _body(js, "function linkOf(l) {")
+    assert "l.length !== 2" in link and "return a && b ? [a, b] : null;" in link
+    stretch = _body(_body(js, "function buildRoutes() {"), "if (data.heat) {")
+    assert "const ways = o.links ? o.links.map(([a, b]) => [unit(a.lon, a.lat), unit(b.lon, b.lat)])" in stretch
+    assert "for (const pts of ways) {" in stretch and "link: !!o.links," in stretch
+    assert "if (!path) continue;  // a link within a kilometre or so: the dot alone" in stretch
+    assert "if (gone < 2e-4 || out.length < 2) return null;" in _body(js, "function wayOf(pts) {")
+    links = _body(js, "function drawLinks(picked) {")
+    assert "if (!rt.link) continue;" in links and "ctx.strokeStyle = css(glow, picked && picked !== rt.o ? 0.25 : 0.8);" in links
+    assert "const glow = mix(colours.network, colours.text, 0.35);" in links  # the lights' own glow
+    draw = _body(js, "function drawRoutes(g, fr, now) {")
+    heat = _body(draw, "if (data.heat) {")
+    assert heat.index("onScreen(rt, g, fr)") < heat.index("drawLinks(picked);") < heat.index("drawLights(picked, now);")
+    assert "if (!now) return;" not in links  # still under reduced motion too: lit, not moving
+    legend = _body(js, "function renderLegend() {")
+    assert f"{network.LINK_KM:g} km at most" in legend and "routes.some((rt) => rt.link)" in legend
+
+
+def test_the_hubs_the_routes_pass_are_drawn_larger_and_brighter_by_their_traffic_and_named(js):
+    """1.106.0 (the user: "they need to show the cities that the lines go to, the hubs"): the page's `hubs`
+    (machines/network.py) read safely, MAX_HUBS at most, the busiest first, each with the places whose routes pass it;
+    drawn under the routers' places with its layer's mark, larger and brighter by the connections through it on a log
+    scale (and the routers' places so too); named after the routers' places by the same placing (never over another
+    name), fewer of them, an unnamed one and one its own layer names now left out."""
+    from liminal_libs.machines import network
+    assert f"  const MAX_HUBS = {network.MAX_HUBS};" in js and f"  const HUB_WAY = {network.ROUTE_HUBS};" in js
+    assert f"  const HUB_KM = {network.HUB_KM:g};" in js and "  const HUB_NAMES = [[2, 4], [6, 12], [Infinity, 32]];" in js
+    normal = _body(js, "function normal(spec) {")
+    assert "hubs: hubsOf(s.hubs, listed)," in normal
+    assert "hubs: (Array.isArray(o.hubs) ? o.hubs.slice(0, HUB_WAY) : []).map((x) => text(x, 64)).filter(Boolean)," in normal
+    hubs = _body(js, "function hubsOf(list, origins) {")
+    assert "list.slice(0, MAX_HUBS)" in hubs and "if (!id || by.has(id)) continue;" in hubs
+    assert "if (u && !u.to.includes(o)) u.to.push(o);" in hubs and "sort((a, b) => b.w - a.w" in hubs
+    places = _body(js, "function drawPlaces(c, g) {")
+    assert places.index("for (const u of data.hubs) {") < places.index("for (const h of data.hops) {") \
+        < places.index("for (const o of data.origins) {")  # the hubs under the routers' places, under the places
+    assert "const t = Math.log1p(u.w) / top, r = 2.2 + 2.6 * t" in places
+    assert "css(mix(colours.network, colours.text, t), u === hub ? 1 : 0.5 + 0.45 * t)" in places
+    assert "const t = Math.log1p(h.count) / most, r = h === hop ? 4.5 : 2 + 1.8 * t;" in places
+    assert "css(colours.text, h === hop ? 1 : 0.55 + 0.4 * t)" in places
+    assert "return l && MARKS[l.mark] === 'points' ? l.mark : 'circle';" in _body(js, "function markOf(kind) {")
+    labels = _body(js, "function drawLabels(c, g, shown) {")
+    assert labels.index("put(text(hopName(h), 32)") < labels.index("put(text(u.name, 32)")  # the routers' first
+    assert "left = HUB_NAMES.find(([upto]) => zoom < upto)[1];" in labels
+    assert "if (!u.name || layerNames(u.kind)) continue;" in labels
+    assert "const layerNames = (id) => data.layers.some((l) => l.id === id && isOn(l) && zoom >= l.namesFrom);" in js
+    legend = _body(js, "function renderLegend() {")
+    assert "'Hubs on the routes, larger and brighter with the connections through them'" in legend
+
+
+def test_a_hub_is_hovered_and_picked_and_a_route_picked_tells_its_way_and_its_hubs(js):
+    """1.106.0 (and docs/PAGES.md's right-hand menu): a hub is under the pointer where no place or home is nearer (the
+    nearer of it and a router's place), told on hover (its name, what it is, the connections through it, its routes,
+    the places it is on the way to, why it is named) and picked whole by a click, a tap or Enter, as side.js tells a
+    pick; a place picked tells its way through its routers' places and the hubs it passes, in its order. Kept through
+    an update while a route still passes it, let go when none does."""
+    hit = _body(js, "function hitAt(clientX, clientY, by) {")
+    assert "for (const u of data.hubs) {" in _body(hit, "if (!best && data.heat) {")
+    assert "best = { hub: u }; bestD = d;" in hit
+    assert "if (p.hub) { hubTip(p.hub, line); return; }" in _body(js, "function tipLines(p, line) {")
+    tip = _body(js, "function hubTip(u, line) {")
+    assert "many(u.w, 'connection')} through it, on ${many(u.routes, 'route')}" in tip and "HUB_KM" in tip
+    assert "if (p.hub) return `globe:hub:${p.hub.id}`;" in _body(js, "function keyOfPick(p) {")
+    pick = _body(js, "function pickOf(p) {")
+    assert "spec.kind = 'hub';" in pick and "['On the way to', u.to.map(nameOf).join(', ')]" in pick
+    assert "['Its way', o.via.length ? wayWords(o) : '']," in pick and "['Passes', o.hubs.map(" in pick
+    way = _body(js, "function wayWords(o) {")
+    assert "const names = ['This machine'];" in way and "names[names.length - 1] !== n" in way
+    assert "return names.join(' → ');" in way
+    assert "if (u) return pickOf({ hub: u });" in _body(js, "function describeKey(key) {")
+    assert "was.hub !== p.hub" in _body(js, "function setPick(p) {")
+    assert "pick.hub ? project(pick.hub.lon, pick.hub.lat, g)" in _body(js, "function anchorTip(g) {")
+    update = _body(js, "function update(next, more) {")
+    assert "const u = data.heat ? data.hubs.find((x) => x.id === pick.hub.id) : null;" in update
+    assert "pick = { ...pick, hub: u };" in update
+    assert "pick.hub ? `hub ${pick.hub.id}`" in _body(js, "function placesLayer(g, ratio, W, H) {")
