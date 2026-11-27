@@ -2842,8 +2842,9 @@
       else if (e.key === '-' || e.key === '_') { zoomBy(1 / 1.6); sayZoom(); }
       else if (e.key === 'Home') { setPick(null); home(); say('Back to this machine, the whole globe'); }
       else if (e.key === 'Escape' && (pick || pinned)) { setPick(null); tellPick(null); }
-      else if (e.key === 'Enter' && pick) {  // 1.105.0: the place stepped to, told in full; Enter on it again lets it go
-        if (pinned && keyOfPick(pick) === pinned) { setPick(null); tellPick(null); } else tellPick(pick);
+      else if (e.key === 'Enter' && pick) {  // 1.105.0: the place stepped to, told in full; Enter on it again lets it go,
+        // still stepped to (its words shown), so Enter once more picks it again, as on a table's row (side.js)
+        if (pinned && keyOfPick(pick) === pinned) tellPick(null); else tellPick(pick);
       }
       else return;
       e.preventDefault();

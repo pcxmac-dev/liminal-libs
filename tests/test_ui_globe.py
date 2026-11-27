@@ -1729,8 +1729,8 @@ def test_a_click_a_tap_or_enter_picks_and_a_hover_never_does(js):
     move = _body(js, "canvas.addEventListener('pointermove', (e) => {")
     assert "tellPick" not in move and "onPick" not in move
     keys = _body(js, "canvas.addEventListener('keydown', (e) => {")
-    assert "if (pinned && keyOfPick(pick) === pinned) { setPick(null); tellPick(null); } else tellPick(pick);" in keys
-    assert "{ setPick(null); tellPick(null); }" in keys
+    assert "if (pinned && keyOfPick(pick) === pinned) tellPick(null); else tellPick(pick);" in keys  # Enter: again lets go
+    assert "{ setPick(null); tellPick(null); }" in keys  # Escape: let go, and the step with it
     tell = _body(js, "function tellPick(p) {")
     assert "if (!onPick || key === pinned) return;" in tell and "onPick(p ? pickOf(p) : null)" in tell
     pick = _body(js, "function pickOf(p) {")
@@ -1758,3 +1758,7 @@ def test_a_second_pick_of_the_same_lets_it_go_as_a_table_rows_does(js):
     assert click.index("if (again) { setPick(null)") < click.index("tellPick(hit);")
     tell = _body(js, "function tellPick(p) {")
     assert "if (!onPick || key === pinned) return;" in tell  # the same told once: so `again` is checked before it
+    # Enter on it again lets it go and keeps it stepped to, so Enter once more picks it again (a table row's Enter)
+    keys = _body(js, "else if (e.key === 'Enter' && pick) {")
+    assert "if (pinned && keyOfPick(pick) === pinned) tellPick(null); else tellPick(pick);" in keys
+    assert "setPick(null)" not in keys
