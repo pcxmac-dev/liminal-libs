@@ -214,6 +214,31 @@ def test_nothing_is_sent_by_these_modules(module):
             assert "://" not in node.value, node.value
 
 
+def test_a_network_list_manager_that_hangs_holds_one_thread_however_often_it_is_read(monkeypatch):
+    """1.110.0 (item 14, libs-apps P3-4): an ask that did not answer in COM_S keeps its daemon thread blocked; the reads
+    after it start no other while it lives, and once it has ended the next read asks again."""
+    monkeypatch.setenv(facts.REAL, "1")
+    monkeypatch.setattr(facts, "COM_S", 0.01)
+    gate, calls = threading.Event(), []
+
+    def hanging():
+        calls.append(1)
+        assert gate.wait(10)
+        return 0x40
+    monkeypatch.setattr(facts, "_nlm_call", hanging)
+    try:
+        for _ in range(3):
+            with pytest.raises(TimeoutError):
+                facts.win_nlm()
+        assert calls == [1] and [t.name for t in threading.enumerate()].count("liminal-facts-nlm") == 1
+    finally:
+        gate.set()
+    facts._NLM["thread"].join(5)
+    monkeypatch.setattr(facts, "_nlm_call", lambda: 0x40)
+    monkeypatch.setattr(facts, "COM_S", 5.0)
+    assert facts.win_nlm() == 0x40
+
+
 def test_nmcli_through_a_stand_in_spawn_and_its_row_let_go_m26(monkeypatch):
     from liminal_libs import lifecycle
 

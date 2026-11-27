@@ -335,8 +335,14 @@ def _nlm_call() -> int:
             ole32.CoUninitialize()
 
 
+_NLM_LOCK = threading.Lock()
+_NLM: dict = {"thread": None}  # 1.110.0 (item 14): the Network List Manager's ask under way, one at a time
+
+
 def win_nlm() -> int:
-    """_nlm_call in a daemon thread of its own, joined at COM_S."""
+    """_nlm_call in a daemon thread of its own, joined at COM_S. 1.110.0 (item 14): one at a time in the process: while
+    an earlier ask that did not answer in time still waits (a daemon thread blocked in COM), no other is started
+    (TimeoutError, in words), so a Network List Manager that hangs holds one thread, not one more each read."""
     _guard()
     box: dict = {}
 
@@ -346,8 +352,13 @@ def win_nlm() -> int:
         except BaseException as e:  # noqa: BLE001 - said by the caller
             box["error"] = e
 
-    t = threading.Thread(target=run, name="liminal-facts-nlm", daemon=True)
-    t.start()
+    with _NLM_LOCK:
+        waiting = _NLM["thread"]
+        if waiting is not None and waiting.is_alive():
+            raise TimeoutError("the Network List Manager has not answered an earlier ask yet: still waiting")
+        t = threading.Thread(target=run, name="liminal-facts-nlm", daemon=True)
+        _NLM["thread"] = t
+        t.start()
     t.join(COM_S)
     if t.is_alive():
         raise TimeoutError(f"the Network List Manager did not answer in {COM_S:.0f} s")
