@@ -373,11 +373,13 @@ def instance_choices(dtype: str, data_dir: Path | None = None) -> list[dict]:
 
 class _Held:
     """One connection to an instance, kept for this process: used by one call at a time (`lock`), closed by `close`
-    (`closed` then: 1.110.0, a call that waited for it takes another)."""
+    (`closed` then: 1.110.0, a call that waited for it takes another). A MongoDB client is shared by the calls instead
+    (1.110.1): each is counted in `users` while it runs, and the pool's cap closes none in use."""
 
     def __init__(self, value, close: Callable[[], None]):
         self.value, self._close, self.lock = value, close, threading.Lock()
         self.closed = False
+        self.users = 0  # the calls sharing it now (a MongoDB client's), counted under _pool_lock
 
     def close(self) -> None:
         self.closed = True
@@ -405,9 +407,10 @@ def _held(key: tuple, opener: Callable[[], _Held]) -> _Held:
         _pool[key] = made
         # 1.110.0 (item 14, libs-rest P3-3): past POOL_MOST the oldest connection no call is using is closed, its
         # lock taken first (never one a call holds: its statement would lose its connection); with every other one in
-        # use, the pool stays over its bound until a later call
+        # use, the pool stays over its bound until a later call. 1.110.1: nor a MongoDB client a call shares (users)
         while len(_pool) > POOL_MOST:
-            idle = next((k for k, h in _pool.items() if h is not made and h.lock.acquire(blocking=False)), None)
+            idle = next((k for k, h in _pool.items()
+                         if h is not made and not h.users and h.lock.acquire(blocking=False)), None)
             if idle is None:
                 break
             oldest = _pool.pop(idle)
@@ -462,7 +465,26 @@ def named_backend(store_name: str, kind: documents.Kind, data_dir: Path | None =
             client = getattr(db, "client", None)
             return _Held(db, client.close if client is not None else (lambda: None))
 
-        return documents.MongoDocuments(_held(key, opener).value, kind)
+        @contextmanager
+        def shared():
+            # 1.110.1 (item 14): each call takes its client from the pool and is counted in it while it runs, so the
+            # pool's cap never closes it under the call. (A MongoDocuments kept one database for good and took no hold:
+            # the cap closed its client, mid-call or between calls, and every call after was refused, "Cannot use
+            # MongoClient after close".) PyMongo's client is thread-safe and pools its own connections: the calls share
+            # it, never waiting for one another, and one that fails leaves it open (the client reconnects by itself).
+            while True:
+                held = _held(key, opener)
+                with _pool_lock:
+                    if not held.closed:  # (closed by the cap since it was given: another is taken)
+                        held.users += 1
+                        break
+            try:
+                yield held.value
+            finally:
+                with _pool_lock:
+                    held.users -= 1
+
+        return documents.MongoDocuments(None, kind, session=shared)
 
     def opener() -> _Held:
         conn = plugin.open(inst, "", read_only=False, data_dir=folder)

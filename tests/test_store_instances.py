@@ -153,6 +153,64 @@ class SqliteStandIn(DatabasePlugin):
         return sqlite3.connect(path)
 
 
+class MongoDatabase:
+    """A database on a stand-in MongoDB server through one client, as PyMongo's `client[name]` (each collection the
+    same here): the documents are the server's (the plugin's `docs`, kept across clients); a call through a client
+    closed is refused, as PyMongo refuses it. The plugin's `during`: what other calls do while a count is answered."""
+
+    def __init__(self, client, plugin):
+        self.client, self.plugin = client, plugin
+
+    def __getitem__(self, collection):
+        return self
+
+    def _open(self):
+        if self.client.closed:
+            raise RuntimeError("Cannot use MongoClient after close")  # (PyMongo's InvalidOperation)
+
+    def count_documents(self, flt):
+        self._open()
+        if self.plugin.during:
+            self.plugin.during()
+        self._open()  # (its answer read through the same client)
+        return len(self.plugin.docs)
+
+    def find(self, flt):
+        self._open()
+        return self
+
+    def sort(self, *order):
+        return self
+
+    def batch_size(self, n):
+        return self
+
+    def __iter__(self):
+        for d in list(self.plugin.docs):
+            self._open()  # (each document read through the client: a cursor's getMore)
+            yield d
+
+
+class MongoStandIn(DatabasePlugin):
+    """MongoDB's, for instances the user added: `open` gives the instance's database through a new client each time,
+    closed by whoever asked, as the real plugin's."""
+
+    name, title, ENGINE, api = "mongodb", "MongoDB", "mongodb", "2.3"
+    options = (variable_of("mongodb"),)
+    METHODS = ("tcp",)
+    HOLDS = ("documents",)
+    SERVER = True
+
+    def builtin(self, data_dir):
+        return ()
+
+    def open(self, instance, part="", read_only=True, data_dir=None):
+        client = SimpleNamespace(closed=False)
+        client.close = lambda: setattr(client, "closed", True)
+        self.clients.append(client)
+        return MongoDatabase(client, self)
+
+
 def kept(*instances) -> str:
     return json.dumps({"v": 1, "instances": list(instances)})
 
@@ -412,6 +470,45 @@ def test_a_connection_a_call_is_using_is_never_closed_by_the_pools_cap(monkeypat
         busy.lock.release()
     stores.close_instances()
     assert sorted(closed) == list(range(stores.POOL_MOST + 1))
+
+
+def test_a_mongodb_client_a_call_is_using_is_never_closed_by_the_pools_cap(world):
+    """1.110.1 (item 14): a MongoDB instance's call is counted in its client while it runs (`every`: until its cursor is
+    read), so past POOL_MOST the pool's cap closes another connection, never that client under the call; between calls
+    it is no call's, and once the cap closed it the next call takes another. (A MongoDocuments kept its database for
+    good and took no hold: the cap closed the client under it, and every call after was refused.) By order: the other
+    connections are opened inside the stand-in's count, and between two batches of `every`."""
+    w = world
+    plugin = MongoStandIn()
+    plugin.attach(SimpleNamespace(db_path=w.main), w.login)
+    plugin.__dict__.update(clients=[], during=None,
+                           docs=[{"source": "massive", "id": str(i), "published_ms": i} for i in (1, 2, 3)])
+    w.plugins["mongodb"] = plugin
+    w.env["MONGODB_INSTANCES"] = kept({"name": "remote", "where": "127.0.0.1", "method": "tcp", "port": 27018,
+                                       "database": "liminal_docs", "holds": ["documents"]})
+    others = iter(range(1000))
+
+    def more(n=stores.POOL_MOST):  # other instances' connections, opened by other calls: eight are one past the cap
+        for _ in range(n):
+            k = next(others)
+            stores._held(("other", k), lambda: stores._Held(k, lambda: None))
+
+    docs = stores.named_backend("mongodb:remote", NEWS, w.folder)
+    plugin.__dict__["during"] = more
+    assert docs.count() == 3  # eight more opened while its count was answered: another closed past the cap
+    client = plugin.clients[0]
+    assert not client.closed and len(plugin.clients) == 1
+    plugin.__dict__["during"] = None
+    batches = docs.every(batch=1)
+    assert next(batches)[0]["id"] == "1"  # one batch read: its cursor goes on
+    more()
+    assert not client.closed
+    assert [b[0]["id"] for b in batches] == ["2", "3"]  # the rest read through the same client
+    more(1)  # its cursor read to its end, the client is no call's: the cap closes it, the oldest
+    assert client.closed
+    assert docs.count() == 3 and len(plugin.clients) == 2 and not plugin.clients[1].closed  # the next call: another
+    stores.close_instances()
+    assert all(c.closed for c in plugin.clients)
 
 
 @pytest.mark.parametrize("dialect", ["postgres", "mariadb", "sqlite"])

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable, Iterator
 
@@ -115,18 +116,30 @@ class SqliteDocuments:
 
 
 class MongoDocuments:
-    """A kind's documents in a MongoDB collection, each with its key as `_id`."""
+    """A kind's documents in a MongoDB collection, each with its key as `_id`: on the database given, or (1.110.1: an
+    instance the user added, stores.py) the one `session` gives, a context manager held while one call runs (`every`:
+    while its cursor is read), never kept between calls, since the pool may close a client no call is using."""
     engine = "mongodb"
 
-    def __init__(self, db, kind: Kind):
+    def __init__(self, db, kind: Kind, session=None):
         self.kind = kind
-        self.coll = db[kind.collection]
+        self.session = session
+        self.coll = db[kind.collection] if db is not None else None
         self._indexed = False
 
-    def _index(self) -> None:
+    @contextmanager
+    def _held(self):
+        """The collection for one call: the database's given, or the one this call's session holds."""
+        if self.session is None:
+            yield self.coll
+            return
+        with self.session() as db:
+            yield db[self.kind.collection]
+
+    def _index(self, coll) -> None:
         if not self._indexed:
-            self.coll.create_index([(self.kind.order, -1)])
-            self.coll.create_index([(self.kind.key[0], 1), (self.kind.order, -1)])
+            coll.create_index([(self.kind.order, -1)])
+            coll.create_index([(self.kind.key[0], 1), (self.kind.order, -1)])
             self._indexed = True
 
     def put(self, docs: Iterable[dict], replace: bool = False) -> int:
@@ -136,10 +149,11 @@ class MongoDocuments:
                 for d in docs]
         if not docs:
             return 0
-        self._index()
         ops = [ReplaceOne({"_id": self.kind.id(d)}, {"_id": self.kind.id(d), **d}, upsert=True) if replace else
                UpdateOne({"_id": self.kind.id(d)}, {"$setOnInsert": d}, upsert=True) for d in docs]
-        got = self.coll.bulk_write(ops, ordered=False)
+        with self._held() as coll:
+            self._index(coll)
+            got = coll.bulk_write(ops, ordered=False)
         return len(docs) if replace else got.upserted_count
 
     @staticmethod
@@ -153,27 +167,31 @@ class MongoDocuments:
         return {f: d.get(f) if f not in self.kind.lists else list(d.get(f) or []) for f in self.kind.fields}
 
     def find(self, where: dict | None = None, since=None, limit: int | None = None) -> list[dict]:
-        cur = self.coll.find(self._filter(where, self.kind.order, since)).sort(self.kind.order, -1)
-        if limit is not None:
-            cur = cur.limit(int(limit))
-        return [self._plain(d) for d in cur]
+        with self._held() as coll:
+            cur = coll.find(self._filter(where, self.kind.order, since)).sort(self.kind.order, -1)
+            if limit is not None:
+                cur = cur.limit(int(limit))
+            return [self._plain(d) for d in cur]
 
     def newest(self, where: dict | None = None):
-        d = self.coll.find_one(self._filter(where, self.kind.order, None), sort=[(self.kind.order, -1)])
+        with self._held() as coll:
+            d = coll.find_one(self._filter(where, self.kind.order, None), sort=[(self.kind.order, -1)])
         return d.get(self.kind.order) if d else None
 
     def count(self, where: dict | None = None) -> int:
-        return self.coll.count_documents(self._filter(where, self.kind.order, None))
+        with self._held() as coll:
+            return coll.count_documents(self._filter(where, self.kind.order, None))
 
     def every(self, where: dict | None = None, batch: int = 5000) -> Iterator[list[dict]]:
-        out = []
-        for d in self.coll.find(self._filter(where, self.kind.order, None)).sort("_id", 1).batch_size(batch):
-            out.append(self._plain(d))
-            if len(out) >= batch:
+        with self._held() as coll:  # (held until its cursor is read to its end: the client stays open under it)
+            out = []
+            for d in coll.find(self._filter(where, self.kind.order, None)).sort("_id", 1).batch_size(batch):
+                out.append(self._plain(d))
+                if len(out) >= batch:
+                    yield out
+                    out = []
+            if out:
                 yield out
-                out = []
-        if out:
-            yield out
 
 
 # -- a kind's documents in an instance the user added (1.91.0, Monday list item 10) -------------------------------------
