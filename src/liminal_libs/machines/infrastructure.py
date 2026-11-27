@@ -49,6 +49,7 @@ import hashlib
 import html
 import io
 import json
+import logging
 import math
 import os
 import posixpath
@@ -69,6 +70,8 @@ from .. import jsonread
 from .. import geo, layout
 from . import world
 from .world import LicenceRefused, size_words
+
+log = logging.getLogger(__name__)
 
 FOLDER = "infrastructure"  # the layers' folder, in the data folder (layout.data_dir())
 VERSION = 1  # a kept file's "v"
@@ -267,6 +270,10 @@ _STATE = threading.Lock()  # guards _NOW
 # the data set being downloaded (1.110.0: its title, and whether it refreshes by itself); how often a file was put in
 # place or removed here
 _NOW = {"id": "", "title": "", "by_itself": False, "changes": 0}
+# 1.110.0 (item 14): answers that are not OK the database could not keep (a long write elsewhere held its lock), by
+# (folder, set id): read as kept until the set is downloaded or the answer kept, so the set is not refreshed again at
+# every look meanwhile; guarded by _STATE
+_UNKEPT: dict[tuple[str, str], dict] = {}
 
 
 class InfrastructureError(Exception):
@@ -2446,19 +2453,35 @@ def _answered(dataset: DataSet, target: Path, e: Exception, now: float) -> None:
     have it downloaded again at every look): a database that cannot keep it changes nothing of the refusal said."""
     from .infrastore import Store
     said = str(e) if isinstance(e, InfrastructureError) else f"the download failed here ({type(e).__name__}: {e})"
+    code, key = getattr(e, "code", None) or 0, (str(target), dataset.id)
     try:
-        Store(target).answered(dataset.id, getattr(e, "code", None) or 0, now, said)
-    except Exception:  # noqa: BLE001 - the refusal is said all the same
-        return
+        Store(target).answered(dataset.id, code, now, said)
+    except Exception as kept:  # noqa: BLE001 - the refusal is said all the same
+        # 1.110.0 (item 14): never lost silently: said in the log, and held here for this process's Indexes
+        log.warning("%s: its answer (%s) could not be kept in %s: %s; it is held until the set is downloaded",
+                    dataset.id, code or "no answer", target, kept)
+        with _STATE:
+            _UNKEPT[key] = {"code": int(code), "at": float(now), "said": said[:TEXT]}
+    else:
+        with _STATE:
+            _UNKEPT.pop(key, None)
     _changed()  # every Index looks again: the table says it at once
+
+
+def _unkept(target) -> dict[str, dict]:
+    """1.110.0: the answers the database of `target` could not keep (_answered), by set id."""
+    where = str(target)
+    with _STATE:
+        return {ident: dict(a) for (folder_, ident), a in _UNKEPT.items() if folder_ == where}
 
 
 def _answer_of(dataset: DataSet, target) -> dict | None:
     from .infrastore import Store
     try:
-        return Store(target).answers().get(dataset.id)
+        kept = Store(target).answers().get(dataset.id)
     except Exception:  # noqa: BLE001 - a database that cannot say: none kept
-        return None
+        kept = None
+    return kept or _unkept(target).get(dataset.id)
 
 
 def paused(dataset: DataSet, answer: Mapping | None, now: float) -> str:
@@ -2614,6 +2637,8 @@ def _install(dataset: DataSet, target: Path, fetch, say, cancel, agent: str, clo
         raise InfrastructureError(f"{dataset.title} could not be kept: {e}. Nothing was installed, and what was "
                                   "installed before stays.") from None
     del features
+    with _STATE:
+        _UNKEPT.pop((str(target), dataset.id), None)  # downloaded: what failed before is past (as Store.put's)
     _changed()
     lines = [f"asked of {host}", f"kept in {store.path}, in place of any older copy",
              f"credited on the globe as {dataset.credit['text']}"]
@@ -3061,7 +3086,8 @@ class Index:
                 if ids != self._kept_ids and self.templates():  # 1.108.0: a region kept is listed, to draw or remove
                     self._kept_ids = ids
                     self._rebuild()
-                self._answers = store.answers() if any(d.refresh or d.pause for d in self.datasets) else {}
+                self._answers = ({**_unkept(self.folder), **store.answers()}
+                                 if any(d.refresh or d.pause for d in self.datasets) else {})
                 problems = self._import(store, kept)
                 if not problems and self._files and store.stamp() == getattr(self, "_stamp", None):
                     return self._files

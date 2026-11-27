@@ -116,3 +116,35 @@ def test_a_download_asked_while_a_set_refreshes_by_itself_is_refused_naming_the_
         view._refreshing.join(10)
         view.close()
     assert ONEWEB["title"] == "Eutelsat OneWeb's orbits" and infrastructure._by_itself() == ""
+
+
+# -- libs-world P3-5: an answer the database could not keep (its lock held by a long write) is never lost silently ----
+
+def test_an_answer_the_locked_database_could_not_keep_is_logged_and_still_stops_the_refreshing(tmp_path, monkeypatch,
+                                                                                                caplog):
+    import logging
+    import sqlite3
+    from liminal_libs.machines import infrastore
+    from liminal_libs.machines.infrastructure import Index, InfrastructureError
+    from test_infrastructure_refresh import AT, REFRESHED, T0, answer
+    folder = tmp_path / "layers"
+    install(REFRESHED, folder, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=Clock(T0))
+    monkeypatch.setattr(infrastore, "TIMEOUT_S", 0.05)  # a write's wait, short: the lock below is never let go in it
+    holder = sqlite3.connect(folder / infrastore.FILE, isolation_level=None)
+    try:
+        holder.execute("BEGIN IMMEDIATE")  # a long region write, as another Store's put holds it
+        refused = InfrastructureError("celestrak.example answered HTTP 503")
+        refused.code = 503
+        with caplog.at_level(logging.WARNING, logger=infrastructure.__name__):
+            infrastructure._answered(DataSet.of(REFRESHED), folder, refused, T0 + 7200)
+        assert "celestrak-oneweb: its answer (503) could not be kept in" in caplog.text
+        index = Index(folder, [REFRESHED], clock=Clock(), wall=Clock(T0 + 7260))
+        assert index.refresh_due() == []  # not downloaded again at every look (P2-1's loop)
+        assert index.table()["rows"][0][4]["text"] == "Update later"  # its 15 minutes' pause held too
+        assert infrastructure.held_back(DataSet.of(REFRESHED), folder, T0 + 7260)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    later = Clock(T0 + 7200 + 900)
+    install(REFRESHED, folder, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=later)
+    assert infrastructure._unkept(folder) == {}  # downloaded: what failed before is past
