@@ -122,6 +122,12 @@ FLUSH_SECONDS = 2.0
 # trades) and one audit a minute, and is forgotten as soon as it passes. A minute's trades are what an audit holds in
 # memory at most, never more.
 PULL_MS = 60_000
+# 1.109.0 (item 14): the recorder's own minutes not audited yet (the policy's audit-on-update off, or an audit that met
+# a busy database) are audited this often, for at most AUDIT_BUDGET_S a time, whatever that policy says: only this
+# process may open the tick files their audit reads, a stream cannot be asked again, and a pull's files stay until
+# an auditor compared them bit by bit, so left alone they filled the cache to its cap
+AUDIT_SECONDS = 60.0
+AUDIT_BUDGET_S = 5.0
 DERIVE_SECONDS = 60.0  # the time frames above a minute are rebuilt this often for the symbols streamed
 RULES_SECONDS = 3600.0  # trade condition rules (stocks) are reread this often
 RECV_TIMEOUT = 20.0
@@ -753,10 +759,30 @@ class Recorder:
         try:
             for source in sorted({s.source for s in self.streams}):  # (its own feeds: the others' runs settle theirs)
                 auditing.recover(store, source, log=self.log)
-                if auditing.policy().on_update:
-                    auditing.audit_pulls(store, feed=source, log=self.log, budget_s=60.0)
+                # its own minutes whatever the policy says (1.109.0: AUDIT_SECONDS), the feed's others on update
+                auditing.audit_pulls(store, feed=source, log=self.log, budget_s=60.0,
+                                     kind=None if auditing.policy().on_update else "live")
         except (sqlite3.Error, OSError) as e:
             self.log(f"live: the fetch cache is settled later ({type(e).__name__}: {e})")
+
+    def audit_own(self, store, budget_s: float = AUDIT_BUDGET_S) -> int:
+        """1.109.0 (item 14): this recorder's own minutes in the fetch cache not audited yet (its feeds' live pulls),
+        audited now for at most `budget_s` a feed, whatever the policy's audit-on-update says (AUDIT_SECONDS). A
+        database busy just then leaves them to the next time. Returns the pulls audited."""
+        import sqlite3
+
+        from . import auditing
+
+        if not auditing.cache_on():
+            return 0
+        done = 0
+        for source in sorted({s.source for s in self.streams}):
+            try:
+                done += len(auditing.audit_pulls(store, feed=source, kind="live", log=self.log, budget_s=budget_s))
+            except (sqlite3.Error, OSError) as e:
+                self.log(f"live: {source}: its minutes in the fetch cache are audited later ({type(e).__name__}: {e})")
+                break
+        return done
 
     def run(self) -> None:
         from .storage import Store
@@ -771,6 +797,7 @@ class Recorder:
         with Store(self.db_path, ticks=True) as store:
             self.settle_cache(store)
             total, last_log, last_derive, last_want, last_lock = 0, time.time(), time.time(), 0.0, time.time()
+            last_audit = time.time()
             next_reap = time.time() + FIRST_REAP_SECONDS
             while True:
                 if self.locks and time.time() >= next_reap:  # the lock holder: one recorder, strictly
@@ -799,6 +826,9 @@ class Recorder:
                     if time.time() - last_derive > DERIVE_SECONDS:
                         self.derive_recorded(store)
                         last_derive = time.time()
+                    if time.time() - last_audit > AUDIT_SECONDS:
+                        last_audit = time.time()
+                        self.audit_own(store)
                 except Exception as e:  # noqa: BLE001 - a locked database, say: logged, the trades kept, tried again
                     self.log(f"live: {type(e).__name__}: {e}; trying again")
                     self.stop.wait(FLUSH_SECONDS)

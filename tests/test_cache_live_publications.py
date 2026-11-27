@@ -142,6 +142,66 @@ def test_a_cache_at_its_cap_never_stops_the_recorder(store, tmp_path, monkeypatc
     assert store.pulls() == [] and any("without the fetch cache this minute" in s for s in said)
 
 
+def _minutes(rec, store, first: int, count: int) -> None:
+    for m in range(first, first + count):
+        rec._buffer[("coinbase", "BTCUSD")] = [_trade(i, at_ms=T0 + m * 60_000 + 1_000) for i in range(3)]
+        rec.flush(store, now_ms=T0 + m * 60_000 + 2_000)
+    rec.end_pulls(store)
+
+
+def test_the_recorders_minutes_are_audited_by_itself_whatever_the_policy_and_never_fill_the_integrators_cap(
+        store, tmp_path):
+    """1.109.0 (item 14, libs-rest P2-3): with audit-on-update off (or an audit that met a busy database) the
+    recorder's minutes piled up unaudited; only it may open the tick files their audit reads, so the integrator's
+    room() could not clear them and, at the cap, every bars fetch stopped (CacheFull). The recorder audits its own
+    minutes at its start and every AUDIT_SECONDS whatever the policy says; a bars-only process does not count them
+    against its cap, nor ask for them. Nothing is removed unaudited."""
+    auditing.set_policy(auditing.Policy(on_update=False))
+    rec = _recorder(tmp_path, [])
+    _minutes(rec, store, 0, 3)
+    left = store.pulls(audited=False)
+    assert len(left) == 3 and {p["kind"] for p in left} == {"live"} and len(_cache_files(store)) == 3
+    tiny = auditing.Policy(on_update=False, cap_gb=1e-9)  # a byte or so: their files are over it
+    with Store(tmp_path / "data" / "liminal.db", ticks=False) as bars_only:  # the integrator's process
+        auditing.room(bars_only, tiny)  # no CacheFull: nothing it could clear is counted
+        assert auditing.audit_pulls(bars_only, policy_=tiny) == []
+        assert len(bars_only.pulls(audited=False)) == 3 and len(_cache_files(store)) == 3  # nothing removed
+    assert auditing._over(store, tiny)  # the recorder's process counts them all
+    _recorder(tmp_path, []).settle_cache(store)  # its next start: its own minutes audited, the policy off
+    assert store.pulls() == [] and _cache_files(store) == [] and store.cache_verified()["pulls"] == 3
+    _minutes(rec, store, 3, 2)
+    assert len(store.pulls(audited=False)) == 2
+    assert rec.audit_own(store) == 2 and store.pulls() == [] and _cache_files(store) == []
+    assert len(_stored_trades(store)) == 15 and store.findings() == []
+
+
+def test_a_bars_only_process_reaches_the_pulls_it_can_audit_behind_a_pile_of_the_recorders(store, tmp_path,
+                                                                                           monkeypatch):
+    """Item 14: audit_pulls reads the newest 5000 pulls not audited yet; 5001 of the recorder's minutes hid every
+    pull a bars-only process can audit behind them."""
+    with store.conn:
+        store.conn.execute("INSERT INTO pulls (id, feed, kind, ticker, timespan, state, opened_at) VALUES "
+                           "('0-bars', 'massive', 'bars', 'AAPL', 'minute', 'complete', '2026-01-01T00:00:00')")
+        store.conn.executemany(
+            "INSERT INTO pulls (id, feed, kind, timespan, state, opened_at) VALUES (?, 'coinbase', 'live', 'trades', "
+            "'complete', ?)", [(f"1-live-{i:05d}", f"2026-02-01T00:{i // 60 % 60:02d}:{i % 60:02d}.{i:05d}")
+                              for i in range(5001)])
+        store.conn.executemany(
+            "INSERT INTO pull_files (pull, seq, kind, name, bytes, sha256, written_at, feed, rows) VALUES "
+            "(?, 1, 'trades', 'x.rows', 10, 'h', '2026-02-01T00:00:00', 'coinbase', 1)",
+            [(f"1-live-{i:05d}",) for i in range(5001)])
+    asked: list[str] = []
+    monkeypatch.setattr(auditing, "audit_pull", lambda st, row, *a, **k: asked.append(row["id"]))
+    with Store(tmp_path / "data" / "liminal.db", ticks=False) as bars_only:
+        auditing.audit_pulls(bars_only)
+        assert asked == ["0-bars"]
+        assert bars_only.cache_bytes() == 50_010 and bars_only.cache_bytes(trades=False) == 0
+    asked.clear()
+    auditing.audit_pulls(store, kind="bars")  # the recorder's process may audit both: of a kind when asked
+    assert asked == ["0-bars"]
+
+
+
 # -- the publishers ----------------------------------------------------------------------------------------------------
 RSS = (b'<?xml version="1.0"?><rss><channel>'
        b'<item><title>Rates held</title><link>https://example.gov/a</link><guid>a1</guid></item>'

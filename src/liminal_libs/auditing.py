@@ -480,6 +480,13 @@ def compare_trades(conn, rows: list, repair: bool = True, late: bool = False) ->
     return out
 
 
+def _trades_here(store) -> dict:
+    """1.109.0 (item 14): what a process that may not open tick files (bars-only mode: the integrator) asks of the
+    ledger, so that what only the live recorder can audit (its pulls' trades files) neither fills the window of pulls
+    it audits nor counts against the cap it must keep under: {"trades": False} there, {} where it may."""
+    return {} if getattr(store, "ticks_allowed", True) else {"trades": False}
+
+
 def _ticks_here(store, feed: str) -> bool:
     """Whether this process may open a feed's tick file (not in bars-only mode, where only the live recorder
     does): a pull with trades files is audited, and its trades loaded late, only where it may."""
@@ -707,17 +714,21 @@ def _find(store, row: dict, out: PullAudit) -> None:
 
 
 def audit_pulls(store, feed: str | None = None, ticker: str | None = None, policy_: Policy | None = None,
-                log: Log | None = None, budget_s: float | None = None) -> list[PullAudit]:
-    """Every closed pull not audited yet (of a feed, of a symbol), the oldest first, for at most `budget_s`. A pull
-    whose audit raises (a feed's file that cannot be read, rows that will not be taken) is said and left for a
-    later pass, and the ones after it are audited all the same, however many fail: no pull holds up the rest,
-    which would fill the cache to its cap behind it. A database that is busy fails them all, each after its wait:
-    that ends the pass. The first FAILURES are said one by one, the rest counted."""
+                log: Log | None = None, budget_s: float | None = None, kind: str | None = None) -> list[PullAudit]:
+    """Every closed pull not audited yet (of a feed, of a symbol, of a kind), the oldest first, for at most
+    `budget_s`. A pull whose audit raises (a feed's file that cannot be read, rows that will not be taken) is said
+    and left for a later pass, and the ones after it are audited all the same, however many fail: no pull holds up
+    the rest, which would fill the cache to its cap behind it. A database that is busy fails them all, each after
+    its wait: that ends the pass. The first FAILURES are said one by one, the rest counted. 1.109.0: in a process
+    that may not open tick files, the pulls with trades files (the live recorder's to audit) are not asked for, so
+    a pile of them never hides the pulls it can audit (_trades_here)."""
     began = time.monotonic()
     out: list[PullAudit] = []
     if read_only() or pulls.cache_dir(store) is None or not hasattr(store, "pulls"):
         return out  # (a store in memory, or a stand-in for one, keeps no pulls)
-    waiting = [p for p in reversed(store.pulls(feed=feed, ticker=ticker, audited=False, limit=5000)) if p["state"] != "open"]
+    asked = {**({"kind": kind} if kind else {}), **_trades_here(store)}
+    waiting = [p for p in reversed(store.pulls(feed=feed, ticker=ticker, audited=False, limit=5000, **asked))
+               if p["state"] != "open"]
     failed = 0
     for row in waiting:
         if budget_s is not None and time.monotonic() - began >= budget_s:
@@ -830,12 +841,14 @@ def room(store, policy_: Policy | None = None, log: Log | None = None) -> None:
 
 def _over(store, with_: Policy) -> str:
     """Why nothing more may be asked into the cache: its unverified bytes are at the cap. "" while there is room,
-    and when the ledger cannot be read just now (a read that fails never stops a fetch)."""
+    and when the ledger cannot be read just now (a read that fails never stops a fetch). 1.109.0: in a process that
+    may not open tick files, the bytes it could not clear (the live recorder's trades files, _trades_here) are not
+    counted: they never stop its fetching, and the recorder, under the whole cap, audits them itself."""
     counted = getattr(store, "cache_bytes", None)
     if not callable(counted):
         return ""
     try:
-        held = counted()
+        held = counted(**_trades_here(store))
     except sqlite3.Error:
         return ""
     if held < with_.cap_gb * 2**30:

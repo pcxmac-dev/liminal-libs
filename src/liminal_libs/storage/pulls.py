@@ -57,6 +57,9 @@ ROW_COLUMNS = ("ticker", "timespan", "multiplier", "ts", "open", "high", "low", 
 TRADE_COLUMNS = ("ticker", "ts_ns", "seq", "price", "size", "exchange", "conditions", "trade_id", "tape")
 TABLES = {"bars": ("rows", ROW_COLUMNS), "trades": ("trades", TRADE_COLUMNS)}  # a rows file's table: its kind, columns
 ROWS_KINDS = ("rows", "trades")  # the ledger's kinds of rows file
+# 1.109.0: a pull with a trades file still on disk (only a process that may open tick files audits it)
+_TRADES_ON_DISK = ("EXISTS (SELECT 1 FROM pull_files t WHERE t.pull={pull} AND t.kind='trades' "
+                   "AND t.removed_at IS NULL)")
 
 
 def row_times(table: str, rows) -> list[int]:
@@ -425,16 +428,21 @@ class PullStore:
         return dict(zip(_PULL, r)) if r else None
 
     def pulls(self, feed: str | None = None, ticker: str | None = None, state: str | None = None,
-              audited: bool | None = None, limit: int = 200) -> list[dict]:
+              audited: bool | None = None, limit: int = 200, kind: str | None = None,
+              trades: bool | None = None) -> list[dict]:
         """The pulls in the ledger, the newest first: of a feed, of a symbol, in a state (open, complete, cut),
-        audited or not yet."""
+        audited or not yet; 1.109.0: of a kind (live, bars ...), and with trades files on disk or without
+        (`trades`: what only a process that may open tick files can audit)."""
         where, args = [], []
-        for column, value in (("feed", feed), ("ticker", ticker.upper() if ticker else None), ("state", state)):
+        for column, value in (("feed", feed), ("ticker", ticker.upper() if ticker else None), ("state", state),
+                              ("kind", kind)):
             if value is not None:
                 where.append(f"{column}=?")
                 args.append(value)
         if audited is not None:
             where.append("audit IS NOT NULL" if audited else "audit IS NULL")
+        if trades is not None:
+            where.append(("" if trades else "NOT ") + _TRADES_ON_DISK.format(pull="pulls.id"))
         sql = f"SELECT {', '.join(_PULL)} FROM pulls" + (" WHERE " + " AND ".join(where) if where else "")
         return [dict(zip(_PULL, r)) for r in self.conn.execute(sql + " ORDER BY opened_at DESC, id DESC LIMIT ?",
                                                                (*args, int(limit)))]
@@ -566,11 +574,13 @@ class PullStore:
             self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (VERIFIED_KEY, json.dumps(out)))
         return out
 
-    def cache_bytes(self, unverified_only: bool = True) -> int:
+    def cache_bytes(self, unverified_only: bool = True, trades: bool | None = None) -> int:
         """Bytes of the cache's files on disk: those of the pulls not audited yet (what the cap counts: a
-        mismatch's kept files do not), or of every file kept."""
+        mismatch's kept files do not), or of every file kept; 1.109.0: `trades` False, only the pulls with no trades
+        file on disk (what a process that may not open tick files can audit, and so clear), True only the others."""
         sql = ("SELECT COALESCE(SUM(f.bytes), 0) FROM pull_files f JOIN pulls p ON p.id=f.pull WHERE f.removed_at IS NULL"
-               + (" AND p.audit IS NULL" if unverified_only else ""))
+               + (" AND p.audit IS NULL" if unverified_only else "")
+               + ("" if trades is None else " AND " + ("" if trades else "NOT ") + _TRADES_ON_DISK.format(pull="p.id")))
         return int(self.conn.execute(sql).fetchone()[0])
 
     def cache_summary(self) -> list[dict]:
