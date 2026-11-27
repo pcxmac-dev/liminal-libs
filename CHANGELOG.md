@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.105.0 (provisional: the next free number at landing)
+## 1.105.0 (2026-11-26)
 
 The right-hand panel, and the page standard (Monday list item 31; the user, 2026-11-22: "the right hand menu holds the
 'tool' selected on the left hand menu in the top portion of it's menu. However, if there is amplifying information
@@ -26,20 +26,27 @@ renamed or removed, and a page that passes none of the new options sees nothing 
   plain words cut at the caps. The World Wide Web tab gives them for its ports (here and elsewhere), its places, the
   hosts view's hosts and the hops' routers; the GeoIP sources' table is not picked.
 - **The globe's `onPick`.** `LiminalGlobe.draw(el, spec, {onPick})`: what a click, a tap or Enter picked (a place, home,
-  a router, a layer's feature) in the tooltip's own words, in full, and null when let go; a hover never picks. The
-  handle's `describe(key)` and `unpick()`; `LiminalGlobe.describe(item)`.
+  a router, a layer's feature) in the tooltip's own words, in full, and null when let go; a hover never picks. A second
+  pick of the same one lets it go, as a table's row does (the user, 2026-11-26). The handle's `describe(key)` and
+  `unpick()`; `LiminalGlobe.describe(item)`; `handle.update(next, more)` passes the draw's options on (the layers'
+  `load` and the sky's loader, which a page gives again with a new spec).
 - **Codebase with a panel.** `LiminalCodebase.mount(data, side, {panel, scope})`: the side's whole is the panel's top
   and the repository picked is the pick; `repoSpec(r)`.
 
 The World Wide Web tab as a plugin of its own (Monday list item 33; plugin-platform-worldwideweb 0.1.0 is built on it).
-**Not additive for the firewalls:** the tab and its fourteen hooks leave the Firewall base, which keeps its rules, the
-Netstat tab and the hosts' recording. A firewall plugin written before still loads, without the tab (firewall-windows
-0.10.0 and firewall-linux 0.13.0 drop it themselves). Settings and files keep their names, so nothing kept is lost.
+**Not additive for the firewalls:** the tab and its seventeen hooks (1.104.0's sky's three among them) leave the
+Firewall base, which keeps its rules, the Netstat tab and the hosts' recording. A firewall plugin written before still
+loads, without the tab; firewall-windows 0.11.0 and firewall-linux 0.14.0 need this release and keep nothing of the tab
+(the user, 2026-11-26: "Delete now"). Settings and files keep their names, so nothing kept is lost.
 
 - **`machines.worldweb.WorldWideWeb`.** The World Wide Web tab's base, its code moved from the Firewall base method by
   method: the traffic watched, the GeoIP sources and installs, the watching's switch, the home, the globe's choices,
-  the infrastructure's layers and data sets, the routes. LIMINAL_HOME_PLACE, LIMINAL_TRAFFIC_WATCHING, the GeoIP sources
-  chosen and each licence accepted keep their names. What only a firewall knows it asks through the platform (ASKS,
+  the infrastructure's layers and data sets, the routes, and 1.104.0's sky (`world_sky`, the sgp4 package's
+  `world_sky_get` and `world_sky_remove`, page-only and refused inside themselves when not asked from the page;
+  `SKY_PACKAGE`, the pin a subclass names; `make_netstat_view` sets the satellites' view up where a data set names
+  them, `sky_onto`). `world_layer(layer, area=None, zoom=None)` reads a layer by area as the globe comes nearer.
+  LIMINAL_HOME_PLACE, LIMINAL_TRAFFIC_WATCHING, the GeoIP sources chosen and each licence accepted keep their names, the
+  sgp4 package's licence too (licence-sgp4-<version>, one acceptance a version). What only a firewall knows it asks through the platform (ASKS,
   plugin ""): the firewall serving it is the one LIMINAL_WWW_FIREWALL names, else the first that answers netstat_seen,
   chosen again after a refusal; with none, the tab draws the traffic captured alone and says why. It offers `places`.
   No lock is held while asking, and no service asks back.
