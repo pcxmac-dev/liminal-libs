@@ -1724,11 +1724,11 @@ def test_a_click_a_tap_or_enter_picks_and_a_hover_never_does(js):
     assert "let onPick = typeof opts.onPick === 'function' ? opts.onPick : null;" in js
     assert "if (more && typeof more.onPick === 'function') onPick = more.onPick;" in js  # kept through an update
     click = _body(js, "canvas.addEventListener('click', (e) => {")
-    assert "tellPick(hit);" in click and "tellPick({ home: true });" in click
+    assert "tellPick(hit);" in click and "tellPick(again ? null : { home: true });" in click
     move = _body(js, "canvas.addEventListener('pointermove', (e) => {")
     assert "tellPick" not in move and "onPick" not in move
     keys = _body(js, "canvas.addEventListener('keydown', (e) => {")
-    assert "else if (e.key === 'Enter' && pick) tellPick(pick);" in keys
+    assert "if (pinned && keyOfPick(pick) === pinned) { setPick(null); tellPick(null); } else tellPick(pick);" in keys
     assert "{ setPick(null); tellPick(null); }" in keys
     tell = _body(js, "function tellPick(p) {")
     assert "if (!onPick || key === pinned) return;" in tell and "onPick(p ? pickOf(p) : null)" in tell
@@ -1743,3 +1743,17 @@ def test_a_click_a_tap_or_enter_picks_and_a_hover_never_does(js):
     assert "const describe = (item) =>" in js
     # nothing of a pick is markup: the tooltip's lines are textContent, and side.js escapes what it is given
     assert "b.textContent = words[0];" in _body(js, "function fillTip(p) {")
+
+
+def test_a_second_pick_of_the_same_lets_it_go_as_a_table_rows_does(js):
+    """1.105.0 (the user, 2026-11-26, answering the build's question): a second click or tap on the place, router,
+    feature or home picked lets it go (onPick(null)), as a second click on a table row does (side.js); Enter on what is
+    picked lets it go too. A pick of something else still replaces it."""
+    click = _body(js, "canvas.addEventListener('click', (e) => {")
+    assert "const again = !!(hit && pinned && keyOfPick(hit) === pinned);" in click
+    assert click.index("const again") < click.index("if (hit && hit.home)")
+    assert "if (again) { setPick(null); tellPick(null); return; }" in click
+    assert "tellPick(again ? null : { home: true });" in click
+    assert click.index("if (again) { setPick(null)") < click.index("tellPick(hit);")
+    tell = _body(js, "function tellPick(p) {")
+    assert "if (!onPick || key === pinned) return;" in tell  # the same told once: so `again` is checked before it

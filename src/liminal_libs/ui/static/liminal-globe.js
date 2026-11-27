@@ -2811,12 +2811,15 @@
       const finger = pressedBy === 'finger';
       if (finger && twoTaps(e)) return;
       const hit = hitAt(e.clientX, e.clientY, finger ? 'finger' : 'mouse');
+      // 1.105.0 (the user, 2026-11-26): a second click or tap on what is picked lets it go, as a table row's does
+      const again = !!(hit && pinned && keyOfPick(hit) === pinned);
       if (hit && hit.home) {  // as globe.js's sun: a click or a tap on home goes back home (a finger's shows its words too)
-        if (finger) setPick({ home: true, by: 'finger' });
+        if (finger) setPick(again ? null : { home: true, by: 'finger' });
         home();
-        tellPick({ home: true });
+        tellPick(again ? null : { home: true });
         return;
       }
+      if (again) { setPick(null); tellPick(null); return; }
       if (finger) setPick(hit ? { ...hit, by: 'finger' } : null);  // its words stay until the next tap; a mouse's hover showed them
       tellPick(hit);  // 1.105.0: told in full in the page's right-hand menu; a click on nothing lets it go
     });
@@ -2838,7 +2841,9 @@
       else if (e.key === '-' || e.key === '_') { zoomBy(1 / 1.6); sayZoom(); }
       else if (e.key === 'Home') { setPick(null); home(); say('Back to this machine, the whole globe'); }
       else if (e.key === 'Escape' && (pick || pinned)) { setPick(null); tellPick(null); }
-      else if (e.key === 'Enter' && pick) tellPick(pick);  // 1.105.0: the place stepped to, told in full
+      else if (e.key === 'Enter' && pick) {  // 1.105.0: the place stepped to, told in full; Enter on it again lets it go
+        if (pinned && keyOfPick(pick) === pinned) { setPick(null); tellPick(null); } else tellPick(pick);
+      }
       else return;
       e.preventDefault();
     });
