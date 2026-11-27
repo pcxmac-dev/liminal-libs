@@ -67,6 +67,7 @@ JOB_BREAKAWAY_OK = 0x0800  # JOB_OBJECT_LIMIT_BREAKAWAY_OK: a child started deta
 EXTENDED_LIMITS = 9  # JobObjectExtendedLimitInformation
 PR_SET_PDEATHSIG = 1
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000  # a data holder leaves its starter's jobs (one that ends them with it) (1.88.4)
+IN_STARTERS_JOB = "in its starter's job: it allows no breakaway"  # a data holder's tie, when it could not leave them
 DATA_KINDS = ("mongod",)  # a ledger row of these kinds holds data (1.88.4)
 DATA_OWNERS = ("host:mongo",)  # ... and of these owners: the MongoDB host and the mongod it keeps
 DATA_EXES = ("mongod", "mongod.exe")  # a process running these holds data, written in the ledger or not
@@ -453,6 +454,25 @@ def is_mongod(p: Proc) -> bool:
     """Whether a process runs mongod (by its executable, or its command line's first word)."""
     words = (p.cmdline or "").split()
     return _base(p.exe) in DATA_EXES or (bool(words) and _base(words[0]) in DATA_EXES)
+
+
+def inside_jobs(rows: Iterable, alive: Iterable["Proc"]) -> set[tuple[int, int | None]]:
+    """1.110.0 (item 14): the processes (pid, started) whose jobs hold a data holder: each running ledger row that holds
+    data and could not leave its starter's jobs (IN_STARTERS_JOB in its tie) is in the job of its starter, and of that
+    one's starter, up the rows: ending any of those jobs would force it."""
+    rows = list(rows)
+    running = {(p.pid, p.started) for p in alive}
+    by_key = {(r.pid, r.started): r for r in rows}
+    out: set[tuple[int, int | None]] = set()
+    for r in rows:
+        if not (row_holds_data(r) and IN_STARTERS_JOB in str(r.tie or "") and (r.pid, r.started) in running):
+            continue
+        key = (r.owner_pid, r.owner_started)
+        while key in by_key and key not in out:
+            out.add(key)
+            up = by_key[key]
+            key = (up.owner_pid, up.owner_started)
+    return out
 
 
 def row_holds_data(row) -> bool:
@@ -951,7 +971,7 @@ def spawn(args, owner: str, kind: str, *, tied: bool = True, ledger: Ledger | No
             child = popen(args, **{**kwargs, "creationflags": kwargs.get("creationflags", 0) | CREATE_BREAKAWAY_FROM_JOB})
         except PermissionError:  # a job of its starter's that allows no breakaway: started in it, and said so
             child = popen(args, **kwargs)
-            noted = "in its starter's job: it allows no breakaway"
+            noted = IN_STARTERS_JOB
     else:
         child = popen(args, **kwargs)
     if holder is not None:

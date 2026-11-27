@@ -464,6 +464,48 @@ def test_the_stop_command_ends_a_rows_job_by_its_name():
     assert ended == ["Local\\liminal-job-a"] and any(line.startswith("job Local\\liminal-job-a") for line in out)
 
 
+def test_the_stop_commands_kill_leaves_the_job_of_a_starter_a_data_holder_could_not_leave():
+    """1.110.0 (item 14, libs-apps P3-6): a data holder whose breakaway its starter's job refused was started inside that
+    job (IN_STARTERS_JOB in its row); --kill ends the starter's tree and leaves its job, so the holder is not forced
+    (1.88.4's "never forced"); a starter with no such holder still has its job ended."""
+    starter = Proc(8201, 1, "C:/py/pythonw.exe", "pythonw -m liminal_charts host fetcher", 3)
+    holder = Proc(8202, 1, "C:/py/pythonw.exe", "pythonw -m liminal_libs.host mongo", 4)
+    other = Proc(8203, 1, "C:/py/pythonw.exe", "pythonw -m liminal_charts host feed-x", 5)
+    table = FakeTable([starter, holder, other], ignores={8202})
+    ledger = MemoryLedger(table)
+    untied = "untied: it outlives its starter by design"
+    breakaway = "in its starter's job: it allows no breakaway"  # lifecycle.spawn's words, written in its row
+    ledger.add(Row(pid=8201, started=3, owner="host:fetcher", owner_pid=1, owner_started=None, kind="host",
+                   command=["pythonw"], tie=f"job:Local\\liminal-job-a; {untied}"))
+    ledger.add(Row(pid=8202, started=4, owner="host:mongo", owner_pid=8201, owner_started=3, kind="host",
+                   command=["pythonw"], holds_data=True,
+                   tie=f"job:Local\\liminal-job-b; {untied}; {breakaway}"))
+    ledger.add(Row(pid=8203, started=5, owner="host:feed-x", owner_pid=1, owner_started=None, kind="host",
+                   command=["pythonw"], tie=f"job:Local\\liminal-job-c; {untied}"))
+    ended = []
+
+    class Killer:
+        def send(self, pid, sig, group=False):
+            return table.send(pid, sig, group)
+
+        def shutdown(self, p):
+            return False
+
+        def end_job(self, name):
+            ended.append(name)
+            return True
+
+    out = []
+    cmd = stop.SignalCommand(node=_NoNode(), http=lambda *a: (0, {}), table=table, killer=Killer(), ledger=ledger,
+                             key=b"k" * 32, env={}, venvs=["C:/py"], clock=FakeClock(), sleep=lambda s: None,
+                             out=out.append, set_event=lambda name: False)
+    rows, procs = ledger.rows(), table.list()
+    cmd.end([starter, other], Signal.TERM, 0.0, 0.0, force=True)
+    assert ended == ["Local\\liminal-job-c"]  # not the fetcher's: the MongoDB host runs inside it
+    assert any(str(line).startswith("job Local\\liminal-job-a") and "left" in str(line) for line in out), out
+    assert lifecycle.inside_jobs(rows, procs) == {(8201, 3)} and lifecycle.IN_STARTERS_JOB == breakaway
+
+
 class _NoNode:
     def reach(self, *a):
         raise ConnectionError("no node")

@@ -354,11 +354,17 @@ class SignalCommand:
             self.say(Line(_said(p) if p else "a child", "left", r["pid"],
                           f"{r.get('why', '')}; owner {owner}; asked {max(self.clock() - began, 0.0):.1f} s ago"))
         # what a row's own job holds (the interpreter its redirector started): ended at once, read from the ledger
-        # before the trees were ended (1.87.0); 1.88.4: only when forcing, and never a data holder's job
+        # before the trees were ended (1.87.0); 1.88.4: only when forcing, and never a data holder's job; 1.110.0
+        # (item 14): nor the job of a starter a data holder could not leave (it runs inside it), named or not
         end_job = getattr(self.killer, "end_job", None)
+        inside = lifecycle.inside_jobs(rows, self.table.list()) if force and callable(end_job) and jobs else set()
         for pid, job in jobs.items() if force and callable(end_job) else ():
             row = of.get(pid)
             if row is not None and lifecycle.row_holds_data(row) and pid not in (named or ()):
+                continue
+            if row is not None and (row.pid, row.started) in inside:
+                self.say(Line(f"job {job}", "left", pid, "a data holder runs inside it (it could not leave its "
+                                                         "starter's job): never forced"))
                 continue
             if end_job(job):
                 self.say(Line(f"job {job}", "killed", pid, "everything in it"))
