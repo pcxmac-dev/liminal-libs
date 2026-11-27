@@ -21,7 +21,7 @@ the GeoIP places of addresses, which a firewall's Netstat tab asks for its place
 No lock of this plugin is held while it asks another plugin, and no service hook of either asks back, so the two
 cannot wait on each other.
 
-1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "Your area only"): a region's data set
+1.108.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "Your area only"): a region's data set
 (OpenStreetMap's roads and buildings) is asked round the globe's home and round each region added on the page
 (world_region: a place, kept through the plugin's login as LIMINAL_WWW_REGIONS, REGIONS_MOST at most), each region a
 row of the Internet infrastructure table downloaded on its own click; Remove… of a region added forgets it too."""
@@ -61,7 +61,7 @@ RULES_SHOWN = 8  # rules told in a port's pick, at most (the count says how many
 PLACES_HOOK = "places"  # what it offers back
 PLACES_MOST = 2000  # addresses placed in one ask, at most
 FIREWALL_VAR = "LIMINAL_WWW_FIREWALL"
-# 1.107.0: the regions added on the page, "lat,lon,name;lat,lon,name" (a name holds no comma and no semicolon)
+# 1.108.0: the regions added on the page, "lat,lon,name;lat,lon,name" (a name holds no comma and no semicolon)
 REGIONS_VAR = "LIMINAL_WWW_REGIONS"
 REGIONS_KEY = KeyVar(REGIONS_VAR, label="The regions the globe's street maps are asked round", secret=False,
                      hint="optional, kept by the World Wide Web tab's Add a region…: lat,lon,name;lat,lon,name (8 at "
@@ -696,7 +696,7 @@ class WorldWideWeb(MachinePlugin):
         """A data set's file removed from this machine, confirmed on the page: the globe no longer draws its layers.
 
         ValueError on a machine the plugin is not for: the layers' folder is this system's, and its own plugin's
-        files are left as they are. 1.107.0: a region added on the page is forgotten with it (its place taken out of
+        files are left as they are. 1.108.0: a region added on the page is forgotten with it (its place taken out of
         LIMINAL_WWW_REGIONS), downloaded or not."""
         self._only_here()
         view = self.netstat_view()
@@ -709,7 +709,7 @@ class WorldWideWeb(MachinePlugin):
             out = {**out, "ok": True, "lines": [*out.get("lines", []), f"the region is forgotten: kept in {where}"]}
         return out
 
-    # -- the regions the street maps are asked round (1.107.0) ---------------------------------------------------------
+    # -- the regions the street maps are asked round (1.108.0) ---------------------------------------------------------
     def world_regions(self, fresh: bool = False) -> list[tuple[float, float, str]]:
         """The regions added on the page, as the login keeps them (REGIONS_VAR, read every SETTING_S at most):
         (lat, lon, name) each, REGIONS_MOST at most; one that does not read is passed over."""
@@ -991,7 +991,7 @@ class WorldWideWeb(MachinePlugin):
         view = NetstatView(self.name, reader=self._seen, book=HostsVia(self._ask, self.firewall),
                            login_of=lambda: getattr(self, "login", None), index=Index(datasets=sets), refused=refused,
                            agent=netstat.agent_of(self.name, self.version), records=False)
-        view.regions_added = self.world_regions  # 1.107.0: the regions added on the page
+        view.regions_added = self.world_regions  # 1.108.0: the regions added on the page
         return self.sky_onto(view)
 
     def sky_onto(self, view: NetstatView) -> NetstatView:
@@ -1072,7 +1072,7 @@ class WorldWideWeb(MachinePlugin):
             view.forget_setting()
         self.__dict__.pop("_geoip_choice", None)
         self.__dict__.pop("_firewall_named", None)
-        self.__dict__.pop("_regions", None)  # 1.107.0
+        self.__dict__.pop("_regions", None)  # 1.108.0
         if not self.not_for_here():
             self.world_watch_follow()
 

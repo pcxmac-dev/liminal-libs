@@ -79,7 +79,7 @@
 //   exchange points, data centres, backbones' cities, cities) are drawn with their layers' marks and the routers'
 //   places as dots, each larger and brighter by the connections through it, and named as the places are (the busiest
 //   first, more as the globe comes nearer, never over another name); a route picked tells its way and its hubs.
-// - 1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x"): a layer may say the zoom
+// - 1.108.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x"): a layer may say the zoom
 //   it is drawn from (`from`: the counties' names 16x, the towns 32x, a region's roads and buildings 64x): it is asked
 //   and drawn only from there, and its credit shown only while it is drawn. A `ranked` layer's features each say the
 //   zoom they are drawn from (`zooms` beside their names: a name's rank, a town's people, a road's class, a building's
@@ -145,11 +145,11 @@
   const SKY_MAX = 20000;  // satellites a constellation draws at most
   const SKY_COLOURS = ['#4aa3ff', '#f2a541', '#7bd88f'];  // --sky-1 to --sky-3 where the theme names none
   const AREA_TILE = 10;  // degrees: the area asked is the view's, rounded out to these
-  // 1.107.0: ... and nearer in, to smaller ones: up to a zoom, the degrees (the 1-degree cells' reads by box beyond)
+  // 1.108.0: ... and nearer in, to smaller ones: up to a zoom, the degrees (the 1-degree cells' reads by box beyond)
   const AREA_TILES = [[32, AREA_TILE], [256, 2], [Infinity, 0.5]];
-  const MAP_LABELS = 60;  // 1.107.0: the map's own names (the label layers') drawn at once
-  const BAND_MOST = 4;  // 1.107.0: the band a ranked layer's whole (coarse) copy is asked at, at most (under AREA_ZOOM)
-  // 1.107.0: 24, the map's names, boundaries, towns, streets and buildings (Monday list item 25) beside the sixteen
+  const MAP_LABELS = 60;  // 1.108.0: the map's own names (the label layers') drawn at once
+  const BAND_MOST = 4;  // 1.108.0: the band a ranked layer's whole (coarse) copy is asked at, at most (under AREA_ZOOM)
+  // 1.108.0: 24, the map's names, boundaries, towns, streets and buildings (Monday list item 25) beside the sixteen
   const MAX_LAYERS = 24;  // the infrastructure layers of a spec that are listed (how many more there were is said)
   const MAX_LAYER_POINTS = 20000;  // a layer's points kept (machines/infrastructure.py packs as many a layer at most)
   const MAX_LAYER_VERTICES = 400000;  // a layer's line vertices kept, the ones filled in among them
@@ -213,7 +213,7 @@
   const num = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? v : null)
     : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  // 1.107.0: a zoom's band, the power of two at or below it (1 to MAX_ZOOM): a ranked layer is asked once a band
+  // 1.108.0: a zoom's band, the power of two at or below it (1 to MAX_ZOOM): a ranked layer is asked once a band
   const BAND_OF = (z) => 2 ** Math.floor(Math.log2(clamp(z, 1, MAX_ZOOM)));
   const wrap = (d) => ((((d + 180) % 360) + 360) % 360) - 180;
   const safeUrl = (u) => (/^https:\/\/[^\s"'<>]+$/i.test(String(u ?? '').trim()) ? String(u).trim() : '');
@@ -677,7 +677,7 @@
       if (!raw) return;
       const xy = new DataView(raw.buffer), n = Math.min(Math.max(0, num(given.n) ?? 0), Math.floor(raw.length / 8));
       const names = Array.isArray(given.names) ? given.names : [], subs = Array.isArray(given.subs) ? given.subs : [];
-      const zooms = Array.isArray(given.zooms) ? given.zooms : null;  // 1.107.0: the zoom each is drawn from
+      const zooms = Array.isArray(given.zooms) ? given.zooms : null;  // 1.108.0: the zoom each is drawn from
       for (let i = 0; i < n; i++) {
         const lon = xy.getInt32(i * 8, true) / 1e5, lat = xy.getInt32(i * 8 + 4, true) / 1e5;
         if (!within(lon, lat)) continue;
@@ -880,7 +880,7 @@
         mark: own(MARKS, l.mark) && MARKS[l.mark] === kind ? l.mark : kind === 'lines' ? 'line' : 'circle',
         slot: LAYER_SLOTS.includes(slot) ? slot : LAYER_SLOTS[layers.length % LAYER_SLOTS.length],
         on: l.on === true, namesFrom: from != null && from >= 1 ? from : Infinity,
-        // 1.107.0: drawn from this zoom (1: from the start); its features each from their own (ranked)
+        // 1.108.0: drawn from this zoom (1: from the start); its features each from their own (ranked)
         from: drawn != null && drawn >= 1 ? Math.min(drawn, MAX_ZOOM) : 1, ranked: l.ranked === true,
         count: count != null && count >= 0 ? Math.round(count) : null,
         credits: (Array.isArray(l.credits) ? l.credits.slice(0, 8) : []).map(creditOf).filter(Boolean),
@@ -1602,7 +1602,7 @@
     let areaKey = '', area = null, stageKey = '';
     function areaOf(g) {
       const reach = sightOf(g) * 180 / Math.PI, lat = view.lat, lon = wrap(view.lon);
-      const T = AREA_TILES.find(([upto]) => zoom < upto)[1];  // 1.107.0: smaller nearer in
+      const T = AREA_TILES.find(([upto]) => zoom < upto)[1];  // 1.108.0: smaller nearer in
       const s = Math.max(-90, Math.floor((lat - reach) / T) * T);
       const n = Math.min(90, Math.ceil((lat + reach) / T) * T);
       const across = reach / Math.max(0.05, Math.cos(Math.min(89, Math.abs(lat) + reach) * rad));
@@ -1613,7 +1613,7 @@
     }
     // A layer's entry for the area asked: its own key, so every globe looking at the same area shares it.
     const areaLayer = (l) => ({ id: l.id, key: `${l.key}\n${areaKey}` });
-    // 1.107.0: what a layer asks now, [whole, near] (either null): none below the zoom it is drawn from; a ranked one
+    // 1.108.0: what a layer asks now, [whole, near] (either null): none below the zoom it is drawn from; a ranked one
     // by its band too (the whole copy at BAND_MOST at most, the area's at AREA_ZOOM at least), and its whole copy not
     // at all where it is drawn only from past AREA_ZOOM (its area's covers it)
     function asksOf(l, byArea) {
@@ -1641,7 +1641,7 @@
       if (!layersShown) {
         layersShown = [];
         for (const l of data.layers) {
-          // 1.104.0: the area's, once in; 1.107.0: none below the zoom it is drawn from
+          // 1.104.0: the area's, once in; 1.108.0: none below the zoom it is drawn from
           const e = isOn(l) ? entryOf(l) : null;
           if (e && e.state === 'ready') layersShown.push({ l, geo: e.geo });
         }
@@ -1839,7 +1839,7 @@
       grid = { cols: Math.ceil(g.w / CELL), rows: Math.ceil(g.h / CELL) };
       const names = [];
       const most = (kind) => list.filter(({ geo }) => geo[kind]).sort((a, b) => b.geo[kind].n - a.geo[kind].n);
-      // 1.107.0: the map's own names first, under every mark and line (a label layer is names alone)
+      // 1.108.0: the map's own names first, under every mark and line (a label layer is names alone)
       paintLabels(c, g, fr, list.filter(({ l, geo }) => l.mark === 'label' && geo.points));
       for (const { l, geo } of most('lines')) paintLines(c, g, fr, l, geo, names);
       for (const { l, geo } of most('points')) if (l.mark !== 'label') paintPoints(c, g, fr, l, geo, names);
@@ -1882,7 +1882,7 @@
       };
       c.beginPath();
       for (let j = 0; j < L.n; j++) {
-        if (L.zooms && L.zooms[j] > zoom) continue;  // 1.107.0: drawn only from its own zoom
+        if (L.zooms && L.zooms[j] > zoom) continue;  // 1.108.0: drawn only from its own zoom
         const q = j * 4, d = L.caps[q] * C[0] + L.caps[q + 1] * C[1] + L.caps[q + 2] * C[2];
         if (Math.acos(clamp(d, -1, 1)) > sight + L.caps[q + 3]) continue;  // wholly out of sight
         id = j + 1; first = true; best = Infinity;
@@ -1914,7 +1914,7 @@
       const count = new Uint16Array(size), sx = new Float32Array(size), sy = new Float32Array(size);
       const firsts = new Int32Array(size * 5), cells = [];
       for (let i = 0, k = 0; i < P.n; i++, k += 3) {
-        if (P.zooms && P.zooms[i] > zoom) continue;  // 1.107.0: drawn only from its own zoom
+        if (P.zooms && P.zooms[i] > zoom) continue;  // 1.108.0: drawn only from its own zoom
         const x = v[k], y = v[k + 1], z = v[k + 2];
         if (x * C[0] + y * C[1] + z * C[2] < 0) continue;  // behind the globe
         const px = g.cx + g.r * (x * E[0] + y * E[1] + z * E[2]), py = g.cy - g.r * (x * N[0] + y * N[1] + z * N[2]);
@@ -1953,7 +1953,7 @@
       for (const m of mine) if (m.n > 1) c.fillText(short(m.n), m.x, m.y + 0.5);
       c.textAlign = 'start'; c.textBaseline = 'alphabetic';
     }
-    // 1.107.0: the label layers' names, the map's own lettering: each centred on its place, drawn from its own zoom,
+    // 1.108.0: the label layers' names, the map's own lettering: each centred on its place, drawn from its own zoom,
     // the most important (the lowest zoom) first and then the nearest the middle, never over another nor near the
     // rim, MAP_LABELS in all; the first label layer the strongest (capitals), the next ones lighter, the third on in
     // italics. No mark and nothing for the pointer: a name is its own words.
@@ -2341,7 +2341,7 @@
         const want = zoom >= AREA_ZOOM ? areaOf(g) : null, key = want ? want.join(',') : '';
         if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }
       }
-      // 1.107.0: a band or a layer's `from` crossed: what is drawn and kept is worked out again (none while it glides)
+      // 1.108.0: a band or a layer's `from` crossed: what is drawn and kept is worked out again (none while it glides)
       const stage = glide ? stageKey : `${BAND_OF(zoom)}|${data.layers.filter((l) => zoom >= l.from).length}`;
       if (stage !== stageKey) { stageKey = stage; layersShown = null; pruneLayers(); }
       for (const l of data.layers) {
@@ -2702,7 +2702,7 @@
           it.b.append(it.m, it.w, it.n, it.s);
           it.b.addEventListener('click', () => switchLayer(l.id));
         }
-        const e = entryOf(l), on = isOn(l), early = zoom < l.from;  // 1.107.0: drawn only from its `from`
+        const e = entryOf(l), on = isOn(l), early = zoom < l.from;  // 1.108.0: drawn only from its `from`
         const ready = on && !!e && e.state === 'ready', failed = on && !!e && e.state === 'failed';
         const count = l.count != null ? l.count : ready ? featuresOf(e.geo) : null;
         attr(it.m, 'class', `lg-m lg-m-${l.mark} lg-s${l.slot}`);

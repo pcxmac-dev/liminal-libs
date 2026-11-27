@@ -5,7 +5,7 @@ A shapefile is a few files of one stem: <stem>.shp holds the shapes, <stem>.dbf 
 the coordinate system and <stem>.cpg the records' code page. read() yields each shape in the file's order as a Shape:
 its kind ("point", "line", "polygon", "multipoint"), its parts (lists of (longitude, latitude) pairs) and its record
 (the .dbf's row, the fields asked for alone). A Z or M shape is read as its plain one, its heights and measures read
-past; a null shape is left out, and so is one whose .dbf row is marked deleted. 1.107.0 (Monday list item 25): every
+past; a null shape is left out, and so is one whose .dbf row is marked deleted. 1.108.0 (Monday list item 25): every
 record is checked first and the shapes are then read one at a time as they are asked for, so a file of millions of
 points is never held as Python's pairs at once; records() reads the .dbf's rows alone, its .shp never read.
 
@@ -163,7 +163,7 @@ def _decoded(shp: bytes, number: int, base: int, start: int, stop: int) -> tuple
 
 
 def _index(shp: bytes, most_records: int) -> list[tuple[int, int, int, int]]:
-    """1.107.0 (Monday list item 25: the states' boundaries, some millions of points): every record of the .shp found
+    """1.108.0 (Monday list item 25: the states' boundaries, some millions of points): every record of the .shp found
     and checked, its parts' counts and offsets among them, without its points read: (its number, its plain type, where
     its content begins and ends) each, so the shapes are read one at a time after (read() yields them as they are
     read, never all of them held at once)."""
@@ -253,14 +253,14 @@ def read(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = S
             raise ShapefileError(f"its zip does not read: {' '.join(str(e).split())[:120]}") from None
     count, rows = _records(dbf, encoding, fields)
     del dbf
-    found = _index(shp, most_records)  # 1.107.0: every record checked, none of its points read yet
+    found = _index(shp, most_records)  # 1.108.0: every record checked, none of its points read yet
     if len(found) != count:
         raise ShapefileError(f"its .shp holds {len(found):,} shapes and its .dbf {count:,} rows: they do not match")
     return _yield(shp, found, rows)
 
 
 def _yield(shp: bytes, found: list, rows: list) -> Iterator[Shape]:
-    """Each shape read as it is asked for (1.107.0): only the .shp's bytes are held, never every shape's points."""
+    """Each shape read as it is asked for (1.108.0): only the .shp's bytes are held, never every shape's points."""
     for at, row in zip(found, rows):
         if row is None:
             continue
@@ -273,7 +273,7 @@ def _yield(shp: bytes, found: list, rows: list) -> Iterator[Shape]:
 
 def records(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = SHP_MOST,
             most_records: int = RECORDS_MOST) -> list[dict]:
-    """1.107.0 (Monday list item 25: the countries' and the states' names, at the label points their records hold):
+    """1.108.0 (Monday list item 25: the countries' and the states' names, at the label points their records hold):
     the .dbf's rows alone, in the file's order, those marked deleted left out, `fields` as read() keeps them. Its .shp
     is not read at all (Natural Earth's states and provinces: some 60 MB of polygons not needed for their names), but
     its .prj is: ShapefileError, in words, for what read() refuses of the zip, its coordinate system and its .dbf, and

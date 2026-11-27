@@ -1,4 +1,4 @@
-"""The regions the globe's street maps are asked round (1.107.0, Monday list item 25; the user, 2026-11-26: "Your area
+"""The regions the globe's street maps are asked round (1.108.0, Monday list item 25; the user, 2026-11-26: "Your area
 only"): the World Wide Web plugin lists a region round the globe's home and round each region added on the page
 (world_region, kept through its login as LIMINAL_WWW_REGIONS), each a row of the Internet infrastructure table with its
 own Download…, and forgets one added on its Remove…. Nothing is downloaded: the page is asked, a region added and

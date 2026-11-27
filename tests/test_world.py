@@ -288,7 +288,7 @@ def test_the_world_wide_web_plugin_has_the_tab_its_hooks_and_its_settings():
             WorldWideWeb.PUBLIC_DNS) == ("", "", {}, ())
     # the home on the globe and (1.74.0) when the traffic is watched, set on the plugin's page and kept through the
     # login; when the hosts are recorded is the firewall's (FakeFirewall's keys)
-    [home, watching, serving, regions] = fw.keys  # 1.107.0: the regions added
+    [home, watching, serving, regions] = fw.keys  # 1.108.0: the regions added
     [recording] = FakeFirewall().keys
     assert (home.name, home.secret, home.pair) == ("LIMINAL_HOME_PLACE", False, "liminal-home-place")
     assert (recording.name, recording.secret, recording.pair) == ("LIMINAL_HOSTS_RECORDING", False,

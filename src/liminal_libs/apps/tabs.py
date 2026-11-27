@@ -25,7 +25,7 @@ The page a tab's hook answers is a dict, every key optional:
   records hosts also its `hosts`, `programs` and `seconds` connected; `local`, the local peers, never placed ({count,
   bytes, hosts}); `attribution`, the places' ({text, url}); `updated` and `note` (its first 1,200 characters drawn);
   `kinds`, the kinds its legend lists; `showing`, the filter in words; `layers`, the infrastructure layers it may draw
-  (machines/infrastructure.py's `Index.layers()`: 1.107.0, a layer's `from`, the zoom it is drawn from, and `ranked`,
+  (machines/infrastructure.py's `Index.layers()`: 1.108.0, a layer's `from`, the zoom it is drawn from, and `ranked`,
   its features each drawn from their own `zooms`), and `layer_hook`, the read hook the page asks with a layer's id for
   that layer's geometry (`Index.layer()`);
 - `flows`: a table of connections, {title, note, empty, columns, rows, filters}, drawn with filter controls, the flagged

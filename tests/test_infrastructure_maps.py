@@ -1,4 +1,4 @@
-"""Street maps on the globe (1.107.0, Monday list item 25; machines/infrastructure.py): the countries' and the states'
+"""Street maps on the globe (1.108.0, Monday list item 25; machines/infrastructure.py): the countries' and the states'
 names at the label points of Natural Earth's records (its shapes never read), the states' boundaries, GeoNames' towns
 and its counties named at the middle of their towns, and a region's major roads, buildings and counties' boundaries
 from OpenStreetMap through the Overpass API, its box asked a piece at a time and each piece's XML read as it comes;

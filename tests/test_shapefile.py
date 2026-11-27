@@ -94,7 +94,7 @@ def test_what_is_larger_than_may_be_is_refused():
 
 
 def test_the_shapes_are_read_one_at_a_time_after_every_record_is_checked(monkeypatch):
-    # 1.107.0 (Monday list item 25): the states' boundaries hold millions of points; none is read before it is asked
+    # 1.108.0 (Monday list item 25): the states' boundaries hold millions of points; none is read before it is asked
     read = []
     real = shapefile._parts
     monkeypatch.setattr(shapefile, "_parts", lambda *a, **k: (read.append(k.get("points", True)), real(*a, **k))[1])

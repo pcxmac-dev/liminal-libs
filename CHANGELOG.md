@@ -19,7 +19,7 @@ server's page draws as before; the platform's page shows the new layers once the
   are never read whole and never full: one read answers `MAX_POINTS` and `MAX_VERTICES` at most, as before, while a
   download keeps `MAX_AREA_POINTS` (400,000) and `MAX_AREA_VERTICES` (8,000,000), its lines packed (`Packed`, 8
   bytes a vertex) and not looked at for repeats.
-- **Read by area and zoom** (machines/infrastore.py): each feature's `zoom` (a column; a file of 1.106.0 gains it at
+- **Read by area and zoom** (machines/infrastore.py): each feature's `zoom` (a column; an older file gains it at
   its first write and reads as before until then, `USER_VERSION` 2); `Store.layer(upto=)` reads only the features
   drawn from that zoom or nearer out, the nearest out first, and says each one's (`zooms`); an area's read keeps the
   features whose box meets it, so an area smaller than a cell reads what it shows. `Index.layer(zoom=)` reads up to

@@ -586,7 +586,7 @@ def test_the_layers_are_asked_of_the_page_and_their_switches_kept_in_this_browse
     assert "chosen = recall(storeName);" in update  # drawn again under another key: the switches kept there
     assert "const isOn = (l) => !!load && (chosen.has(l.id) ? chosen.get(l.id) : l.on);" in js
     render = _body(js, "function render(now) {")
-    # 1.107.0: each layer's asks made by asksOf (its whole copy and its area's), each asked as it says
+    # 1.108.0: each layer's asks made by asksOf (its whole copy and its area's), each asked as it says
     assert "for (const a of asksOf(l, byArea)) if (a) askLayer(a, load, a.more);" in render
     assert "return [{ id: l.id, key: l.key, more: byArea ? { zoom: 1 } : undefined }," in _body(
         js, "function asksOf(l, byArea) {")
@@ -667,7 +667,7 @@ def test_nothing_is_fetched_but_the_map(js):
 
 
 def test_the_layers_are_bounded(js):
-    """At most MAX_LAYERS 24 layers listed (1.104.0: 13 and more to come; 1.107.0: 24) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
+    """At most MAX_LAYERS 24 layers listed (1.104.0: 13 and more to come; 1.108.0: 24) (more counted and said), 20,000 points and 400,000 line vertices a layer (as
     machines/infrastructure.py keeps at most), 16 parts an answer, 12 names on the map at once; no DOM node a feature
     (they are thousands: the plugin's own tables count them)."""
     for line in ("const MAX_LAYERS = 24;", "const MAX_LAYER_POINTS = 20000;", "const MAX_LAYER_VERTICES = 400000;",
@@ -1683,12 +1683,12 @@ def test_a_layer_is_asked_by_the_views_area_past_its_zoom(js):
     render = _body(js, "function render(now) {")
     # the review: by area only with a loader that takes the area (its second argument); today's platform loader takes
     # the id alone and answers the whole layer, which would be fetched again for every new area
-    assert "const byArea = byAreaNow();" in render  # 1.107.0: the same words, named
+    assert "const byArea = byAreaNow();" in render  # 1.108.0: the same words, named
     assert "const byAreaNow = () => !!(data.layerArea && typeof load === 'function' && load.length >= 2);" in js
     assert "if (!byArea && areaKey) { areaKey = ''; area = null; layersShown = null; pruneLayers(); }" in render
     assert "if (byArea && !glide) {" in render and "data.layerArea && !glide" not in render
     assert "if (key !== areaKey) { areaKey = key; area = want; layersShown = null; pruneLayers(); }" in render
-    asks = _body(js, "function asksOf(l, byArea) {")  # 1.107.0: the asks made by asksOf, the area's as before
+    asks = _body(js, "function asksOf(l, byArea) {")  # 1.108.0: the asks made by asksOf, the area's as before
     assert "areaKey ? { ...areaLayer(l), more: { area, zoom } } : null];" in asks
     shown = _body(js, "function shownLayers() {")
     assert "const e = isOn(l) ? entryOf(l) : null;" in shown
@@ -1872,7 +1872,7 @@ def test_a_hub_is_hovered_and_picked_and_a_route_picked_tells_its_way_and_its_hu
 
 
 def test_the_maps_layers_are_drawn_from_their_zoom_each_feature_from_its_own_and_names_as_lettering(js):
-    """1.107.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x"): a layer's `from` read
+    """1.108.0 (Monday list item 25, street maps on the globe; the user, 2026-11-26: "From 64x"): a layer's `from` read
     (1, the start, when it says none) and nothing asked or drawn below it, its button saying from when; a ranked
     layer's features' zooms read and a feature drawn only from its own, asked by the zoom's band (its whole copy at
     BAND_MOST at most, its area's at AREA_ZOOM at least, the whole copy not at all for one drawn only past AREA_ZOOM);

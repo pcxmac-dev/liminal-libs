@@ -281,7 +281,7 @@ class NetstatView:
         self.records = bool(records)
         self._reader, self._book, self._login_of = reader, book, login_of
         self.index = index if index is not None else Index()
-        # 1.107.0 (Monday list item 25): the regions added on the page, (lat, lon, label) each, as the plugin keeps them
+        # 1.108.0 (Monday list item 25): the regions added on the page, (lat, lon, label) each, as the plugin keeps them
         # (its world_regions); none until it says
         self.regions_added = lambda: ()
         self._listeners, self._app_ports, self._fetch, self._names_of = listeners, app_ports, fetch, names
@@ -961,7 +961,7 @@ class NetstatView:
             globe = page.get("globe")
             if not isinstance(globe, dict):
                 globe = page["globe"] = {}
-            try:  # 1.107.0: the regions round home (the globe's own, as it draws it) and those added, before the table
+            try:  # 1.108.0: the regions round home (the globe's own, as it draws it) and those added, before the table
                 self.index.place_regions(globe.get("home"), self.regions_added() or ())
             except Exception:  # noqa: BLE001 - the regions never cost the tab its page
                 pass
@@ -1006,7 +1006,7 @@ class NetstatView:
                 self._place(world)
             try:
                 forms += self.index.forms(can=True)
-                forms += self.index.region_forms(can=True)  # 1.107.0: a region added, nothing downloaded
+                forms += self.index.region_forms(can=True)  # 1.108.0: a region added, nothing downloaded
             except Exception:  # noqa: BLE001 - its table says why
                 pass
             page["tables"] = tables

@@ -113,7 +113,7 @@ def test_the_file_is_closed_after_each_call_and_another_systems_folder_refused(t
         Store(tmp_path).layer("roads", area=(0, 0, 1))
 
 
-# -- 1.107.0 (Monday list item 25: street maps on the globe) -------------------------------------------------------------
+# -- 1.108.0 (Monday list item 25: street maps on the globe) -------------------------------------------------------------
 TOWNS = {**SET, "id": "geonames-places", "layer": "towns", "format": "geonames"}
 
 

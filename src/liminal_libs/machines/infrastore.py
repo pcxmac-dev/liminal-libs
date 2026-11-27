@@ -13,7 +13,7 @@ downloads (infrastructure.install) and read by area, so the globe asks for what 
 - A set is written in one transaction, its older rows replaced: a write that fails leaves the older copy as it was.
 - The file is opened only while a write or a read is made, and closed after each (it can be removed right after, on
   Windows too); no thread, no timer. Thread-safe.
-- 1.107.0 (Monday list item 25, street maps on the globe): each feature's `zoom`, the globe's zoom it is drawn (a name
+- 1.108.0 (Monday list item 25, street maps on the globe): each feature's `zoom`, the globe's zoom it is drawn (a name
   placed) from, 0 for always (every feature before it); a read with `upto` leaves out those drawn only from further
   in, and an area's read keeps only the features whose box meets it, so an area smaller than a cell (a street's at
   1024x) reads what it shows. A file of USER_VERSION 1 gains the column at its first write, and is read as before
@@ -35,7 +35,7 @@ from pathlib import Path
 from . import infrastructure as infra
 
 FILE = "infrastructure.db"
-USER_VERSION = 2  # 1.107.0: features.zoom
+USER_VERSION = 2  # 1.108.0: features.zoom
 PIECE = 256  # vertices a line's piece holds at most: a cell's read then reads little more than it shows
 POINT, LINE, PIECE_KIND = 0, 1, 2  # a feature's kind: a point, a line (its first piece), a line's further piece
 COARSE = 0.25  # degrees between a coarse line's kept vertices (the whole globe's view)
@@ -43,7 +43,7 @@ SAMPLE = 0.5  # degrees between the points a long segment's cells are found at
 CELLS = 360 * 180
 TIMEOUT_S = 10.0  # how long a write waits for another's lock
 CHUNK = 500  # cells asked in one query of points (1.106.0): within the oldest SQLite's 999 parameters
-MAX_ZOOM = 1024.0  # 1.107.0: the globe's furthest zoom, the most a feature's own may be
+MAX_ZOOM = 1024.0  # 1.108.0: the globe's furthest zoom, the most a feature's own may be
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sets (
@@ -151,7 +151,7 @@ def _version(ident: str, fetched: float, count: int) -> str:
 
 
 def _zoom(value) -> float:
-    """A feature's zoom as it is kept (1.107.0): the globe's zoom it is drawn from, 0 (always) to MAX_ZOOM; 0 for what
+    """A feature's zoom as it is kept (1.108.0): the globe's zoom it is drawn from, 0 (always) to MAX_ZOOM; 0 for what
     is no number."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not value == value:
         return 0.0
@@ -238,7 +238,7 @@ class Store:
                     con.executescript(SCHEMA)
                     con.execute(ANSWERS)
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
-                elif had == 1:  # 1.107.0: an older file gains each feature's zoom, 0 (always) for what it holds
+                elif had == 1:  # 1.108.0: an older file gains each feature's zoom, 0 (always) for what it holds
                     con.execute("ALTER TABLE features ADD COLUMN zoom REAL NOT NULL DEFAULT 0")
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
         except BaseException:
@@ -304,7 +304,7 @@ class Store:
             for line in got.get("lines") or ():
                 vertices, name = line[0], line[1]
                 zoom = _zoom(line[2] if len(line) > 2 else 0)
-                ints = getattr(vertices, "ints", None)  # 1.107.0: a line kept packed (infrastructure.Packed)
+                ints = getattr(vertices, "ints", None)  # 1.108.0: a line kept packed (infrastructure.Packed)
                 spots = (list(zip(ints[0::2], ints[1::2])) if ints is not None
                          else [(round(lon * infra.SCALE), round(lat * infra.SCALE)) for lon, lat in vertices])
                 for at in range(0, max(1, len(spots) - 1), PIECE - 1):
@@ -433,13 +433,13 @@ class Store:
         `xy` and `offsets` packed as infrastructure.pack packs them. `area` (west, south, east, north; across the
         antimeridian when west is greater): only the features crossing its cells; `coarse`: the lines' coarse copies.
         At most infrastructure.MAX_POINTS points and MAX_VERTICES vertices in all ("cut" says where more were).
-        1.107.0: `upto` (the globe's zoom): only the features drawn from that zoom or nearer out, the nearest out first
+        1.108.0: `upto` (the globe's zoom): only the features drawn from that zoom or nearer out, the nearest out first
         (a read that is cut keeps the names placed first); an area's features those whose box meets it, not only those
         in its cells; each feature's zoom said ("zooms") where one is above 0."""
         box = area_of(area)
 
         def work(con):
-            zoomed = con.execute("PRAGMA user_version").fetchone()[0] >= 2  # a file before 1.107.0 has none
+            zoomed = con.execute("PRAGMA user_version").fetchone()[0] >= 2  # a file before 1.108.0 has none
             conditions, args = ["f.layer = ?"], [layer_id]
             if box is not None:
                 ranges = _ranges(box)
@@ -486,7 +486,7 @@ class Store:
                 if ps:
                     part["points"] = {"n": len(ps), "xy": base64.b64encode(b"".join(p[0] for p in ps)).decode(),
                                       "names": [p[1] for p in ps], "subs": [p[2] for p in ps]}
-                    if any(p[3] for p in ps):  # 1.107.0: the zoom each is drawn from
+                    if any(p[3] for p in ps):  # 1.108.0: the zoom each is drawn from
                         part["points"]["zooms"] = [_shown_zoom(p[3]) for p in ps]
                 if ls:
                     offsets, at = array(infra._U32, [0]), 0
