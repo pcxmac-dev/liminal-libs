@@ -324,6 +324,32 @@ def test_a_document_type_or_an_entity_is_refused_by_the_parser_whatever_the_answ
         parse(STREETS, entity)
 
 
+def test_a_regions_limit_is_held_across_its_pieces_as_each_is_read(tmp_path, monkeypatch):
+    """Item 3: a piece is asked with what is left of the set's limit, cut off as it passes it, never read whole."""
+    monkeypatch.setattr(infrastructure, "MAX_ANSWER", 1_000)  # every set's: this one raises its own to 5,000
+    home = DataSet.of({**STREETS, "most": 5_000, "size": 4_000}).placed(48.85661, 2.35222, "Paris")
+
+    class Dribble:  # a piece's answer a thousand bytes a read, as many as it is asked for
+        def __init__(self, total):
+            self.total, self.given = total, 0
+
+        def read1(self, n):
+            if self.given >= self.total:
+                return b""
+            self.given += 1000
+            return b" " * 1000
+
+        read = read1
+
+        def close(self):
+            pass
+    first, endless = answer(way(1, [(2.3, 48.8), (2.31, 48.81)], highway="primary")), Dribble(10 << 20)
+    answers = {a: [first] if i == 0 else [endless] for i, a in enumerate(home.addresses()[:2])}
+    with pytest.raises(InfrastructureError, match=r"its answers are larger than .* in all, the most this data set"):
+        install(home, tmp_path, accept_licence=True, fetch=Downloads(answers), clock=Clock())
+    assert endless.given <= 5_000 + 1000  # what was left of the limit, and the read that passed it
+
+
 def test_a_way_on_the_edge_two_pieces_share_is_kept_once(tmp_path):
     """Item 13: a piece is half-open (its north and east edges the next one's), its last row and column closed."""
     home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")

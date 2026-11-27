@@ -2085,15 +2085,16 @@ def _scale(dataset: "DataSet | None") -> int:
 
 
 def _read(stream, dataset: DataSet, cutoff, deadline: float, took: str, clock, say, wait: float, final: bool = True,
-          most: int | None = None) -> bytearray:
+          most: int | None = None, large: str = "") -> bytearray:
     """The answer's bytes, read on the download's thread a piece at a time (one of the stream's own reads at most:
     read1, so a server sending a byte now and then holds no read for longer than its socket's timeout, `wait`), the
     stop and the deadline looked at between the pieces, MAX_ANSWER bytes at most; its end noted on the cut-off (what
     is left is this machine's own). 1.104.0: `final` false for a tile with more to come (its end is not the
-    download's), `most` the bytes it may be (MAX_ANSWER, as it is now, when not given)."""
+    download's), `most` the bytes it may be (MAX_ANSWER, as it is now, when not given); 1.108.0: `large` the words
+    when it is more (a piece of a region's, or a batch's: what is left of the set's limit in all)."""
     host = dataset.host
-    large = (_too_large(dataset) if most is None
-             else f"a tile is larger than {size_words(most)}, the most one may be")
+    large = large or (_too_large(dataset) if most is None
+                      else f"a tile is larger than {size_words(most)}, the most one may be")
     most = dataset.limit if most is None else most
     size = world._length(stream)
     if size is not None and size > most:
@@ -2175,7 +2176,8 @@ def _batches(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float,
             say(f"request {i + 1} of {len(asked)}")
         try:
             raw = _one(dataset, address, fetch, agent, cutoff, halt, deadline, took, clock,
-                       say if not i else (lambda _line: None), final=i == len(asked) - 1)
+                       say if not i else (lambda _line: None), final=i == len(asked) - 1,
+                       most=dataset.limit - total, large=_too_large(dataset, several=True))
         except InfrastructureError as e:
             if dataset.format == "atlas-latest" and getattr(e, "code", None) in (401, 403):
                 raise InfrastructureError(f"{dataset.host} refused the request: it asks for credentials, and none "
@@ -2200,8 +2202,11 @@ def _region(dataset: DataSet, fetch, agent: str, cutoff, halt, deadline: float, 
     for i, (address, piece) in enumerate(zip(addresses, pieces)):
         if i:
             say(f"piece {i + 1} of {len(addresses)}: {world._plural(ways, 'way')} read so far")
+        # the review of 1.108.0: asked with what is left of its limit, so a piece is cut off as it passes it, never
+        # read whole first
         raw = _one(dataset, address, fetch, agent, cutoff, halt, deadline, took, clock,
-                   say if not i else (lambda _line: None), final=i == len(addresses) - 1)
+                   say if not i else (lambda _line: None), final=i == len(addresses) - 1,
+                   most=dataset.limit - total, large=_too_large(dataset, several=True))
         total += len(raw)
         if total > dataset.limit:
             raise InfrastructureError(_too_large(dataset, several=True))
@@ -2221,10 +2226,11 @@ class _Missing(Exception):
 
 
 def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: threading.Event, deadline: float, took: str,
-         clock, say, final: bool = True, most: int | None = None, missing_ok: bool = False) -> bytearray:
+         clock, say, final: bool = True, most: int | None = None, missing_ok: bool = False,
+         large: str = "") -> bytearray:
     """On the download's thread: one answer's bytes. One GET of `address`, each socket operation waiting its `wait`
     at most (less once less is left of the install's time); a busy server is asked once more RETRY_S later, that wait
-    and the second try inside the same deadline."""
+    and the second try inside the same deadline. `most` and `large` as _read's."""
     host = dataset.host
     for again in (False, True):
         left = deadline - clock()
@@ -2254,7 +2260,7 @@ def _one(dataset: DataSet, address: str, fetch, agent: str, cutoff, halt: thread
         try:
             if cutoff.why:  # it came after the stop: let go unread
                 raise InfrastructureError(cutoff.why)
-            return _read(stream, dataset, cutoff, deadline, took, clock, say, wait, final, most)
+            return _read(stream, dataset, cutoff, deadline, took, clock, say, wait, final, most, large)
         finally:
             world._close(stream)
     raise InfrastructureError(cutoff.why or took)  # not reached: the second try answers or raises
