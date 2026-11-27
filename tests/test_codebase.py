@@ -339,6 +339,31 @@ def test_every_app_holds_one_and_answers_it_at_its_own_address(workspace, tools,
         app.stop()
 
 
+def test_the_remotes_are_asked_only_by_a_person_at_the_page():
+    """POST /api/codebase/fetch (the sweep of 2026-11-26): any program on the machine could have git ask every
+    remote. Refused (401) when the login says no one is shown to be there; asked when it says so, or with no login."""
+    from liminal_libs.apps import Refused
+
+    from liminal_libs.apps import App
+
+    class Demo(App):
+        NAME, TITLE, ICON = "demo", "Demo", "plug"
+
+    app, asked, shown = Demo(log=lambda m: None), [], []
+    app.codebase.fetch = lambda paths=None: asked.append(paths) or {"fetching": True}  # no git is run here
+    request = object()
+    app.present = lambda handler: shown.append(handler) or False
+    with pytest.raises(Refused) as refused:
+        app.api(request, "POST", "/api/codebase/fetch", {}, {"paths": ["C:/x"]})
+    assert refused.value.status == 401 and "asked only from this app's page" in refused.value.reason
+    assert asked == [] and shown == [request]  # the login was shown this request, and git was asked nothing
+    for said in (True, None):  # a person shown to be there; an app that holds no login, as before
+        app.present = lambda handler, said=said: said
+        assert app.api(request, "POST", "/api/codebase/fetch", {}, {"paths": ["C:/x"]}) == (202, {"fetching": True})
+    assert app.api(request, "POST", "/api/codebase/fetch", {}, {}) == (202, {"fetching": True})
+    assert asked == [["C:/x"], ["C:/x"], None]
+
+
 def test_the_drawing_and_its_icon_come_with_the_library():
     """codebase.js is the library's, served beside every app's page (ui.STATIC): the same picture in each."""
     from liminal_libs import ui

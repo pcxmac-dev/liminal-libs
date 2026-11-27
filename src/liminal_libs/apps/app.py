@@ -785,6 +785,13 @@ class App:
         if method == "GET" and path == CODEBASE_PATH:  # read in a thread when first asked, kept, `fresh=1`: again
             return 200, self.codebase.snapshot(fresh=str(query.get("fresh") or "").lower() in ("1", "true", "yes"))
         if method == "POST" and path == CODEBASE_PATH + "/fetch":  # the user's click: the remotes asked what they have
+            # 1.106.0 (the sweep of 2026-11-26): git asks the remotes over the network, so this is a person's at the
+            # page alone, as a hook only its page asks: refused when the login says no one is shown to be there
+            # (present False); asked when it says so, or when this app holds no login (None), as before
+            if self.present(handler) is False:
+                raise Refused(HTTPStatus.UNAUTHORIZED, "The repositories' remotes are asked only from this app's "
+                                                       "page, and its login does not show that you are there: sign "
+                                                       "in on the page, then ask again.")
             paths = (body or {}).get("paths")  # the repositories asked, by where they are; none named: every one
             return 202, self.codebase.fetch(paths if isinstance(paths, list) else None)
         if method == "GET" and path == "/api/ui":  # the UI's preferences every page applies (ui/static/theme.js)
