@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.104.0 (2026-11-26, provisional)
+## 1.104.0 (2026-11-26)
 
 The firewalls' globe gets its Monday list items 24, 27, 28, 29 and 32: fibre on land and its stand-ins, the
 infrastructure kept in the plugin's own database and read by area, TopoHub's backbones and RIPE Atlas as sources of the
