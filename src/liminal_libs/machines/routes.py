@@ -79,6 +79,7 @@ WAITING_NOTE = ("A leg of a route is drawn only along a line installed below: a 
 LEGAL = frozenset({"inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company",
                    "plc", "gmbh", "ag", "sa", "sas", "srl", "spa", "bv", "nv", "pty", "lp", "llp", "ab",
                    "oy", "kk", "as", "asa", "aps", "the"})
+HEAT_ERROR = 300  # 1.106.0: a failed heat's words, cut past this (globe["heat_error"])
 
 
 def _said(v) -> str:
@@ -654,10 +655,13 @@ class Routes:
                         origin["via"] = way
             try:
                 self.network.onto(globe, index)
-            except Exception:  # noqa: BLE001 - the heat never costs the tab its page
+            except Exception as e:  # noqa: BLE001 - the heat never costs the tab its page
                 # 1.106.0 (Monday list item 27: "the straightlines are meaningless"): an empty heat, not none, so the
-                # globe draws no route this time rather than the straight lines it draws a page without one
+                # globe draws no route this time rather than the straight lines it draws a page without one; the
+                # review: and said (heat_error: the Routes note, the tab's log), the legs of the page before let go
                 globe["heat"], globe["heat_by"], globe["hubs"] = [], "connections", []
+                globe["heat_error"] = f"{type(e).__name__}: {e}"[:HEAT_ERROR]
+                self.network.legs = {}
                 for origin in globe["origins"]:
                     if isinstance(origin, dict):
                         origin.pop("links", None)
@@ -702,6 +706,9 @@ class Routes:
                 f"cities within {network_module.HUB_KM:g} km of its lines, from the data sets installed below) are "
                 "named on the globe, larger and brighter with the traffic through them, and a place picked tells "
                 "its way and its hubs.")
+        failed = (globe or {}).get("heat_error")
+        if failed:  # the review of 1.106.0: a heat that failed is said, not drawn as straight lines nor left silent
+            note += f" No route is drawn this time: their heat failed ({failed})."
         table = {"title": TITLE, "note": note, "empty": ("No route traced yet." if wanted else
                                                          "No connection to the internet is open."),
                  "columns": [{"title": "To"}, {"title": "Hops"}, {"title": "The way, from here"},

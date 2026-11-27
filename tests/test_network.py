@@ -238,9 +238,15 @@ def test_a_heat_that_fails_leaves_an_empty_heat_never_none(monkeypatch):
     def broken(globe, index):
         globe["origins"][0]["links"] = [[[0, 20], [0, 20]]]  # half way when it failed
         raise RuntimeError("a stand-in's failure")
+    r.network.legs = {"0,0>0,10": ("the page before's", "")}  # what an earlier page left
     monkeypatch.setattr(r.network, "onto", broken)
     page = {"globe": {"home": {"lat": 0, "lon": 0}, "origins": [{"id": "h", "lat": 0, "lon": 20, "count": 4}]}}
     r.onto(page, Geo(), [target], index=Index({"cables": T}))
     g = page["globe"]
     assert (g["heat"], g["heat_by"], g["hubs"]) == ([], "connections", []) and "links" not in g["origins"][0]
+    # the review: said, and the legs of the page before are not this one's (nor kept in the composite as such)
+    assert g["heat_error"] == "RuntimeError: a stand-in's failure"
+    assert "No route is drawn this time: their heat failed (RuntimeError: a stand-in's failure)." in \
+        page["tables"][0]["note"]
+    assert r.network.legs == {}
     r.close()

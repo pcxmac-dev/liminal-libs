@@ -739,6 +739,18 @@ class WorldWideWeb(MachinePlugin):
             sky.sky._package = None
 
     # -- the routes (1.67.0), kept in the serving firewall's hosts database ------------------------------------------
+    def _say_heat(self, failed: str) -> None:
+        """The routes' heat that failed, in the app's log (the review of 1.106.0): once each time its words change,
+        and once when it works again; nothing while it goes on as it was."""
+        said = self.__dict__.get("_heat_said", "")
+        if failed == said:
+            return
+        self.__dict__["_heat_said"] = failed
+        log = getattr(getattr(self, "app", None), "log", None)
+        if callable(log):
+            log(f"{self.name}: the routes' heat failed, no route drawn: {failed}" if failed
+                else f"{self.name}: the routes' heat works again")
+
     def world_routes(self) -> routes_module.Routes:
         """The routes of this plugin's World Wide Web tab (1.67.0, machines/routes.py): made when first asked, closed
         when the plugin is detached or the platform stops."""
@@ -819,10 +831,11 @@ class WorldWideWeb(MachinePlugin):
             view.touch()
             page = view.page(**frame)
         page = net.onto(page, view, **frame)
+        failed = ""
         try:
             routes.onto(page, view.geoip(), remotes, index=net.index, licence=frame["licence"])
-        except Exception:  # noqa: BLE001 - the routes never cost the tab its page
-            pass
+        except Exception as e:  # noqa: BLE001 - the routes never cost the tab its page
+            failed = f"{type(e).__name__}: {e}"[:routes_module.HEAT_ERROR]
         finally:
             view.rest()
         globe = page.get("globe") if isinstance(page, dict) else None
@@ -830,6 +843,12 @@ class WorldWideWeb(MachinePlugin):
             # globe draws no route then, never the straight lines it draws a page without one
             globe.setdefault("heat", [])
             globe.setdefault("heat_by", "connections")
+            if failed:
+                globe["heat"], globe["heat_error"] = [], failed
+        self._say_heat(failed or (globe or {}).get("heat_error") or "")
+        if failed:  # the review: said on the page, where no Routes table says it
+            page["note"] = " ".join(x for x in (str(page.get("note") or ""),
+                                                f"No route is drawn this time: the routes failed ({failed}).") if x)
         try:  # 1.74.0: the switch of the traffic's watching, its table and its form (kept through a login: with one)
             if getattr(self, "login", None) is not None:
                 table, form = self._watch_table()

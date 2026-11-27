@@ -355,6 +355,17 @@ def test_the_globe_always_has_a_heat_so_it_never_draws_a_straight_line(monkeypat
     app, web = framed(wall)
     page = page_ask(app, "www", "world")
     assert page["globe"]["heat"] == [] and page["globe"]["heat_by"] == "connections"  # nothing traced: no line
+    said = []
+    app.log = said.append
     monkeypatch.setattr(routes_module.Routes, "onto", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stand-in")))
     page = page_ask(app, "www", "world")
     assert page["globe"]["heat"] == [] and page["globe"]["heat_by"] == "connections"
+    # the review of 1.106.0: said on the page and in the log, once while it goes on
+    assert page["globe"]["heat_error"] == "RuntimeError: stand-in"
+    assert "No route is drawn this time: the routes failed (RuntimeError: stand-in)." in page["note"]
+    page_ask(app, "www", "world")
+    assert [m for m in said if "heat" in m] == ["www: the routes' heat failed, no route drawn: RuntimeError: stand-in"]
+    monkeypatch.undo()
+    page = page_ask(app, "www", "world")
+    assert "heat_error" not in page["globe"] and "the routes failed" not in page.get("note", "")
+    assert [m for m in said if "heat" in m][-1] == "www: the routes' heat works again"
