@@ -458,31 +458,36 @@ class Store:
             return out
         return self._read(work) or {}
 
-    def points(self, layers: Mapping, cells, most: int) -> list[tuple[str, float, float, str, str]]:
+    def points(self, layers: Mapping, cells, most: int) -> tuple[list[tuple[str, float, float, str, str]], int | None]:
         """The points of some layers in some cells (1.106.0, Monday list item 27: the hubs a route passes): `layers`
-        {layer: the ids of the sets feeding it}, `cells` 1-degree cells (cell_of); as (layer, lon, lat, name, sub),
-        `most` at most, by cell and then in the features' order. Read through the cells' index alone, CHUNK cells a
-        query (points_sql): no layer is read whole, and a point is in one cell, so none comes twice."""
+        {layer: the ids of the sets feeding it}, `cells` 1-degree cells (cell_of); (the points as (layer, lon, lat,
+        name, sub), `most` at most, by cell and then in the features' order; and where a read was cut, the first cell
+        not read whole, else None). The review of 1.106.0: one more is asked than kept, so a cut is known, and every
+        cell before the one it fell in was read whole. Read through the cells' index alone, CHUNK cells a query
+        (points_sql): no layer is read whole, and a point is in one cell, so none comes twice."""
         cells = sorted({int(c) for c in cells if 0 <= int(c) < CELLS})
         pairs = [(str(layer), str(sid)) for layer, sids in layers.items() for sid in sids]
-        if not cells or not pairs or most <= 0:
-            return []
+        if not cells or not pairs:
+            return [], None
+        if most <= 0:
+            return [], cells[0]
 
         def work(con):
             out: list = []
+            taken = 0  # rows read, a malformed one too: what the LIMIT counts
             for at in range(0, len(cells), CHUNK):
                 chunk = cells[at:at + CHUNK]
                 rows = con.execute(points_sql(len(chunk), len(pairs)),
-                                   [*chunk, *(v for p in pairs for v in p), most - len(out)])
-                for _, layer, name, sub, blob in rows:
+                                   [*chunk, *(v for p in pairs for v in p), most - taken + 1])
+                for cell, layer, name, sub, blob in rows:
+                    if taken >= most:  # one more than kept: cut in this cell
+                        return out, cell
+                    taken += 1
                     xy = _ints(blob)
-                    if len(xy) < 2:
-                        continue
-                    out.append((layer, xy[0] / infra.SCALE, xy[1] / infra.SCALE, name, sub))
-                    if len(out) >= most:
-                        return out
-            return out
-        return self._read(work) or []
+                    if len(xy) >= 2:
+                        out.append((layer, xy[0] / infra.SCALE, xy[1] / infra.SCALE, name, sub))
+            return out, None
+        return self._read(work) or ([], None)
 
     def orbits(self, constellation: str | None = None) -> list[dict]:
         """The satellites' elements kept (item 32): [{"norad", "set", "constellation", "name", "epoch", "omm"}]."""

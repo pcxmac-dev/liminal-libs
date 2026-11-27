@@ -30,10 +30,12 @@ class Index(LineIndex):
                                    for k in self.points_given]
 
     def points(self, layers, cells, most):
+        """As Store.points: by cell, `most` at most, and where it was cut, the first cell not read whole."""
         cells = set(cells)
         self.asked.append((sorted(layers), cells))
-        return [(layer, lon, lat, name, sub) for layer in layers
-                for lat, lon, name, sub in self.points_given.get(layer, ()) if cell_of(lon, lat) in cells][:most]
+        found = sorted((cell_of(lon, lat), layer, lon, lat, name, sub) for layer in layers
+                       for lat, lon, name, sub in self.points_given.get(layer, ()) if cell_of(lon, lat) in cells)
+        return [row[1:] for row in found[:most]], (found[most][0] if len(found) > most else None)
 
 
 LINE = [run((0, 1), (0, 10))]  # a cable from 1 to 10 degrees east along the equator, a point every 0.45 degrees
@@ -189,11 +191,17 @@ def kept(folder):
 def test_the_index_reads_points_by_cells_alone_within_its_bound(tmp_path):
     index = kept(tmp_path)
     alpha, beside = ("landings", 2.5, 0.05, "Alpha", "a landing"), ("landings", 2.55, 0.05, "Beside", "")
-    assert index.points(["landings"], {cell_of(2.5, 0.05)}) == [alpha, beside]
-    assert index.points(["landings"], {cell_of(2.5, 0.05)}, most=1) == [alpha]
-    assert index.points(["landings"], set(range(1200)) | {cell_of(5.0, 1.0)}) == [("landings", 5.0, 1.0, "Gamma", "")]
-    assert index.points(["landings"], {cell_of(100, 10)}) == [] and index.points(["exchanges"], {cell_of(2.5, 0)}) == []
-    assert index.points(["cables"], {cell_of(2.5, 0)}) == []  # lines are never points
+    gamma = ("landings", 5.0, 1.0, "Gamma", "")
+    here = cell_of(2.5, 0.05)
+    assert index.points(["landings"], {here}) == ([alpha, beside], None)
+    assert index.points(["landings"], {here}, most=2) == ([alpha, beside], None)  # exactly all: not cut
+    assert index.points(["landings"], {here}, most=1) == ([alpha], here)  # cut in its cell: said
+    # by cell: Gamma's cell is after Alpha's, so a read cut after Alpha's two says Gamma's cell
+    assert index.points(["landings"], {here, cell_of(5.0, 1.0)}, most=2) == ([alpha, beside], cell_of(5.0, 1.0))
+    assert index.points(["landings"], set(range(1200)) | {cell_of(5.0, 1.0)}) == ([gamma], None)
+    assert index.points(["landings"], {cell_of(100, 10)}) == ([], None)
+    assert index.points(["exchanges"], {cell_of(2.5, 0)}) == ([], None)
+    assert index.points(["cables"], {cell_of(2.5, 0)}) == ([], None)  # lines are never points
 
 
 def test_a_route_over_a_kept_database_names_its_hubs(tmp_path):
@@ -225,3 +233,29 @@ def test_the_points_query_starts_from_the_cells_and_finds_each_feature_by_its_id
             assert sql.endswith("LIMIT ?")
     finally:
         con.close()
+
+
+def test_a_read_cut_at_hub_read_keeps_no_stretch_it_may_have_missed_hubs_of(monkeypatch):
+    """The review of 1.106.0: a read cut at HUB_READ kept the stretches after the cut as having no hubs, for good. Now
+    the stretches reaching the cell it was cut in, or a later one, are read again on the next page."""
+    index, net = Index({"cables": E}, HUBS), Network()
+    monkeypatch.setattr(network, "HUB_READ", 2)
+    east, branch = places()
+    net.onto(globe([east, branch]), index)
+    assert len(east.get("hubs", [])) < 5  # cut: some missed this time
+    kept_now = set(net._hub_edges)
+    monkeypatch.setattr(network, "HUB_READ", 20_000)
+    east, branch = places()
+    net.onto(globe([east, branch]), index)
+    assert east["hubs"] == [ALPHA, DELTA, EPSILON, ETA, BETA] and branch["hubs"] == [ALPHA, DELTA, EPSILON, *DCS]
+    assert len(index.asked) == 2 and set(net._hub_edges) > kept_now  # only those not kept were asked again
+    assert index.asked[1][1] <= index.asked[0][1]  # the cells of those again, no others
+
+
+def test_an_older_index_answering_a_plain_list_is_read_whole():
+    class Older(Index):
+        def points(self, layers, cells, most):
+            return super().points(layers, cells, most)[0]
+    east, branch = places()
+    Network().onto(globe([east, branch]), Older({"cables": E}, HUBS))
+    assert east["hubs"] == [ALPHA, DELTA, EPSILON, ETA, BETA]

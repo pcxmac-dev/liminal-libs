@@ -525,9 +525,11 @@ def _hub_id(layer: str, lat: float, lon: float) -> str:
     return f"{layer}:{lat:.3f},{lon:.3f}"
 
 
-def _read_hubs(graph: Graph, index, layers, edges) -> dict[int, list]:
+def _read_hubs(graph: Graph, index, layers, edges) -> tuple[dict[int, list], set[int]]:
     """The hubs of edges (Network.hubs' shape), read now: the points of `layers` in the cells within HUB_KM of the
-    edges' lines (one read, HUB_READ points at most), each kept for an edge whose line runs within HUB_KM of it."""
+    edges' lines (one read, HUB_READ points at most), each kept for an edge whose line runs within HUB_KM of it; and
+    the edges whose cells were all read whole (the review of 1.106.0: a read cut at HUB_READ reads the cells in order,
+    so the edges reaching the cell it was cut in, or one after it, may have missed hubs, and are not kept)."""
     lines, cells, every = {}, {}, set()
     for e in edges:
         pts = graph.line(e, graph.eu[e])
@@ -536,9 +538,12 @@ def _read_hubs(graph: Graph, index, layers, edges) -> dict[int, list]:
         cells[e] = _cells_near(lat, lon, HUB_KM)
         every |= cells[e]
     try:
-        found = index.points(list(layers), every, HUB_READ) if every else []
+        got = index.points(list(layers), every, HUB_READ) if every else ([], None)
     except Exception:  # noqa: BLE001 - a database that does not read: no hubs named this time
-        found = []
+        got = ([], None)
+    # (the points, the first cell not read whole); a plain list is an older index's, read whole
+    found, short = got if isinstance(got, tuple) and len(got) == 2 else (got or [], None)
+    whole = set(lines) if short is None else {e for e in lines if max(cells[e], default=-1) < short}
     by_cell: dict[int, list] = {}
     for item in found:
         try:
@@ -574,7 +579,7 @@ def _read_hubs(graph: Graph, index, layers, edges) -> dict[int, list]:
                     chosen.append((int(at[k]) / max(1, len(lat) - 1), (ident, layer, hlat, hlon, name, sub)))
         chosen.sort(key=lambda x: (x[0], x[1][0]))
         out[e] = chosen
-    return out
+    return out, whole
 
 
 class Network:
@@ -708,11 +713,11 @@ class Network:
                     out[e] = self._hub_edges[e]
         new = [e for e in edges if e not in out]
         if new:
-            found = _read_hubs(graph, index, [x["id"] for x in kinds], new)
+            found, whole = _read_hubs(graph, index, [x["id"] for x in kinds], new)
             with self._lock:
                 self.hubs_read += 1
-                if self._hub_key == key:
-                    self._hub_edges.update(found)
+                if self._hub_key == key:  # those a cut read may have missed hubs of are read again next time
+                    self._hub_edges.update((e, hs) for e, hs in found.items() if e in whole)
                     while len(self._hub_edges) > MAX_HUB_EDGES:
                         self._hub_edges.popitem(last=False)
             out.update(found)
