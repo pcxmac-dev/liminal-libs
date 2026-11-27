@@ -146,3 +146,29 @@ def test_the_tab_refreshes_only_for_a_person_at_the_page(tmp_path, monkeypatch):
         fw.world()
     assert asked == [fw.name]
     fw.detach()
+
+
+def test_any_failure_of_a_refreshed_set_is_kept_so_it_is_not_downloaded_again_at_every_look(tmp_path, monkeypatch):
+    # item 14 (1.109.0): an answer with a line past csv's field limit raised csv.Error, which is no
+    # InfrastructureError: no answer was kept and the tab's next look (2 s later) downloaded it all again
+    folder = tmp_path / "layers"
+    install(REFRESHED, folder, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=Clock(T0))
+    long_line = Downloads({AT: gzip.compress(b"x" * 200_000 + b"\n")})
+    with pytest.raises(InfrastructureError, match="not the data asked for"):  # a refusal, said as one
+        install(REFRESHED, folder, accept_licence=True, fetch=long_line, clock=Clock(), wall=Clock(T0 + 7200))
+    assert Store(folder).answers()["celestrak-oneweb"]["code"] == 0
+    assert Index(folder, [REFRESHED], clock=Clock(), wall=Clock(T0 + 7202)).refresh_due() == []
+    # any other failure of a reader (a bug, a KeyError) is kept the same way, and raised as it is
+    other = tmp_path / "other"
+    install(REFRESHED, other, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(), wall=Clock(T0))
+    from liminal_libs.machines import satellites
+
+    def broken(data, most=0):
+        raise KeyError("EPOCH")
+    monkeypatch.setattr(satellites, "omm_rows", broken)
+    with pytest.raises(KeyError):
+        install(REFRESHED, other, accept_licence=True, fetch=Downloads({AT: answer()}), clock=Clock(),
+                wall=Clock(T0 + 7200))
+    kept = Store(other).answers()["celestrak-oneweb"]
+    assert kept["code"] == 0 and "the download failed here (KeyError" in kept["said"]
+    assert Index(other, [REFRESHED], clock=Clock(), wall=Clock(T0 + 7202)).refresh_due() == []

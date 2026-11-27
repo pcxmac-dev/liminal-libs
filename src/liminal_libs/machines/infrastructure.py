@@ -44,6 +44,7 @@ major internet infrastructure, (as many as possible) datacenter locations.").
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import html
 import io
@@ -1873,7 +1874,7 @@ def _omm_csv(doc, kept: _Kept, host: str, free: bool) -> None:
     for _, raw in parts:
         try:
             found, left = satellites.omm_rows(_unpacked(raw, host))
-        except ValueError as e:
+        except (ValueError, csv.Error) as e:  # 1.109.0: a line past csv's field limit is a refusal too
             raise InfrastructureError(f"{host}'s answer is not the data asked for ({e})") from None
         for _ in range(left):
             kept.drop(OTHER)
@@ -2393,7 +2394,7 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
         try:
             return _install(dataset, target, fetch or world.fetch_url, world._sayer(log), cancel, agent, clock, wall,
                             float(wall()))
-        except InfrastructureError as e:
+        except Exception as e:  # 1.109.0: every failure kept, not only a refusal (item 14: a csv.Error was not)
             if dataset.refresh or dataset.pause:  # 1.104.0: kept, so it is not refreshed by itself, and paused
                 _answered(dataset, target, e, float(wall()))
             raise
@@ -2403,12 +2404,14 @@ def install(dataset, folder=None, *, accept_licence=False, fetch=None, log=None,
         _INSTALLING.release()
 
 
-def _answered(dataset: DataSet, target: Path, e: InfrastructureError, now: float) -> None:
-    """A refused download of a set refreshed by itself or paused after a 500 or 503, kept in the database (its HTTP
-    code, 0 when no answer came): a database that cannot keep it changes nothing of the refusal said."""
+def _answered(dataset: DataSet, target: Path, e: Exception, now: float) -> None:
+    """A refused or failed download of a set refreshed by itself or paused after a 500 or 503, kept in the database
+    (its HTTP code, 0 when no answer came or it failed here; 1.109.0: any failure, so a reader's own error cannot
+    have it downloaded again at every look): a database that cannot keep it changes nothing of the refusal said."""
     from .infrastore import Store
+    said = str(e) if isinstance(e, InfrastructureError) else f"the download failed here ({type(e).__name__}: {e})"
     try:
-        Store(target).answered(dataset.id, getattr(e, "code", None) or 0, now, str(e))
+        Store(target).answered(dataset.id, getattr(e, "code", None) or 0, now, said)
     except Exception:  # noqa: BLE001 - the refusal is said all the same
         return
     _changed()  # every Index looks again: the table says it at once

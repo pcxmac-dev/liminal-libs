@@ -105,7 +105,14 @@ def epoch_of(text: str) -> float | None:
 def omm_rows(data, most: int = MAX_ROWS) -> tuple[list[dict], int]:
     """CelesTrak's CSV (its GP data as OMM fields) as its rows, the OMM_FIELDS kept of each, and how many were left
     out: a row without the NEEDED fields, or whose numbers or epoch do not read; past `most` rows. ValueError for a
-    file that is no such CSV."""
+    file that is no such CSV, one csv cannot read among them (1.109.0: a line past its field limit)."""
+    try:
+        return _omm_rows(data, most)
+    except csv.Error as e:
+        raise ValueError(f"it does not read as CSV ({e})") from None
+
+
+def _omm_rows(data, most: int) -> tuple[list[dict], int]:
     text = data.decode("utf-8-sig", "replace") if isinstance(data, (bytes, bytearray)) else str(data)
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames or not set(NEEDED) <= {f.strip() for f in reader.fieldnames}:
