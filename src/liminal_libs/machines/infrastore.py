@@ -35,7 +35,7 @@ from pathlib import Path
 from . import infrastructure as infra
 
 FILE = "infrastructure.db"
-USER_VERSION = 2  # 1.108.0: features.zoom
+USER_VERSION = 3  # 1.108.0: features.zoom; 1.110.0: orbits kept by set and number
 PIECE = 256  # vertices a line's piece holds at most: a cell's read then reads little more than it shows
 POINT, LINE, PIECE_KIND = 0, 1, 2  # a feature's kind: a point, a line (its first piece), a line's further piece
 COARSE = 0.25  # degrees between a coarse line's kept vertices (the whole globe's view)
@@ -63,8 +63,9 @@ CREATE TABLE IF NOT EXISTS cells (
   PRIMARY KEY (cell, feature)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS cells_by_feature ON cells (feature);
 CREATE TABLE IF NOT EXISTS orbits (
-  norad INTEGER PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
-  constellation TEXT NOT NULL, name TEXT NOT NULL, epoch REAL NOT NULL, omm TEXT NOT NULL);
+  norad INTEGER NOT NULL, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
+  constellation TEXT NOT NULL, name TEXT NOT NULL, epoch REAL NOT NULL, omm TEXT NOT NULL,
+  PRIMARY KEY (set_id, norad));
 CREATE TABLE IF NOT EXISTS probes (
   id INTEGER PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE,
   lat REAL NOT NULL, lon REAL NOT NULL, country TEXT NOT NULL, asn4 INTEGER, asn6 INTEGER,
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, stamp TEXT NOT NULL)
 # key: a first download that failed has no set yet); made by the writes that use it too, so an older file gains it
 ANSWERS = ("CREATE TABLE IF NOT EXISTS answers (set_id TEXT PRIMARY KEY, code INTEGER NOT NULL, at REAL NOT NULL, "
            "said TEXT NOT NULL)")
+ORBITS = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS orbits"):SCHEMA.index("CREATE TABLE IF NOT EXISTS probes")]
 SET_COLUMNS = ("id", "title", "source", "url", "licence_name", "licence", "accepted", "credit_text", "credit_url",
                "fetched", "features", "dropped", "bytes", "stand_in", "version")
 
@@ -83,12 +85,23 @@ SET_COLUMNS = ("id", "title", "source", "url", "licence_name", "licence", "accep
 def _migrate(con: sqlite3.Connection) -> None:
     """1.108.0 (the review): a file of user_version 1 gains each feature's zoom in one transaction, its version read
     again inside it (another process may have done it meanwhile) and the column added only where it is not there yet,
-    so a file left half done (the column added, the version not) is finished, and one that fails is left as it was."""
+    so a file left half done (the column added, the version not) is finished, and one that fails is left as it was.
+    1.110.0 (item 14): a file of user_version 1 or 2 has its orbits kept by set and number, no longer by number alone
+    (two sets holding one satellite each keep their own row), in the same transaction."""
     con.execute("BEGIN IMMEDIATE")
     try:
-        if con.execute("PRAGMA user_version").fetchone()[0] == 1:
+        had = con.execute("PRAGMA user_version").fetchone()[0]
+        if had in (1, 2):
             if "zoom" not in {row[1] for row in con.execute("PRAGMA table_info(features)")}:
                 con.execute("ALTER TABLE features ADD COLUMN zoom REAL NOT NULL DEFAULT 0")
+            keyed = {row[1] for row in con.execute("PRAGMA table_info(orbits)") if row[5]}
+            if keyed != {"set_id", "norad"}:
+                con.execute("DROP TABLE IF EXISTS orbits_by_set")
+                con.execute(ORBITS.replace("orbits (", "orbits_by_set (", 1))
+                con.execute("INSERT INTO orbits_by_set (norad, set_id, constellation, name, epoch, omm) "
+                            "SELECT norad, set_id, constellation, name, epoch, omm FROM orbits")
+                con.execute("DROP TABLE orbits")
+                con.execute("ALTER TABLE orbits_by_set RENAME TO orbits")
             con.execute(f"PRAGMA user_version = {USER_VERSION}")
     except BaseException:
         con.execute("ROLLBACK")
@@ -288,7 +301,8 @@ class Store:
                     con.executescript(SCHEMA)
                     con.execute(ANSWERS)
                     con.execute(f"PRAGMA user_version = {USER_VERSION}")
-                elif had == 1:  # 1.108.0: an older file gains each feature's zoom, 0 (always) for what it holds
+                elif had in (1, 2):  # 1.108.0: an older file gains each feature's zoom, 0 (always) for what it
+                    # holds; 1.110.0: its orbits kept by set and number
                     _migrate(con)
         except BaseException:
             con.close()
@@ -557,13 +571,20 @@ class Store:
         return self._read(work) or ([], None)
 
     def orbits(self, constellation: str | None = None) -> list[dict]:
-        """The satellites' elements kept (item 32): [{"norad", "set", "constellation", "name", "epoch", "omm"}]."""
+        """The satellites' elements kept (item 32): [{"norad", "set", "constellation", "name", "epoch", "omm"}]. 1.110.0
+        (item 14): each set keeps its own row of a satellite; one is read a constellation, the newest epoch's."""
         def work(con):
             sql, args = "SELECT norad, set_id, constellation, name, epoch, omm FROM orbits", ()
             if constellation is not None:
                 sql, args = sql + " WHERE constellation = ?", (constellation,)
-            return [{"norad": r[0], "set": r[1], "constellation": r[2], "name": r[3], "epoch": r[4],
-                     "omm": json.loads(r[5])} for r in con.execute(sql + " ORDER BY norad", args)]
+            out, seen = [], set()
+            for r in con.execute(sql + " ORDER BY norad, epoch DESC, set_id", args):
+                if (r[2], r[0]) in seen:
+                    continue
+                seen.add((r[2], r[0]))
+                out.append({"norad": r[0], "set": r[1], "constellation": r[2], "name": r[3], "epoch": r[4],
+                            "omm": json.loads(r[5])})
+            return out
         return self._read(work) or []
 
     def probes(self, anchors: bool = False) -> list[dict]:

@@ -174,7 +174,7 @@ def test_a_file_before_the_zooms_is_read_as_it_was_and_gains_them_at_its_first_w
     assert store.layer("roads", upto=1)["ne-roads"]["lines"]["names"] == ["kept"]
     store.put(TOWNS, features(points=[(2.35, 48.86, "Paris", "FR", 32)], layer="towns"), fetched=2.0)
     with sqlite3.connect(tmp_path / infrastore.FILE) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == infrastore.USER_VERSION
         assert con.execute("SELECT zoom FROM features WHERE name = 'kept'").fetchone()[0] == 0
     con.close()
     assert store.layer("towns", upto=32)["geonames-places"]["points"]["zooms"] == [32]
@@ -192,7 +192,7 @@ def test_a_file_left_half_way_through_gaining_the_zooms_is_finished_at_its_next_
     store = Store(tmp_path)
     store.put(TOWNS, features(points=[(2.35, 48.86, "Paris", "FR", 32)], layer="towns"), fetched=2.0)
     with sqlite3.connect(tmp_path / infrastore.FILE) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == infrastore.USER_VERSION
     con.close()
     assert store.layer("towns", upto=32)["geonames-places"]["points"]["zooms"] == [32]
 
