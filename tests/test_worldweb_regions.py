@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from liminal_libs.apps import asking
 from liminal_libs.machines import worldweb
 from liminal_libs.machines.infrastructure import REGION_HOOK, REGIONS_MOST
 from liminal_libs.machines.world import HOME_PLACE_VAR
@@ -92,4 +93,30 @@ def test_no_more_than_the_most_regions_are_added_and_a_region_is_asked_only_by_t
     assert app.login.pairs[worldweb.REGIONS_VAR].startswith("0.0,0.0,r0;")
     page = page_ask(app, "www", "world")  # no home here: the table says the template needs a place
     assert rows_of(page)[0] == "Major roads and buildings round r0"
+    web.detach()
+
+
+
+def test_a_region_is_added_only_from_the_page_as_its_page_only_hooks_say():
+    """The review of 1.108.0 (item 8): with room to add one, an ask from no page is refused by the declaration
+    (PAGE_ONLY_HOOKS: its words say so, not the closed default's), and nothing is kept."""
+    app, web = framed({})
+    with pytest.raises(asking.AskRefused, match=r"world_region is asked only from its page\. This ask names no asker"):
+        app.ask("www", REGION_HOOK, "osm-streets", 60, 60, "")
+    with asking.asking("another"), pytest.raises(asking.AskRefused, match="never by another plugin: another asked"):
+        app.ask("www", REGION_HOOK, "osm-streets", 60, 60, "")
+    assert worldweb.REGIONS_VAR not in app.login.pairs
+    web.detach()
+
+
+def test_home_is_never_added_as_a_region_and_a_remove_forgets_any_added_at_its_place():
+    """The review of 1.108.0 (item 12): a region added at home's place was listed as home's and could never be
+    forgotten: it is refused, and a Remove… forgets every region added at its place, whichever row it was."""
+    app, web = framed({HOME_PLACE_VAR: "51.51,-0.13,London", worldweb.REGIONS_VAR: "51.51,-0.13,old;40.71,-74.01,NY"})
+    page_ask(app, "www", "world")
+    with pytest.raises(ValueError, match="your home place's, listed already"):
+        page_ask(app, "www", REGION_HOOK, "osm-streets", 51.5072, -0.1276, "again")
+    out = page_ask(app, "www", "world_layer_remove", "osm-streets-n5151w00013")  # home's row
+    assert "the region is forgotten" in out["lines"][-1]
+    assert app.login.pairs[worldweb.REGIONS_VAR] == "40.71,-74.01,NY"
     web.detach()

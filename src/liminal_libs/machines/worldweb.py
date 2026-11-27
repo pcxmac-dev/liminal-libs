@@ -702,7 +702,10 @@ class WorldWideWeb(MachinePlugin):
         view = self.netstat_view()
         found = view.index.dataset(dataset)
         out = view.drop(dataset)
-        if getattr(found, "why", "") == "added" and found.place:
+        # the review of 1.108.0: any region added at its place, whichever row it was (home's, where an added one is at
+        # home's place too), so none is left that no Remove… can forget
+        added = {(round(r[0], 2), round(r[1], 2)) for r in self.world_regions(fresh=True)} if found.place else set()
+        if found.place and (round(found.place[0], 2), round(found.place[1], 2)) in added:
             place = (round(found.place[0], 2), round(found.place[1], 2))
             left = [r for r in self.world_regions(fresh=True) if (round(r[0], 2), round(r[1], 2)) != place]
             where = self._keep_regions(left)
@@ -762,6 +765,11 @@ class WorldWideWeb(MachinePlugin):
         except (TypeError, ValueError):
             raise ValueError("a region's place is its latitude and longitude, in degrees") from None
         one = template.placed(lat, lon, str(label or ""))
+        home = next((d for d in self.netstat_view().index.datasets if d.id == one.id
+                     and getattr(d, "why", "") == "home"), None)
+        if home is not None:  # the review of 1.108.0: home's region is listed already, and removed as home's
+            raise ValueError(f"a region round {one.place[0]:.2f}, {one.place[1]:.2f} is your home place's, listed "
+                             "already")
         regions = self.world_regions(fresh=True)
         if any(template.placed(r[0], r[1]).id == one.id for r in regions):
             raise ValueError(f"a region round {one.place[0]:.2f}, {one.place[1]:.2f} is added already")
