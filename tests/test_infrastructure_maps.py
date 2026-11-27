@@ -384,3 +384,12 @@ def test_a_files_json_is_packed_from_lines_that_carry_their_zoom():
     got = infrastructure.pack(STREETS, {"layers": {"streets": {"points": [], "lines": [
         ([(2.3, 48.8), (2.4, 48.9)], "A", 64.0), ([(2.5, 48.8), (2.6, 48.9)], "B")]}}}, 1.0)
     assert got["layers"]["streets"]["lines"]["names"] == ["A", "B"] and got["features"] == 2
+
+
+def test_a_regions_form_says_a_dense_city_may_be_larger_and_is_refused_past_its_limit(tmp_path):
+    """Item 15: its size an estimate; past its limit refused, nothing kept."""
+    home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")
+    words = infrastructure.form(home, tmp_path)["confirm"]["words"]
+    assert f"A dense city may be larger: past {infrastructure.size_words(128 << 20)} it is refused, nothing kept." in (
+        words)
+    assert "dense city" not in infrastructure.form(PLACES, tmp_path)["confirm"]["words"]

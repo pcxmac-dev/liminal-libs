@@ -2711,8 +2711,10 @@ def _limit_words(dataset: DataSet) -> str:
     set's (MAX_ANSWER)."""
     if not dataset.most:
         return ""
+    dense = (f" A dense city may be larger: past {size_words(dataset.limit)} it is refused, nothing kept."
+             if dataset.region else "")  # the review of 1.108.0
     return (f" It may be up to {size_words(dataset.limit)} in all, a limit raised for this data set alone (every other "
-            f"set may be {size_words(MAX_ANSWER)} at most).")
+            f"set may be {size_words(MAX_ANSWER)} at most).{dense}")
 
 
 def _requests(dataset: DataSet, folder=None) -> str:
