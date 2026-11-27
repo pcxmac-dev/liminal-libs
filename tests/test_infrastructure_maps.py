@@ -381,6 +381,60 @@ def test_a_way_on_the_edge_two_pieces_share_is_kept_once(tmp_path):
     assert sorted(Store(tmp_path).layer("streets")[home.id]["lines"]["names"]) == ["on it", "the far corner"]
 
 
+def cut(ident, points, **tags) -> str:
+    """A way as Overpass prints it under a global bbox (out geom): a point it crops is an nd with no coordinates."""
+    nd = "".join('<nd ref="9"/>' if p is None else f'<nd lat="{p[1]}" lon="{p[0]}"/>' for p in points)
+    return f'<way id="{ident}">{nd}' + "".join(f'<tag k="{k}" v="{v}"/>' for k, v in tags.items()) + "</way>"
+
+
+def lines_of(kept) -> list[tuple[str, list]]:
+    return [(name, [(round(x, 5), round(y, 5)) for x, y in line]) for line, name, *_ in
+            kept.layers.get("streets", {}).get("lines", [])]
+
+
+def test_an_nd_without_coordinates_breaks_a_way_and_the_rest_is_kept():
+    """Item 14 (1.109.0): Overpass' global bbox crops `out geom`, a point outside the piece an nd with no coordinates;
+    1.108.0 dropped the whole way ("off the globe")."""
+    xml = answer(cut(1, [None, (0.01, 0.01), (0.02, 0.02)], highway="primary", name="cut"))
+    kept = infrastructure._Kept(None)
+    infrastructure._osm_piece(xml, kept, "h", (0.0, 0.0, 0.05, 0.05), (0.0, 0.0, 0.05, 0.05), set())
+    assert lines_of(kept) == [("cut", [(0.01, 0.01), (0.02, 0.02)])] and kept.dropped == {}
+    kept = infrastructure._Kept(None)  # one answer, no region: every stretch of two points or more
+    infrastructure._osm_piece(answer(cut(2, [(1.0, 1.0), (1.01, 1.01), None, (1.03, 1.03), (1.04, 1.04), None,
+                                             (1.06, 1.06)], highway="primary", name="two")), kept, "h")
+    assert lines_of(kept) == [("two", [(1.0, 1.0), (1.01, 1.01)]), ("two", [(1.03, 1.03), (1.04, 1.04)])]
+    kept = infrastructure._Kept(None)
+    infrastructure._osm_piece(answer(cut(3, [None, None], highway="primary")), kept, "h")
+    assert lines_of(kept) == [] and kept.dropped == {infrastructure.OFF: 1}
+
+
+def test_a_way_cropped_in_each_piece_it_crosses_is_kept_once_segment_by_segment():
+    """Item 14: as Overpass answers each piece, with its points outside cropped but the first one past each stretch's
+    ends; whichever piece its first point is in, every segment is kept, and none twice."""
+    home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")
+    p0, p1 = home.pieces()[0], home.pieces()[1]  # side by side, west to east
+    y = round(p0[0] + 0.03, 5)
+    a, b, c = (round(p0[3] - 0.02, 5), y), (round(p1[1] + 0.02, 5), y), (round(p1[1] + 0.05, 5), y)
+    d = (round(p0[1] + 0.01, 5), y)
+    # one point in the first piece, the rest in the second: the first piece is not given the rest
+    starts = [cut(30, [a, b, None], highway="primary", name="starts west"), cut(30, [a, b, c], highway="primary",
+                                                                                 name="starts west")]
+    # one point past the first piece's edge, its last: the second is not given the start
+    ends = [cut(31, [d, a, b], highway="primary", name="ends east"), cut(31, [None, a, b], highway="primary",
+                                                                          name="ends east")]
+    kept = infrastructure._Kept(home)
+    infrastructure._osm_xml([(0, answer(starts[0], ends[0])), (1, answer(starts[1], ends[1]))], kept, "h", False)
+    assert sorted(lines_of(kept)) == [("ends east", [d, a, b]), ("starts west", [a, b]), ("starts west", [b, c])]
+    assert kept.dropped == {}
+    # an answer of whole ways (no crop) to both: the same, each segment once
+    whole = infrastructure._Kept(home)
+    both = answer(cut(30, [a, b, c], highway="primary", name="starts west"),
+                  cut(31, [d, a, b], highway="primary", name="ends east"))
+    infrastructure._osm_xml([(0, both), (1, both)], whole, "h", False)
+    assert sorted(lines_of(whole)) == [("ends east", [d, a, b]), ("starts west", [a, b]), ("starts west", [b, c])]
+
+
+
 def test_a_files_json_is_packed_from_lines_that_carry_their_zoom():
     """Item 14: pack() reads a line's vertices and its name whatever follows them."""
     got = infrastructure.pack(STREETS, {"layers": {"streets": {"points": [], "lines": [

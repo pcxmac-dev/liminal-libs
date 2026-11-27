@@ -1528,9 +1528,11 @@ def _osm_piece(raw, kept: _Kept, host: str, piece=None, region=None, outside: se
     no tree built: of a way only its tags (GML_KEYS at most) and its points (WAY_POINTS; a longer way is left out) are
     held until it ends, PIECE_POINTS in the piece at most (more refuses the answer), nothing of any other element. Its
     roads, buildings and counties' boundaries kept (_way_zoom), named by their name (else their ref). A way crossing
-    several pieces is kept once: by the piece its first point is in (`piece`, south, west, north, east: half-open, its
-    north and east edges the next piece's unless they are the region's), or where that is outside the region
-    (`region`) by the first piece it comes in (its id in `outside`). The answer is read as UTF-8 whatever it declares
+    several pieces is kept once, segment by segment (1.109.0, _osm_way): each by the piece its first point is in
+    (`piece`, south, west, north, east: half-open, its north and east edges the next piece's unless they are the
+    region's), or, coming in from outside the region (`region`), by the one its second point is in; an nd without
+    coordinates (a point outside the piece, as Overpass crops `out geom`) breaks the way there, nothing dropped of the
+    rest (`outside` is no longer needed). The answer is read as UTF-8 whatever it declares
     (Overpass writes nothing else); a document type or an entity declared refuses it in the parser itself, as does a
     remark that is an error (the query did not finish). The ways read, kept or not."""
     from xml.parsers import expat
@@ -1621,22 +1623,42 @@ def _osm_piece(raw, kept: _Kept, host: str, piece=None, region=None, outside: se
 
 
 def _osm_way(kept: _Kept, ident, tags, points, piece, region, outside, inside) -> None:
-    if len(points) < 2 or any(p[0] is None for p in points):
+    """1.109.0 (item 14): a way kept segment by segment. Overpass' global bbox crops `out geom` to the piece asked: a
+    point outside it comes as an nd with no coordinates (but for the first one past each end of a stretch inside), so
+    a way crossing a piece's edge has gaps, and the piece its first point is in may not hold the rest of it. Each
+    segment between two points with coordinates is kept by one piece, whichever way Overpass answers: the one its
+    first point is in (`inside.ours`, half-open), or, for a segment coming in from outside the region (`region`), the
+    one its second point is in; the segments a piece keeps that follow one another are one line. Without a piece
+    (one answer, no region) every stretch of two points or more is kept. (`ident` and `outside` are no longer
+    needed: 1.108.0 kept a way whole by the piece its first point was in.)"""
+    if len(points) < 2:
         return kept.drop(OFF if points else SHORT)
-    lon, lat = points[0]
-    if piece is not None and not inside.ours(lon, lat):  # another piece's: kept by the one its first point is in
-        if inside(region, lon, lat) or ident is None:
-            return None
-        if outside is not None:
-            if ident in outside:
-                return None
-            outside.add(ident)
-    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    runs, run = [], []
+    for a, b in zip(points, points[1:]):
+        if a[0] is None or b[0] is None:
+            ours = False
+        elif piece is None:
+            ours = True
+        else:
+            ours = inside.ours(*a) or (not inside(region, *a) and inside.ours(*b))
+        if ours:
+            run = run or [a]
+            run.append(b)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+    if not runs:  # no segment with both its ends placed, or every one another piece's
+        return kept.drop(OFF) if piece is None or all(p[0] is None for p in points) else None
+    placed = [p for p in points if p[0] is not None]  # its zoom by all of it this piece was given
+    xs, ys = [p[0] for p in placed], [p[1] for p in placed]
     layer, zoom = _way_zoom(tags, (min(xs), min(ys), max(xs), max(ys)))
     if not layer:
         return kept.drop(OTHER)
     name = _name(tags.get("name")) or _name(tags.get("ref"))
-    kept.line(layer, points, name, zoom=zoom)
+    for run in runs:
+        kept.line(layer, run, name, zoom=zoom)
 
 
 def _osm_xml(doc, kept: _Kept, host: str, free: bool) -> None:
