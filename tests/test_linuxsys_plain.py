@@ -98,3 +98,21 @@ def test_the_check_would_see_a_module_of_the_plugin_contract():
     names = _imports(Path(liminal_libs.__file__).parent / "machines" / "linux.py", ("liminal_libs", "machines"))
     assert "liminal_libs.machines.plugin" in names and "liminal_libs.linuxsys.shared" in names
     assert any(n.startswith(NEVER) for n in names)
+
+
+def test_its_two_starts_open_no_window(monkeypatch):
+    """The system's runner and spawn (linuxsys._run, ._spawn) say how a console window is kept away, as every start in
+    the library does (the charts' test_no_console_windows reads each call's text): CREATE_NO_WINDOW on Windows, 0
+    elsewhere, so a sudo or probe started by a console-less platform pops no Terminal window (1.104.0)."""
+    import subprocess
+
+    from liminal_libs import proctree
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.append(("run", kw)))
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: seen.append(("Popen", kw)))
+    for nt, flags in ((True, 0x08000000), (False, 0)):
+        monkeypatch.setattr(proctree, "_nt", lambda nt=nt: nt)
+        seen.clear()
+        linuxsys._run(["true"], timeout=1)
+        linuxsys._spawn(["true"])
+        assert [(k, kw.get("creationflags", "missing")) for k, kw in seen] == [("run", flags), ("Popen", flags)]

@@ -77,6 +77,10 @@ stays 2.4.
     twice no longer says it is asked once more; a refreshed set says when; a download made before infrastructure.db is
     said kept, and deleted with its data set's removal; the sgp4 package's removal says a loaded one is marked removed
     and deleted when the platform next starts.
+- **`linuxsys`: no console window.** The system's runner and spawn (`_run`, `_spawn`: the probe, sudo's listing and
+  conversation) pass creationflags, CREATE_NO_WINDOW on Windows and 0 elsewhere, as every start in the library does (the
+  charts' test_no_console_windows found them without it). Test: tests/test_linuxsys_plain.py
+  `test_its_two_starts_open_no_window`.
 
 ## 1.103.0 (2026-11-26)
 

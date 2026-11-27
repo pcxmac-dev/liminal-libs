@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 
+from .. import proctree as _proctree
 from . import accounts as _accounts
 from . import elevation as _elevation
 from . import facts as _facts
@@ -47,14 +48,21 @@ LISTING_S = 10.0  # seconds `sudo -n -l` may take
 UNASKED = "no password is asked here, so this page cannot show that it is you who asks"  # the user's answer 6
 
 
+def _no_window() -> int:
+    """creationflags for a start here: CREATE_NO_WINDOW on Windows (a console child of a process without a console
+    gets a Terminal window of its own, the user, 2026-11-01), 0 elsewhere. Said outright in each call below: the
+    charts' test of every start (test_no_console_windows) reads creationflags in each call's text."""
+    return _proctree.CREATE_NO_WINDOW if _proctree._nt() else 0
+
+
 def _run(argv, timeout=None):
     return subprocess.run(list(argv), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
-                          check=False)
+                          check=False, creationflags=_no_window())
 
 
 def _spawn(argv):
     return subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            bufsize=0)
+                            bufsize=0, creationflags=_no_window())
 
 
 class LinuxSystem:
