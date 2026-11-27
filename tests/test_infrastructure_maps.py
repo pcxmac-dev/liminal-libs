@@ -281,3 +281,58 @@ def test_a_by_area_layer_is_never_left_out_as_full(tmp_path, monkeypatch):
     monkeypatch.setattr(infrastructure, "MAX_VERTICES", 2)
     listed = Index(tmp_path, [STATE_LINES]).layers()
     assert [x["id"] for x in listed] == ["states"] and "left out" not in listed[0]["note"]
+
+
+# -- the review of 1.108.0 ---------------------------------------------------------------------------------------------
+def test_a_pieces_xml_is_read_by_its_handlers_holding_one_ways_points_at_most():
+    """Item 1: nothing of an element but a way's is held, and a way's points WAY_POINTS at most (a longer way is left
+    out), PIECE_POINTS in a piece."""
+    import tracemalloc
+    body = b"<osm>" + b"<x/>" * 500_000 + b"</osm>"  # 2 MB of elements that are no way
+    long = (b'<osm><way id="1">' + b'<nd lat="1.0" lon="1.0"/>' * 100_000 + b'<tag k="highway" v="primary"/></way>'
+            + way(2, [(1.0, 1.0), (1.001, 1.001)], highway="primary", name="kept").encode() + b"</osm>")
+    peaks = []
+    for raw in (body, long):
+        kept = infrastructure._Kept(None)
+        tracemalloc.start()
+        try:
+            infrastructure._osm_piece(raw, kept, "h")
+            peaks.append(tracemalloc.get_traced_memory()[1])
+        finally:
+            tracemalloc.stop()
+    assert peaks[0] < 2 << 20 and peaks[1] < 2 << 20, peaks  # a tree held them: some 60 MB and 15 MB
+    assert kept.dropped == {infrastructure.LONG: 1} and [n for _, n, _ in kept.layers["streets"]["lines"]] == ["kept"]
+
+
+def test_a_piece_of_more_points_than_the_most_is_refused(monkeypatch):
+    monkeypatch.setattr(infrastructure, "PIECE_POINTS", 5)
+    xml = answer(*(way(i, [(2.0, 48.0), (2.1, 48.1)], highway="primary") for i in range(3)))
+    with pytest.raises(InfrastructureError, match="more than 5 points in one piece"):
+        parse(STREETS, xml)
+
+
+def test_a_document_type_or_an_entity_is_refused_by_the_parser_whatever_the_answers_encoding():
+    """Item 2: a UTF-16 answer declaring an entity was read and the entity expanded: the parser itself refuses it."""
+    doc = ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE osm [<!ENTITY a "AAAAAAAAAA">]><osm><way id="1">'
+           '<nd lat="1" lon="1"/><nd lat="1.001" lon="1.001"/><tag k="highway" v="primary"/><tag k="name" v="&a;"/>'
+           '</way></osm>')
+    for raw in (doc.encode("utf-16"), doc.encode("utf-16-le"), doc.replace("UTF-16", "UTF-8").encode()):
+        with pytest.raises(InfrastructureError, match="not the data asked for"):
+            parse(STREETS, raw)
+    entity = b'<?xml version="1.0"?><osm><way id="1"><tag k="name" v="&a;"/></way></osm>'  # undeclared: no read
+    with pytest.raises(InfrastructureError, match="its XML does not read"):
+        parse(STREETS, entity)
+
+
+def test_a_way_on_the_edge_two_pieces_share_is_kept_once(tmp_path):
+    """Item 13: a piece is half-open (its north and east edges the next one's), its last row and column closed."""
+    home = DataSet.of(STREETS).placed(48.85661, 2.35222, "Paris")
+    pieces = home.pieces()
+    edge = pieces[0][3]  # the first piece's east edge, the second's west
+    on = way(20, [(edge, pieces[0][0] + 0.01), (edge + 0.01, pieces[0][0] + 0.02)], highway="primary", name="on it")
+    last = way(21, [(pieces[-1][3], pieces[-1][2]), (pieces[-1][3] - 0.01, pieces[-1][2] - 0.01)],
+               highway="primary", name="the far corner")
+    answers = {a: answer(on, last) for a in home.addresses()}
+    out = install(home, tmp_path, accept_licence=True, fetch=Downloads(answers), clock=Clock())
+    assert out["file"]["layers"] == {"streets": 2}  # each once: neither left out, neither twice
+    assert sorted(Store(tmp_path).layer("streets")[home.id]["lines"]["names"]) == ["on it", "the far corner"]

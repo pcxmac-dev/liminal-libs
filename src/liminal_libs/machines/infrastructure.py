@@ -156,6 +156,9 @@ REGION_PIECE = (0.01, 0.25)  # degrees: a region's box is asked in pieces of thi
 REGION_PIECES = 100  # pieces a region is asked in, at most
 REGION_ID = re.compile(r"(.+)-([ns])(\d{4,5})([ew])(\d{5})")  # a region's id: its template's, then its place
 XML_FEED = 64 << 10  # bytes of an XML answer handed to its parser at a time
+# the points read of one way (OpenStreetMap's own API refuses a way of more than 2,000 nodes) and of one piece of a
+# region in all (the review of 1.108.0: a piece's points are what it holds while it is read)
+WAY_POINTS, PIECE_POINTS = 2_000, 2_000_000
 POINT_LAYERS = tuple(layer for layer, _, kind, *_ in LAYERS if kind == "points")
 
 FORMATS = ("overpass", "sparql", "geojson", "gml", "ourairports", "geonames", "shapefile", "mvt", "topohub",
@@ -216,6 +219,7 @@ LONGITUDE_FIRST = ("epsg:4326", "crs:84", "urn:ogc:def:crs:ogc:1.3:crs84", "urn:
 # why a feature of an answer is left out, as the words count them ("2 repeated, 1 off the globe")
 REPEATED, OFF, SHORT, OVER, OTHER = ("repeated", "off the globe", "under two points", "over the most a layer keeps",
                                      "of no kind asked for")
+LONG = "over the points a way may have"  # 1.108.0: a way of more than WAY_POINTS
 # and of a map of a network: a point with no place given, one of another network's, a link to a point not drawn
 UNPLACED, OUTSIDE, ENDS = "with no place", "outside its network", "between points not drawn"
 SITES = (  # an OpenStreetMap site's layer by its tags: the first that fits
@@ -1513,69 +1517,107 @@ def _way_zoom(tags: Mapping, box: tuple[float, float, float, float]) -> tuple[st
 
 def _osm_piece(raw, kept: _Kept, host: str, piece=None, region=None, outside: set | None = None) -> int:
     """1.108.0 (Monday list item 25): one piece of a region's Overpass answer in XML (out tags geom: each way's tags and
-    its points' places, no node's id), read as it streams through the parser XML_FEED bytes at a time, each way let go
-    once read: its roads, buildings and counties' boundaries kept (_way_zoom), named by their name (else their ref). A
-    way crossing several pieces is kept once: by the piece its first point is in (`piece`, south, west, north, east),
-    or where that is outside the region (`region`) by the first piece it comes in (its id in `outside`). A document
-    type or an entity declared, or a remark that is an error (the query did not finish), refuses the whole answer.
-    The ways read, kept or not."""
-    from xml.etree.ElementTree import ParseError, XMLPullParser
-    data = memoryview(raw)
-    if re.search(rb"<!(?:DOCTYPE|ENTITY)", data, re.IGNORECASE):
-        raise InfrastructureError(f"{host}'s answer is not the data asked for (it declares a document type)")
-    parser = XMLPullParser(events=("start", "end"))
-    root, way, tags, points, ways = None, None, {}, [], 0
+    its points' places, no node's id), read as it streams through expat XML_FEED bytes at a time by its own handlers,
+    no tree built: of a way only its tags (GML_KEYS at most) and its points (WAY_POINTS; a longer way is left out) are
+    held until it ends, PIECE_POINTS in the piece at most (more refuses the answer), nothing of any other element. Its
+    roads, buildings and counties' boundaries kept (_way_zoom), named by their name (else their ref). A way crossing
+    several pieces is kept once: by the piece its first point is in (`piece`, south, west, north, east: half-open, its
+    north and east edges the next piece's unless they are the region's), or where that is outside the region
+    (`region`) by the first piece it comes in (its id in `outside`). The answer is read as UTF-8 whatever it declares
+    (Overpass writes nothing else); a document type or an entity declared refuses it in the parser itself, as does a
+    remark that is an error (the query did not finish). The ways read, kept or not."""
+    from xml.parsers import expat
 
-    def inside(box, lon, lat) -> bool:
+    data = memoryview(raw)
+    parser = expat.ParserCreate(encoding="UTF-8")  # the answer's own declaration overruled: UTF-8 or nothing
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    state = {"root": None, "depth": 0, "way": None, "tags": {}, "points": [], "long": False, "ways": 0, "read": 0,
+             "remark": None}
+
+    def refuse(*_args):
+        raise InfrastructureError(f"{host}'s answer is not the data asked for (it declares a document type or an "
+                                  "entity)")
+
+    def start(tag, attrs):
+        state["depth"] += 1
+        if state["root"] is None:
+            state["root"] = tag
+            if tag != "osm":
+                raise InfrastructureError(f"{host}'s answer is not the data asked for (its root is {_name(tag)[:20]}, "
+                                          "not osm)")
+        elif tag == "way":
+            state.update(way=attrs.get("id"), tags={}, points=[], long=False)
+        elif tag == "nd" and state["way"] is not None:
+            points = state["points"]
+            if len(points) >= WAY_POINTS:
+                state["long"] = True
+                return
+            state["read"] += 1
+            if state["read"] > PIECE_POINTS:
+                raise InfrastructureError(f"{host}'s answer holds more than {PIECE_POINTS:,} points in one piece: "
+                                          "nothing was kept")
+            try:
+                points.append((float(attrs.get("lon")), float(attrs.get("lat"))))
+            except (TypeError, ValueError):
+                points.append((None, None))
+        elif tag == "tag" and state["way"] is not None and len(state["tags"]) < GML_KEYS:
+            state["tags"].setdefault(str(attrs.get("k")), str(attrs.get("v") or ""))
+        elif tag == "remark" and state["depth"] == 2:
+            state["remark"] = []
+
+    def text(chunk):
+        words = state["remark"]
+        if words is not None and sum(map(len, words)) < REMARK * 2:
+            words.append(chunk)
+
+    def end(tag):
+        state["depth"] -= 1
+        if tag == "remark" and state["remark"] is not None:
+            words = _text("".join(state["remark"]))[:REMARK]
+            state["remark"] = None
+            if "error" in words.lower():
+                raise InfrastructureError(f"{host} could not finish the query: {words}")
+            if words:
+                kept.remarks.append(f"{host} remarked: {words}")
+        elif tag == "way" and state["way"] is not None:
+            state["ways"] += 1
+            if state["long"]:
+                kept.drop(LONG)
+            else:
+                _osm_way(kept, state["way"], state["tags"], state["points"], piece, region, outside, inside)
+            state.update(way=None, tags={}, points=[], long=False)
+
+    def inside(box, lon, lat) -> bool:  # the region's box, closed
         return box is not None and box[0] <= lat <= box[2] and box[1] <= lon <= box[3]
+
+    def ours(lon, lat) -> bool:  # the piece's, half-open: its north and east edges the next piece's
+        s_, w_, n_, e_ = piece
+        north = lat < n_ or (lat == n_ and (region is None or n_ >= region[2]))
+        east = lon < e_ or (lon == e_ and (region is None or e_ >= region[3]))
+        return s_ <= lat and w_ <= lon and north and east
+
+    inside.ours = ours
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = text
     try:
         for at in range(0, max(1, len(data)), XML_FEED):
-            parser.feed(bytes(data[at:at + XML_FEED]))
-            if at + XML_FEED >= len(data):
-                parser.close()
-            for event, e in parser.read_events():
-                if event == "start":
-                    if root is None:
-                        root = e
-                        if e.tag != "osm":
-                            raise InfrastructureError(f"{host}'s answer is not the data asked for (its root is "
-                                                      f"{_name(e.tag)[:20]}, not osm)")
-                    elif e.tag == "way":
-                        way, tags, points = e.get("id"), {}, []
-                    continue
-                if e.tag == "remark":
-                    words = _text(e.text)[:REMARK]
-                    if "error" in words.lower():
-                        raise InfrastructureError(f"{host} could not finish the query: {words}")
-                    if words:
-                        kept.remarks.append(f"{host} remarked: {words}")
-                elif e.tag == "nd" and way is not None:
-                    try:
-                        points.append((float(e.get("lon")), float(e.get("lat"))))
-                    except (TypeError, ValueError):
-                        points.append((None, None))
-                elif e.tag == "tag" and way is not None and len(tags) < GML_KEYS:
-                    tags.setdefault(str(e.get("k")), str(e.get("v") or ""))
-                elif e.tag == "way":
-                    ways += 1
-                    _osm_way(kept, way, tags, points, piece, region, outside, inside)
-                    way, tags, points = None, {}, []
-                    root.clear()  # what was read let go: the parser keeps nothing of it
-                elif e.tag in ("node", "relation", "area") and root is not None:
-                    root.clear()
-    except ParseError as e:
+            parser.Parse(bytes(data[at:at + XML_FEED]), at + XML_FEED >= len(data))
+    except expat.ExpatError as e:
         raise InfrastructureError(f"{host}'s answer is not the data asked for (its XML does not read: "
                                   f"{' '.join(str(e).split())[:80]})") from None
-    if root is None:
+    if state["root"] is None:
         raise InfrastructureError(f"{host}'s answer is not the data asked for (it is empty)")
-    return ways
+    return state["ways"]
 
 
 def _osm_way(kept: _Kept, ident, tags, points, piece, region, outside, inside) -> None:
     if len(points) < 2 or any(p[0] is None for p in points):
         return kept.drop(OFF if points else SHORT)
     lon, lat = points[0]
-    if piece is not None and not inside(piece, lon, lat):  # another piece's: kept by the one its first point is in
+    if piece is not None and not inside.ours(lon, lat):  # another piece's: kept by the one its first point is in
         if inside(region, lon, lat) or ident is None:
             return None
         if outside is not None:
