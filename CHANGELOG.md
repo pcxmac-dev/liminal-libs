@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.108.0 (2026-11-26, provisional)
+
+Street maps on the globe (Monday list item 25; the user, 2026-11-20: "lets include streetmaps in to the globe as well
+just need to show major roads, and buildings"; 2026-11-22: "the street maps should account for all states/counties/
+countries/ and cities world wide", "so the world map should look a lot more detailed"; decided 2026-11-26: "From 64x"
+and "Your area only"). Additive for the plugins: the plugin API stays 2.4; nothing is downloaded until the user's
+click in the Internet infrastructure table, each data set's file, source, size and licence said first. An older
+server's page draws as before; the platform's page shows the new layers once the platform is restarted.
+
+- **Eight layers** (machines/infrastructure.py `LAYERS`, the globe's `MAX_LAYERS` 24): the countries' and the states'
+  names (mark `label`: names alone, the map's own lettering) and the states' boundaries, from the start; the counties'
+  names from 16x (`LAYER_FROM`), and inside a region their boundaries; the cities and towns from 32x; a region's major
+  roads and buildings from 64x. `RANKED` layers' features each say the zoom they are drawn from: a name's rank
+  (Natural Earth's MIN_LABEL, one web zoom early: `WEB_ZOOM`, `LABEL_EARLY`), a town's people (`TOWN_ZOOMS`: 100,000
+  and more from 32x, then 64x, 128x, 256x), a road's class (`ROAD_ZOOMS`: motorway to secondary 64x, tertiary 128x),
+  a building's size (from where it spans `BUILDING_PX` 1.5 pixels, never before 64x), a county 16x. `BY_AREA` layers
+  are never read whole and never full: one read answers `MAX_POINTS` and `MAX_VERTICES` at most, as before, while a
+  download keeps `MAX_AREA_POINTS` (400,000) and `MAX_AREA_VERTICES` (8,000,000), its lines packed (`Packed`, 8
+  bytes a vertex) and not looked at for repeats.
+- **Read by area and zoom** (machines/infrastore.py): each feature's `zoom` (a column; a file of 1.106.0 gains it at
+  its first write and reads as before until then, `USER_VERSION` 2); `Store.layer(upto=)` reads only the features
+  drawn from that zoom or nearer out, the nearest out first, and says each one's (`zooms`); an area's read keeps the
+  features whose box meets it, so an area smaller than a cell reads what it shows. `Index.layer(zoom=)` reads up to
+  twice the zoom asked; a ranked layer with nothing yet answers no parts, not a refusal. `Index.layers()` says a
+  layer's `from` and `ranked`.
+- **Natural Earth's names** (`label` of a shapefile set: its records' lon, lat and rank fields): the .dbf alone is read
+  (`shapefile.records`), never its shapes. **liminal_libs.shapefile** checks every record first and then reads the
+  shapes one at a time as they are asked for, so the states' boundaries are never held as Python's pairs at once.
+- **GeoNames' places** (format `geonames-places`, its second file named by `also`): cities500.zip read a line at a time
+  from the zip, each town a point of `towns`, and admin2Codes.txt's second-order divisions, each named at the middle
+  of its towns (a division with no town of the file is not placed, counted).
+- **A region's roads, buildings and counties' boundaries** (format `osm-xml`, `region` {km, piece}): the region's box
+  round its place (`DataSet.placed`: its id the template's and the place's to 0.01 degree, osm-streets-n4886e00235)
+  asked of Overpass a piece at a time (`REGION_PIECES` 100 at most), each piece's XML read as it streams through the
+  parser (`XML_FEED` 64 KiB) and let go before the next piece is asked, so one piece's bytes are held at most; a way
+  crossing pieces is kept once, by the piece its first point is in (or, outside the region, the first that brings
+  it); a document type or an entity declared, or a remark that is an error, refuses the whole answer. A region's
+  answers in all are its limit (`most`).
+- **The regions** (`Index.place_regions`, `Index.region_forms`, worldweb's `world_region` and `REGIONS_VAR`
+  LIMINAL_WWW_REGIONS): a template is listed as its regions, round the globe's home (as the globe draws it), round
+  each region added on the page (Add a region…: a place and a name, kept through the plugin's login, `REGIONS_MOST`
+  8), and round any other kept in the database; each a row with its own Download…; Remove… of one added forgets it
+  too, downloaded or not. Round no place, the template's row says what it needs.
+- **The globe** (ui/static/liminal-globe.js): a layer's `from` (nothing asked or drawn below it, its button says from
+  when, its credit only while it is drawn: OpenStreetMap's "© OpenStreetMap contributors" while a region's roads or
+  buildings are); a ranked layer asked by the zoom's band (`BAND_OF`, its whole copy at `BAND_MOST` 4 at most, its
+  area's at `AREA_ZOOM` at least, no whole copy for one drawn only past `AREA_ZOOM`), its features drawn from their
+  own zooms; the area asked shrinks nearer in (`AREA_TILES`: 10, 2, then 0.5 degrees); a label layer's names centred
+  on their places, the lowest zoom first and then the nearest the middle, never one over another nor at the rim,
+  `MAP_LABELS` 60 at most, under every mark and line, the first label layer in capitals.
+
 ## 1.107.0 (2026-11-26)
 
 Closed by default (the user, 2026-11-26: "Yes, closed by default"). The security sweep of 2026-11-26 found that a
