@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.109.0 (provisional, 2026-11-27)
+
+Six findings of the complete review (Monday list item 14) and a test that failed on CI, each fixed with a test that
+fails without it.
+
+- **A refreshed set's every failure kept** (machines/infrastructure.py, satellites.py): a set refreshed by itself
+  (CelesTrak) whose reader raised anything but InfrastructureError (csv.Error for a line past csv's field limit)
+  kept no answer, so the tab's next look, two seconds later, downloaded it all again. `install` keeps every failure
+  of a refreshed or paused set (code 0), and a csv.Error is the reader's refusal.
+- **A region's ways kept segment by segment** (machines/infrastructure.py `_osm_way`): Overpass' global bbox crops
+  `out geom`, a point outside the piece an nd with no coordinates, and the whole way was dropped "off the globe".
+  Each segment between two placed points is kept by the piece its first point is in (coming in from outside the
+  region: its second); the segments a piece keeps that follow one another are one line. That holds cropped or not;
+  a way crossing pieces is now several lines meeting at their points. The World Wide Web plugin's query may still
+  ask for whole geometry (`out tags geom(-90,-180,90,180) qt;`).
+- **Idempotency-Key passed on** (apps/binding.py `FORWARDED`): every Trading Desk order through the charts' front
+  (8765) reached the integrator without its key and was refused 400.
+- **The process ledger's hold** (lifecycle.py `Ledger._held`): a folder that could not be made left the thread lock
+  held and every later spawn and end_owned waited on it for good; the lock file is taken only from a holder gone (or
+  after `LOCK_HELD_MOST_S`, 120 s), and a hold removes only its own lock file.
+- **The recorder's minutes audited** (live.py, auditing.py, storage/pulls.py): with audit-on-update off, or an audit
+  that met a busy database, the live recorder's pulls piled up unaudited and, at the cap, every bars fetch stopped.
+  The recorder audits its own minutes at its start and every `AUDIT_SECONDS` (60 s) whatever the policy says; a
+  bars-only process neither asks for them nor counts them against its cap. Nothing goes unaudited.
+- **The audit queue** (audit.py, storage/audits.py, a table `audit_tries`): an entry the auditing feed could not serve
+  (NotEntitled) held the head of the oldest-first queue for a week; a try that could not run puts it behind the ones
+  that feed has not tried, the oldest try first.
+- **Tests**: on Python 3.12 (CI, windows-latest) a test's own `import unittest.mock` imported asyncio for the first
+  time under the guards' stand-in for Popen, a function, and asyncio stayed broken for the rest of the run. The
+  stand-ins for Popen are classes, conftest imports asyncio and unittest.mock before any guard, and the test patches
+  with monkeypatch.
+
 ## 1.108.1 (2026-11-27)
 
 A WSL plugin's holds end when its app stops (found at the first live restart with a service running: Jenkins in
