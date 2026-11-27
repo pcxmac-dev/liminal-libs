@@ -91,3 +91,31 @@ def test_what_is_larger_than_may_be_is_refused():
     two = one(line, more={"other.shp": b"", "other.dbf": b"", "other.prj": S.WGS84_PRJ})
     assert "2 shapefiles" in refused(two)
     assert len(list(shapefile.read(two, "ne_10m_roads"))) == 3
+
+
+def test_the_shapes_are_read_one_at_a_time_after_every_record_is_checked(monkeypatch):
+    # 1.107.0 (Monday list item 25): the states' boundaries hold millions of points; none is read before it is asked
+    read = []
+    real = shapefile._parts
+    monkeypatch.setattr(shapefile, "_parts", lambda *a, **k: (read.append(k.get("points", True)), real(*a, **k))[1])
+    got = shapefile.read(roads())
+    assert read == [False, False, False]  # the three records with parts checked, none of their points read
+    first = next(got)
+    assert first.kind == "line" and read[3:] == [True]  # the first shape's points read once it is asked for
+    assert [g.kind for g in got] == ["point", "polygon"] and read[3:] == [True, True]  # the deleted one never read
+    bad = bytearray(S.content(3, [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]))
+    struct.pack_into("<i", bad, 48, 7)
+    with pytest.raises(ShapefileError, match="begin past its points"):  # a later record's fault, before the first
+        shapefile.read(one([(3, [[(0, 0), (1, 1)]]), bytes(bad)]))
+
+
+def test_the_records_alone_are_read_without_the_shapes():
+    data = S.zipped(shp_bytes=b"not a shapefile at all", dbf_bytes=S.dbf(FIELDS, [["A 8", "x", 3, "T", ""],
+                                                                                 ["Gone", "", 1, "", ""]], deleted={1}))
+    assert shapefile.records(data, fields=["name", "scalerank"]) == [{"name": "A 8", "scalerank": 3}]
+    assert "not WGS 84" in str(pytest.raises(ShapefileError, shapefile.records, S.zipped(
+        shp_bytes=b"", dbf_bytes=S.dbf(FIELDS, []), prj=S.MERCATOR_PRJ)).value)
+    with pytest.raises(ShapefileError, match="more than 1 records"):
+        shapefile.records(roads(), most_records=1)
+    with pytest.raises(ShapefileError, match="it is no zip"):
+        shapefile.records(b"nothing")

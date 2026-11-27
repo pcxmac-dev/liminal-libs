@@ -5,7 +5,9 @@ A shapefile is a few files of one stem: <stem>.shp holds the shapes, <stem>.dbf 
 the coordinate system and <stem>.cpg the records' code page. read() yields each shape in the file's order as a Shape:
 its kind ("point", "line", "polygon", "multipoint"), its parts (lists of (longitude, latitude) pairs) and its record
 (the .dbf's row, the fields asked for alone). A Z or M shape is read as its plain one, its heights and measures read
-past; a null shape is left out, and so is one whose .dbf row is marked deleted.
+past; a null shape is left out, and so is one whose .dbf row is marked deleted. 1.107.0 (Monday list item 25): every
+record is checked first and the shapes are then read one at a time as they are asked for, so a file of millions of
+points is never held as Python's pairs at once; records() reads the .dbf's rows alone, its .shp never read.
 
 What is read is bounded, and what does not fit is refused in words (ShapefileError), never mended: a coordinate system
 that is not WGS 84's longitude and latitude (anything projected among them), a member larger than SHP_MOST bytes, more
@@ -146,6 +148,25 @@ def _records(dbf: bytes, encoding: str, fields) -> tuple[int, list]:
 
 def _shapes(shp: bytes, most_records: int) -> Iterator[tuple[int, str, list] | None]:
     """The .shp's shapes in order: (its number, its kind, its parts), None for a null shape."""
+    for number, base, start, stop in _index(shp, most_records):
+        yield _decoded(shp, number, base, start, stop)
+
+
+def _decoded(shp: bytes, number: int, base: int, start: int, stop: int) -> tuple[int, str, list] | None:
+    """One record of the .shp, checked already (_index), as (its number, its kind, its parts); None for a null one."""
+    if base == NULL:
+        return None
+    if base == 1:
+        x, y = struct.unpack_from("<2d", shp, start + 4)
+        return number, KINDS[1], [[(x, y)]]
+    return number, KINDS[base], _parts(shp, start, stop, number, multi=base == 8)
+
+
+def _index(shp: bytes, most_records: int) -> list[tuple[int, int, int, int]]:
+    """1.107.0 (Monday list item 25: the states' boundaries, some millions of points): every record of the .shp found
+    and checked, its parts' counts and offsets among them, without its points read: (its number, its plain type, where
+    its content begins and ends) each, so the shapes are read one at a time after (read() yields them as they are
+    read, never all of them held at once)."""
     if len(shp) < HEADER:
         raise ShapefileError("its .shp is cut short")
     code, = struct.unpack_from(">i", shp, 0)
@@ -154,7 +175,7 @@ def _shapes(shp: bytes, most_records: int) -> Iterator[tuple[int, str, list] | N
     if code != FILE_CODE or version != FILE_VERSION:
         raise ShapefileError("its .shp is no shapefile (its file code or version is not ESRI's)")
     end = min(len(shp), words * 2)
-    at, count = HEADER, 0
+    at, count, found = HEADER, 0, []
     while at + 8 <= end:
         number, length = struct.unpack_from(">ii", shp, at)
         start, stop = at + 8, at + 8 + length * 2
@@ -167,22 +188,20 @@ def _shapes(shp: bytes, most_records: int) -> Iterator[tuple[int, str, list] | N
         base = kind_code % 10 if kind_code else NULL
         if kind_code not in (NULL, 1, 3, 5, 8, 11, 13, 15, 18, 21, 23, 25, 28):
             raise ShapefileError(f"its record {number:,} is a shape of type {kind_code}, which is none read here")
-        if base == NULL:
-            yield None
-        elif base == 1:
-            if start + 20 > stop:
-                raise ShapefileError(f"its record {number:,} is cut short")
-            x, y = struct.unpack_from("<2d", shp, start + 4)
-            yield number, KINDS[1], [[(x, y)]]
-        else:
-            yield number, KINDS[base], _parts(shp, start, stop, number, multi=base == 8)
+        if base == 1 and start + 20 > stop:
+            raise ShapefileError(f"its record {number:,} is cut short")
+        if base not in (NULL, 1):
+            _parts(shp, start, stop, number, multi=base == 8, points=False)
+        found.append((number, base, start, stop))
         at = stop
     if at != end:
         raise ShapefileError("its .shp ends inside a record")
+    return found
 
 
-def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool) -> list:
-    """A polyline's, a polygon's or a multipoint's parts, each its (x, y) pairs: their counts and offsets checked."""
+def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool, points: bool = True) -> list:
+    """A polyline's, a polygon's or a multipoint's parts, each its (x, y) pairs: their counts and offsets checked
+    (`points` false: checked alone, nothing read)."""
     at = start + 4 + 32  # the type, then the box
     if multi:
         if at + 4 > stop:
@@ -203,6 +222,8 @@ def _parts(shp: bytes, start: int, stop: int, number: int, multi: bool) -> list:
         raise ShapefileError(f"its record {number:,} says more points than it holds")
     if offsets[0] != 0 or any(b < a for a, b in zip(offsets, offsets[1:])) or offsets[-1] > points:
         raise ShapefileError(f"its record {number:,}'s parts begin past its points")
+    if not points:
+        return []
     xy = struct.unpack_from(f"<{2 * points}d", shp, at)
     pairs = list(zip(xy[0::2], xy[1::2]))
     bounds = offsets + [points]
@@ -232,16 +253,44 @@ def read(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = S
             raise ShapefileError(f"its zip does not read: {' '.join(str(e).split())[:120]}") from None
     count, rows = _records(dbf, encoding, fields)
     del dbf
-    shapes = list(_shapes(shp, most_records))
-    del shp
-    if len(shapes) != count:
-        raise ShapefileError(f"its .shp holds {len(shapes):,} shapes and its .dbf {count:,} rows: they do not match")
-    return _yield(shapes, rows)
+    found = _index(shp, most_records)  # 1.107.0: every record checked, none of its points read yet
+    if len(found) != count:
+        raise ShapefileError(f"its .shp holds {len(found):,} shapes and its .dbf {count:,} rows: they do not match")
+    return _yield(shp, found, rows)
 
 
-def _yield(shapes: list, rows: list) -> Iterator[Shape]:
-    for shape, row in zip(shapes, rows):
-        if shape is None or row is None:
+def _yield(shp: bytes, found: list, rows: list) -> Iterator[Shape]:
+    """Each shape read as it is asked for (1.107.0): only the .shp's bytes are held, never every shape's points."""
+    for at, row in zip(found, rows):
+        if row is None:
+            continue
+        shape = _decoded(shp, *at)
+        if shape is None:
             continue
         _, kind, parts = shape
         yield Shape(kind, parts, row)
+
+
+def records(zip_bytes, stem: str | None = None, *, fields=None, most_bytes: int = SHP_MOST,
+            most_records: int = RECORDS_MOST) -> list[dict]:
+    """1.107.0 (Monday list item 25: the countries' and the states' names, at the label points their records hold):
+    the .dbf's rows alone, in the file's order, those marked deleted left out, `fields` as read() keeps them. Its .shp
+    is not read at all (Natural Earth's states and provinces: some 60 MB of polygons not needed for their names), but
+    its .prj is: ShapefileError, in words, for what read() refuses of the zip, its coordinate system and its .dbf, and
+    for more than `most_records` rows."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(bytes(zip_bytes)))
+    except zipfile.BadZipFile:
+        raise ShapefileError("it is no zip") from None
+    with z:
+        members = _members(z, stem)
+        try:
+            _geographic(_read(z, members[".prj"], 64 << 10).decode("latin-1"))
+            encoding = _encoding(_read(z, members[".cpg"], 256) if ".cpg" in members else None)
+            dbf = _read(z, members[".dbf"], most_bytes)
+        except (zipfile.BadZipFile, zlib.error, EOFError, OSError) as e:
+            raise ShapefileError(f"its zip does not read: {' '.join(str(e).split())[:120]}") from None
+    count, rows = _records(dbf, encoding, fields)
+    if count > most_records:
+        raise ShapefileError(f"it holds more than {most_records:,} records, the most a shapefile may")
+    return [row for row in rows if row is not None]
