@@ -48,6 +48,7 @@ log = logging.getLogger(__name__)
 
 INTERNET_S, SLOW_S = 15.0, 60.0
 COM_S, NMCLI_S, FEATURES_WAIT_S = 2.0, 5.0, 2.0
+REAP_S = 2.0  # 1.110.0: how long a killed nmcli is waited for
 MAX_VALUES = 80
 READINGS = 4  # the internet's last readings kept, with their times (M9)
 REAL = "LIMINAL_REAL_FACTS"
@@ -505,7 +506,9 @@ def open_files(paths) -> dict:
 
 def nmcli() -> str | None:
     """NetworkManager's last verdict (full, limited, portal, none, unknown), through lifecycle.spawn, NMCLI_S at most;
-    None where it is not there or does not answer. Its row is let go once it has ended (M26)."""
+    None where it is not there or does not answer. Its row is let go once it has ended (M26). 1.110.0 (item 14): one
+    that did not answer in time is killed, then reaped and its pipe closed (REAP_S at most), never left to the
+    garbage collector."""
     _guard()
     import subprocess
 
@@ -523,8 +526,26 @@ def nmcli() -> str | None:
     finally:
         lifecycle.end_owned("facts", lifecycle.Signal.KILL if late else lifecycle.Signal.TERM,
                             lifecycle.deadline_in(0))
+        if late:
+            _reaped(child)
     word = (out or "").strip().splitlines()
     return word[0].strip().lower() if word and not late else None
+
+
+def _reaped(child) -> None:
+    """1.110.0 (item 14): a child killed after its timeout waited for (REAP_S at most: on Linux no zombie is left) and
+    its pipe closed, whether or not it ended in time."""
+    try:
+        child.communicate(timeout=REAP_S)
+    except Exception:  # noqa: BLE001 - not ended in time, or already reaped: its pipe is closed all the same
+        pass
+    finally:
+        stream = getattr(child, "stdout", None)
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - closed already
+                pass
 
 
 # -- the parsers (pure: what the readers gathered -> the facts' shape) ------------------------------------------------

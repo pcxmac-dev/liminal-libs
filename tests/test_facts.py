@@ -259,6 +259,37 @@ def test_nmcli_through_a_stand_in_spawn_and_its_row_let_go_m26(monkeypatch):
     assert "check" not in facts.NMCLI  # it reads the last verdict, and asks for none
 
 
+def test_nmcli_that_does_not_answer_is_killed_then_reaped_and_its_pipe_closed(monkeypatch):
+    """1.110.0 (item 14, libs-apps P3-7): after its timeout the child is killed, then waited for (REAP_S) and its stdout
+    closed: no zombie and no open pipe left to the garbage collector."""
+    import subprocess
+
+    from liminal_libs import lifecycle
+
+    monkeypatch.setenv(facts.REAL, "1")
+    said = []
+
+    class Pipe:
+        def close(self):
+            said.append("closed")
+
+    class Child:
+        stdout = Pipe()
+
+        def communicate(self, timeout=None):
+            said.append(("communicate", timeout))
+            if len(said) == 1:
+                raise subprocess.TimeoutExpired(facts.NMCLI, timeout)
+            return "", ""
+
+    monkeypatch.setattr(facts.shutil, "which", lambda name: "/usr/bin/nmcli")
+    monkeypatch.setattr(lifecycle, "spawn", lambda args, owner, kind, **kw: Child())
+    monkeypatch.setattr(lifecycle, "end_owned", lambda owner, sig, deadline, **kw: said.append(sig) or [])
+    assert facts.nmcli() is None
+    assert said[:2] == [("communicate", facts.NMCLI_S), lifecycle.Signal.KILL]
+    assert said[2:] == [("communicate", 2.0), "closed"] and facts.REAP_S == 2.0  # waited for, then closed
+
+
 def test_nmcli_is_never_asked_inside_wsl_nor_without_networkmanager(monkeypatch):
     asked = []
     monkeypatch.setattr(facts, "nmcli", lambda: asked.append(1) or "full")
