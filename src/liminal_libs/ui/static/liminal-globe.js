@@ -1347,22 +1347,36 @@
       routes = [];
       if (!data.home) return;
       if (data.heat) {  // 1.69.0: the heat draws the routes; a light travels each place's end of its way alone
+        // the review of 1.106.0: a link by its two ends -> its route, so one several places share (home's) is one
+        // route, lit once and one light of LIGHTS, its places its `os` and its weight theirs together
+        const shared = new Map();
         for (const o of data.origins) {
           if (!o.placed) continue;
           // 1.106.0: its short links into it and into home, each lit (drawLinks) and travelled by its light; an older
           // server's page: 1.70.0's tail along the lines into it, else its straight last stretch
-          const ways = o.links ? o.links.map(([a, b]) => [unit(a.lon, a.lat), unit(b.lon, b.lat)])
-            : o.tail.length >= 2 ? [o.tail.map((p) => unit(p.lon, p.lat))]
-              : o.last ? [[unit(o.lon, o.lat), unit(o.last.lon, o.last.lat)]] : [];
-          for (const pts of ways) {
+          const ways = o.links ? o.links.map(([a, b]) => ({ key: `${a.lat},${a.lon}>${b.lat},${b.lon}`,
+            pts: [unit(a.lon, a.lat), unit(b.lon, b.lat)] }))
+            : o.tail.length >= 2 ? [{ key: '', pts: o.tail.map((p) => unit(p.lon, p.lat)) }]
+              : o.last ? [{ key: '', pts: [unit(o.lon, o.lat), unit(o.last.lon, o.last.lat)] }] : [];
+          for (const { key, pts } of ways) {
+            const was = key ? shared.get(key) : null;
+            if (was) {  // another place's way over the same link: the one route, its light the busiest place's
+              was.os.push(o);
+              was.count += o.count;
+              was.width = routeWidth(was.count);
+              if (o.count > was.o.count) was.o = o;
+              continue;
+            }
             const path = wayOf(pts);
             if (!path) continue;  // a link within a kilometre or so: the dot alone
             const seed = seedOf(o.id), n = path.length / 4;
-            routes.push({ o, path, hops: [], link: !!o.links, screen: new Float64Array(n * 3),
-              width: routeWidth(o.count), seed, period: 2400 + seed * 1600 });
+            const rt = { o, os: [o], count: o.count, path, hops: [], link: !!o.links, screen: new Float64Array(n * 3),
+              width: routeWidth(o.count), seed, period: 2400 + seed * 1600 };
+            routes.push(rt);
+            if (key) shared.set(key, rt);
           }
         }
-        routes.sort((x, y) => x.o.count - y.o.count);
+        routes.sort((x, y) => x.count - y.count);
         return;
       }
       const b = unit(data.home.lon, data.home.lat);
@@ -2020,12 +2034,14 @@
           if (!s[j + 2]) { pen = false; continue; }
           if (pen) ctx.lineTo(s[j], s[j + 1]); else { ctx.moveTo(s[j], s[j + 1]); pen = true; }
         }
-        ctx.strokeStyle = css(glow, picked && picked !== rt.o ? 0.25 : 0.8);
-        ctx.lineWidth = rt.width + (picked === rt.o ? 1 : 0);
+        ctx.strokeStyle = css(glow, picked && !ofRoute(rt, picked) ? 0.25 : 0.8);
+        ctx.lineWidth = rt.width + (picked && ofRoute(rt, picked) ? 1 : 0);
         ctx.stroke();
       }
       ctx.lineCap = 'butt';
     }
+    // whether a route is a place's: a link several share is each of theirs (the review of 1.106.0)
+    const ofRoute = (rt, o) => (rt.os ? rt.os.includes(o) : rt.o === o);
     // A light along each of the busiest routes, in towards home or out from it, its tail thinning behind it.
     function drawLights(picked, now) {
       if (!now) return;  // still: no lights
@@ -2037,7 +2053,7 @@
         const fade = rt.o.kind === 'unanswered' ? 1 - smooth(0.6, 0.9, t) : 1;  // it knocks, and no answer comes
         const head = fade > 0 ? along(rt.screen, t) : null;
         if (!head) continue;
-        const dim = picked && picked !== rt.o ? 0.25 : 1;
+        const dim = picked && !ofRoute(rt, picked) ? 0.25 : 1;
         const glow = mix(colours.network, colours.text, 0.35);
         let end = head;
         ctx.beginPath();

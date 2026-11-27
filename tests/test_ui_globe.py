@@ -1603,8 +1603,8 @@ def test_the_routes_are_a_heat_map_and_the_lights_travel_only_the_last_stretch(j
     build = _body(js, "function buildRoutes() {")
     stretch = _body(build, "if (data.heat) {")
     # 1.106.0: its short links; an older server's page its tail (1.70.0), else its straight last stretch (1.69.0)
-    assert ": o.tail.length >= 2 ? [o.tail.map((p) => unit(p.lon, p.lat))]" in stretch and "return;" in stretch
-    assert "const path = wayOf(pts);" in stretch
+    assert ": o.tail.length >= 2 ? [{ key: '', pts: o.tail.map((p) => unit(p.lon, p.lat)) }]" in stretch
+    assert "return;" in stretch and "const path = wayOf(pts);" in stretch
     assert "hops: []" in stretch  # no hop dots: the network is the heat's
     draw = _body(js, "function drawRoutes(g, fr, now) {")
     assert "for (const rt of routes) onScreen(rt, g, fr);\n        drawLinks(picked);" in draw
@@ -1781,12 +1781,18 @@ def test_a_routes_light_travels_only_its_short_links_lit_and_an_older_page_keeps
     link = _body(js, "function linkOf(l) {")
     assert "l.length !== 2" in link and "return a && b ? [a, b] : null;" in link
     stretch = _body(_body(js, "function buildRoutes() {"), "if (data.heat) {")
-    assert "const ways = o.links ? o.links.map(([a, b]) => [unit(a.lon, a.lat), unit(b.lon, b.lat)])" in stretch
-    assert "for (const pts of ways) {" in stretch and "link: !!o.links," in stretch
+    assert "const ways = o.links ? o.links.map(([a, b]) => ({ key: `${a.lat},${a.lon}>${b.lat},${b.lon}`," in stretch
+    assert "for (const { key, pts } of ways) {" in stretch and "link: !!o.links," in stretch
+    # the review of 1.106.0: a link several places share (home's) is one route: lit once, one light of LIGHTS
+    assert "const was = key ? shared.get(key) : null;" in stretch and "was.os.push(o);" in stretch
+    assert "if (key) shared.set(key, rt);" in stretch and "routes.sort((x, y) => x.count - y.count);" in stretch
     assert "if (!path) continue;  // a link within a kilometre or so: the dot alone" in stretch
     assert "if (gone < 2e-4 || out.length < 2) return null;" in _body(js, "function wayOf(pts) {")
     links = _body(js, "function drawLinks(picked) {")
-    assert "if (!rt.link) continue;" in links and "ctx.strokeStyle = css(glow, picked && picked !== rt.o ? 0.25 : 0.8);" in links
+    assert "if (!rt.link) continue;" in links
+    assert "ctx.strokeStyle = css(glow, picked && !ofRoute(rt, picked) ? 0.25 : 0.8);" in links
+    assert "const ofRoute = (rt, o) => (rt.os ? rt.os.includes(o) : rt.o === o);" in js
+    assert "const dim = picked && !ofRoute(rt, picked) ? 0.25 : 1;" in _body(js, "function drawLights(picked, now) {")
     assert "const glow = mix(colours.network, colours.text, 0.35);" in links  # the lights' own glow
     draw = _body(js, "function drawRoutes(g, fr, now) {")
     heat = _body(draw, "if (data.heat) {")
