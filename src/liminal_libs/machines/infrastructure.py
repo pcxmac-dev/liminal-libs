@@ -2547,12 +2547,14 @@ class Index:
             out["cut"] = True
         return out
 
-    def points(self, layers, cells, most: int = MAX_POINTS) -> tuple[list[tuple[str, float, float, str, str]], int | None]:
+    def points(self, layers, cells,
+               most: int = MAX_POINTS) -> tuple[list[tuple[str, float, float, str, str]], int | None] | None:
         """The points of `layers` (their ids) in `cells` (1-degree cells, infrastore.cell_of), from the data sets
         drawn in each (as layer() draws them): ([(layer, lon, lat, name, sub)], `most` at most; the first cell not
         read whole where the read was cut, else None: Store.points) (1.106.0, Monday list item 27: the hubs a route
-        passes). Read now by the cells alone and not kept; none for a layer not installed, a database that does not
-        read, or a folder on another system's drive."""
+        passes). Read now by the cells alone and not kept; none for a layer not installed or a folder on another
+        system's drive. None where the database did not read (the review of 1.106.0: a failure is not "no points",
+        which a caller may keep)."""
         files = self._look()
         feeding = {layer: [d.id for d, _, _ in self._feeding(layer, files)[0]]
                    for layer in layers if isinstance(layer, str)}
@@ -2561,8 +2563,8 @@ class Index:
             return [], None
         try:
             return self.store().points(feeding, cells, most)
-        except Exception:  # noqa: BLE001 - gone or changed since the look: no hubs named this time
-            return [], None
+        except Exception:  # noqa: BLE001 - gone, changed or locked since the look: not read, said so
+            return None
 
     def _held(self, dataset: DataSet) -> str:
         """Why its download or its Update waits (held_back), "" when it does not, from the look's facts."""

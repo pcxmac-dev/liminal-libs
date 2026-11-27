@@ -259,3 +259,36 @@ def test_an_older_index_answering_a_plain_list_is_read_whole():
     east, branch = places()
     Network().onto(globe([east, branch]), Older({"cables": E}, HUBS))
     assert east["hubs"] == [ALPHA, DELTA, EPSILON, ETA, BETA]
+
+
+@pytest.mark.parametrize("how", ["raises", "answers None"])
+def test_a_read_that_fails_is_not_kept_as_no_hubs(how):
+    """The review of 1.106.0: a points read that failed once (a database locked) was kept as "no hubs" for good. Now
+    nothing of it is kept, and the next page reads it again."""
+    class Flaky(Index):
+        failed = False
+
+        def points(self, layers, cells, most):
+            if not self.failed:
+                self.failed = True
+                if how == "raises":
+                    raise RuntimeError("database is locked")
+                return None
+            return super().points(layers, cells, most)
+    index, net = Flaky({"cables": E}, HUBS), Network()
+    east, branch = places()
+    page = net.onto(globe([east, branch]), index)
+    assert page["hubs"] == [] and "hubs" not in east and not net._hub_edges
+    east, branch = places()
+    net.onto(globe([east, branch]), index)
+    assert east["hubs"] == [ALPHA, DELTA, EPSILON, ETA, BETA] and net.hubs_read == 2
+
+
+def test_the_index_answers_none_where_its_database_does_not_read(tmp_path, monkeypatch):
+    index = kept(tmp_path)
+
+    def locked(self, *args, **kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(Store, "points", locked)
+    assert index.points(["landings"], {cell_of(2.5, 0.05)}) is None
+    assert index.points(["exchanges"], {cell_of(2.5, 0.05)}) == ([], None)  # none installed: no points, read whole

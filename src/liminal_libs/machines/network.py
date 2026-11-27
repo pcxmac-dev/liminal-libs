@@ -529,7 +529,8 @@ def _read_hubs(graph: Graph, index, layers, edges) -> tuple[dict[int, list], set
     """The hubs of edges (Network.hubs' shape), read now: the points of `layers` in the cells within HUB_KM of the
     edges' lines (one read, HUB_READ points at most), each kept for an edge whose line runs within HUB_KM of it; and
     the edges whose cells were all read whole (the review of 1.106.0: a read cut at HUB_READ reads the cells in order,
-    so the edges reaching the cell it was cut in, or one after it, may have missed hubs, and are not kept)."""
+    so the edges reaching the cell it was cut in, or one after it, may have missed hubs, and are not kept; a read that
+    failed, raising or answering None, read none whole)."""
     lines, cells, every = {}, {}, set()
     for e in edges:
         pts = graph.line(e, graph.eu[e])
@@ -539,11 +540,14 @@ def _read_hubs(graph: Graph, index, layers, edges) -> tuple[dict[int, list], set
         every |= cells[e]
     try:
         got = index.points(list(layers), every, HUB_READ) if every else ([], None)
-    except Exception:  # noqa: BLE001 - a database that does not read: no hubs named this time
-        got = ([], None)
-    # (the points, the first cell not read whole); a plain list is an older index's, read whole
-    found, short = got if isinstance(got, tuple) and len(got) == 2 else (got or [], None)
-    whole = set(lines) if short is None else {e for e in lines if max(cells[e], default=-1) < short}
+    except Exception:  # noqa: BLE001 - a database that does not read: no hubs named this time, none kept
+        got = None
+    # (the points, the first cell not read whole); a plain list is an older index's, read whole; None: not read
+    if got is None:
+        found, whole = [], set()
+    else:
+        found, short = got if isinstance(got, tuple) and len(got) == 2 else (got or [], None)
+        whole = set(lines) if short is None else {e for e in lines if max(cells[e], default=-1) < short}
     by_cell: dict[int, list] = {}
     for item in found:
         try:
