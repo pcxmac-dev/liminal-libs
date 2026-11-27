@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.108.1 (2026-11-27)
+
+A WSL plugin's holds end when its app stops (found at the first live restart with a service running: Jenkins in
+Liminal-Ubuntu). The container stopped cleanly, but the hold that kept its distribution running, the WSL plugin's own
+idle session, was let go only by an ask from the container plugin, which is not carried while the platform stops: the
+session outlived the platform, the stop waited its whole timeout on it, and the distribution kept running with nothing
+in it. `WslDistribution.app_stopping` ends every hold session itself and forgets its holders; the distribution is not
+stopped (WSL stops one nothing uses). Not covered: a distribution you started from the page (its kept session).
+
 ## 1.108.0 (2026-11-26)
 
 Street maps on the globe (Monday list item 25; the user, 2026-11-20: "lets include streetmaps in to the globe as well

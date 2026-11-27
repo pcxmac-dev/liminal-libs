@@ -292,6 +292,26 @@ def test_one_session_holds_for_every_holder_and_the_last_let_go_ends_it(tmp_path
             p.hold("Liminal-Ubuntu")
 
 
+def test_every_hold_ends_when_its_app_stops(tmp_path):
+    """1.108.1 (the first live restart with a service running): the platform's stop tells each plugin (app_stopping);
+    a container plugin's let_go is not carried then, so the WSL plugin ends its own hold sessions itself. Before, the
+    session outlived the platform and the stop waited its whole timeout on it."""
+    p, fake, spawned = _wsl(tmp_path)
+    with asking.asking("docker"):
+        p.hold("Liminal-Ubuntu")
+    with asking.asking("lxd"):
+        p.hold("Liminal-Ubuntu")
+    assert len(spawned) == 1 and not spawned[0].ended
+    before = list(fake.calls)
+    p.app_stopping()
+    assert spawned[0].ended and p.held_by("Liminal-Ubuntu") == []
+    assert not any("--terminate" in c or "--shutdown" in c for c in fake.calls[len(before):])  # nothing is stopped
+    p.app_stopping()  # a second stop finds nothing to end
+    with asking.asking("docker"):
+        p.hold("Liminal-Ubuntu")  # and after a start it holds again, with a session of its own
+    assert len(spawned) == 2 and not spawned[1].ended
+
+
 def test_stopping_a_held_distribution_is_asked_twice(tmp_path):
     p, fake, _ = _wsl(tmp_path)
     with asking.asking("docker"):

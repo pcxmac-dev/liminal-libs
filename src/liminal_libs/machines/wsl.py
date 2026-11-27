@@ -1271,6 +1271,27 @@ class WslDistribution(MachinePlugin):
                 pass
         return {"said": f"{distribution} let go by {who}", "ok": True, "holders": self.held_by(key)}
 
+    def app_stopping(self) -> None:
+        """Its app stops (1.108.1; the first live restart with a service running, 2026-11-26): every hold ends with
+        it. A hold is this plugin's own idle session, a child of the app; the container plugin that asked for it lets
+        it go by asking this plugin, and an ask is not carried while the app stops, so the session outlived the
+        platform, which waited its whole stop out on it, and kept the distribution running with no service in it.
+        Every service of the page's lifecycle is stopped by its container plugin at the same stop, so no holder is
+        left to hold for. The distribution itself is not stopped: WSL stops one that nothing uses."""
+        with self._holds["lock"]:
+            sessions = list(self._holds["sessions"].values())
+            self._holds["sessions"].clear()
+            self._holds["by"].clear()
+        for session in sessions:
+            if hasattr(session, "terminate"):
+                try:
+                    session.terminate()  # this plugin's own wsl.exe session alone
+                except OSError:
+                    pass
+        parent = getattr(super(), "app_stopping", None)
+        if callable(parent):
+            parent()
+
     def _wslconfig(self) -> Path:
         if self.WSLCONFIG is not None:
             return Path(self.WSLCONFIG)
