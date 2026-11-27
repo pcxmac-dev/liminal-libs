@@ -18,24 +18,38 @@ page as before).
   light travels it alone; the legend says so. An older server's page keeps its tail.
 - **Never a straight line, even when the routes fail**: a heat that fails is left empty (its hubs and links with it),
   not removed, and the World Wide Web tab's globe always has one: the globe draws a page without a heat with straight
-  lines (an older server's, and the exchanges globe's), which this tab's must never do.
+  lines (an older server's, and the exchanges globe's), which this tab's must never do. Why it failed is said:
+  `globe["heat_error"]` (its words, `HEAT_ERROR` 300 characters at most), the Routes table's note and the page's note
+  ("No route is drawn this time: ..."), and the app's log once a change (and again when it works); the legs of the
+  page before are not kept.
 - **The hubs each route passes** (machines/network.py `HUB_LAYERS`): the cable landing stations, exchange points, data
   centres, backbones' points of presence, backbone models' cities and cities of the installed data sets that a route's
   lines run within `HUB_KM` (10 km) of, at a vertex of theirs: `globe["hubs"]` ({id, lat, lon, kind, what, name, sub,
   w, routes}: the connections through each, each route's once, and how many routes; `MAX_HUBS` 400, the busiest kept)
-  and each origin's `hubs` (their ids in its way's order, `ROUTE_HUBS` 32 at most). Of each kind, the `EDGE_HUBS` (3)
-  nearest a stretch of the lines are kept, the named first (a city's data centres are many). Each stretch's hubs are read
+  and each origin's `hubs` (their ids in its way's order, `ROUTE_HUBS` 32 at most: `HUB_ENDS` (4) at each end kept,
+  then the landings, exchange points, points of presence, models' cities and data centres before the cities
+  (`HUB_RANK`), a kind too many for the room sampled evenly along the way, so the far end always shows). Of each
+  kind, the `EDGE_HUBS` (3) nearest a stretch of the lines are kept, the named first (a city's data centres are many).
+  Each stretch's hubs are read
   by the 1-degree cells within `HUB_KM` of its line (`Index.points`, `Store.points`: the cells' index, 500 cells a
   query, `HUB_READ` points a page at most), never a layer whole, and kept with the graph and the hub layers' versions
-  (`MAX_HUB_EDGES`), so a page asked again reads nothing new.
+  (`MAX_HUB_EDGES`), so a page asked again reads nothing new: only the stretches read whole are kept (a read cut at
+  `HUB_READ` says the first cell it did not finish, and the stretches reaching it are read again next time), a read
+  that fails (`Index.points` answers None) keeps nothing and changes nothing kept, and a graph made again lets the old
+  one go (nothing kept holds it). The cells near a line are every cell of its points' boxes (every column between
+  their corners; all 360 near a pole), and the query starts from the cells (`cells CROSS JOIN features`, by id,
+  `LIMIT`ed).
 - **On the globe** (ui/static/liminal-globe.js): the hubs drawn under the routers' places with their layers' marks, and
   both larger and brighter by the connections through them (a log scale up to the busiest); named after the routers'
   places by the same placing (the busiest first, `HUB_NAMES` by zoom, never over another name; an unnamed one, and one
   whose own layer names its marks at this zoom, left out). A hub is told on hover and picked whole (`globe:hub:<id>`:
   what it is, the connections through it, its routes, the places it is on the way to); a place picked tells its way
   (home, its routers' places, the place) and the hubs it passes, in order: told in the right-hand panel (side.js) as
-  every pick is. Checked in headless Edge over stand-ins: the names drawn, the links stroked lit, a hub hovered,
-  clicked, let go and gone after an update, an older page, no throw.
+  every pick is. Only the names placed count against the budget (a name with no room uses up nothing, so home's
+  crowded metro leaves the far routers and hubs named). A short link several places share (home's) is one route,
+  stroked lit once a frame and one light, its places together (lit with any of them picked). Checked in headless Edge
+  over stand-ins: the names drawn, the links stroked lit, a hub hovered, clicked, let go and gone after an update, an
+  older page, no throw, the far names in a crowded metro, home's shared link once.
 - The Routes table's note says the short links and the hubs; docs/PAGES.md names a hub among a globe's picks.
 
 ## 1.105.0 (2026-11-26)
