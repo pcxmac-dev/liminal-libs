@@ -30,9 +30,11 @@ from .login import SESSION_HEADER
 # where it comes from (Origin, Sec-Fetch-Site: the front checked them; the bound app takes a request
 # saying neither). A TLS front's mark is passed on as it came, with its word on where the browser was and
 # how it came (web.FRONT_HEADER, X-Forwarded-For, X-Forwarded-Proto), and never added: what such a front
-# handed this app is not from this machine at the bound app either, and a page here still is
+# handed this app is not from this machine at the bound app either, and a page here still is. Idempotency-Key
+# (1.109.0, item 14): the Trading Desk's order carries its key so alone, and without it every order from the charts'
+# page was refused (400) behind the front
 FORWARDED = ("Cookie", "Content-Type", "Accept", "Last-Event-ID", web.WRITE_HEADER, web.PROFILE_HEADER, SESSION_HEADER,
-             web.FRONT_HEADER, "X-Forwarded-For", "X-Forwarded-Proto")
+             web.FRONT_HEADER, "X-Forwarded-For", "X-Forwarded-Proto", "Idempotency-Key")
 # The answer's headers passed back to the page, beside its status, its body and its cookies. Retry-After among them
 # (1.98.0): a bound app that says how long to wait (the login's 429 once too many sign-ins have failed) is heard
 # through a front as at its own port; until then the wait was in the answer's words alone

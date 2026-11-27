@@ -313,3 +313,57 @@ def test_a_bound_apps_wait_is_passed_back_with_its_answer():
         front.server_close()
         up.shutdown()
         up.server_close()
+
+
+def test_an_orders_idempotency_key_is_passed_on_to_the_bound_app(monkeypatch):
+    """1.109.0 (item 14, apps A1): the Trading Desk sends its order's key only as the Idempotency-Key header, and the
+    front's forward dropped it, so every order from the charts' page (8765) was refused 400 by the integrator. It is
+    passed on with the others; what is not in FORWARDED still is not. No socket: the connection is a stand-in."""
+    import io
+    from email.message import Message
+
+    sent = {}
+
+    class Connection:
+        def __init__(self, host, port, timeout=None):
+            sent["to"] = (host, port)
+            self.sock = type("Sock", (), {"settimeout": lambda self, t: None})()
+
+        def connect(self):
+            pass
+
+        def request(self, method, path, body=None, headers=None):
+            sent.update(method=method, path=path, body=body, headers=dict(headers or {}))
+
+        def getresponse(self):
+            msg = Message()
+            msg["Content-Type"] = "application/json"
+            return type("Answer", (), {"status": 201, "msg": msg, "getheader": lambda self, n: msg.get(n),
+                                       "read": lambda self: b'{"placed": true}'})()
+
+        def close(self):
+            pass
+
+    class Page:  # the front's handler, as the charts' page asked it
+        def __init__(self, headers):
+            self.headers = Message()
+            for name, value in headers.items():
+                self.headers[name] = value
+            self.rfile, self.wfile, self.status = io.BytesIO(b"{}"), io.BytesIO(), None
+
+        def send_response(self, status, *_):
+            self.status = status
+
+        def send_header(self, *_):
+            pass
+
+        def end_headers(self):
+            pass
+
+    monkeypatch.setattr(binding_mod.http.client, "HTTPConnection", Connection)
+    page = Page({"Content-Length": "2", "Content-Type": "application/json", web.WRITE_HEADER: "1",
+                 "Idempotency-Key": "desk-pv1-abc", "X-Not-Passed": "x"})
+    forward(page, "POST", "http://127.0.0.1:8785", "/v1/orders", drop_cookies=("liminal_login",))
+    assert sent["path"] == "/v1/orders" and sent["to"] == ("127.0.0.1", 8785) and page.status == 201
+    assert sent["headers"]["Idempotency-Key"] == "desk-pv1-abc"
+    assert "X-Not-Passed" not in sent["headers"]
